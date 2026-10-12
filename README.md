@@ -4,7 +4,7 @@
 [![React](https://img.shields.io/badge/React-18-blue?style=flat&logo=react)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?style=flat&logo=typescript)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-5-646CFF?style=flat&logo=vite)](https://vitejs.dev/)
-[![Tests](https://img.shields.io/badge/Tests-35%20Passing-success?style=flat&logo=vitest)](https://vitest.dev/)
+[![Tests](https://img.shields.io/badge/Tests-41%20Passing-success?style=flat&logo=vitest)](https://vitest.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **SOLARIS** is a scientifically grounded, real-time interactive 3D Solar System reconstruction built with **Three.js (WebGL2)**, **React**, and **TypeScript**.
@@ -95,7 +95,7 @@ Visit `http://localhost:5173/` in your browser.
 npm test
 ```
 
-Runs 35 unit tests across 8 test suites verifying coordinates, epochs, astrodynamics, Kepler solver convergence, moon periods, scale invariance, and catalogue integrity.
+Runs 41 unit tests across 9 test suites verifying coordinates, epochs, astrodynamics, Kepler solver convergence, moon periods, scale invariance, catalogue integrity, and texture cache consistency.
 
 ### Building for Production
 
@@ -109,7 +109,7 @@ Compiles TypeScript and bundles via Vite into `dist/`.
 
 ## Scientific Data Provenance
 
-See [ASSETS.md](file:///C:/Users/anish%20jha/.gemini/antigravity/scratch/solaris/ASSETS.md) for full catalogue record counts, licenses, and reference URLs.
+See [ASSETS.md](./ASSETS.md) for full catalogue record counts, licenses, and reference URLs.
 
 * **Orbital Elements**: NASA / JPL SSD Horizons J2000.0 osculating elements.
 * **Planetary Physical Constants**: IAU Working Group on Cartographic Coordinates and Rotational Elements (WGCCRE).
@@ -120,4 +120,4 @@ See [ASSETS.md](file:///C:/Users/anish%20jha/.gemini/antigravity/scratch/solaris
 
 ## License
 
-[MIT](file:///C:/Users/anish%20jha/.gemini/antigravity/scratch/solaris/LICENSE)
+[MIT](./LICENSE)

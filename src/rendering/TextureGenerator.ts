@@ -691,38 +691,116 @@ export class TextureGenerator {
 
   // --- 12. EUROPA (FRACTURED ICE OCEAN) ---
   private static createEuropaTexture(): THREE.CanvasTexture {
-    const w = 512, h = 256;
+    const w = 1024, h = 512;
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext('2d')!;
 
-    // Pale, brilliant icy crust
-    ctx.fillStyle = '#e8e5dc';
+    // Clean, high-albedo crystalline water ice crust (geometric albedo ~0.67)
+    ctx.fillStyle = '#f4f6fa';
     ctx.fillRect(0, 0, w, h);
 
-    // Subtle polar mottled shading
-    ctx.fillStyle = 'rgba(180, 165, 145, 0.25)';
-    ctx.fillRect(0, 0, w, h * 0.2);
-    ctx.fillRect(0, h * 0.8, w, h * 0.2);
+    // Subtle polar frost mottling (delicate cool cyan-white sheen)
+    const northFrost = ctx.createLinearGradient(0, 0, 0, h * 0.25);
+    northFrost.addColorStop(0, 'rgba(230, 240, 250, 0.6)');
+    northFrost.addColorStop(1, 'rgba(244, 246, 250, 0.0)');
+    ctx.fillStyle = northFrost;
+    ctx.fillRect(0, 0, w, h * 0.25);
 
-    // Tectonic lineae (reddish-brown double ridges and cycloid cracks)
-    ctx.strokeStyle = '#8b4513';
-    ctx.lineWidth = 1.5;
-    for (let i = 0; i < 28; i++) {
-      const sx = Math.random() * w;
-      const sy = Math.random() * h;
-      const len = 60 + Math.random() * 120;
-      const angle = (Math.random() - 0.5) * Math.PI;
+    const southFrost = ctx.createLinearGradient(0, h, 0, h * 0.75);
+    southFrost.addColorStop(0, 'rgba(230, 240, 250, 0.6)');
+    southFrost.addColorStop(1, 'rgba(244, 246, 250, 0.0)');
+    ctx.fillStyle = southFrost;
+    ctx.fillRect(0, h * 0.75, w, h * 0.25);
 
+    // Subtle equatorial mottled ice variations
+    for (let i = 0; i < 35; i++) {
+      const cx = (i * 37) % w;
+      const cy = h * 0.3 + ((i * 29) % (h * 0.4));
+      const rad = 25 + (i % 5) * 12;
+      const patchGrad = ctx.createRadialGradient(cx, cy, 2, cx, cy, rad);
+      patchGrad.addColorStop(0, 'rgba(225, 232, 240, 0.25)');
+      patchGrad.addColorStop(1, 'rgba(244, 246, 250, 0.0)');
+      ctx.fillStyle = patchGrad;
       ctx.beginPath();
-      ctx.moveTo(sx, sy);
-      // Curved cycloidal fracture
-      const cpx = sx + Math.cos(angle) * (len * 0.5) + (Math.random() - 0.5) * 30;
-      const cpy = sy + Math.sin(angle) * (len * 0.5) + (Math.random() - 0.5) * 30;
+      ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Chaos terrain patches (disrupted ice raft plates with subtle mineral salts, e.g. Conamara Chaos)
+    const chaosRegions = [
+      { x: w * 0.28, y: h * 0.45, rx: 42, ry: 28 },
+      { x: w * 0.62, y: h * 0.52, rx: 36, ry: 24 },
+      { x: w * 0.45, y: h * 0.35, rx: 30, ry: 20 },
+      { x: w * 0.82, y: h * 0.42, rx: 38, ry: 25 },
+    ];
+    for (const cr of chaosRegions) {
+      const grad = ctx.createRadialGradient(cr.x, cr.y, 5, cr.x, cr.y, cr.rx);
+      grad.addColorStop(0, 'rgba(175, 135, 105, 0.16)');
+      grad.addColorStop(0.7, 'rgba(160, 125, 98, 0.10)');
+      grad.addColorStop(1, 'rgba(244, 246, 250, 0.0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.ellipse(cr.x, cr.y, cr.rx, cr.ry, 0.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Deterministic pseudo-random seed helper for consistent fractures
+    let seed = 42;
+    const rnd = () => {
+      seed = (seed * 16807) % 2147483647;
+      return (seed - 1) / 2147483646;
+    };
+
+    // Primary tectonic cycloidal fractures (double ridges)
+    for (let i = 0; i < 32; i++) {
+      const sx = rnd() * w;
+      const sy = h * 0.15 + rnd() * h * 0.7;
+      const len = 80 + rnd() * 160;
+      const angle = (rnd() - 0.5) * Math.PI * 1.4;
+
+      const cpx = sx + Math.cos(angle) * (len * 0.5) + (rnd() - 0.5) * 40;
+      const cpy = sy + Math.sin(angle) * (len * 0.5) + (rnd() - 0.5) * 40;
       const ex = sx + Math.cos(angle) * len;
       const ey = sy + Math.sin(angle) * len;
+
+      // 1. Faint mineral stain halo
+      ctx.strokeStyle = 'rgba(155, 115, 90, 0.14)';
+      ctx.lineWidth = 4.0;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
       ctx.quadraticCurveTo(cpx, cpy, ex, ey);
+      ctx.stroke();
+
+      // 2. Main central fracture line
+      ctx.strokeStyle = 'rgba(115, 80, 65, 0.45)';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.quadraticCurveTo(cpx, cpy, ex, ey);
+      ctx.stroke();
+
+      // 3. Flanking bright crystalline ice ridge highlights
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+      ctx.lineWidth = 0.8;
+      ctx.beginPath();
+      ctx.moveTo(sx + 1, sy + 1);
+      ctx.quadraticCurveTo(cpx + 1, cpy + 1, ex + 1, ey + 1);
+      ctx.stroke();
+    }
+
+    // Secondary intricate micro-fractures (fine tensile crackle network)
+    ctx.strokeStyle = 'rgba(130, 95, 78, 0.22)';
+    ctx.lineWidth = 0.7;
+    for (let i = 0; i < 50; i++) {
+      const sx = rnd() * w;
+      const sy = rnd() * h;
+      const len = 30 + rnd() * 60;
+      const angle = rnd() * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx + Math.cos(angle) * len, sy + Math.sin(angle) * len);
       ctx.stroke();
     }
 

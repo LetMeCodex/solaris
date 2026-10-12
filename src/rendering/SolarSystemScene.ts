@@ -188,6 +188,10 @@ export class SolarSystemScene {
       }
       if (bundle.ringMesh) {
         bundle.ringMesh.scale.set(r, r, r);
+        const ringMat = bundle.ringMesh.material as THREE.ShaderMaterial;
+        if (ringMat.uniforms && ringMat.uniforms.saturnRadius) {
+          ringMat.uniforms.saturnRadius.value = r;
+        }
       }
       if (bundle.glowMeshes) {
         bundle.glowMeshes.forEach((g) => g.scale.set(r, r, r));
@@ -314,6 +318,15 @@ export class SolarSystemScene {
       // Independent Earth cloud drift
       if (bundle.cloudMesh) {
         bundle.cloudMesh.rotation.y = spinAngle * 1.05;
+      }
+
+      // Update Saturn planetary shadow on rings
+      if (body.name === 'Saturn' && bundle.ringMesh) {
+        const ringMat = bundle.ringMesh.material as THREE.ShaderMaterial;
+        if (ringMat.uniforms && ringMat.uniforms.saturnCenter) {
+          ringMat.uniforms.saturnCenter.value.set(renderPos[0], renderPos[1], renderPos[2]);
+          ringMat.uniforms.saturnRadius.value = bundle.visualRadius;
+        }
       }
     }
 

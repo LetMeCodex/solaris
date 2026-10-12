@@ -124,9 +124,9 @@ export class PlanetFactory {
     } else {
       // PBR Standard Material
       const roughness = body.name === 'Earth' ? 0.6 :
-                        (body.name === 'Europa' || body.name === 'Enceladus' ? 0.35 :
+                        (body.name === 'Europa' || body.name === 'Enceladus' ? 0.22 :
                         (body.name === 'Venus' ? 0.85 : 0.8));
-      const metalness = body.name === 'Psyche' ? 0.6 : 0.05;
+      const metalness = body.name === 'Psyche' ? 0.6 : 0.02;
 
       const matParams: THREE.MeshStandardMaterialParameters = {
         map: textures.map,
@@ -244,28 +244,51 @@ export class PlanetFactory {
       }
 
       // Rayleigh atmospheric rim glow
-      const atmoGeo = new THREE.SphereGeometry(1.034, 48, 36);
+      const atmoGeo = new THREE.SphereGeometry(1.022, 64, 48);
       const atmoMat = new THREE.ShaderMaterial({
         vertexShader: `
-          varying vec3 vNormal;
-          varying vec3 vViewPosition;
+          varying vec3 vWorldNormal;
+          varying vec3 vWorldPosition;
           void main() {
-            vNormal = normalize(normalMatrix * normal);
-            vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
-            vViewPosition = -mvPos.xyz;
-            gl_Position = projectionMatrix * mvPos;
+            vWorldNormal = normalize(mat3(modelMatrix) * normal);
+            vec4 worldPos = modelMatrix * vec4(position, 1.0);
+            vWorldPosition = worldPos.xyz;
+            gl_Position = projectionMatrix * viewMatrix * worldPos;
           }
         `,
         fragmentShader: `
-          varying vec3 vNormal;
-          varying vec3 vViewPosition;
+          varying vec3 vWorldNormal;
+          varying vec3 vWorldPosition;
           void main() {
-            vec3 normal = normalize(vNormal);
-            vec3 viewDir = normalize(vViewPosition);
-            float rim = 1.0 - clamp(abs(dot(normal, viewDir)), 0.0, 1.0);
-            float intensity = pow(rim, 3.2) * 1.35;
-            vec3 atmoColor = vec3(0.28, 0.58, 1.0); // Azure Rayleigh blue
-            gl_FragColor = vec4(atmoColor, intensity);
+            vec3 worldNormal = normalize(vWorldNormal);
+            // Sun is at origin (0, 0, 0)
+            vec3 sunDir = normalize(-vWorldPosition);
+            vec3 viewDir = normalize(cameraPosition - vWorldPosition);
+
+            // Limb Fresnel rim peaking right at the silhouette horizon
+            float rim = 1.0 - clamp(abs(dot(worldNormal, viewDir)), 0.0, 1.0);
+            float rimFactor = pow(rim, 3.8);
+
+            // Sunlight modulation across the terminator:
+            // Eliminates artificial night-side glow while maintaining forward scatter on illuminated limb
+            float sunDot = dot(worldNormal, sunDir);
+            float dayFactor = smoothstep(-0.25, 0.35, sunDot);
+
+            // Forward scattering phase function (Rayleigh/Mie forward peak)
+            float viewSunCos = dot(viewDir, sunDir);
+            float forwardScatter = pow(max(0.0, viewSunCos), 2.5) * 0.45;
+
+            // Deep space Rayleigh blue gradient with soft cyan-white inner horizon
+            vec3 dayColor = mix(vec3(0.24, 0.52, 0.95), vec3(0.55, 0.82, 1.0), rimFactor * 0.5);
+            // Twilight ember warm glow right along the terminator
+            float terminatorFringe = smoothstep(-0.15, 0.05, sunDot) * (1.0 - smoothstep(0.05, 0.25, sunDot));
+            vec3 twilightColor = vec3(0.95, 0.45, 0.22);
+            vec3 atmoColor = mix(dayColor, twilightColor, terminatorFringe * 0.38);
+
+            // Atmospheric intensity: day scattering with forward peak, falling off to subtle dark-side airglow
+            float intensity = rimFactor * (dayFactor * 1.35 + forwardScatter + 0.02);
+
+            gl_FragColor = vec4(atmoColor, clamp(intensity, 0.0, 1.0));
           }
         `,
         blending: THREE.AdditiveBlending,
@@ -282,28 +305,35 @@ export class PlanetFactory {
 
     // --- MARS DELICATE ATMOSPHERIC RIM ---
     if (body.name === 'Mars') {
-      const atmoGeo = new THREE.SphereGeometry(1.025, 48, 36);
+      const atmoGeo = new THREE.SphereGeometry(1.018, 48, 36);
       const atmoMat = new THREE.ShaderMaterial({
         vertexShader: `
-          varying vec3 vNormal;
-          varying vec3 vViewPosition;
+          varying vec3 vWorldNormal;
+          varying vec3 vWorldPosition;
           void main() {
-            vNormal = normalize(normalMatrix * normal);
-            vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
-            vViewPosition = -mvPos.xyz;
-            gl_Position = projectionMatrix * mvPos;
+            vWorldNormal = normalize(mat3(modelMatrix) * normal);
+            vec4 worldPos = modelMatrix * vec4(position, 1.0);
+            vWorldPosition = worldPos.xyz;
+            gl_Position = projectionMatrix * viewMatrix * worldPos;
           }
         `,
         fragmentShader: `
-          varying vec3 vNormal;
-          varying vec3 vViewPosition;
+          varying vec3 vWorldNormal;
+          varying vec3 vWorldPosition;
           void main() {
-            vec3 normal = normalize(vNormal);
-            vec3 viewDir = normalize(vViewPosition);
-            float rim = 1.0 - clamp(abs(dot(normal, viewDir)), 0.0, 1.0);
-            float intensity = pow(rim, 3.6) * 0.95;
-            vec3 atmoColor = vec3(0.85, 0.45, 0.28); // Amber-tinted thin CO2 haze
-            gl_FragColor = vec4(atmoColor, intensity);
+            vec3 worldNormal = normalize(vWorldNormal);
+            vec3 sunDir = normalize(-vWorldPosition);
+            vec3 viewDir = normalize(cameraPosition - vWorldPosition);
+
+            float rim = 1.0 - clamp(abs(dot(worldNormal, viewDir)), 0.0, 1.0);
+            float rimFactor = pow(rim, 4.0);
+
+            float sunDot = dot(worldNormal, sunDir);
+            float dayFactor = smoothstep(-0.20, 0.30, sunDot);
+
+            vec3 atmoColor = vec3(0.85, 0.48, 0.30); // Amber thin CO2 haze
+            float intensity = rimFactor * (dayFactor * 0.85 + 0.015);
+            gl_FragColor = vec4(atmoColor, clamp(intensity, 0.0, 1.0));
           }
         `,
         blending: THREE.AdditiveBlending,
@@ -318,7 +348,7 @@ export class PlanetFactory {
       bodyGroup.add(atmosphereMesh);
     }
 
-    // --- SATURN ANNULAR RING SYSTEM ---
+    // --- SATURN ANNULAR RING SYSTEM WITH PLANETARY SHADOW ---
     if (body.name === 'Saturn') {
       const innerR = 1.32;
       const outerR = 2.65;
@@ -337,14 +367,67 @@ export class PlanetFactory {
       uvs.needsUpdate = true;
 
       const ringTex = textures.ringAlphaMap || textures.map;
-      const ringMat = new THREE.MeshStandardMaterial({
-        map: ringTex,
-        alphaMap: ringTex,
+      const ringMat = new THREE.ShaderMaterial({
+        uniforms: {
+          ringMap: { value: ringTex },
+          saturnCenter: { value: new THREE.Vector3() },
+          saturnRadius: { value: visualRadius },
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          varying vec3 vWorldPosition;
+          varying vec3 vWorldNormal;
+          void main() {
+            vUv = uv;
+            vec4 worldPos = modelMatrix * vec4(position, 1.0);
+            vWorldPosition = worldPos.xyz;
+            vWorldNormal = normalize(mat3(modelMatrix) * normal);
+            gl_Position = projectionMatrix * viewMatrix * worldPos;
+          }
+        `,
+        fragmentShader: `
+          uniform sampler2D ringMap;
+          uniform vec3 saturnCenter;
+          uniform float saturnRadius;
+          varying vec2 vUv;
+          varying vec3 vWorldPosition;
+          varying vec3 vWorldNormal;
+
+          void main() {
+            vec4 ringTexCol = texture2D(ringMap, vUv);
+            if (ringTexCol.a < 0.02) discard;
+
+            // Sun sits at origin (0, 0, 0) in world coordinates
+            vec3 sunDir = normalize(-vWorldPosition);
+            vec3 normal = normalize(vWorldNormal);
+
+            // Double-sided lighting: sunlight illuminates ring from both top and bottom
+            float lightDot = max(0.12, abs(dot(normal, sunDir)));
+
+            // Analytical spherical shadow cast by Saturn's globe onto its rings:
+            vec3 saturnToSun = normalize(-saturnCenter);
+            vec3 d = vWorldPosition - saturnCenter;
+            float t = dot(d, saturnToSun);
+
+            float shadowFactor = 1.0;
+            // The shadow falls behind Saturn on the anti-sunward side (t < 0)
+            if (t < 0.0) {
+              vec3 d_perp = d - t * saturnToSun;
+              float distToAxis = length(d_perp);
+              // Soft penumbra edge at Saturn's limb
+              shadowFactor = smoothstep(saturnRadius * 0.985, saturnRadius * 1.015, distToAxis);
+            }
+
+            // Direct sunlight + soft ambient for dark-side silhouette visibility
+            vec3 directIllum = vec3(1.0, 0.97, 0.90) * 1.85 * lightDot * shadowFactor;
+            vec3 ambientIllum = vec3(0.045, 0.048, 0.06);
+
+            vec3 color = ringTexCol.rgb * (directIllum + ambientIllum);
+            gl_FragColor = vec4(color, ringTexCol.a * 0.96);
+          }
+        `,
         side: THREE.DoubleSide,
         transparent: true,
-        opacity: 0.95,
-        roughness: 0.45,
-        metalness: 0.1,
         depthWrite: false,
       });
 
@@ -353,7 +436,6 @@ export class PlanetFactory {
       // Rotate ring into Saturn's equatorial plane
       ringMesh.rotation.x = Math.PI * 0.5;
       ringMesh.renderOrder = 3;
-      ringMesh.receiveShadow = true;
       ringMesh.scale.set(visualRadius, visualRadius, visualRadius);
       bodyGroup.add(ringMesh);
     }
