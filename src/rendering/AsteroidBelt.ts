@@ -12,15 +12,28 @@ interface AsteroidOrbitalElement {
   scale: number;
 }
 
+// Deterministic 32-bit pseudo-random number generator (Mulberry32)
+export function createSeededRng(seed: number = 19890825): () => number {
+  let s = seed >>> 0;
+  return function (): number {
+    let t = (s += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 export class AsteroidBelt {
   public mesh: THREE.InstancedMesh;
   private count: number = 3200;
   private elements: AsteroidOrbitalElement[] = [];
   private dummy: THREE.Object3D = new THREE.Object3D();
   private transform: RenderSpaceTransform;
+  private seed: number;
 
-  constructor(transform: RenderSpaceTransform) {
+  constructor(transform: RenderSpaceTransform, seed: number = 19890825) {
     this.transform = transform;
+    this.seed = seed;
 
     // Create irregular low-poly asteroid rock geometry
     const baseGeo = new THREE.DodecahedronGeometry(0.35, 1);
@@ -52,8 +65,10 @@ export class AsteroidBelt {
 
   /**
    * Synthesize real Main Belt distribution (2.1 to 3.3 AU) with Kirkwood Resonance Gaps.
+   * Deterministic and reproducible across reloads via seeded PRNG.
    */
   private generateElements(): void {
+    const rng = createSeededRng(this.seed);
     const kirkwoodGaps = [
       { au: 2.50, width: 0.045 }, // 3:1 resonance with Jupiter
       { au: 2.82, width: 0.040 }, // 5:2 resonance
@@ -66,14 +81,14 @@ export class AsteroidBelt {
 
     while (generated < this.count) {
       // Semi-major axis between 2.12 and 3.28 AU
-      const a = 2.12 + Math.random() * 1.16;
+      const a = 2.12 + rng() * 1.16;
 
       // Kirkwood gap rejection check
       let inGap = false;
       for (const gap of kirkwoodGaps) {
         if (Math.abs(a - gap.au) < gap.width) {
           // 88% depletion probability inside resonance gap
-          if (Math.random() < 0.88) {
+          if (rng() < 0.88) {
             inGap = true;
             break;
           }
@@ -81,19 +96,19 @@ export class AsteroidBelt {
       }
       if (inGap) continue;
 
-      const e = 0.03 + Math.random() * 0.19; // Eccentricity
-      const iDeg = (Math.random() * Math.random()) * 18.0; // Inclination concentrated near ecliptic
+      const e = 0.03 + rng() * 0.19; // Eccentricity
+      const iDeg = (rng() * rng()) * 18.0; // Inclination concentrated near ecliptic
       const incRad = THREE.MathUtils.degToRad(iDeg);
-      const longNodeRad = Math.random() * Math.PI * 2;
-      const argPeriRad = Math.random() * Math.PI * 2;
-      const m0Rad = Math.random() * Math.PI * 2;
+      const longNodeRad = rng() * Math.PI * 2;
+      const argPeriRad = rng() * Math.PI * 2;
+      const m0Rad = rng() * Math.PI * 2;
 
       // Kepler's Third Law: period in years = a^(1.5), days = a^(1.5) * 365.25
       const periodDays = Math.pow(a, 1.5) * 365.25;
       const meanMotion = (Math.PI * 2) / periodDays;
 
       // Visual scale variance (small pebbles to large kilometer boulders)
-      const scale = 0.45 + Math.random() * 0.9;
+      const scale = 0.45 + rng() * 0.9;
 
       this.elements.push({
         semiMajorAxisAU: a,
@@ -107,18 +122,18 @@ export class AsteroidBelt {
       });
 
       // Rock color: C-type carbonaceous (dark grey/brown), S-type stony, M-type metallic
-      const type = Math.random();
+      const type = rng();
       if (type < 0.70) {
         // C-type (70% of belt)
-        const v = 0.28 + Math.random() * 0.18;
+        const v = 0.28 + rng() * 0.18;
         colors.push(new THREE.Color(v * 0.95, v * 0.92, v * 0.88));
       } else if (type < 0.90) {
         // S-type (20% of belt)
-        const v = 0.45 + Math.random() * 0.22;
+        const v = 0.45 + rng() * 0.22;
         colors.push(new THREE.Color(v * 1.05, v * 0.95, v * 0.80));
       } else {
         // M-type (10% metallic)
-        const v = 0.55 + Math.random() * 0.25;
+        const v = 0.55 + rng() * 0.25;
         colors.push(new THREE.Color(v, v * 0.95, v * 0.90));
       }
 

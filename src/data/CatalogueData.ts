@@ -637,7 +637,7 @@ export const MOONS_AND_MINOR_BODIES: CelestialBodyDefinition[] = [
 
   // --- DWARF PLANETS & ASTEROIDS ---
   {
-    id: '1;',
+    id: '1',
     name: 'Ceres',
     category: 'dwarf_planet',
     orderFromSun: 4.5,
@@ -666,7 +666,7 @@ export const MOONS_AND_MINOR_BODIES: CelestialBodyDefinition[] = [
     description: 'Largest body in the asteroid belt, comprising ~33% of its total mass; differentiated protoplanet with an ice-rich mantle and bright sodium-carbonate salt spots (Cerealia Facula in Occator Crater).'
   },
   {
-    id: '4;',
+    id: '4',
     name: 'Vesta',
     category: 'asteroid',
     orderFromSun: 4.3,
@@ -693,7 +693,7 @@ export const MOONS_AND_MINOR_BODIES: CelestialBodyDefinition[] = [
     description: 'Brightest asteroid visible from Earth; preserved basaltic differentiated protoplanet with metallic core, silicate mantle, and enormous south-polar impact crater Rheasilvia.'
   },
   {
-    id: '2;',
+    id: '2',
     name: 'Pallas',
     category: 'asteroid',
     orderFromSun: 4.6,
@@ -717,7 +717,7 @@ export const MOONS_AND_MINOR_BODIES: CelestialBodyDefinition[] = [
     description: 'Third-largest asteroid in the belt; notable for its unusually high 34.8° orbital inclination and dynamic golf-ball-like surface topography.'
   },
   {
-    id: '10;',
+    id: '10',
     name: 'Hygiea',
     category: 'asteroid',
     orderFromSun: 4.8,
@@ -740,7 +740,7 @@ export const MOONS_AND_MINOR_BODIES: CelestialBodyDefinition[] = [
     description: 'Fourth-largest asteroid and major carbonaceous C-type asteroid; nearly spherical body likely formed from a catastrophic impact parent-body disruption.'
   },
   {
-    id: '16;',
+    id: '16',
     name: 'Psyche',
     category: 'asteroid',
     orderFromSun: 4.7,
@@ -764,7 +764,7 @@ export const MOONS_AND_MINOR_BODIES: CelestialBodyDefinition[] = [
     description: 'Enormous metallic M-type asteroid thought to be the exposed nickel-iron core of an early protoplanet stripped by hit-and-run collisions; target of NASA’s Psyche mission.'
   },
   {
-    id: '433;',
+    id: '433',
     name: 'Eros',
     category: 'asteroid',
     orderFromSun: 3.5,
@@ -787,7 +787,7 @@ export const MOONS_AND_MINOR_BODIES: CelestialBodyDefinition[] = [
     description: 'Elongated peanut-shaped S-type near-Earth asteroid; historic target orbited and landed upon by the NEAR Shoemaker spacecraft in 2001.'
   },
   {
-    id: '951;',
+    id: '951',
     name: 'Gaspra',
     category: 'asteroid',
     orderFromSun: 4.1,
@@ -810,7 +810,7 @@ export const MOONS_AND_MINOR_BODIES: CelestialBodyDefinition[] = [
     description: 'First asteroid ever visited by a spacecraft (Galileo flyby in 1991); irregular S-type asteroid with prominent groove-like depressions.'
   },
   {
-    id: '243;',
+    id: '243',
     name: 'Ida',
     category: 'asteroid',
     orderFromSun: 4.6,
@@ -833,7 +833,7 @@ export const MOONS_AND_MINOR_BODIES: CelestialBodyDefinition[] = [
     description: 'Coronis-family asteroid visited by Galileo in 1993, famous for the historic discovery of Dactyl, the first recognized asteroid moon.'
   },
   {
-    id: '101955;',
+    id: '101955',
     name: 'Bennu',
     category: 'asteroid',
     orderFromSun: 3.2,
@@ -856,7 +856,7 @@ export const MOONS_AND_MINOR_BODIES: CelestialBodyDefinition[] = [
     description: 'Diamond-shaped carbonaceous rubble-pile near-Earth asteroid sampled by NASA’s OSIRIS-REx spacecraft, delivering pristine solar nebula samples to Earth in 2023.'
   },
   {
-    id: '162173;',
+    id: '162173',
     name: 'Ryugu',
     category: 'asteroid',
     orderFromSun: 3.3,

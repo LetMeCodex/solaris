@@ -173,14 +173,24 @@ export class SolarSystemScene {
     this.planetBundles.forEach((bundle) => {
       const r = this.transform.getVisualRadius(bundle.definition);
       bundle.visualRadius = r;
-      // Rescale body mesh
+      // Rescale body mesh directly from unit sphere
       const flattening = bundle.definition.physical.flattening || 0;
-      bundle.surfaceMesh.scale.set(r, r * (1 - flattening), r);
+      const polarScale = 1.0 - flattening;
+      bundle.surfaceMesh.scale.set(r, r * polarScale, r);
+      if (bundle.nightMesh) {
+        bundle.nightMesh.scale.set(r, r * polarScale, r);
+      }
       if (bundle.cloudMesh) {
-        bundle.cloudMesh.scale.set(r * 1.018, r * 1.018, r * 1.018);
+        bundle.cloudMesh.scale.set(r, r, r);
+      }
+      if (bundle.atmosphereMesh) {
+        bundle.atmosphereMesh.scale.set(r, r, r);
       }
       if (bundle.ringMesh) {
-        bundle.ringMesh.scale.set(r / 8.2, r / 8.2, r / 8.2);
+        bundle.ringMesh.scale.set(r, r, r);
+      }
+      if (bundle.glowMeshes) {
+        bundle.glowMeshes.forEach((g) => g.scale.set(r, r, r));
       }
     });
 
@@ -202,31 +212,32 @@ export class SolarSystemScene {
     return this.orbitLinesGroup.visible;
   }
 
-  private setupInteraction(): void {
-    this.container.addEventListener('click', (e) => {
-      const rect = this.container.getBoundingClientRect();
-      this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  private onContainerClick = (e: MouseEvent): void => {
+    const rect = this.container.getBoundingClientRect();
+    this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
-      this.raycaster.setFromCamera(this.mouse, this.cameraRig.camera);
+    this.raycaster.setFromCamera(this.mouse, this.cameraRig.camera);
 
-      const interactiveMeshes: THREE.Object3D[] = [];
-      this.planetBundles.forEach((bundle) => {
-        interactiveMeshes.push(bundle.surfaceMesh);
-      });
-
-      const intersects = this.raycaster.intersectObjects(interactiveMeshes, false);
-      if (intersects.length > 0) {
-        const hit = intersects[0].object;
-        for (const bundle of this.planetBundles.values()) {
-          if (bundle.surfaceMesh === hit) {
-            this.selectBody(bundle.definition.name);
-            break;
-          }
-        }
-      }
+    const interactiveMeshes: THREE.Object3D[] = [];
+    this.planetBundles.forEach((bundle) => {
+      interactiveMeshes.push(bundle.surfaceMesh);
     });
 
+    const intersects = this.raycaster.intersectObjects(interactiveMeshes, false);
+    if (intersects.length > 0) {
+      const hit = intersects[0].object;
+      for (const bundle of this.planetBundles.values()) {
+        if (bundle.surfaceMesh === hit) {
+          this.selectBody(bundle.definition.name);
+          break;
+        }
+      }
+    }
+  };
+
+  private setupInteraction(): void {
+    this.container.addEventListener('click', this.onContainerClick);
     window.addEventListener('resize', this.onResize);
   }
 
@@ -319,8 +330,15 @@ export class SolarSystemScene {
       const parentState = this.latestPhysicalStates.get(parentDef.name);
       const parentRenderPos = parentPositionsRender.get(parentDef.id) || [0, 0, 0];
 
-      // Moon parent-relative Keplerian propagation
-      const moonRelState = KeplerSolver.propagate(moon.orbit, elapsedDaysSinceJ2000);
+      // Gravitational parameter mu = GM_parent + GM_satellite
+      const parentGm = parentDef.physical.gmKm3S2 ??
+        (parentDef.physical.massKg ? parentDef.physical.massKg * 6.6743e-20 : undefined);
+      const moonGm = moon.physical.gmKm3S2 ??
+        (moon.physical.massKg ? moon.physical.massKg * 6.6743e-20 : 0);
+      const mu = (parentGm !== undefined) ? (parentGm + moonGm) : KeplerSolver.GM_SUN;
+
+      // Moon parent-relative Keplerian propagation using parent gravitational parameter
+      const moonRelState = KeplerSolver.propagate(moon.orbit, elapsedDaysSinceJ2000, mu);
 
       // Total heliocentric physical state for telemetry
       const parentPosKm = parentState?.positionKm || [0, 0, 0];
@@ -433,8 +451,39 @@ export class SolarSystemScene {
       cancelAnimationFrame(this.animationFrameId);
     }
     window.removeEventListener('resize', this.onResize);
+    this.container.removeEventListener('click', this.onContainerClick);
+    this.cameraRig.dispose();
     this.starfield.dispose();
     this.asteroidBelt.dispose();
+
+    // Dispose all planetary geometries and materials
+    this.planetBundles.forEach((bundle) => {
+      bundle.surfaceMesh.geometry.dispose();
+      (bundle.surfaceMesh.material as THREE.Material).dispose();
+      if (bundle.nightMesh) {
+        bundle.nightMesh.geometry.dispose();
+        (bundle.nightMesh.material as THREE.Material).dispose();
+      }
+      if (bundle.cloudMesh) {
+        bundle.cloudMesh.geometry.dispose();
+        (bundle.cloudMesh.material as THREE.Material).dispose();
+      }
+      if (bundle.atmosphereMesh) {
+        bundle.atmosphereMesh.geometry.dispose();
+        (bundle.atmosphereMesh.material as THREE.Material).dispose();
+      }
+      if (bundle.ringMesh) {
+        bundle.ringMesh.geometry.dispose();
+        (bundle.ringMesh.material as THREE.Material).dispose();
+      }
+      if (bundle.glowMeshes) {
+        bundle.glowMeshes.forEach((g) => {
+          g.geometry.dispose();
+          (g.material as THREE.Material).dispose();
+        });
+      }
+    });
+
     this.renderer.dispose();
     if (this.renderer.domElement.parentElement) {
       this.renderer.domElement.parentElement.removeChild(this.renderer.domElement);

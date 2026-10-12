@@ -65,6 +65,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [dateInput, setDateInput] = useState<string>(utcIso.slice(0, 10));
   const [isDatePickerOpen, setIsDatePickerOpen] = useState<boolean>(false);
+  const [isEditingDate, setIsEditingDate] = useState<boolean>(false);
 
   // Global keyboard shortcuts for immersion
   useEffect(() => {
@@ -78,8 +79,13 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         e.preventDefault();
         setIsHudVisible((v) => !v);
       } else if (e.key === 'Escape') {
-        setIsCatalogueOpen(false);
-        setIsDetailsOpen(false);
+        if (isCatalogueOpen || isDetailsOpen || isDatePickerOpen) {
+          setIsCatalogueOpen(false);
+          setIsDetailsOpen(false);
+          setIsDatePickerOpen(false);
+        } else {
+          onResetView();
+        }
       } else if (e.key === 'o' || e.key === 'O') {
         onToggleOrbits?.();
       } else if (e.key === 'c' || e.key === 'C') {
@@ -91,12 +97,23 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onTogglePlay, onToggleOrbits, onToggleConstellations, onToggleAsteroidBelt]);
+  }, [
+    onTogglePlay,
+    onToggleOrbits,
+    onToggleConstellations,
+    onToggleAsteroidBelt,
+    onResetView,
+    isCatalogueOpen,
+    isDetailsOpen,
+    isDatePickerOpen
+  ]);
 
-  // Sync date input when paused or significant shift
+  // Sync date input when running, only when user is not actively editing or picking
   useEffect(() => {
-    setDateInput(utcIso.slice(0, 10));
-  }, [utcIso]);
+    if (!isEditingDate && !isDatePickerOpen) {
+      setDateInput(utcIso.slice(0, 10));
+    }
+  }, [utcIso, isEditingDate, isDatePickerOpen]);
 
   const allBodies = useMemo(() => CatalogueManager.getAllBodies(), []);
   const majorPlanets = useMemo(() => CatalogueManager.getPlanets(), []);
@@ -126,6 +143,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
   const handleDateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setIsEditingDate(false);
     const parsed = Date.parse(dateInput);
     if (!isNaN(parsed)) {
       onSeekDate(parsed);
@@ -211,7 +229,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                   : 'text-white/40 hover:text-white/70'
               }`}
             >
-              Stars
+              Constellations
             </button>
             <button
               onClick={onToggleAsteroidBelt}
@@ -360,14 +378,18 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
               <span className="text-white/40">Period</span>
               <span className="text-right text-white/90">
-                {fullTargetDef.orbit.orbitalPeriodDays > 730
+                {fullTargetDef.category === 'star' || fullTargetDef.orbit.orbitalPeriodDays === 0
+                  ? 'N/A (Barycenter)'
+                  : fullTargetDef.orbit.orbitalPeriodDays > 730
                   ? `${(fullTargetDef.orbit.orbitalPeriodDays / 365.25).toFixed(2)} yr`
                   : `${fullTargetDef.orbit.orbitalPeriodDays.toFixed(1)} d`}
               </span>
 
               <span className="text-white/40">Inclination</span>
               <span className="text-right text-white/90">
-                {fullTargetDef.orbit.inclinationDeg.toFixed(2)}°
+                {fullTargetDef.category === 'star'
+                  ? '0.00°'
+                  : `${fullTargetDef.orbit.inclinationDeg.toFixed(2)}°`}
               </span>
             </div>
           </div>
@@ -378,29 +400,41 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               Real-Time Ephemeris
             </span>
             <div className="grid grid-cols-2 gap-y-1.5 text-[11px]">
-              <span className="text-white/40">Sun Distance</span>
+              <span className="text-white/40">
+                {fullTargetDef.category === 'star'
+                  ? 'Barycentric Dist'
+                  : fullTargetDef.category === 'moon' && fullTargetDef.parentName
+                  ? `${fullTargetDef.parentName} Dist`
+                  : 'Sun Distance'}
+              </span>
               <span className="text-right text-white/90">
-                {target.distanceKm > 1e6
+                {fullTargetDef.category === 'star'
+                  ? '0 km (Origin)'
+                  : target.distanceKm > 1e6
                   ? `${(target.distanceKm / 1e6).toFixed(2)}M km`
                   : `${Math.round(target.distanceKm).toLocaleString()} km`}
               </span>
 
               <span className="text-white/40">AU Distance</span>
               <span className="text-right text-white/90">
-                {(target.distanceKm / 149597870.7).toFixed(3)} AU
+                {fullTargetDef.category === 'star'
+                  ? '0.000 AU'
+                  : `${(target.distanceKm / 149597870.7).toFixed(3)} AU`}
               </span>
 
               <span className="text-white/40">Velocity</span>
               <span className="text-right text-white/90">
-                {target.apparentSpeedKmS.toFixed(2)} km/s
+                {fullTargetDef.category === 'star'
+                  ? '0.00 km/s'
+                  : `${target.apparentSpeedKmS.toFixed(2)} km/s`}
               </span>
             </div>
           </div>
 
           {/* Provenance Badge */}
           <div className="pt-2 border-t border-white/10 flex justify-between items-center text-[10px] font-mono text-white/35">
-            <span>NASA JPL DE440</span>
-            <span>IAU WGS · EXACT</span>
+            <span>NASA / JPL SSD Horizons (J2000)</span>
+            <span>2-Body Keplerian Orbit</span>
           </div>
         </aside>
       )}
@@ -487,7 +521,12 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             <input
               type="date"
               value={dateInput}
-              onChange={(e) => setDateInput(e.target.value)}
+              onFocus={() => setIsEditingDate(true)}
+              onChange={(e) => {
+                setIsEditingDate(true);
+                setDateInput(e.target.value);
+              }}
+              onBlur={() => setIsEditingDate(false)}
               className="bg-white/10 text-white px-2 py-1 rounded border border-white/15 outline-none focus:border-white/40 text-xs"
             />
             <button

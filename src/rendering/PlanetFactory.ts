@@ -11,6 +11,7 @@ export interface PlanetMeshBundle {
   cloudMesh?: THREE.Mesh;      // Earth's independent rotating clouds
   atmosphereMesh?: THREE.Mesh; // Rayleigh atmospheric limb glow
   ringMesh?: THREE.Mesh;       // Saturn's ring system
+  glowMeshes?: THREE.Mesh[];   // Sun corona halos
   orbitLine?: THREE.Line;      // Visual Keplerian orbital path
   visualRadius: number;
   orbitalDistance: number;
@@ -82,14 +83,13 @@ export class PlanetFactory {
     const flattening = body.physical.flattening || 0;
     const polarScale = 1.0 - flattening;
 
-    // Create surface sphere (optimized subdivision based on body size)
+    // Create unit surface sphere (R = 1.0)
     const isSmallBody = body.category === 'moon' || body.category === 'asteroid';
     const sphereGeo = new THREE.SphereGeometry(
-      visualRadius,
+      1.0,
       isSmallBody ? 36 : 64,
       isSmallBody ? 24 : 48
     );
-    sphereGeo.scale(1.0, polarScale, 1.0); // Compress along polar Y axis
 
     // Irregular asteroid/minor moon mesh deformation for realistic non-spherical shape
     if (body.category === 'asteroid' || (body.category === 'moon' && body.physical.meanRadiusKm < 200)) {
@@ -98,7 +98,7 @@ export class PlanetFactory {
         const vx = pos.getX(i);
         const vy = pos.getY(i);
         const vz = pos.getZ(i);
-        // Deterministic low-frequency perturbation
+        // Deterministic low-frequency perturbation on unit sphere
         const noise = 1.0 + 0.18 * Math.sin(vx * 4.0) * Math.cos(vy * 4.0 + vz * 3.0);
         pos.setXYZ(i, vx * noise, vy * noise, vz * noise);
       }
@@ -113,6 +113,7 @@ export class PlanetFactory {
     let cloudMesh: THREE.Mesh | undefined;
     let atmosphereMesh: THREE.Mesh | undefined;
     let ringMesh: THREE.Mesh | undefined;
+    const glowMeshes: THREE.Mesh[] = [];
 
     if (body.category === 'star') {
       // Sun: Photosphere with high-luminance emission
@@ -145,11 +146,13 @@ export class PlanetFactory {
     surfaceMesh.name = `surface_${body.name}`;
     surfaceMesh.castShadow = body.category !== 'star';
     surfaceMesh.receiveShadow = body.category !== 'star';
+    // Single-application scale from unit sphere
+    surfaceMesh.scale.set(visualRadius, visualRadius * polarScale, visualRadius);
     bodyGroup.add(surfaceMesh);
 
     // --- SUN CORONA HALO GLOW ---
     if (body.category === 'star') {
-      const innerGlowGeo = new THREE.SphereGeometry(visualRadius * 1.06, 32, 32);
+      const innerGlowGeo = new THREE.SphereGeometry(1.06, 32, 32);
       const innerGlowMat = new THREE.MeshBasicMaterial({
         color: 0xffaa33,
         transparent: true,
@@ -157,9 +160,12 @@ export class PlanetFactory {
         blending: THREE.AdditiveBlending,
         side: THREE.BackSide,
       });
-      bodyGroup.add(new THREE.Mesh(innerGlowGeo, innerGlowMat));
+      const innerMesh = new THREE.Mesh(innerGlowGeo, innerGlowMat);
+      innerMesh.scale.set(visualRadius, visualRadius, visualRadius);
+      bodyGroup.add(innerMesh);
+      glowMeshes.push(innerMesh);
 
-      const outerGlowGeo = new THREE.SphereGeometry(visualRadius * 1.35, 32, 32);
+      const outerGlowGeo = new THREE.SphereGeometry(1.35, 32, 32);
       const outerGlowMat = new THREE.MeshBasicMaterial({
         color: 0xff6600,
         transparent: true,
@@ -167,14 +173,17 @@ export class PlanetFactory {
         blending: THREE.AdditiveBlending,
         side: THREE.BackSide,
       });
-      bodyGroup.add(new THREE.Mesh(outerGlowGeo, outerGlowMat));
+      const outerMesh = new THREE.Mesh(outerGlowGeo, outerGlowMat);
+      outerMesh.scale.set(visualRadius, visualRadius, visualRadius);
+      bodyGroup.add(outerMesh);
+      glowMeshes.push(outerMesh);
     }
 
     // --- EARTH NIGHT LIGHTS, CLOUDS & RAYLEIGH ATMOSPHERE ---
     if (body.name === 'Earth') {
       // Night-side city lights
       if (textures.nightMap) {
-        const nightGeo = new THREE.SphereGeometry(visualRadius * 1.002, 64, 48);
+        const nightGeo = new THREE.SphereGeometry(1.002, 64, 48);
         const nightMat = new THREE.ShaderMaterial({
           uniforms: {
             nightMap: { value: textures.nightMap },
@@ -199,7 +208,7 @@ export class PlanetFactory {
             void main() {
               vec3 sunDir = normalize(-vWorldPosition);
               float sunDot = dot(vWorldNormal, sunDir);
-              float nightFactor = smoothstep(0.05, -0.18, sunDot);
+              float nightFactor = 1.0 - smoothstep(-0.20, 0.05, sunDot);
               vec4 cityCol = texture2D(nightMap, vUv);
               gl_FragColor = vec4(cityCol.rgb * 1.35 * nightFactor, 1.0);
             }
@@ -211,16 +220,18 @@ export class PlanetFactory {
         nightMesh = new THREE.Mesh(nightGeo, nightMat);
         nightMesh.name = 'earth_night_lights';
         nightMesh.renderOrder = 1;
+        nightMesh.scale.set(visualRadius, visualRadius * polarScale, visualRadius);
         bodyGroup.add(nightMesh);
       }
 
-      // Cloud shell
+      // Cloud shell with luminance transparency mask
       if (textures.cloudsMap) {
-        const cloudGeo = new THREE.SphereGeometry(visualRadius * 1.016, 64, 48);
+        const cloudGeo = new THREE.SphereGeometry(1.016, 64, 48);
         const cloudMat = new THREE.MeshStandardMaterial({
           map: textures.cloudsMap,
+          alphaMap: textures.cloudsMap,
           transparent: true,
-          opacity: 0.82,
+          opacity: 0.88,
           blending: THREE.NormalBlending,
           roughness: 0.9,
           depthWrite: false,
@@ -228,11 +239,12 @@ export class PlanetFactory {
         cloudMesh = new THREE.Mesh(cloudGeo, cloudMat);
         cloudMesh.name = 'earth_clouds';
         cloudMesh.renderOrder = 2;
+        cloudMesh.scale.set(visualRadius, visualRadius, visualRadius);
         bodyGroup.add(cloudMesh);
       }
 
       // Rayleigh atmospheric rim glow
-      const atmoGeo = new THREE.SphereGeometry(visualRadius * 1.034, 48, 36);
+      const atmoGeo = new THREE.SphereGeometry(1.034, 48, 36);
       const atmoMat = new THREE.ShaderMaterial({
         vertexShader: `
           varying vec3 vNormal;
@@ -264,12 +276,13 @@ export class PlanetFactory {
       atmosphereMesh = new THREE.Mesh(atmoGeo, atmoMat);
       atmosphereMesh.name = 'earth_atmosphere';
       atmosphereMesh.renderOrder = 3;
+      atmosphereMesh.scale.set(visualRadius, visualRadius, visualRadius);
       bodyGroup.add(atmosphereMesh);
     }
 
     // --- MARS DELICATE ATMOSPHERIC RIM ---
     if (body.name === 'Mars') {
-      const atmoGeo = new THREE.SphereGeometry(visualRadius * 1.025, 48, 36);
+      const atmoGeo = new THREE.SphereGeometry(1.025, 48, 36);
       const atmoMat = new THREE.ShaderMaterial({
         vertexShader: `
           varying vec3 vNormal;
@@ -301,13 +314,14 @@ export class PlanetFactory {
       atmosphereMesh = new THREE.Mesh(atmoGeo, atmoMat);
       atmosphereMesh.name = 'mars_atmosphere';
       atmosphereMesh.renderOrder = 3;
+      atmosphereMesh.scale.set(visualRadius, visualRadius, visualRadius);
       bodyGroup.add(atmosphereMesh);
     }
 
     // --- SATURN ANNULAR RING SYSTEM ---
     if (body.name === 'Saturn') {
-      const innerR = visualRadius * 1.32;
-      const outerR = visualRadius * 2.65;
+      const innerR = 1.32;
+      const outerR = 2.65;
       const ringGeo = new THREE.RingGeometry(innerR, outerR, 128, 8);
       
       // Remap UVs so U goes radially from inner to outer radius
@@ -340,6 +354,7 @@ export class PlanetFactory {
       ringMesh.rotation.x = Math.PI * 0.5;
       ringMesh.renderOrder = 3;
       ringMesh.receiveShadow = true;
+      ringMesh.scale.set(visualRadius, visualRadius, visualRadius);
       bodyGroup.add(ringMesh);
     }
 
@@ -376,6 +391,7 @@ export class PlanetFactory {
       cloudMesh,
       atmosphereMesh,
       ringMesh,
+      glowMeshes: glowMeshes.length > 0 ? glowMeshes : undefined,
       orbitLine,
       visualRadius,
       orbitalDistance,

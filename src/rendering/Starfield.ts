@@ -161,7 +161,7 @@ export class Starfield {
 
       // Size from apparent magnitude (logarithmic brightness perception)
       // Vmag ranges from -1.44 (Sirius) to 8.0 (faint limit)
-      const sizePx = Math.max(1.2, 5.2 - 0.52 * vmag);
+      const sizePx = Math.max(1.2, 5.8 - 0.62 * vmag);
       sizes[i] = sizePx;
     }
 
@@ -177,8 +177,7 @@ export class Starfield {
       void main() {
         vColor = color;
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = size * (300.0 / -mvPosition.z);
-        gl_PointSize = clamp(gl_PointSize, 1.2, 8.0);
+        gl_PointSize = clamp(size, 1.2, 9.0);
         gl_Position = projectionMatrix * mvPosition;
       }
     `;

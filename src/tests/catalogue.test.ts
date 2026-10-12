@@ -55,6 +55,15 @@ describe('Phase 3 Celestial Catalogue & Hierarchy', () => {
     }
   });
 
+  it('verifies clean catalogue IDs without trailing punctuation or spaces', () => {
+    const allBodies = CatalogueManager.getAllBodies();
+    for (const body of allBodies) {
+      expect(body.id).toMatch(/^[0-9]+$/);
+      expect(body.id.includes(';')).toBe(false);
+      expect(body.id.trim()).toBe(body.id);
+    }
+  });
+
   it('verifies retrograde orbit for Triton (i > 90 deg)', () => {
     const triton = CatalogueManager.getBody('Triton');
     expect(triton).toBeDefined();

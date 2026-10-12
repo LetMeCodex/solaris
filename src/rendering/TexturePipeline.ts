@@ -56,6 +56,13 @@ export class TexturePipeline {
     const cached = this.cache.get(fullUrl);
     if (cached) return cached;
 
+    // Guard for headless / Node unit test environments without DOM
+    if (typeof document === 'undefined') {
+      const dummyTex = new THREE.Texture();
+      this.cache.set(fullUrl, dummyTex);
+      return dummyTex;
+    }
+
     // Create texture instance
     const texture = this.loader.load(
       fullUrl,

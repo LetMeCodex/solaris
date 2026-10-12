@@ -30,6 +30,7 @@ export class CameraRig {
   private previousMousePosition = { x: 0, y: 0 };
 
   constructor(domElement: HTMLElement) {
+    this.domElement = domElement;
     this.camera = new THREE.PerspectiveCamera(
       45,
       domElement.clientWidth / domElement.clientHeight,
@@ -156,45 +157,61 @@ export class CameraRig {
     };
   }
 
+  private domElement: HTMLElement;
+  private onMouseDown = (e: MouseEvent) => {
+    if (e.button !== 0 && e.button !== 2) return;
+    this.isDragging = true;
+    this.previousMousePosition = { x: e.clientX, y: e.clientY };
+  };
+
+  private onMouseUp = () => {
+    this.isDragging = false;
+  };
+
+  private onMouseMove = (e: MouseEvent) => {
+    if (!this.isDragging) return;
+
+    const deltaX = e.clientX - this.previousMousePosition.x;
+    const deltaY = e.clientY - this.previousMousePosition.y;
+    this.previousMousePosition = { x: e.clientX, y: e.clientY };
+
+    const rotateSpeed = 0.005;
+    this.spherical.theta -= deltaX * rotateSpeed;
+    this.spherical.phi -= deltaY * rotateSpeed;
+
+    // Restrict phi to avoid polar singularity flip
+    this.spherical.phi = Math.max(0.05, Math.min(Math.PI - 0.05, this.spherical.phi));
+  };
+
+  private onWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    const zoomSpeed = 0.0015;
+    const factor = 1.0 + e.deltaY * zoomSpeed;
+    const minDistance = this.focusedObject ? this.focusDistance * 0.6 : 10.0;
+    const maxDistance = 1500.0;
+
+    this.spherical.radius = Math.max(minDistance, Math.min(maxDistance, this.spherical.radius * factor));
+  };
+
   private setupEventListeners(element: HTMLElement): void {
-    element.addEventListener('mousedown', (e) => {
-      if (e.button !== 0 && e.button !== 2) return;
-      this.isDragging = true;
-      this.previousMousePosition = { x: e.clientX, y: e.clientY };
-    });
-
-    window.addEventListener('mouseup', () => {
-      this.isDragging = false;
-    });
-
-    window.addEventListener('mousemove', (e) => {
-      if (!this.isDragging) return;
-
-      const deltaX = e.clientX - this.previousMousePosition.x;
-      const deltaY = e.clientY - this.previousMousePosition.y;
-      this.previousMousePosition = { x: e.clientX, y: e.clientY };
-
-      const rotateSpeed = 0.005;
-      this.spherical.theta -= deltaX * rotateSpeed;
-      this.spherical.phi -= deltaY * rotateSpeed;
-
-      // Restrict phi to avoid polar singularity flip
-      this.spherical.phi = Math.max(0.05, Math.min(Math.PI - 0.05, this.spherical.phi));
-    });
-
-    element.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      const zoomSpeed = 0.0015;
-      const factor = 1.0 + e.deltaY * zoomSpeed;
-      const minDistance = this.focusedObject ? this.focusDistance * 0.6 : 10.0;
-      const maxDistance = 1500.0;
-
-      this.spherical.radius = Math.max(minDistance, Math.min(maxDistance, this.spherical.radius * factor));
-    }, { passive: false });
+    this.domElement = element;
+    element.addEventListener('mousedown', this.onMouseDown);
+    window.addEventListener('mouseup', this.onMouseUp);
+    window.addEventListener('mousemove', this.onMouseMove);
+    element.addEventListener('wheel', this.onWheel, { passive: false });
   }
 
   public handleResize(width: number, height: number): void {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+  }
+
+  public dispose(): void {
+    if (this.domElement) {
+      this.domElement.removeEventListener('mousedown', this.onMouseDown);
+      this.domElement.removeEventListener('wheel', this.onWheel);
+    }
+    window.removeEventListener('mouseup', this.onMouseUp);
+    window.removeEventListener('mousemove', this.onMouseMove);
   }
 }
