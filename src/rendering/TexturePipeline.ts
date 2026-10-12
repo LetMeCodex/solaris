@@ -18,8 +18,15 @@ export class TexturePipeline {
   private loader: THREE.TextureLoader = new THREE.TextureLoader();
   private cache: Map<string, THREE.Texture> = new Map();
   private maxAnisotropy: number = 8;
+  private baseUrl: string = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
 
   private constructor() {}
+
+  private resolveUrl(path: string): string {
+    if (path.startsWith('http://') || path.startsWith('https://')) return path;
+    const clean = path.startsWith('/') ? path.slice(1) : path;
+    return `${this.baseUrl}${clean}`;
+  }
 
   public static getInstance(): TexturePipeline {
     if (!TexturePipeline.instance) {
@@ -45,12 +52,13 @@ export class TexturePipeline {
     isSRGB: boolean = true,
     fallbackKey?: string
   ): THREE.Texture {
-    const cached = this.cache.get(url);
+    const fullUrl = this.resolveUrl(url);
+    const cached = this.cache.get(fullUrl);
     if (cached) return cached;
 
     // Create texture instance
     const texture = this.loader.load(
-      url,
+      fullUrl,
       (tex) => {
         tex.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.NoColorSpace;
         tex.generateMipmaps = true;

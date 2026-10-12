@@ -113,7 +113,8 @@ export class Starfield {
 
   private async loadCatalog(): Promise<void> {
     try {
-      const response = await fetch('/data/stars.json');
+      const baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
+      const response = await fetch(`${baseUrl}data/stars.json`);
       if (!response.ok) {
         throw new Error(`Failed to fetch stars.json: HTTP ${response.status}`);
       }
