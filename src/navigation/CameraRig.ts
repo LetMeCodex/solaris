@@ -21,6 +21,7 @@ export class CameraRig {
   // Focus lock
   public focusedObject: THREE.Object3D | null = null;
   public focusDistance: number = 30;
+  private focusedElevationOffset: THREE.Vector3 = new THREE.Vector3();
 
   // Transition state
   private transition: CameraTransition | null = null;
@@ -47,10 +48,10 @@ export class CameraRig {
       const elapsed = now - this.transition.startTime;
       const progress = Math.min(1.0, elapsed / this.transition.durationMs);
       
-      // Smooth cubic ease-in-out
+      // Smooth quintic ease-in-out for ultra-silky acceleration and deceleration
       const ease = progress < 0.5
-        ? 4 * progress * progress * progress
-        : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+        ? 16 * Math.pow(progress, 5)
+        : 1 - Math.pow(-2 * progress + 2, 5) / 2;
 
       this.camera.position.lerpVectors(this.transition.startPos, this.transition.targetPos, ease);
       this.lookAtTarget.lerpVectors(this.transition.startLookAt, this.transition.targetLookAt, ease);
@@ -67,8 +68,10 @@ export class CameraRig {
     }
 
     if (this.focusedObject) {
-      // Follow the tracked object as it moves along its orbit
+      // Follow the tracked object as it moves along its orbit, preserving cinematic elevation offset
+      this.focusedObject.updateWorldMatrix(true, false);
       this.focusedObject.getWorldPosition(this.lookAtTarget);
+      this.lookAtTarget.add(this.focusedElevationOffset);
     }
 
     this.targetOffset.setFromSpherical(this.spherical);
@@ -86,60 +89,112 @@ export class CameraRig {
     this.updateCameraPosition();
   }
 
-  public focusOn(object: THREE.Object3D, radius: number, durationMs: number = 1400): void {
+  /**
+   * Reference-matched cinematic framing:
+   * Frames the planet massively in the lower viewport with its curved horizon arching
+   * across the lower-middle screen, catching grazing sunlight on the upper limb.
+   */
+  public focusCinematic(
+    object: THREE.Object3D,
+    radius: number,
+    bodyName: string = '',
+    durationMs: number = 1800,
+    onComplete?: () => void
+  ): void {
     this.focusedObject = object;
-    // Scale viewing distance tailored to body size and ring extent:
-    if (object.name.includes('Saturn')) {
-      this.focusDistance = radius * 7.2; // Extra clearance for rings
-    } else if (object.name.includes('Sun')) {
-      this.focusDistance = radius * 3.8;
-    } else if (radius < 1.5) {
-      this.focusDistance = Math.max(2.5, radius * 5.5);
-    } else {
-      this.focusDistance = Math.max(14.0, radius * 5.6);
+
+    // Respect prefers-reduced-motion
+    if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      durationMs = 150;
     }
 
+    object.updateWorldMatrix(true, false);
     const worldPos = new THREE.Vector3();
     object.getWorldPosition(worldPos);
 
-    // Compute sunlit framing vector:
-    // The Sun is at (0, 0, 0). Vector from planet toward Sun is -worldPos.
+    // Vector toward the Sun at (0, 0, 0)
     const toSun = new THREE.Vector3().copy(worldPos).negate();
-    if (toSun.lengthSq() < 1) {
-      // Focusing on the Sun itself
+    const isSun = toSun.lengthSq() < 1 || bodyName === 'Sun';
+    if (isSun) {
       toSun.set(0, 0, 1);
     } else {
       toSun.normalize();
     }
 
-    // Place camera at a dramatic 40-degree angle from the Sun direction and elevated +Y
-    const sideVec = new THREE.Vector3(-toSun.z, 0, toSun.x).normalize();
-    const cameraOffset = new THREE.Vector3()
-      .copy(toSun)
-      .multiplyScalar(0.75)
-      .addScaledVector(sideVec, 0.65)
-      .add(new THREE.Vector3(0, 0.45, 0))
-      .normalize()
-      .multiplyScalar(this.focusDistance);
+    // 1. Derivation of camera distance and vertical lookAt elevation
+    let distanceFactor = 2.75;
+    let elevationOffset = radius * 0.44;
+
+    if (bodyName === 'Saturn') {
+      distanceFactor = 4.4; // Extra clearance for the annular ring system
+      elevationOffset = radius * 0.32;
+    } else if (bodyName === 'Sun') {
+      distanceFactor = 3.2;
+      elevationOffset = radius * 0.38;
+    } else if (bodyName === 'Jupiter') {
+      distanceFactor = 2.85;
+      elevationOffset = radius * 0.45;
+    } else if (radius < 1.5) {
+      distanceFactor = 3.2;
+      elevationOffset = radius * 0.42;
+    }
+
+    const viewingDistance = Math.max(3.2, radius * distanceFactor);
+    this.focusDistance = viewingDistance;
+    this.focusedElevationOffset.set(0, elevationOffset, 0);
+
+    // 2. Camera vantage point relative to Sun:
+    // Place camera on the night/terminator side looking down at the planet,
+    // so the Sun is behind/above the top edge of the planet, creating the iconic glowing horizon arc!
+    const side = new THREE.Vector3(-toSun.z, 0, toSun.x).normalize();
+    const up = new THREE.Vector3(0, 1, 0);
+
+    let cameraOffset: THREE.Vector3;
+    if (isSun) {
+      cameraOffset = new THREE.Vector3(0, 0.4, 1.0).normalize().multiplyScalar(viewingDistance);
+    } else if (bodyName === 'Saturn') {
+      // 26 degree tilt to Saturn's ring plane for majestic oblique perspective
+      cameraOffset = new THREE.Vector3()
+        .copy(toSun).multiplyScalar(-0.42)
+        .addScaledVector(side, 0.48)
+        .addScaledVector(up, 0.62)
+        .normalize()
+        .multiplyScalar(viewingDistance);
+    } else {
+      cameraOffset = new THREE.Vector3()
+        .copy(toSun).multiplyScalar(-0.35)
+        .addScaledVector(side, 0.28)
+        .addScaledVector(up, 0.65)
+        .normalize()
+        .multiplyScalar(viewingDistance);
+    }
 
     const targetCameraPos = new THREE.Vector3().copy(worldPos).add(cameraOffset);
+    const targetLookAt = new THREE.Vector3().copy(worldPos).add(this.focusedElevationOffset);
     const targetSpherical = new THREE.Spherical().setFromVector3(cameraOffset);
 
+    // Cancel or smoothly supersede any previous transition
     this.transition = {
       startPos: this.camera.position.clone(),
       targetPos: targetCameraPos,
       startLookAt: this.lookAtTarget.clone(),
-      targetLookAt: worldPos.clone(),
+      targetLookAt,
       startTime: performance.now(),
       durationMs,
       onComplete: () => {
         this.spherical.copy(targetSpherical);
+        if (onComplete) onComplete();
       }
     };
   }
 
+  public focusOn(object: THREE.Object3D, radius: number, durationMs: number = 1800): void {
+    this.focusCinematic(object, radius, object.name, durationMs);
+  }
+
   public resetToOverview(durationMs: number = 1600): void {
     this.focusedObject = null;
+    this.focusedElevationOffset.set(0, 0, 0);
     const targetSpherical = new THREE.Spherical(280, Math.PI * 0.32, Math.PI * 0.25);
     const targetPos = new THREE.Vector3().setFromSpherical(targetSpherical);
 

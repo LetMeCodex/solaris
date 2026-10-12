@@ -17,8 +17,10 @@ export const App: React.FC = () => {
       setTelemetry(data);
     });
     sceneRef.current = scene;
+    (window as any).__solaris_scene = scene;
 
     return () => {
+      delete (window as any).__solaris_scene;
       scene.dispose();
       sceneRef.current = null;
     };

@@ -60,8 +60,8 @@ export class SolarSystemScene {
     this.container = container;
     this.onTelemetryUpdate = onTelemetryUpdate;
 
-    // Default target: Sun
-    this.selectedBody = CatalogueManager.getBody('Sun') || CatalogueManager.getAllBodies()[0];
+    // Default target: Mercury (reference opens with cinematic horizon view of Mercury)
+    this.selectedBody = CatalogueManager.getBody('Mercury') || CatalogueManager.getAllBodies()[0];
 
     // 1. Scene
     this.scene = new THREE.Scene();
@@ -94,9 +94,15 @@ export class SolarSystemScene {
     this.scene.add(this.asteroidBelt.mesh);
 
     // 7. Build Celestial Bodies & Keplerian Orbit Trails
+    this.orbitLinesGroup.visible = false; // Restrained cinematic aesthetic by default
     this.scene.add(this.orbitLinesGroup);
     this.setupBodies();
     this.rebuildOrbitLines();
+
+    // Initial propagation & matrix update so meshes are placed before initial focus
+    this.propagateAll(0);
+    this.scene.updateMatrixWorld(true);
+    this.selectBody('Mercury', 1800);
 
     // 8. Interaction
     this.setupInteraction();
@@ -216,8 +222,20 @@ export class SolarSystemScene {
     return this.orbitLinesGroup.visible;
   }
 
-  private onContainerClick = (e: MouseEvent): void => {
-    const rect = this.container.getBoundingClientRect();
+  private pointerDownPos = { x: 0, y: 0 };
+  private onPointerDown = (e: MouseEvent): void => {
+    this.pointerDownPos = { x: e.clientX, y: e.clientY };
+  };
+
+  private onCanvasClick = (e: MouseEvent): void => {
+    // Only handle clicks directly on the WebGL canvas
+    if (e.target !== this.renderer.domElement) return;
+
+    // Ignore drags
+    const dist = Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y);
+    if (dist > 6) return;
+
+    const rect = this.renderer.domElement.getBoundingClientRect();
     this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
@@ -241,16 +259,17 @@ export class SolarSystemScene {
   };
 
   private setupInteraction(): void {
-    this.container.addEventListener('click', this.onContainerClick);
+    this.renderer.domElement.addEventListener('mousedown', this.onPointerDown);
+    this.renderer.domElement.addEventListener('click', this.onCanvasClick);
     window.addEventListener('resize', this.onResize);
   }
 
-  public selectBody(name: string): void {
+  public selectBody(name: string, durationMs: number = 1800): void {
     const bundle = this.planetBundles.get(name);
     if (!bundle) return;
 
     this.selectedBody = bundle.definition;
-    this.cameraRig.focusOn(bundle.bodyGroup, bundle.visualRadius);
+    this.cameraRig.focusCinematic(bundle.bodyGroup, bundle.visualRadius, bundle.definition.name, durationMs);
   }
 
   public resetView(): void {
@@ -266,22 +285,11 @@ export class SolarSystemScene {
     this.cameraRig.handleResize(w, h);
   };
 
-  private animate = (): void => {
-    if (!this.isRunning) return;
-    this.animationFrameId = requestAnimationFrame(this.animate);
-
-    const now = performance.now();
-    // 1. Advance master simulation clock
-    this.clock.update(now);
-
-    // Days elapsed since J2000.0 epoch
-    const currentJd = this.clock.getJulianDate();
-    const elapsedDaysSinceJ2000 = currentJd - SimulationClock.J2000_JD;
-
-    // 2. Propagate all heliocentric bodies first (Sun, Planets, Dwarf Planets, Asteroids)
+  public propagateAll(elapsedDaysSinceJ2000: number): void {
     const bodies = CatalogueManager.getAllBodies();
     const parentPositionsRender: Map<string, [number, number, number]> = new Map();
 
+    // Heliocentric bodies (Sun, Planets, Dwarf Planets, Asteroids)
     for (const body of bodies) {
       if (body.category === 'moon') continue; // Handled in second pass
 
@@ -292,7 +300,6 @@ export class SolarSystemScene {
         // Sun sits at center (0, 0, 0)
         bundle.bodyGroup.position.set(0, 0, 0);
         parentPositionsRender.set(body.id, [0, 0, 0]);
-        // Sun differential rotation
         const spinAngle = (elapsedDaysSinceJ2000 * 24.0 / 609.12) * Math.PI * 2;
         bundle.surfaceMesh.rotation.y = spinAngle;
         continue;
@@ -330,7 +337,7 @@ export class SolarSystemScene {
       }
     }
 
-    // 3. Propagate all natural satellites (Moons) relative to parent bodies
+    // Natural satellites (Moons) relative to parent bodies
     for (const moon of bodies) {
       if (moon.category !== 'moon' || !moon.parentId) continue;
 
@@ -343,17 +350,14 @@ export class SolarSystemScene {
       const parentState = this.latestPhysicalStates.get(parentDef.name);
       const parentRenderPos = parentPositionsRender.get(parentDef.id) || [0, 0, 0];
 
-      // Gravitational parameter mu = GM_parent + GM_satellite
       const parentGm = parentDef.physical.gmKm3S2 ??
         (parentDef.physical.massKg ? parentDef.physical.massKg * 6.6743e-20 : undefined);
       const moonGm = moon.physical.gmKm3S2 ??
         (moon.physical.massKg ? moon.physical.massKg * 6.6743e-20 : 0);
       const mu = (parentGm !== undefined) ? (parentGm + moonGm) : KeplerSolver.GM_SUN;
 
-      // Moon parent-relative Keplerian propagation using parent gravitational parameter
       const moonRelState = KeplerSolver.propagate(moon.orbit, elapsedDaysSinceJ2000, mu);
 
-      // Total heliocentric physical state for telemetry
       const parentPosKm = parentState?.positionKm || [0, 0, 0];
       const parentVelKmS = parentState?.velocityKmPerSec || [0, 0, 0];
 
@@ -378,7 +382,6 @@ export class SolarSystemScene {
         eccentricAnomalyDeg: moonRelState.eccentricAnomalyDeg,
       });
 
-      // Transform moon position to active render mode
       const renderPos = this.transform.toMoonRenderPosition(
         moonRelState.positionKm,
         moon,
@@ -387,28 +390,36 @@ export class SolarSystemScene {
       );
       moonBundle.bodyGroup.position.set(renderPos[0], renderPos[1], renderPos[2]);
 
-      // Update parent-relative orbit line position
       const moonOrbitLine = this.moonOrbitLines.get(moon.name);
       if (moonOrbitLine) {
         moonOrbitLine.position.set(parentRenderPos[0], parentRenderPos[1], parentRenderPos[2]);
       }
 
-      // Moon synchronous rotation
       const periodHours = moon.physical.rotationPeriodHours || moon.orbit.orbitalPeriodDays * 24.0;
       const spinAngle = (elapsedDaysSinceJ2000 * 24.0 / periodHours) * Math.PI * 2;
       moonBundle.surfaceMesh.rotation.y = spinAngle;
     }
 
-    // 4. Propagate Asteroid Belt
+    // Instanced Asteroid Belt
     this.asteroidBelt.updatePositions(elapsedDaysSinceJ2000);
+  }
 
-    // 5. Update camera controller
+  private animate = (): void => {
+    if (!this.isRunning) return;
+    this.animationFrameId = requestAnimationFrame(this.animate);
+
+    const now = performance.now();
+    this.clock.update(now);
+
+    const currentJd = this.clock.getJulianDate();
+    const elapsedDaysSinceJ2000 = currentJd - SimulationClock.J2000_JD;
+
+    this.propagateAll(elapsedDaysSinceJ2000);
+
     this.cameraRig.update();
 
-    // 6. Render frame
     this.renderer.render(this.scene, this.cameraRig.camera);
 
-    // 7. Throttled HUD telemetry dispatch (approx 20 Hz)
     this.telemetryThrottleCounter++;
     if (this.telemetryThrottleCounter % 3 === 0 && this.onTelemetryUpdate) {
       this.dispatchTelemetry();
@@ -464,7 +475,8 @@ export class SolarSystemScene {
       cancelAnimationFrame(this.animationFrameId);
     }
     window.removeEventListener('resize', this.onResize);
-    this.container.removeEventListener('click', this.onContainerClick);
+    this.renderer.domElement.removeEventListener('mousedown', this.onPointerDown);
+    this.renderer.domElement.removeEventListener('click', this.onCanvasClick);
     this.cameraRig.dispose();
     this.starfield.dispose();
     this.asteroidBelt.dispose();

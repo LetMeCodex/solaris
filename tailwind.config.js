@@ -22,6 +22,7 @@ export default {
         }
       },
       fontFamily: {
+        sans: ['Montserrat', 'system-ui', '-apple-system', 'sans-serif'],
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
         serif: ['Instrument Serif', 'Georgia', 'serif'],
       }
