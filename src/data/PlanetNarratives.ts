@@ -176,6 +176,124 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
       { name: 'New Horizons', year: '2015', agency: 'NASA', role: 'Historic historic flyby capturing high-resolution imagery of Tombaugh Regio' }
     ]
   },
+  Moon: {
+    name: 'Moon',
+    category: 'moon',
+    eyebrow: 'NATURAL SATELLITE · EARTH I',
+    accentColor: '#d1d5db',
+    eyebrowColor: '#e5e7eb',
+    distanceAU: '1.000 AU',
+    textureThumb: 'textures/2k_moon.jpg',
+    monographText:
+      'EARTH\'S CONSTANT CELESTIAL COMPANION, TIDALLY LOCKED IN AN ANCIENT GRAVITATIONAL EMBRACE. ITS HIGHLANDS AND BASALTIC MARIA PRESERVE FOUR BILLION YEARS OF COSMIC HISTORY.',
+    extendedLore:
+      'Formed ~4.5 billion years ago from the debris of a giant collision between the proto-Earth and a Mars-sized protoplanet named Theia. The Moon stabilizes Earth\'s rotational tilt, modulating climate extremes and generating oceanic tides.',
+    missions: [
+      { name: 'Apollo 11', year: '1969', agency: 'NASA', role: 'First human landing on another celestial world' },
+      { name: 'LRO', year: '2009–Present', agency: 'NASA', role: 'High-resolution sub-meter 3D laser altimetry and mapping' },
+      { name: 'Artemis I', year: '2022', agency: 'NASA', role: 'Uncrewed lunar orbital qualification flight for deep space exploration' }
+    ]
+  },
+  Europa: {
+    name: 'Europa',
+    category: 'moon',
+    eyebrow: 'OCEAN MOON · JUPITER II',
+    accentColor: '#7dd3fc',
+    eyebrowColor: '#bae6fd',
+    distanceAU: '5.203 AU',
+    textureThumb: 'textures/2k_moon.jpg',
+    monographText:
+      'A SMOOTH CRUST OF WATER ICE FRACTURED BY REDDISH LINEAE, CONCEALING A VAST GLOBAL SALTWATER OCEAN CONTAINING TWICE THE WATER OF ALL EARTH\'S OCEANS COMBINED.',
+    extendedLore:
+      'Tidally flexed by orbital resonance with Io and Ganymede, Europa\'s rocky mantle produces geothermal heating that keeps its deep subsurface ocean in a liquid state. Cryovolcanic plumes venting water into space make it one of humankind\'s top destinations in the search for extraterrestrial habitability.',
+    missions: [
+      { name: 'Galileo', year: '1995–2003', agency: 'NASA', role: 'Discovered induced magnetic field evidence for a subsurface saline ocean' },
+      { name: 'Europa Clipper', year: '2024–Present', agency: 'NASA', role: 'Dedicated mission equipped with ice-penetrating radar to confirm habitability' }
+    ]
+  },
+  Io: {
+    name: 'Io',
+    category: 'moon',
+    eyebrow: 'VOLCANIC MOON · JUPITER I',
+    accentColor: '#facc15',
+    eyebrowColor: '#fef08a',
+    distanceAU: '5.203 AU',
+    textureThumb: 'textures/2k_moon.jpg',
+    monographText:
+      'THE MOST VOLCANICALLY ACTIVE BODY IN THE SOLAR SYSTEM, SCARRED BY HUNDREDS OF ACTIVE VOLCANOES DRIVEN BY INTENSE GRAVITATIONAL TIDAL FRICTION.',
+    extendedLore:
+      'Caught in an eccentric resonance between Jupiter and its sibling moons, Io undergoes constant tidal flexing that generates ferocious internal heat, driving molten silicate lava lakes and sulfur plumes hundreds of kilometers into space.',
+    missions: [
+      { name: 'Voyager 1', year: '1979', agency: 'NASA', role: 'First observation of active extraterrestrial volcanism' },
+      { name: 'Juno', year: '2016–Present', agency: 'NASA', role: 'Close flybys mapping polar volcanic hotspots and magma oceans' }
+    ]
+  },
+  Ganymede: {
+    name: 'Ganymede',
+    category: 'moon',
+    eyebrow: 'GIANT MOON · JUPITER III',
+    accentColor: '#cbd5e1',
+    eyebrowColor: '#e2e8f0',
+    distanceAU: '5.203 AU',
+    textureThumb: 'textures/2k_moon.jpg',
+    monographText:
+      'THE LARGEST MOON IN THE SOLAR SYSTEM, EVEN EXCEEDING MERCURY IN DIAMETER, AND THE ONLY SATELLITE BEARING AN INTERNALLY GENERATED MAGNETIC FIELD.',
+    extendedLore:
+      'Possesses a molten iron-rich core that generates an intrinsic magnetosphere. Beneath its grooved and fractured tectonic ice shell lies a deep subterranean liquid ocean separated by high-pressure ice phases.',
+    missions: [
+      { name: 'Galileo', year: '1995–2003', agency: 'NASA', role: 'Identified intrinsic dipolar magnetic field' },
+      { name: 'JUICE', year: '2023–Present', agency: 'ESA', role: 'En route to enter permanent orbit around Ganymede in 2034' }
+    ]
+  },
+  Titan: {
+    name: 'Titan',
+    category: 'moon',
+    eyebrow: 'HYDROCARBON WORLD · SATURN VI',
+    accentColor: '#f59e0b',
+    eyebrowColor: '#fde68a',
+    distanceAU: '9.539 AU',
+    textureThumb: 'textures/2k_moon.jpg',
+    monographText:
+      'THE ONLY MOON WITH A DENSE ATMOSPHERE AND STABLE SURFACE SEAS, WHERE METHANE AND ETHANE FORM A COMPLETE METEOROLOGICAL HYDROLOGIC CYCLE.',
+    extendedLore:
+      'Exceeding Mercury in size, Titan possesses an orange smoggy atmosphere 1.5 times denser than Earth\'s sea-level pressure. Cryogenic rivers carve canyon networks feeding liquid hydrocarbon seas like Kraken Mare.',
+    missions: [
+      { name: 'Cassini-Huygens', year: '2004–2017', agency: 'NASA / ESA', role: 'Huygens landed directly on Titan\'s surface in 2005' },
+      { name: 'Dragonfly', year: 'Planned 2028', agency: 'NASA', role: 'Rotorcraft lander to explore prebiotic organic chemistry' }
+    ]
+  },
+  Enceladus: {
+    name: 'Enceladus',
+    category: 'moon',
+    eyebrow: 'CRYOVOLCANIC MOON · SATURN II',
+    accentColor: '#e0f2fe',
+    eyebrowColor: '#f0f9ff',
+    distanceAU: '9.539 AU',
+    textureThumb: 'textures/2k_moon.jpg',
+    monographText:
+      'AN IMMACULATE WORLD OF PURE REFLECTIVE ICE, ERUPTING GIANT HYDROTHERMAL GEYSERS FROM TIGER STRIPES OVER ITS SOUTH POLAR TERRAIN.',
+    extendedLore:
+      'Enceladus possesses a global liquid saltwater ocean in direct physical contact with an active hydrothermal rocky seafloor. Cassini detected complex macromolecules and molecular hydrogen in its plumes, confirming active serpentinization.',
+    missions: [
+      { name: 'Cassini', year: '2005–2017', agency: 'NASA / ESA', role: 'Flew directly through erupting plumes, sampling water vapor, salts, and organics' }
+    ]
+  },
+  Ceres: {
+    name: 'Ceres',
+    category: 'dwarf_planet',
+    eyebrow: 'DWARF PLANET · ASTEROID BELT',
+    accentColor: '#a1a1aa',
+    eyebrowColor: '#d4d4d8',
+    distanceAU: '2.767 AU',
+    textureThumb: 'textures/2k_moon.jpg',
+    monographText:
+      'EMPRESS OF THE ASTEROID BELT, HOLDING A THIRD OF ITS ENTIRE MASS. AN ICE-RICH RELICT WORLD FEATURING RADIANT SODIUM CARBONATE SALT DOMES.',
+    extendedLore:
+      'Ceres is a differentiated protoplanet containing significant quantities of water ice and hydrous minerals. Occator Crater hosts the bright Cerealia Facula, formed by subsurface brine percolation and cryovolcanic extrusion.',
+    missions: [
+      { name: 'Dawn', year: '2015–2018', agency: 'NASA', role: 'Orbited Ceres for three years, discovering active cryovolcanism and hydrated minerals' }
+    ]
+  },
   Sun: {
     name: 'Sun',
     category: 'star',

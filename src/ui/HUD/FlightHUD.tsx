@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { TelemetryData } from '../../rendering/SolarSystemScene';
 import { CatalogueManager } from '../../data/CatalogueManager';
 import { ScaleMode } from '../../rendering/RenderSpaceTransform';
@@ -82,6 +82,11 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   // Staged cinematic intro choreography (0 -> 1 -> 2)
   const [introPhase, setIntroPhase] = useState<number>(0);
 
+  // Monograph auto-vanish state (shows on target selection, vanishes after 5.5s)
+  const [monographVisible, setMonographVisible] = useState<boolean>(true);
+  const [isVanishing, setIsVanishing] = useState<boolean>(false);
+  const [isHoveredMonograph, setIsHoveredMonograph] = useState<boolean>(false);
+
   useEffect(() => {
     if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       setIntroPhase(2);
@@ -151,6 +156,46 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const allBodies = useMemo(() => CatalogueManager.getAllBodies(), []);
   const fullTargetDef = useMemo(() => CatalogueManager.getBody(activeTargetName), [activeTargetName]);
 
+  // Monograph auto-vanish cycle state & selection tracking
+  const [selectionNonce, setSelectionNonce] = useState<number>(1);
+  const prevTargetNameRef = useRef<string | null>(null);
+
+  // Trigger reveal when target changes from external interactions (3D raycasting, etc.)
+  useEffect(() => {
+    if (activeTargetName !== prevTargetNameRef.current) {
+      prevTargetNameRef.current = activeTargetName;
+      setSelectionNonce((n) => n + 1);
+    }
+  }, [activeTargetName]);
+
+  // Trigger monograph reveal and auto-vanish countdown on selection or hover change
+  useEffect(() => {
+    setMonographVisible(true);
+    setIsVanishing(false);
+
+    if (isHoveredMonograph) return;
+
+    const vanishTimer = setTimeout(() => {
+      setIsVanishing(true);
+    }, 5500);
+
+    const hideTimer = setTimeout(() => {
+      setMonographVisible(false);
+      setIsVanishing(false);
+    }, 7100);
+
+    return () => {
+      clearTimeout(vanishTimer);
+      clearTimeout(hideTimer);
+    };
+  }, [selectionNonce, isHoveredMonograph]);
+
+  const handleRevealMonograph = useCallback(() => {
+    setMonographVisible(true);
+    setIsVanishing(false);
+    setSelectionNonce((n) => n + 1);
+  }, []);
+
   const filteredBodies = useMemo(() => {
     return allBodies.filter((b) => {
       if (catalogueFilter === 'planet' && b.category !== 'planet') return false;
@@ -183,9 +228,9 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
     { label: '1×', val: 1 },
     { label: '10×', val: 10 },
     { label: '100×', val: 100 },
-    { label: '1 d/s', val: 86400 },
-    { label: '1 m/s', val: 2592000 },
-    { label: '1 y/s', val: 31536000 },
+    { label: '1 D/S', val: 86400 },
+    { label: '1 M/S', val: 2592000 },
+    { label: '1 Y/S', val: 31536000 },
   ];
 
   const baseUrl = import.meta.env.BASE_URL || '/';
@@ -195,7 +240,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
       <div className="absolute bottom-6 right-6 z-50 pointer-events-auto">
         <button
           onClick={() => setIsHudVisible(true)}
-          className="flex items-center gap-2 px-3.5 py-1.5 text-xs text-white/50 hover:text-white bg-black/60 hover:bg-black/90 backdrop-blur-md border border-white/10 rounded-full transition"
+          className="flex items-center gap-2 px-3.5 py-1.5 text-xs text-white/50 hover:text-white bg-black/60 hover:bg-black/90 backdrop-blur-md border border-white/10 rounded-full transition uppercase tracking-[0.2em] font-light"
         >
           <Eye size={13} />
           <span>Show Interface (H)</span>
@@ -208,36 +253,45 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
     <div className="absolute inset-0 pointer-events-none select-none flex flex-col justify-between p-6 z-20 font-sans text-white/90 overflow-hidden">
       
       {/* ========================================================
-          1. TOP CENTER SUBTLE CORONA ARC
+          1. TOP CENTER SUBTLE STELLAR CORONA HIGHLIGHT
           ======================================================== */}
-      <div className="absolute -top-16 left-1/2 -translate-x-1/2 w-[520px] h-32 rounded-[100%] bg-gradient-to-b from-amber-500/10 via-orange-500/5 to-transparent blur-3xl pointer-events-none" />
+      <div className="absolute -top-16 left-1/2 -translate-x-1/2 w-[540px] h-32 rounded-[100%] bg-gradient-to-b from-amber-500/10 via-orange-500/5 to-transparent blur-3xl pointer-events-none" />
 
       {/* ========================================================
           2. TOP BAR CONTROLS & EPHEMERIS READOUT
           ======================================================== */}
       <header className="flex justify-between items-start pointer-events-auto w-full z-30">
-        {/* Top-Left: Masthead & Live Ephemeris Time */}
+        {/* Top-Left: SOLARIS Brand & Live Ephemeris Time */}
         <div
           className={`flex flex-col gap-1.5 transition-all duration-1000 ${
             introPhase >= 0 ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'
           }`}
         >
-          <div className="flex flex-col">
-            <h1 className="text-xs uppercase tracking-[0.45em] text-white/90 font-light drop-shadow">
-              Solar Explorer
+          {/* Brand Name with Unique Creative Animation */}
+          <div
+            className="flex items-baseline gap-3 relative group cursor-pointer"
+            onClick={onResetView}
+            title="Reset to Solaris Overview"
+          >
+            {/* Luminous stellar aura behind title */}
+            <div className="absolute -inset-2 bg-gradient-to-r from-amber-500/10 via-white/5 to-transparent rounded-lg blur-md opacity-40 group-hover:opacity-90 transition-opacity animate-corona-aura pointer-events-none" />
+
+            <h1 className="relative text-xl md:text-2xl uppercase tracking-[0.52em] font-extralight drop-shadow-md select-none animate-solaris-shimmer">
+              SOLARIS
             </h1>
-            <span className="text-[9px] uppercase tracking-[0.35em] text-white/35 font-light">
-              Interactive 3D Planetary Simulation
+            <span className="text-[9px] uppercase tracking-[0.32em] text-white/35 font-light hidden sm:inline">
+              Solar System Explorer
             </span>
           </div>
 
-          <div className="flex items-center gap-2 text-[10px] font-mono text-white/50 bg-black/40 backdrop-blur-md px-3 py-1 rounded-full border border-white/10 shadow-lg w-fit mt-0.5">
+          {/* Ephemeris Time Readout with Image 1's Typography */}
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] font-light text-white/60 bg-black/40 backdrop-blur-md px-3.5 py-1 rounded-full border border-white/10 shadow-lg w-fit mt-0.5">
             <span
               className={`w-1.5 h-1.5 rounded-full ${
                 isPaused ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'
               }`}
             />
-            <span className="text-white/80">{utcIso.replace('T', ' ').slice(0, 19)} UTC</span>
+            <span className="text-white/85">{utcIso.replace('T', ' ').slice(0, 19)} UTC</span>
             <span className="text-white/20">·</span>
             <span>JD {julianDate.toFixed(2)}</span>
             <span className="text-white/20">·</span>
@@ -248,17 +302,17 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         {/* Top-Right: Astronomical Layer Toggles & Catalogue Trigger */}
         <div className="flex items-center gap-2">
           {/* Layer toggles */}
-          <div className="flex items-center bg-black/40 backdrop-blur-md border border-white/10 rounded-full p-0.5 text-[11px] font-mono shadow-lg">
+          <div className="flex items-center bg-black/40 backdrop-blur-md border border-white/10 rounded-full p-0.5 text-[10px] uppercase tracking-[0.2em] font-light shadow-lg">
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleOrbits?.();
               }}
               title="Toggle Orbit Lines (O)"
-              className={`px-3 py-1 rounded-full transition ${
+              className={`px-3 py-1 rounded-full transition-all duration-200 ${
                 orbitsOn
-                  ? 'bg-white/15 text-white shadow-sm'
-                  : 'text-white/40 hover:text-white/70'
+                  ? 'bg-white/15 text-white shadow-sm border border-white/20'
+                  : 'text-white/40 hover:text-white/80'
               }`}
             >
               Orbits
@@ -269,10 +323,10 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 onToggleConstellations?.();
               }}
               title="Toggle IAU Constellations (C)"
-              className={`px-3 py-1 rounded-full transition ${
+              className={`px-3 py-1 rounded-full transition-all duration-200 ${
                 constellationsOn
-                  ? 'bg-white/15 text-white shadow-sm'
-                  : 'text-white/40 hover:text-white/70'
+                  ? 'bg-white/15 text-white shadow-sm border border-white/20'
+                  : 'text-white/40 hover:text-white/80'
               }`}
             >
               Constellations
@@ -283,10 +337,10 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 onToggleAsteroidBelt?.();
               }}
               title="Toggle Asteroid Belt (B)"
-              className={`px-3 py-1 rounded-full transition ${
+              className={`px-3 py-1 rounded-full transition-all duration-200 ${
                 asteroidBeltOn
-                  ? 'bg-white/15 text-white shadow-sm'
-                  : 'text-white/40 hover:text-white/70'
+                  ? 'bg-white/15 text-white shadow-sm border border-white/20'
+                  : 'text-white/40 hover:text-white/80'
               }`}
             >
               Belt
@@ -294,16 +348,16 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           </div>
 
           {/* Scale mode toggle */}
-          <div className="flex items-center bg-black/40 backdrop-blur-md border border-white/10 rounded-full p-0.5 text-[11px] font-mono shadow-lg">
+          <div className="flex items-center bg-black/40 backdrop-blur-md border border-white/10 rounded-full p-0.5 text-[10px] uppercase tracking-[0.2em] font-light shadow-lg">
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 onSetScaleMode('exploration');
               }}
-              className={`px-3 py-1 rounded-full transition ${
+              className={`px-3 py-1 rounded-full transition-all duration-200 ${
                 scaleMode === 'exploration'
-                  ? 'bg-white/15 text-white shadow-sm'
-                  : 'text-white/40 hover:text-white/70'
+                  ? 'bg-white/15 text-white shadow-sm border border-white/20'
+                  : 'text-white/40 hover:text-white/80'
               }`}
             >
               Exploration
@@ -313,10 +367,10 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 e.stopPropagation();
                 onSetScaleMode('scientific');
               }}
-              className={`px-3 py-1 rounded-full transition ${
+              className={`px-3 py-1 rounded-full transition-all duration-200 ${
                 scaleMode === 'scientific'
-                  ? 'bg-white/15 text-white shadow-sm'
-                  : 'text-white/40 hover:text-white/70'
+                  ? 'bg-white/15 text-white shadow-sm border border-white/20'
+                  : 'text-white/40 hover:text-white/80'
               }`}
             >
               Scientific 1:1
@@ -329,7 +383,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               e.stopPropagation();
               setIsCatalogueOpen(true);
             }}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-black/40 hover:bg-black/70 backdrop-blur-md border border-white/10 hover:border-white/20 rounded-full text-[11px] font-mono text-white/80 transition shadow-lg"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-black/40 hover:bg-black/70 backdrop-blur-md border border-white/10 hover:border-white/20 rounded-full text-[10px] uppercase tracking-[0.2em] font-light text-white/80 transition shadow-lg"
           >
             <Search size={11} className="text-white/50" />
             <span>Catalogue (42)</span>
@@ -342,7 +396,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               onResetView();
             }}
             title="Reset to System Overview"
-            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-black/40 hover:bg-black/70 backdrop-blur-md border border-white/10 hover:border-white/20 rounded-full text-[11px] font-mono text-white/80 transition shadow-lg"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 bg-black/40 hover:bg-black/70 backdrop-blur-md border border-white/10 hover:border-white/20 rounded-full text-[10px] uppercase tracking-[0.2em] font-light text-white/80 transition shadow-lg"
           >
             <RotateCcw size={11} className="text-white/50" />
             <span>Overview</span>
@@ -381,6 +435,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               onClick={(e) => {
                 e.stopPropagation();
                 onSelectPlanet(planetName);
+                handleRevealMonograph();
               }}
               className="flex items-center gap-3.5 group text-left cursor-pointer transition-all duration-200 outline-none focus:outline-none"
             >
@@ -432,7 +487,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                   {planetName}
                 </span>
                 <span
-                  className={`text-[9px] font-mono tracking-wider transition-colors duration-200 ${
+                  className={`text-[9px] tracking-wider transition-colors duration-200 font-light ${
                     isSelected
                       ? 'text-white/50'
                       : 'text-white/20 group-hover:text-white/40'
@@ -448,63 +503,97 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
       {/* ========================================================
           4. CENTER EDITORIAL MONOGRAPH (OVER HORIZON)
+             Vanishes after 5.5s with ethereal upward blur dissolve!
           ======================================================== */}
-      <section
-        className={`absolute left-1/2 bottom-20 md:bottom-24 -translate-x-1/2 flex flex-col items-center text-center max-w-2xl px-6 pointer-events-auto select-none transition-all duration-1000 z-20 ${
-          introPhase >= 2 ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6'
-        }`}
-      >
-        {/* Eyebrow: PLANET / DWARF PLANET / STAR */}
-        <span
-          className="text-[11px] md:text-xs uppercase tracking-[0.52em] font-light transition-colors duration-500 mb-1"
-          style={{ color: narrative.eyebrowColor }}
+      {monographVisible && (
+        <section
+          onMouseEnter={() => setIsHoveredMonograph(true)}
+          onMouseLeave={() => setIsHoveredMonograph(false)}
+          className="absolute left-1/2 bottom-20 md:bottom-24 -translate-x-1/2 pointer-events-auto select-none z-20"
         >
-          {narrative.eyebrow}
-        </span>
-
-        {/* Huge Title: MERCURY / EARTH / SATURN */}
-        <h2 className="text-5xl md:text-6xl lg:text-7xl font-extralight tracking-[0.36em] text-white uppercase drop-shadow-2xl my-1.5 transition-all duration-500">
-          {activeTargetName}
-        </h2>
-
-        {/* Editorial Description Paragraph */}
-        <p className="text-[10px] md:text-[11px] lg:text-[12px] font-light tracking-[0.20em] leading-relaxed text-white/75 uppercase max-w-xl mx-auto my-3 text-center transition-all duration-500">
-          {narrative.monographText}
-        </p>
-
-        {/* READ MORE Button with Accent Underline */}
-        <button
-          onClick={() => setIsReadMoreOpen(true)}
-          className="group mt-2.5 flex flex-col items-center cursor-pointer transition-all duration-300 outline-none focus:outline-none"
-        >
-          <span
-            className="text-xs uppercase tracking-[0.32em] font-light transition-colors duration-300"
-            style={{ color: narrative.accentColor }}
-          >
-            READ MORE
-          </span>
           <div
-            className="h-[1px] w-full mt-1 transition-all duration-300 group-hover:w-[115%]"
-            style={{
-              backgroundColor: narrative.accentColor,
-              boxShadow: `0 0 6px ${narrative.accentColor}66`,
+            className={`flex flex-col items-center text-center max-w-2xl px-6 ${
+              isVanishing ? 'monograph-vanishing' : 'monograph-visible'
+            }`}
+          >
+            {/* Eyebrow: PLANET / DWARF PLANET / STAR */}
+            <span
+              className="text-[11px] md:text-xs uppercase tracking-[0.52em] font-light transition-colors duration-500 mb-1"
+              style={{ color: narrative.eyebrowColor }}
+            >
+              {narrative.eyebrow}
+            </span>
+
+            {/* Huge Title: MERCURY / EARTH / SATURN */}
+            <h2 className="text-5xl md:text-6xl lg:text-7xl font-extralight tracking-[0.36em] text-white uppercase drop-shadow-2xl my-1.5 transition-all duration-500">
+              {activeTargetName}
+            </h2>
+
+            {/* Editorial Description Paragraph */}
+            <p className="text-[10px] md:text-[11px] lg:text-[12px] font-light tracking-[0.20em] leading-relaxed text-white/75 uppercase max-w-xl mx-auto my-3 text-center transition-all duration-500">
+              {narrative.monographText}
+            </p>
+
+            {/* READ MORE Button with Accent Underline */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsReadMoreOpen(true);
+              }}
+              className="group mt-2.5 flex flex-col items-center cursor-pointer transition-all duration-300 outline-none focus:outline-none"
+            >
+              <span
+                className="text-xs uppercase tracking-[0.32em] font-light transition-colors duration-300"
+                style={{ color: narrative.accentColor }}
+              >
+                READ MORE
+              </span>
+              <div
+                className="h-[1px] w-full mt-1 transition-all duration-300 group-hover:w-[115%]"
+                style={{
+                  backgroundColor: narrative.accentColor,
+                  boxShadow: `0 0 6px ${narrative.accentColor}66`,
+                }}
+              />
+            </button>
+          </div>
+        </section>
+      )}
+
+      {/* Floating Minimal Pill Trigger when vanished (click to re-open anytime) */}
+      {!monographVisible && (
+        <div className="absolute left-1/2 bottom-20 -translate-x-1/2 pointer-events-auto z-20 transition-all duration-700 opacity-60 hover:opacity-100">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleRevealMonograph();
             }}
-          />
-        </button>
-      </section>
+            className="flex items-center gap-2 px-3.5 py-1 text-[10px] uppercase tracking-[0.25em] font-light text-white/60 hover:text-white bg-black/40 hover:bg-black/80 backdrop-blur-md border border-white/10 hover:border-white/25 rounded-full transition-all shadow-lg cursor-pointer"
+          >
+            <span
+              className="w-1.5 h-1.5 rounded-full animate-pulse"
+              style={{ backgroundColor: narrative.accentColor }}
+            />
+            <span>{activeTargetName} Overview</span>
+          </button>
+        </div>
+      )}
 
       {/* ========================================================
           5. BOTTOM TIMELINE CONTROLLER & DATE CONTROLS
           ======================================================== */}
       <footer className="flex flex-col items-center gap-2 w-full pointer-events-auto z-30">
-        <div className="flex items-center gap-3 bg-black/40 backdrop-blur-md border border-white/10 rounded-full px-4 py-1 text-xs font-mono shadow-xl">
+        <div className="flex items-center gap-3 bg-black/40 backdrop-blur-md border border-white/10 rounded-full px-4 py-1 text-[10px] uppercase tracking-[0.2em] font-light shadow-xl">
           {/* Play/Pause */}
           <button
-            onClick={onTogglePlay}
+            onClick={(e) => {
+              e.stopPropagation();
+              onTogglePlay();
+            }}
             className="p-1 text-white/70 hover:text-white transition rounded-full"
             title="Space to toggle play"
           >
-            {isPaused ? <Play size={12} /> : <Pause size={12} />}
+            {isPaused ? <Play size={11} /> : <Pause size={11} />}
           </button>
 
           {/* Speed selector steps */}
@@ -514,10 +603,13 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               return (
                 <button
                   key={step.label}
-                  onClick={() => onSetTimeMultiplier(step.val)}
-                  className={`px-2 py-0.5 rounded-full text-[10px] transition ${
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSetTimeMultiplier(step.val);
+                  }}
+                  className={`px-2 py-0.5 rounded-full text-[9px] uppercase tracking-[0.15em] transition-all duration-200 ${
                     active
-                      ? 'bg-white/20 text-white font-medium'
+                      ? 'bg-white/20 text-white font-normal border border-white/25 shadow-sm'
                       : 'text-white/40 hover:text-white/70'
                   }`}
                 >
@@ -528,15 +620,21 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           </div>
 
           {/* Epoch Shortcuts */}
-          <div className="flex items-center gap-1.5 border-l border-white/10 pl-3 text-[10px]">
+          <div className="flex items-center gap-1.5 border-l border-white/10 pl-3 text-[10px] uppercase tracking-[0.2em] font-light">
             <button
-              onClick={onResetToJ2000}
+              onClick={(e) => {
+                e.stopPropagation();
+                onResetToJ2000();
+              }}
               className="text-white/40 hover:text-white px-1.5 py-0.5 rounded transition"
             >
               J2000
             </button>
             <button
-              onClick={onResetToNow}
+              onClick={(e) => {
+                e.stopPropagation();
+                onResetToNow();
+              }}
               className="text-white/40 hover:text-white px-1.5 py-0.5 rounded transition"
             >
               Now
@@ -544,7 +642,10 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             
             {/* Date Picker Trigger */}
             <button
-              onClick={() => setIsDatePickerOpen(!isDatePickerOpen)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsDatePickerOpen(!isDatePickerOpen);
+              }}
               className="flex items-center gap-1 text-white/50 hover:text-white px-1.5 py-0.5 rounded transition"
             >
               <Calendar size={10} />
@@ -557,7 +658,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         {isDatePickerOpen && (
           <form
             onSubmit={handleDateSubmit}
-            className="flex items-center gap-2 bg-black/85 backdrop-blur-xl border border-white/15 rounded-lg px-3 py-2 text-xs font-mono shadow-2xl"
+            className="flex items-center gap-2 bg-black/85 backdrop-blur-xl border border-white/15 rounded-xl px-3 py-2 text-[10px] uppercase tracking-[0.2em] font-light shadow-2xl"
           >
             <input
               type="date"
@@ -568,11 +669,11 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 setDateInput(e.target.value);
               }}
               onBlur={() => setIsEditingDate(false)}
-              className="bg-white/10 text-white px-2 py-1 rounded border border-white/15 outline-none focus:border-white/40 text-xs"
+              className="bg-white/10 text-white px-2 py-1 rounded border border-white/15 outline-none focus:border-white/40 text-[11px] font-sans"
             />
             <button
               type="submit"
-              className="px-2.5 py-1 bg-white/20 hover:bg-white/30 text-white rounded transition text-[11px]"
+              className="px-2.5 py-1 bg-white/20 hover:bg-white/30 text-white rounded-lg transition text-[10px] uppercase tracking-[0.2em] font-light"
             >
               Jump
             </button>
@@ -604,12 +705,12 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             <div className="flex justify-between items-start border-b border-white/10 pb-4">
               <div>
                 <span
-                  className="text-[10px] uppercase font-mono tracking-widest block"
+                  className="text-[10px] uppercase tracking-[0.25em] font-light block"
                   style={{ color: narrative.eyebrowColor }}
                 >
                   {narrative.eyebrow} · SOLAR SYSTEM EXPLORER
                 </span>
-                <h2 className="text-3xl font-light text-white tracking-[0.25em] uppercase mt-1">
+                <h2 className="text-3xl font-extralight text-white tracking-[0.25em] uppercase mt-1">
                   {activeTargetName}
                 </h2>
               </div>
@@ -623,7 +724,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
             {/* In-Depth Historical & Scientific Lore */}
             <div className="flex flex-col gap-2">
-              <span className="text-[10px] tracking-widest uppercase text-white/40 font-mono">
+              <span className="text-[10px] tracking-[0.25em] uppercase text-white/40 font-light">
                 Astronomical Lore & Physical Environment
               </span>
               <p className="text-xs leading-relaxed text-white/80 font-light">
@@ -633,11 +734,11 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
             {/* Physical Dimensions */}
             {fullTargetDef && (
-              <div className="flex flex-col gap-2 pt-2 border-t border-white/10 font-mono">
-                <span className="text-[10px] tracking-widest uppercase text-white/40">
+              <div className="flex flex-col gap-2 pt-2 border-t border-white/10">
+                <span className="text-[10px] tracking-[0.25em] uppercase text-white/40 font-light">
                   Physical Dimensions
                 </span>
-                <div className="grid grid-cols-2 gap-y-2 text-xs">
+                <div className="grid grid-cols-2 gap-y-2 text-xs font-light">
                   <span className="text-white/40">Mean Radius</span>
                   <span className="text-right text-white/90">
                     {fullTargetDef.physical.meanRadiusKm.toLocaleString()} km
@@ -672,11 +773,11 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
             {/* Keplerian Orbital Mechanics */}
             {fullTargetDef && (
-              <div className="flex flex-col gap-2 pt-2 border-t border-white/10 font-mono">
-                <span className="text-[10px] tracking-widest uppercase text-white/40">
+              <div className="flex flex-col gap-2 pt-2 border-t border-white/10">
+                <span className="text-[10px] tracking-[0.25em] uppercase text-white/40 font-light">
                   Keplerian Orbit (J2000)
                 </span>
-                <div className="grid grid-cols-2 gap-y-2 text-xs">
+                <div className="grid grid-cols-2 gap-y-2 text-xs font-light">
                   <span className="text-white/40">Semi-Major Axis</span>
                   <span className="text-right text-white/90">
                     {fullTargetDef.orbit.semiMajorAxisAU.toFixed(3)} AU
@@ -704,11 +805,11 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
             {/* Live Ephemeris Telemetry */}
             {target && (
-              <div className="flex flex-col gap-2 pt-2 border-t border-white/10 font-mono">
-                <span className="text-[10px] tracking-widest uppercase text-white/40">
+              <div className="flex flex-col gap-2 pt-2 border-t border-white/10">
+                <span className="text-[10px] tracking-[0.25em] uppercase text-white/40 font-light">
                   Live Ephemeris Telemetry
                 </span>
-                <div className="grid grid-cols-2 gap-y-2 text-xs">
+                <div className="grid grid-cols-2 gap-y-2 text-xs font-light">
                   <span className="text-white/40">Heliocentric Dist</span>
                   <span className="text-right text-white/90">
                     {target.distanceKm > 1e6
@@ -732,18 +833,18 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             {/* Exploration History & Spacecraft */}
             {narrative.missions && narrative.missions.length > 0 && (
               <div className="flex flex-col gap-3 pt-2 border-t border-white/10">
-                <span className="text-[10px] tracking-widest uppercase text-white/40 font-mono">
+                <span className="text-[10px] tracking-[0.25em] uppercase text-white/40 font-light">
                   Exploration Missions
                 </span>
                 <div className="flex flex-col gap-2.5">
                   {narrative.missions.map((m) => (
                     <div
                       key={m.name}
-                      className="p-2.5 rounded-lg bg-white/[0.03] border border-white/5 flex flex-col gap-1"
+                      className="p-2.5 rounded-xl bg-white/[0.03] border border-white/5 flex flex-col gap-1"
                     >
                       <div className="flex justify-between items-center text-xs">
-                        <span className="text-white font-medium">{m.name}</span>
-                        <span className="text-[10px] font-mono text-white/40">
+                        <span className="text-white font-medium tracking-[0.1em]">{m.name}</span>
+                        <span className="text-[10px] text-white/40 font-light">
                           {m.year} · {m.agency}
                         </span>
                       </div>
@@ -755,7 +856,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             )}
 
             {/* Provenance Badge */}
-            <div className="pt-3 border-t border-white/10 flex justify-between items-center text-[10px] font-mono text-white/30">
+            <div className="pt-3 border-t border-white/10 flex justify-between items-center text-[10px] font-light text-white/30 uppercase tracking-[0.2em]">
               <span>NASA JPL SSD Horizons DE440</span>
               <span>Keplerian 2-Body Solver</span>
             </div>
@@ -779,10 +880,10 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             {/* Drawer Header */}
             <div className="flex justify-between items-center border-b border-white/10 pb-4">
               <div>
-                <h3 className="text-lg font-light text-white tracking-[0.15em] uppercase">
+                <h3 className="text-lg font-extralight text-white tracking-[0.25em] uppercase">
                   Astronomical Catalogue
                 </h3>
-                <span className="text-[11px] font-mono text-white/40">
+                <span className="text-[10px] uppercase tracking-[0.2em] font-light text-white/40">
                   42 bodies · NASA JPL DE440
                 </span>
               </div>
@@ -795,27 +896,27 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             </div>
 
             {/* Live Search & Filter Bar */}
-            <div className="flex flex-col gap-2.5 font-mono text-xs">
+            <div className="flex flex-col gap-2.5 text-xs">
               <div className="relative">
                 <Search size={13} className="absolute left-3 top-2.5 text-white/35" />
                 <input
                   type="text"
-                  placeholder="Filter by name, parent, category..."
+                  placeholder="FILTER BY NAME, CATEGORY..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-9 pr-3 py-2 text-white placeholder-white/30 text-xs outline-none focus:border-white/30"
+                  className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-3 py-2 text-white placeholder-white/30 text-[11px] uppercase tracking-[0.15em] outline-none focus:border-white/30"
                 />
               </div>
 
               {/* Filter Tabs */}
-              <div className="grid grid-cols-4 gap-1 text-[11px]">
+              <div className="grid grid-cols-4 gap-1 text-[10px] uppercase tracking-[0.18em] font-light">
                 {(['all', 'planet', 'moon', 'minor'] as CatalogueFilter[]).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setCatalogueFilter(tab)}
-                    className={`py-1 rounded text-center uppercase tracking-wider transition ${
+                    className={`py-1 rounded-lg text-center uppercase tracking-wider transition-all duration-200 ${
                       catalogueFilter === tab
-                        ? 'bg-white/15 text-white font-medium'
+                        ? 'bg-white/15 text-white font-normal border border-white/20'
                         : 'text-white/40 hover:text-white/70'
                     }`}
                   >
@@ -840,9 +941,10 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                     key={b.name}
                     onClick={() => {
                       onSelectPlanet(b.name);
+                      handleRevealMonograph();
                       setIsCatalogueOpen(false);
                     }}
-                    className={`flex items-center justify-between p-2.5 rounded-xl border transition text-left font-mono ${
+                    className={`flex items-center justify-between p-2.5 rounded-xl border transition text-left ${
                       isSelected
                         ? 'bg-white/15 border-white/30 text-white'
                         : 'bg-white/[0.02] border-white/5 text-white/70 hover:bg-white/[0.06] hover:text-white'
@@ -854,15 +956,15 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                         style={{ backgroundColor: b.physical.colorHex || '#ffffff' }}
                       />
                       <div className="flex flex-col">
-                        <span className="text-xs text-white font-sans">{b.name}</span>
-                        <span className="text-[10px] text-white/35 capitalize">
+                        <span className="text-xs text-white font-light tracking-[0.15em] uppercase">{b.name}</span>
+                        <span className="text-[10px] text-white/35 uppercase tracking-[0.1em]">
                           {b.category.replace('_', ' ')}
                           {b.parentName && ` · ${b.parentName}`}
                         </span>
                       </div>
                     </div>
 
-                    <div className="text-right text-[10px] text-white/40">
+                    <div className="text-right text-[10px] text-white/40 font-light tracking-wider">
                       <div>{b.physical.meanRadiusKm.toLocaleString()} km</div>
                       <div>{b.orbit.semiMajorAxisAU.toFixed(2)} AU</div>
                     </div>
