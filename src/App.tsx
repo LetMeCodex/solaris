@@ -74,7 +74,7 @@ export const App: React.FC = () => {
     sceneRef.current?.toggleOrbits();
   }, []);
 
-  const handleJumpToScale = useCallback((domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic') => {
+  const handleJumpToScale = useCallback((domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic' | 'sgr_a') => {
     sceneRef.current?.jumpToScale(domain);
   }, []);
 

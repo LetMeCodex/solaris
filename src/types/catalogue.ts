@@ -5,7 +5,8 @@ export type BodyCategory =
   | 'dwarf_planet' 
   | 'asteroid' 
   | 'comet' 
-  | 'spacecraft';
+  | 'spacecraft'
+  | 'black_hole';
 
 export interface PhysicalParameters {
   meanRadiusKm: number;

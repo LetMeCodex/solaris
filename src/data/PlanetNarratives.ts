@@ -7,7 +7,7 @@ export interface MissionInfo {
 
 export interface PlanetNarrative {
   name: string;
-  category: 'star' | 'planet' | 'dwarf_planet' | 'moon' | 'asteroid';
+  category: 'star' | 'planet' | 'dwarf_planet' | 'moon' | 'asteroid' | 'black_hole';
   eyebrow: string;
   accentColor: string;
   eyebrowColor: string;
@@ -310,6 +310,25 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
       { name: 'SOHO', year: '1995–Present', agency: 'ESA / NASA', role: 'Continuous monitoring of helioseismology and coronal mass ejections' },
       { name: 'Parker Solar Probe', year: '2018–Present', agency: 'NASA', role: 'Closest spacecraft to Sun, diving directly through the outer corona' },
       { name: 'Solar Orbiter', year: '2020–Present', agency: 'ESA / NASA', role: 'Capturing the first close-up images of the Sun\'s polar regions' }
+    ]
+  },
+  'Sagittarius A*': {
+    name: 'Sagittarius A*',
+    category: 'black_hole',
+    eyebrow: 'SUPERMASSIVE BLACK HOLE',
+    accentColor: '#f59e0b',
+    eyebrowColor: '#fde68a',
+    distanceAU: '1.65 × 10⁹ AU (26,990 LY)',
+    textureThumb: 'textures/milky_way_disk.png',
+    monographText:
+      'THE 4.3 MILLION SOLAR MASS SUPERMASSIVE BLACK HOLE AT THE DYNAMICAL HEART OF THE MILKY WAY. ITS EVENT HORIZON TRAPS ALL LIGHT, BENDING SPACETIME INTO A RELATIVISTIC PHOTON RING.',
+    extendedLore:
+      'Sagittarius A* (Sgr A*) anchors the Milky Way Galaxy with a mass of 4.297 ± 0.012 × 10⁶ M☉ located 8.277 ± 0.033 kpc (~26,990 light-years) from Earth. In May 2022, the Event Horizon Telescope (EHT) collaboration released the first direct horizon-scale image of its shadow, resolving an angular diameter of 51.8 ± 2.3 microarcseconds that confirms Einstein\'s General Relativity. Matter orbiting near the innermost stable circular orbit (ISCO at 3.0 r_s) reaches speeds of 0.408 c (122,400 km/s), generating extreme relativistic Doppler beaming and gravitational redshift, framed by high-velocity stars of the central nuclear S-cluster.',
+    missions: [
+      { name: 'Event Horizon Telescope (EHT)', year: '2022', agency: 'Global Consortium / NSF / ESO', role: 'First direct millimeter-wave imaging of Sgr A* event horizon shadow' },
+      { name: 'GRAVITY / ESO VLTI', year: '2018–Present', agency: 'ESO', role: 'Detection of gravitational redshift in star S2 orbit and orbital flares near ISCO' },
+      { name: 'Chandra X-ray Observatory', year: '1999–Present', agency: 'NASA', role: 'Long-term monitoring of hot gas accretion and high-energy flare eruptions' },
+      { name: 'Neil Gehrels Swift Observatory', year: '2004–Present', agency: 'NASA', role: 'Daily multiwavelength monitoring of Galactic Center flaring activity' },
     ]
   }
 };

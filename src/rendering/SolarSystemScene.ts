@@ -279,6 +279,16 @@ export class SolarSystemScene {
   }
 
   public selectBody(name: string, durationMs: number = 1800): void {
+    if (name === 'Sagittarius A*' || name === 'Sgr A*' || name === 'sagittarius_a_star') {
+      const sgrDef = CatalogueManager.getSagittariusAStar();
+      if (sgrDef) {
+        this.selectedBody = sgrDef;
+        const sgrGroup = this.starfield.externalGalaxy.sagittariusAStar.group;
+        this.cameraRig.focusCinematic(sgrGroup, 180.0, sgrDef.name, durationMs);
+        return;
+      }
+    }
+
     const bundle = this.planetBundles.get(name);
     if (!bundle) return;
 
@@ -465,7 +475,8 @@ export class SolarSystemScene {
       this.cameraRig.camera.position,
       deltaSec,
       this.cameraRig.getVelocity(),
-      this.cameraRig.getZoomVelocity()
+      this.cameraRig.getZoomVelocity(),
+      this.cameraRig.camera
     );
 
     this.renderer.render(this.scene, this.cameraRig.camera);
@@ -476,7 +487,11 @@ export class SolarSystemScene {
     }
   };
 
-  public jumpToScale(domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic'): void {
+  public jumpToScale(domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic' | 'sgr_a'): void {
+    if (domain === 'sgr_a') {
+      this.selectBody('Sagittarius A*');
+      return;
+    }
     this.cameraRig.jumpToScale(domain);
   }
 
@@ -484,8 +499,14 @@ export class SolarSystemScene {
     const selectedState = this.latestPhysicalStates.get(this.selectedBody.name);
 
     // Physical distance and speed directly from authoritative state
-    const physicalDistKm = selectedState?.distanceKm || this.selectedBody.orbit.semiMajorAxisKm;
-    const physicalSpeedKmS = selectedState?.speedKmPerSec || 0;
+    let physicalDistKm = selectedState?.distanceKm || this.selectedBody.orbit.semiMajorAxisKm;
+    let physicalSpeedKmS = selectedState?.speedKmPerSec || 0;
+
+    // Authoritative black hole parameters for Sgr A*
+    if (this.selectedBody.id === 'sagittarius_a_star' || this.selectedBody.name === 'Sagittarius A*') {
+      physicalDistKm = 2.553e17; // ~26,990 ly (8.277 kpc) from Sun
+      physicalSpeedKmS = 122400; // ~0.408 c at ISCO (innermost stable circular orbit)
+    }
 
     // Camera look bearings
     const lookDir = new THREE.Vector3();

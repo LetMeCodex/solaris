@@ -671,7 +671,8 @@ export class Starfield {
     cameraPosition: THREE.Vector3,
     deltaSec: number,
     cameraVelocity?: THREE.Vector3,
-    zoomRate?: number
+    zoomRate?: number,
+    camera?: THREE.Camera
   ): void {
     // Keep infinite celestial sphere and real Hipparcos distant stars centered on camera
     this.celestialGroup.position.copy(cameraPosition);
@@ -679,14 +680,21 @@ export class Starfield {
     // Distance from camera to Solar System barycenter (0, 0, 0)
     const distToSun = cameraPosition.length();
 
+    // Proximity to Galactic Center / Sagittarius A*
+    const galCenterPos = this.externalGalaxy.getGalacticCenterWorldPosition();
+    const distToGalCenter = cameraPosition.distanceTo(galCenterPos);
+
     // Multiscale Crossfade: local skybox <-> external 3D galaxy
-    // Between 3,500 units (outer solar system edge) and 24,000 units (external galaxy view)
-    const t = THREE.MathUtils.clamp((distToSun - 3500.0) / 18500.0, 0.0, 1.0);
+    // Transition between 3,500 units (outer solar system) and 24,000 units (external galaxy view),
+    // or ensure 100% visibility when inspecting Galactic Center / Sagittarius A*
+    const tSun = THREE.MathUtils.clamp((distToSun - 3500.0) / 18500.0, 0.0, 1.0);
+    const tGal = distToGalCenter < 8000.0 ? THREE.MathUtils.clamp((8000.0 - distToGalCenter) / 4000.0, 0.0, 1.0) : 0.0;
+    const t = Math.max(tSun, tGal);
     const smoothT = t * t * (3.0 - 2.0 * t);
     this.externalGalaxy.setOpacity(smoothT);
     this.milkyWayOpacityUniform.value = 1.0 - smoothT;
 
-    this.externalGalaxy.update(performance.now() * 0.001);
+    this.externalGalaxy.update(performance.now() * 0.001, camera);
 
     // Update velocity-aware travel streak particles
     this.travelParticles.update(

@@ -884,3 +884,33 @@ export const ALL_CELESTIAL_BODIES: CelestialBodyDefinition[] = [
   ...SOLAR_SYSTEM_BODIES,
   ...MOONS_AND_MINOR_BODIES,
 ];
+
+export const SAGITTARIUS_A_STAR_DEF: CelestialBodyDefinition = {
+  id: 'SGR_A_STAR',
+  name: 'Sagittarius A*',
+  category: 'black_hole',
+  orderFromSun: 999,
+  physical: {
+    meanRadiusKm: 12690400, // Schwarzschild radius r_s = 2GM/c^2 (~12.69 million km)
+    equatorialRadiusKm: 32971000, // Apparent black hole shadow radius (3*sqrt(3)/2 * r_s ~ 32.97 million km)
+    polarRadiusKm: 12690400,
+    flattening: 0.0,
+    massKg: 8.544455e36, // 4.297 x 10^6 solar masses (GRAVITY Collaboration 2021)
+    gmKm3S2: 5.70283e17,
+    rotationPeriodHours: 0.18, // Relativistic orbital period at ISCO (~11 minutes)
+    axialTiltDeg: 42.0, // Accretion disk inclination from EHT 2022
+    meanTemperatureK: 1e7, // Hot synchrotron-emitting relativistic plasma
+    colorHex: '#ffaa33',
+  },
+  orbit: {
+    semiMajorAxisKm: 2.554e17, // ~8.277 kpc (~26,990 light-years)
+    semiMajorAxisAU: 1.707e9,
+    eccentricity: 0.0,
+    inclinationDeg: 62.87, // Galactic plane inclination relative to ecliptic
+    longitudeAscendingNodeDeg: 0,
+    argumentPeriapsisDeg: 0,
+    meanAnomalyAtEpochDeg: 0,
+    orbitalPeriodDays: 2.3e8 * 365.25, // Sun's galactic orbital period (~230 million years)
+  },
+  description: 'Supermassive black hole at the gravitational center of the Milky Way galaxy (mass 4.3 million solar masses, distance 27,000 ly). Demonstrates extreme relativistic light bending, an apparent gravitational shadow, a photon sphere, and a glowing synchrotron accretion disk.'
+};

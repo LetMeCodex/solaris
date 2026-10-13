@@ -27,13 +27,14 @@ interface FlightHUDProps {
   onToggleConstellations?: () => void;
   onToggleAsteroidBelt?: () => void;
   onToggleOrbits?: () => void;
-  onJumpToScale?: (domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic') => void;
+  onJumpToScale?: (domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic' | 'sgr_a') => void;
 }
 
 type CatalogueFilter = 'all' | 'planet' | 'moon' | 'minor';
 
-// Reference navigation order: Pluto at top down to Mercury at bottom, plus Sun
+// Reference navigation order: Sagittarius A* at top, then Pluto down to Mercury, plus Sun
 const REFERENCE_NAV_ORDER = [
+  'Sagittarius A*',
   'Pluto',
   'Neptune',
   'Uranus',
@@ -159,8 +160,18 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
   const activeTargetName = target?.name || 'Mercury';
   const narrative = useMemo(() => getPlanetNarrative(activeTargetName), [activeTargetName]);
-  const allBodies = useMemo(() => CatalogueManager.getAllBodies(), []);
-  const fullTargetDef = useMemo(() => CatalogueManager.getBody(activeTargetName), [activeTargetName]);
+  const allBodies = useMemo(() => {
+    const list = [...CatalogueManager.getAllBodies()];
+    const sgr = CatalogueManager.getSagittariusAStar();
+    if (sgr) list.unshift(sgr);
+    return list;
+  }, []);
+  const fullTargetDef = useMemo(() => {
+    if (activeTargetName === 'Sagittarius A*' || activeTargetName === 'Sgr A*' || activeTargetName === 'sagittarius_a_star') {
+      return CatalogueManager.getSagittariusAStar();
+    }
+    return CatalogueManager.getBody(activeTargetName);
+  }, [activeTargetName]);
 
   // Monograph auto-vanish cycle state & selection tracking
   const [selectionNonce, setSelectionNonce] = useState<number>(1);
@@ -357,12 +368,25 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             <button
               onClick={() => onJumpToScale?.('galactic')}
               className={`px-2.5 py-1 rounded-full transition-all duration-200 ${
-                observerDomain === 'galactic'
+                observerDomain === 'galactic' && activeTargetName !== 'Sagittarius A*'
                   ? 'bg-purple-400/25 text-purple-200 font-medium shadow-sm border border-purple-400/35'
                   : 'text-white/40 hover:text-white/80'
               }`}
             >
               Milky Way
+            </button>
+            <button
+              onClick={() => {
+                onSelectPlanet('Sagittarius A*');
+                handleRevealMonograph();
+              }}
+              className={`px-2.5 py-1 rounded-full transition-all duration-200 ${
+                activeTargetName === 'Sagittarius A*'
+                  ? 'bg-amber-500/30 text-amber-200 font-medium shadow-sm border border-amber-500/40'
+                  : 'text-white/40 hover:text-white/80'
+              }`}
+            >
+              Sgr A*
             </button>
           </div>
         </div>
@@ -799,6 +823,81 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 {narrative.extendedLore}
               </p>
             </div>
+
+            {/* Sagittarius A* General Relativistic Horizon & Shadow Card */}
+            {(activeTargetName === 'Sagittarius A*' || target?.category === 'black_hole') && (
+              <div className="flex flex-col gap-2.5 pt-2 border-t border-amber-500/30">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] tracking-[0.25em] uppercase text-amber-400 font-medium">
+                    Relativistic Horizons & Metrics
+                  </span>
+                  <span className="text-[9px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    EHT / NASA SVS
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-y-2 text-xs font-light bg-amber-500/5 p-3 rounded-xl border border-amber-500/15">
+                  <span className="text-white/40">Mass (M)</span>
+                  <span className="text-right text-amber-200 font-mono">
+                    4.297 ± 0.012 × 10⁶ M☉
+                  </span>
+
+                  <span className="text-white/40">Schwarzschild Radius (r_s)</span>
+                  <span className="text-right text-amber-200 font-mono">
+                    12.69 × 10⁶ km (0.085 AU)
+                  </span>
+
+                  <span className="text-white/40">Photon Sphere (r_ph)</span>
+                  <span className="text-right text-amber-200 font-mono">
+                    1.5 r_s · 19.04 × 10⁶ km
+                  </span>
+
+                  <span className="text-white/40">Shadow Radius (r_shadow)</span>
+                  <span className="text-right text-amber-200 font-mono">
+                    2.60 r_s · 32.97 × 10⁶ km
+                  </span>
+
+                  <span className="text-white/40">EHT Shadow Diameter (θ)</span>
+                  <span className="text-right text-amber-200 font-mono">
+                    51.8 ± 2.3 µas
+                  </span>
+
+                  <span className="text-white/40">ISCO Radius (r_isco)</span>
+                  <span className="text-right text-amber-200 font-mono">
+                    3.0 r_s · 38.07 × 10⁶ km
+                  </span>
+
+                  <span className="text-white/40">ISCO Orbital Velocity</span>
+                  <span className="text-right text-amber-200 font-mono">
+                    0.408 c (122,400 km/s)
+                  </span>
+
+                  <span className="text-white/40">Galactic Center Distance</span>
+                  <span className="text-right text-amber-200 font-mono">
+                    8.277 kpc (26,990 ly)
+                  </span>
+                </div>
+
+                {/* Relativistic Optical Physics Overview */}
+                <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-black/50 border border-white/10 text-[11px] text-white/70 font-light">
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-white/40 font-medium">
+                    Relativistic Optical Phenomena:
+                  </span>
+                  <p>
+                    • <strong className="text-amber-200 font-normal">Event Horizon Shadow:</strong> Null-geodesic ray tracing confirms absolute photon capture for impact parameters b &lt; 2.598 r_s (3√3/2 r_s).
+                  </p>
+                  <p>
+                    • <strong className="text-amber-200 font-normal">Lensed Accretion Arches:</strong> Light emitted from the rear accretion disk loops over and under the black hole's gravitational potential well, projecting primary and secondary lensed arcs.
+                  </p>
+                  <p>
+                    • <strong className="text-amber-200 font-normal">Relativistic Doppler Beaming:</strong> Plasma orbiting at ~0.4 c blazes in intense blue-white on the approaching left limb (intensity boost ~ δ⁴) while receding plasma dims into deep red.
+                  </p>
+                  <p>
+                    • <strong className="text-amber-200 font-normal">Nuclear S-Cluster:</strong> Over 300 massive B/O-type stars orbit Sgr A* in the central parsec, including star S2 reaching speeds of 7,650 km/s at pericenter.
+                  </p>
+                </div>
+              </div>
+            )}
 
             {/* Physical Dimensions */}
             {fullTargetDef && (

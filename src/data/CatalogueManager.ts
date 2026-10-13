@@ -1,14 +1,19 @@
 import { CelestialBodyDefinition, BodyCategory } from '../types/catalogue';
-import { ALL_CELESTIAL_BODIES } from './CatalogueData';
+import { ALL_CELESTIAL_BODIES, SAGITTARIUS_A_STAR_DEF } from './CatalogueData';
 
 export class CatalogueManager {
   private static bodies: CelestialBodyDefinition[] = ALL_CELESTIAL_BODIES;
-  private static bodiesById: Map<string, CelestialBodyDefinition> = new Map(
-    ALL_CELESTIAL_BODIES.map((b) => [b.id, b])
-  );
-  private static bodiesByName: Map<string, CelestialBodyDefinition> = new Map(
-    ALL_CELESTIAL_BODIES.map((b) => [b.name.toLowerCase(), b])
-  );
+  private static bodiesById: Map<string, CelestialBodyDefinition> = new Map([
+    ...ALL_CELESTIAL_BODIES.map((b) => [b.id, b] as [string, CelestialBodyDefinition]),
+    [SAGITTARIUS_A_STAR_DEF.id, SAGITTARIUS_A_STAR_DEF],
+  ]);
+  private static bodiesByName: Map<string, CelestialBodyDefinition> = new Map([
+    ...ALL_CELESTIAL_BODIES.map((b) => [b.name.toLowerCase(), b] as [string, CelestialBodyDefinition]),
+    ['sagittarius a*', SAGITTARIUS_A_STAR_DEF],
+    ['sgr a*', SAGITTARIUS_A_STAR_DEF],
+    ['sgr a', SAGITTARIUS_A_STAR_DEF],
+    ['black hole', SAGITTARIUS_A_STAR_DEF],
+  ]);
   private static moonsByParentId: Map<string, CelestialBodyDefinition[]> = new Map();
 
   static {
@@ -21,6 +26,10 @@ export class CatalogueManager {
         this.moonsByParentId.get(body.parentId)!.push(body);
       }
     }
+  }
+
+  public static getSagittariusAStar(): CelestialBodyDefinition {
+    return SAGITTARIUS_A_STAR_DEF;
   }
 
   public static getAllBodies(): CelestialBodyDefinition[] {

@@ -113,6 +113,13 @@ export const BODY_FRAMING_PROFILES: Record<string, FramingProfile> = {
     fov: 39.0,
     preferredElevation: Math.PI * 0.38,
   },
+  'Sagittarius A*': {
+    targetCoverageY: 0.88,
+    ndcOffsetX: -0.32,
+    ndcOffsetY: 0.0,
+    fov: 42.0,
+    preferredElevation: Math.PI * 0.38,
+  },
 };
 
 export const DEFAULT_PLANET_FRAMING: FramingProfile = {
@@ -378,8 +385,10 @@ export class CameraRig {
 
       // Seamless anchor handoff: as observer zooms beyond planetary domain (> 350 units),
       // the orbit pivot smoothly transfers from the individual body towards the Solar System barycenter (0,0,0).
+      // For Sagittarius A*, preserve its Galactic Center anchor to allow wide deep-space black hole views.
       const r = this.spherical.radius;
-      if (r > 320.0) {
+      const isBlackHole = this.focusedObject.name.includes('sagittarius') || this.focusedObject.name === 'Sagittarius A*';
+      if (!isBlackHole && r > 320.0) {
         const handoffFactor = Math.min(1.0, (r - 320.0) / 480.0);
         this.effectiveAnchor.lerpVectors(this.subjectAnchor, CameraRig.ORIGIN_VEC, handoffFactor);
         currentAnchor = this.effectiveAnchor;
@@ -522,6 +531,9 @@ export class CameraRig {
         .addScaledVector(up, 0.58)
         .normalize()
         .multiplyScalar(viewingDistance);
+    } else if (bodyName === 'Sagittarius A*' || bodyName === 'Sgr A*' || bodyName === 'sagittarius_a_star') {
+      // Oblique vantage point (~68° inclination) revealing relativistic shadow, photon ring, and lensed arches
+      cameraOffset = new THREE.Vector3(0.68, 0.38, 0.62).normalize().multiplyScalar(viewingDistance);
     } else {
       // 3/4 sunlit vantage point: illuminated surface + terminator + limb
       // Looking past the planet towards the deep cosmos and Milky Way
@@ -752,6 +764,13 @@ export class CameraRig {
     domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic';
   } {
     const d = this.spherical.radius;
+
+    if (this.focusedObject && (this.focusedObject.name.includes('sagittarius') || this.focusedObject.name === 'Sagittarius A*')) {
+      const rsMulti = (d / 20.0).toFixed(1);
+      const km = Math.round(d * 634520);
+      return { distance: d, formatted: `${rsMulti} r_s (${km.toLocaleString()} KM)`, domain: 'planetary' };
+    }
+
     if (d < 30.0) {
       const km = Math.round(d * 4200.0);
       return { distance: d, formatted: `${km.toLocaleString()} KM`, domain: 'planetary' };
@@ -862,7 +881,8 @@ export class CameraRig {
 
     // Logarithmic zoom scaling across 9 orders of magnitude
     const zoomFactor = Math.pow(0.92, e.deltaY * 0.012);
-    const minDistance = this.focusedObject ? this.focusedRadius * 1.15 : 0.35;
+    const isBlackHole = this.focusedObject && (this.focusedObject.name.includes('sagittarius') || this.focusedObject.name === 'Sagittarius A*');
+    const minDistance = isBlackHole ? 65.0 : (this.focusedObject ? this.focusedRadius * 1.15 : 0.35);
     const maxDistance = 180000.0;
 
     this.targetSpherical.radius = Math.max(
@@ -915,7 +935,8 @@ export class CameraRig {
       const dist = Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
       if (this.initialPinchDist > 0) {
         const scale = this.initialPinchDist / dist;
-        const minDistance = this.focusedObject ? this.focusedRadius * 1.15 : 0.35;
+        const isBlackHole = this.focusedObject && (this.focusedObject.name.includes('sagittarius') || this.focusedObject.name === 'Sagittarius A*');
+        const minDistance = isBlackHole ? 65.0 : (this.focusedObject ? this.focusedRadius * 1.15 : 0.35);
         this.targetSpherical.radius = Math.max(minDistance, Math.min(180000.0, this.initialRadiusOnPinch * scale));
       }
     }

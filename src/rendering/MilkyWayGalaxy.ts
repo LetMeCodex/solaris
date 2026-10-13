@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TexturePipeline } from './TexturePipeline';
+import { SagittariusAStar } from './SagittariusAStar';
 
 export interface GalaxyConfig {
   radius: number;          // Outer radius of galactic disk in scene units (e.g. 28,000)
@@ -29,9 +30,14 @@ export const DEFAULT_GALAXY_CONFIG: GalaxyConfig = {
  *    and Sagittarius Dwarf Spheroidal providing authentic cosmic scale.
  * 6. High-Tech Orion Spur Sun Beacon: Precision astronomical reticle marking the Solar System at
  *    26,000 ly from Sagittarius A*, with vertical altitude stalk to the galactic midplane.
+ * 7. Sagittarius A* Relativistic Black Hole: Supermassive black hole at local (0, 0, 0) with
+ *    Kerr/Schwarzschild null-geodesic ray tracing, event horizon shadow, photon ring, and accretion disk.
  */
 export class MilkyWayGalaxy {
   public group: THREE.Group = new THREE.Group();
+
+  // Sagittarius A* supermassive black hole at Galactic Center (0, 0, 0)
+  public sagittariusAStar: SagittariusAStar;
 
   // Core visual subsystems
   private masterDiskMesh: THREE.Mesh;
@@ -49,6 +55,7 @@ export class MilkyWayGalaxy {
   // Uniform controllers
   private opacityUniform: { value: number } = { value: 0.0 };
   private timeUniform: { value: number } = { value: 0.0 };
+  private bulgeFadeUniform: { value: number } = { value: 1.0 };
 
   public readonly config: GalaxyConfig;
   public readonly sunWorldPosition: THREE.Vector3 = new THREE.Vector3();
@@ -91,6 +98,10 @@ export class MilkyWayGalaxy {
     this.sunRadarRing = radarRing;
     this.sunWorldPosition.copy(sunPos);
     this.group.add(this.sunBeaconGroup);
+
+    // 7. Build Sagittarius A* Supermassive Black Hole at Galactic Center (0, 0, 0)
+    this.sagittariusAStar = new SagittariusAStar();
+    this.group.add(this.sagittariusAStar.group);
 
     // Initially transparent (crossfades in when camera pulls out into interstellar space)
     this.setOpacity(0.0);
@@ -153,8 +164,12 @@ export class MilkyWayGalaxy {
           float isBlueStar = max(0.0, tex.b - tex.r * 0.92);
           float twinkle = 1.0 + isBlueStar * 0.18 * sin(uTime * 3.0 + vUv.x * 50.0 + vUv.y * 65.0);
 
+          // Clear out innermost void for 3D Sagittarius A* relativistic system
+          float distFromCenter = length(vUv - vec2(0.5)) * 2.0;
+          float innerDiskMask = smoothstep(0.012, 0.045, distFromCenter);
+
           vec3 rgb = tex.rgb * 1.25 * depthFactor * twinkle;
-          float alpha = clamp(tex.a * 1.10, 0.0, 1.0) * uOpacity;
+          float alpha = clamp(tex.a * 1.10, 0.0, 1.0) * uOpacity * innerDiskMask;
 
           gl_FragColor = vec4(rgb, alpha);
         }
@@ -183,6 +198,7 @@ export class MilkyWayGalaxy {
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         uOpacity: this.opacityUniform,
+        uBulgeFade: this.bulgeFadeUniform,
         uTime: this.timeUniform,
       },
       vertexShader: `
@@ -197,6 +213,7 @@ export class MilkyWayGalaxy {
       `,
       fragmentShader: `
         uniform float uOpacity;
+        uniform float uBulgeFade;
         uniform float uTime;
         varying vec3 vNormal;
         varying vec3 vViewDir;
@@ -216,7 +233,7 @@ export class MilkyWayGalaxy {
           vec3 rgb = mix(amberHaloCol, goldenBulgeCol, halo);
           rgb = mix(rgb, nucleusCol, nucleus);
 
-          float alpha = (nucleus * 0.50 + halo * 0.22) * uOpacity;
+          float alpha = (nucleus * 0.50 + halo * 0.22) * uOpacity * uBulgeFade;
           gl_FragColor = vec4(rgb * 1.05, alpha);
         }
       `,
@@ -262,7 +279,9 @@ export class MilkyWayGalaxy {
           vec4 tex = texture2D(uGalaxyMap, vUv);
           // Detect dark dust lanes: high red/amber relative to blue with moderate luminance
           float dustMask = clamp((tex.r * 1.1 - tex.b) * 1.8, 0.0, 1.0) * (1.0 - tex.b * 0.6);
-          float alpha = dustMask * 0.38 * uOpacity;
+          float distFromCenter = length(vUv - vec2(0.5)) * 2.0;
+          float innerMask = smoothstep(0.012, 0.045, distFromCenter);
+          float alpha = dustMask * 0.38 * uOpacity * innerMask;
           if (alpha < 0.01) discard;
 
           // Deep interstellar coal-dust absorption tone
@@ -660,12 +679,25 @@ export class MilkyWayGalaxy {
   }
 
   /**
-   * Updates opacity of 3D galaxy based on camera distance.
+   * Retrieves world-space coordinates of Sagittarius A* / Galactic Center.
+   */
+  public getGalacticCenterWorldPosition(target: THREE.Vector3 = new THREE.Vector3()): THREE.Vector3 {
+    this.group.updateWorldMatrix(true, false);
+    return this.group.getWorldPosition(target);
+  }
+
+  /**
+   * Updates opacity of 3D galaxy and central Sagittarius A* based on camera distance.
    */
   public setOpacity(opacity: number): void {
     const clamped = Math.max(0.0, Math.min(1.0, opacity));
     this.opacityUniform.value = clamped;
     this.group.visible = clamped > 0.005;
+
+    // Synchronize relativistic black hole opacity
+    if (this.sagittariusAStar) {
+      this.sagittariusAStar.setOpacity(clamped);
+    }
 
     // Scale beacon visibility
     if (this.sunReticleMesh) {
@@ -679,8 +711,20 @@ export class MilkyWayGalaxy {
     }
   }
 
-  public update(timeSec: number): void {
+  public update(timeSec: number, camera?: THREE.Camera): void {
     this.timeUniform.value = timeSec;
+
+    // Update Sagittarius A* ray-marching shader and S-stars cluster
+    if (this.sagittariusAStar && camera) {
+      this.sagittariusAStar.update(camera, timeSec);
+
+      // Smoothly fade out the low-resolution macro bulge when entering the central black hole realm
+      const camGalLocal = camera.position.clone();
+      this.group.worldToLocal(camGalLocal);
+      const distToGalCenter = camGalLocal.length();
+      const bulgeFade = THREE.MathUtils.clamp((distToGalCenter - 450.0) / 2200.0, 0.0, 1.0);
+      this.bulgeFadeUniform.value = bulgeFade;
+    }
 
     // Gentle pulsing effect for the Sun beacon
     if (this.sunPulseMesh && this.group.visible) {
@@ -696,6 +740,7 @@ export class MilkyWayGalaxy {
   }
 
   public dispose(): void {
+    this.sagittariusAStar.dispose();
     this.masterDiskMesh.geometry.dispose();
     (this.masterDiskMesh.material as THREE.Material).dispose();
 
@@ -715,7 +760,7 @@ export class MilkyWayGalaxy {
     (this.sunRadarRing.material as THREE.Material).dispose();
 
     this.sunPulseMesh.geometry.dispose();
-    (this.sunPulseMesh.material as THREE.Material).dispose();
+    (this.sunPulseMesh.material as THREE.MeshBasicMaterial).dispose();
 
     this.satelliteGroup.traverse((obj) => {
       if (obj instanceof THREE.Mesh || obj instanceof THREE.Points) {
