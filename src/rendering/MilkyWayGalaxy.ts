@@ -126,6 +126,7 @@ export class MilkyWayGalaxy {
       uniforms: {
         uGalaxyMap: { value: tex },
         uOpacity: this.opacityUniform,
+        uBulgeFade: this.bulgeFadeUniform,
         uTime: this.timeUniform,
       },
       vertexShader: `
@@ -146,6 +147,7 @@ export class MilkyWayGalaxy {
       fragmentShader: `
         uniform sampler2D uGalaxyMap;
         uniform float uOpacity;
+        uniform float uBulgeFade;
         uniform float uTime;
         varying vec2 vUv;
         varying vec3 vViewDir;
@@ -169,7 +171,7 @@ export class MilkyWayGalaxy {
           float innerDiskMask = smoothstep(0.012, 0.045, distFromCenter);
 
           vec3 rgb = tex.rgb * 1.25 * depthFactor * twinkle;
-          float alpha = clamp(tex.a * 1.10, 0.0, 1.0) * uOpacity * innerDiskMask;
+          float alpha = clamp(tex.a * 1.10, 0.0, 1.0) * uOpacity * innerDiskMask * uBulgeFade;
 
           gl_FragColor = vec4(rgb, alpha);
         }
@@ -262,6 +264,7 @@ export class MilkyWayGalaxy {
       uniforms: {
         uGalaxyMap: { value: tex },
         uOpacity: this.opacityUniform,
+        uBulgeFade: this.bulgeFadeUniform,
       },
       vertexShader: `
         varying vec2 vUv;
@@ -273,6 +276,7 @@ export class MilkyWayGalaxy {
       fragmentShader: `
         uniform sampler2D uGalaxyMap;
         uniform float uOpacity;
+        uniform float uBulgeFade;
         varying vec2 vUv;
 
         void main() {
@@ -281,7 +285,7 @@ export class MilkyWayGalaxy {
           float dustMask = clamp((tex.r * 1.1 - tex.b) * 1.8, 0.0, 1.0) * (1.0 - tex.b * 0.6);
           float distFromCenter = length(vUv - vec2(0.5)) * 2.0;
           float innerMask = smoothstep(0.012, 0.045, distFromCenter);
-          float alpha = dustMask * 0.38 * uOpacity * innerMask;
+          float alpha = dustMask * 0.38 * uOpacity * innerMask * uBulgeFade;
           if (alpha < 0.01) discard;
 
           // Deep interstellar coal-dust absorption tone

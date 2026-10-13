@@ -115,10 +115,10 @@ export const BODY_FRAMING_PROFILES: Record<string, FramingProfile> = {
   },
   'Sagittarius A*': {
     targetCoverageY: 0.88,
-    ndcOffsetX: -0.32,
-    ndcOffsetY: 0.0,
-    fov: 42.0,
-    preferredElevation: Math.PI * 0.38,
+    ndcOffsetX: -0.24,
+    ndcOffsetY: -0.02,
+    fov: 40.0,
+    preferredElevation: Math.PI * 0.42,
   },
 };
 
@@ -532,8 +532,13 @@ export class CameraRig {
         .normalize()
         .multiplyScalar(viewingDistance);
     } else if (bodyName === 'Sagittarius A*' || bodyName === 'Sgr A*' || bodyName === 'sagittarius_a_star') {
-      // Oblique vantage point (~68° inclination) revealing relativistic shadow, photon ring, and lensed arches
-      cameraOffset = new THREE.Vector3(0.68, 0.38, 0.62).normalize().multiplyScalar(viewingDistance);
+      // Classic Gargantua / NASA observer inclination: ~14.5° elevation above equatorial accretion disk
+      // In Sgr A*'s local frame: elevation angle ~14.5° (sin = 0.25, cos = 0.968), approaching limb on left
+      const objQuat = new THREE.Quaternion();
+      object.getWorldQuaternion(objQuat);
+      const localDir = new THREE.Vector3(0.28, 0.25, 0.92).normalize();
+      const worldDir = localDir.applyQuaternion(objQuat);
+      cameraOffset = worldDir.multiplyScalar(viewingDistance);
     } else {
       // 3/4 sunlit vantage point: illuminated surface + terminator + limb
       // Looking past the planet towards the deep cosmos and Milky Way

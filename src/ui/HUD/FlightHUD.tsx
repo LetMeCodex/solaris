@@ -893,6 +893,9 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                     • <strong className="text-amber-200 font-normal">Relativistic Doppler Beaming:</strong> Plasma orbiting at ~0.4 c blazes in intense blue-white on the approaching left limb (intensity boost ~ δ⁴) while receding plasma dims into deep red.
                   </p>
                   <p>
+                    • <strong className="text-amber-200 font-normal">Relativistic Polar Jets:</strong> Twin collimated particle beams erupting at ~0.98 c along the spin axis, featuring an incandescent white-hot core and helical synchrotron shock sheaths.
+                  </p>
+                  <p>
                     • <strong className="text-amber-200 font-normal">Nuclear S-Cluster:</strong> Over 300 massive B/O-type stars orbit Sgr A* in the central parsec, including star S2 reaching speeds of 7,650 km/s at pericenter.
                   </p>
                 </div>
