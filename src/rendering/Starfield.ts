@@ -266,34 +266,14 @@ export class Starfield {
 
         void main() {
           vec4 tex = texture2D(milkyWayMap, vUv);
+          vec3 rgb = tex.rgb;
 
-          // Gentle gamma lift: pulls faint galactic dust and star lanes out of the dark toe of ACESFilmic
-          vec3 baseColor = pow(tex.rgb, vec3(0.82));
-          float lum = dot(baseColor, vec3(0.299, 0.587, 0.114));
+          // Pure, natural photographic contrast matching the ESA Gaia DR3 reference (test_gaia.jpg):
+          // Deep clean space vacuum without washed-out toe or artificial fog,
+          // preserving the authentic golden galactic core and dark absorption dust lanes.
+          rgb = smoothstep(vec3(0.016), vec3(1.0), rgb);
 
-          // Warm golden core enhancement for the galactic bulge
-          vec3 coreWarmth = vec3(1.22, 1.08, 0.88);
-          float coreMask = smoothstep(0.10, 0.60, lum);
-
-          // Deep interstellar dust enhancement: accentuate dark absorption silhouettes (Great Rift)
-          float dustContrast = smoothstep(0.02, 0.22, lum);
-
-          // Subtle H-alpha ionized hydrogen emission nebular wisps (656.3 nm deep ruby/crimson)
-          vec3 hAlpha = vec3(0.68, 0.18, 0.32) * smoothstep(0.22, 0.68, tex.r) * 0.42;
-
-          // Subtle O-III oxygen emission teal/cyan wisps
-          vec3 oiii = vec3(0.12, 0.46, 0.62) * smoothstep(0.28, 0.78, tex.b) * 0.24;
-
-          // Balanced cosmic color grading
-          vec3 cosmicColor = baseColor * mix(vec3(0.96, 0.98, 1.04), coreWarmth, coreMask) * (0.90 + 0.48 * dustContrast) + hAlpha + oiii;
-
-          // Maintain subtle atmospheric depth across deep space void (never crushed to flat black)
-          cosmicColor = max(cosmicColor, vec3(0.003, 0.004, 0.008));
-
-          gl_FragColor = vec4(cosmicColor * 1.35, 1.0);
-
-          #include <tonemapping_fragment>
-          #include <colorspace_fragment>
+          gl_FragColor = vec4(rgb, 1.0);
         }
       `,
       side: THREE.BackSide,
@@ -311,42 +291,40 @@ export class Starfield {
   }
 
   private build3DCosmicStardust(): void {
-    const count = 2800;
+    const count = 800; // Rare, delicate motes that give subtle 3D depth without cluttering overview
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
     const scales = new Float32Array(count);
     const phases = new Float32Array(count);
 
     for (let i = 0; i < count; i++) {
-      // Toroidal cosmic distribution across the solar system disk
-      const r = 25.0 + Math.pow(Math.random(), 0.65) * 850.0;
+      const r = 30.0 + Math.pow(Math.random(), 0.7) * 750.0;
       const theta = Math.random() * Math.PI * 2;
-      const y = (Math.random() - 0.5) * (120.0 + r * 0.15);
+      const y = (Math.random() - 0.5) * (90.0 + r * 0.1);
 
       positions[i * 3] = Math.cos(theta) * r;
       positions[i * 3 + 1] = y;
       positions[i * 3 + 2] = Math.sin(theta) * r;
 
-      // Color variation: Planckian stardust (soft warm amber, diamond white, pale cyan)
       const colorType = Math.random();
-      if (colorType < 0.40) {
-        // Diamond white
-        colors[i * 3] = 0.95;
-        colors[i * 3 + 1] = 0.97;
-        colors[i * 3 + 2] = 1.0;
-      } else if (colorType < 0.70) {
+      if (colorType < 0.50) {
+        // Subtle diamond starlight
+        colors[i * 3] = 0.90;
+        colors[i * 3 + 1] = 0.92;
+        colors[i * 3 + 2] = 0.98;
+      } else if (colorType < 0.80) {
         // Warm solar stardust
-        colors[i * 3] = 1.0;
-        colors[i * 3 + 1] = 0.88;
-        colors[i * 3 + 2] = 0.65;
+        colors[i * 3] = 0.98;
+        colors[i * 3 + 1] = 0.85;
+        colors[i * 3 + 2] = 0.60;
       } else {
-        // Deep space ice cyan
-        colors[i * 3] = 0.72;
-        colors[i * 3 + 1] = 0.90;
-        colors[i * 3 + 2] = 1.0;
+        // Faint deep space ice cyan
+        colors[i * 3] = 0.65;
+        colors[i * 3 + 1] = 0.85;
+        colors[i * 3 + 2] = 0.98;
       }
 
-      scales[i] = 1.8 + Math.random() * 2.6;
+      scales[i] = 1.0 + Math.random() * 1.5;
       phases[i] = Math.random() * Math.PI * 2;
     }
 
@@ -372,7 +350,9 @@ export class Starfield {
           vTwinkle = 0.65 + 0.35 * sin(time * 1.8 + aPhase);
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           float dist = -mvPosition.z;
-          gl_PointSize = clamp(aScale * (220.0 / dist), 1.2, 5.5);
+          // Distance falloff: motes naturally vanish beyond 300 units so overview stays clean
+          float fade = clamp(1.0 - (dist - 100.0) / 220.0, 0.0, 1.0);
+          gl_PointSize = clamp(aScale * (120.0 / max(dist, 10.0)) * fade, 0.0, 3.5);
           gl_Position = projectionMatrix * mvPosition;
         }
       `,
@@ -385,10 +365,10 @@ export class Starfield {
           float d = length(coord);
           if (d > 0.5) discard;
 
-          float core = exp(-d * d * 22.0);
-          float alpha = core * vTwinkle * 0.75;
+          float core = exp(-d * d * 26.0);
+          float alpha = core * vTwinkle * 0.40;
 
-          gl_FragColor = vec4(vColor * 1.3, alpha);
+          gl_FragColor = vec4(vColor, alpha);
         }
       `,
       vertexColors: true,
@@ -421,9 +401,9 @@ export class Starfield {
   }
 
   private buildStarfieldMesh(data: RawStarHeader): void {
-    // Render naked-eye observable stars (Vmag <= 6.2) so the photographic
-    // Gaia Milky Way panorama provides the deep interstellar background without speckle noise
-    const stars = data.stars.filter((s) => s[4] <= 6.2);
+    // Render only the prominent navigational and constellation-anchor stars (Vmag <= 4.6, ~850 stars).
+    // The photographic Gaia DR3 panorama already captures the millions of faint stars authentically.
+    const stars = data.stars.filter((s) => s[4] <= 4.6);
     const count = stars.length;
 
     const positions = new Float32Array(count * 3);
@@ -449,8 +429,8 @@ export class Starfield {
       colors[i * 3 + 1] = color.g;
       colors[i * 3 + 2] = color.b;
 
-      // Crisp pinpoint scaling: brightest stars stand out with subtle glare
-      const sizePx = Math.max(0.8, 4.4 - 0.58 * vmag);
+      // Delicate telescopic pinpoint scaling: prominent stars gleam softly
+      const sizePx = Math.max(0.6, 2.8 - 0.42 * vmag);
       sizes[i] = sizePx;
     }
 
@@ -468,7 +448,7 @@ export class Starfield {
         vColor = color;
         vBrightness = size;
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = clamp(size, 0.8, 8.0);
+        gl_PointSize = clamp(size, 0.6, 6.0);
         gl_Position = projectionMatrix * mvPosition;
       }
     `;
@@ -482,18 +462,18 @@ export class Starfield {
         float dist = length(coord);
         if (dist > 0.5) discard;
 
-        float core = exp(-dist * dist * 38.0);
-        float halo = smoothstep(0.5, 0.05, dist) * 0.18;
+        float core = exp(-dist * dist * 40.0);
+        float halo = smoothstep(0.5, 0.05, dist) * 0.12;
 
         float spikes = 0.0;
-        if (vBrightness > 3.6) {
+        if (vBrightness > 2.4) {
           float crossX = exp(-abs(coord.y) * 45.0) * max(0.0, 1.0 - abs(coord.x) * 2.0);
           float crossY = exp(-abs(coord.x) * 45.0) * max(0.0, 1.0 - abs(coord.y) * 2.0);
-          spikes = max(crossX, crossY) * 0.35;
+          spikes = max(crossX, crossY) * 0.30;
         }
 
-        float alpha = clamp(core + halo + spikes, 0.0, 1.0) * clamp(vBrightness * 0.28, 0.2, 0.95);
-        gl_FragColor = vec4(vColor * 1.25, alpha);
+        float alpha = clamp(core + halo + spikes, 0.0, 1.0) * clamp(vBrightness * 0.20, 0.12, 0.60);
+        gl_FragColor = vec4(vColor, alpha);
       }
     `;
 
