@@ -48,8 +48,8 @@ export class RenderSpaceTransform {
 
     // Distance in AU
     const rAU = rKm / RenderSpaceTransform.AU_KM;
-    // Compressed visual radius: 30 + sqrt(AU) * 65
-    const visualDistance = 30.0 + Math.sqrt(rAU) * 65.0;
+    // Calibrated power scaling: 50 + AU^0.58 * 65
+    const visualDistance = 50.0 + Math.pow(rAU, 0.58) * 65.0;
 
     // Unit direction in Ecliptic plane
     const dirX = physicalKm[0] / rKm;
@@ -110,8 +110,7 @@ export class RenderSpaceTransform {
     // Visual distance based on parent visual radius
     const parentRadius = this.getVisualRadius(parentDef);
     // Logarithmic scaling of orbital radius so all moons are distinct and outside parent globe
-    // Satellites span from ~1.5x parent radius to ~5x parent radius
-    const scaledOrbitDist = parentRadius * (1.6 + 1.2 * Math.log10(1.0 + relDistKm / 50000.0));
+    const scaledOrbitDist = parentRadius * (1.35 + 1.25 * Math.log10(1.0 + relDistKm / 40000.0));
 
     return [
       parentRenderPos[0] + relThreeDir[0] * scaledOrbitDist,
@@ -131,33 +130,44 @@ export class RenderSpaceTransform {
       return Math.max(0.015, rawRadiusUnits * 4.0);
     }
 
-    // Exploration Mode: Power-scaled radius for comfortable inspection
-    if (body.category === 'star') return 14.0;
-    
+    // Exploration Mode: NASA dimension-grounded proportional scaling
+    if (body.category === 'star') return 48.0;
+
+    switch (body.name) {
+      case 'Jupiter': return 26.90; // 11.2x Earth
+      case 'Saturn':  return 22.68; // 9.46x Earth
+      case 'Uranus':  return 9.62;  // 4.01x Earth
+      case 'Neptune': return 9.32;  // 3.88x Earth
+      case 'Earth':   return 2.40;  // Terrestrial baseline
+      case 'Venus':   return 2.28;  // 0.95x Earth
+      case 'Mars':    return 1.28;  // 0.53x Earth
+      case 'Mercury': return 0.92;  // 0.38x Earth
+      case 'Pluto':   return 0.45;  // 0.19x Earth
+      default:
+        break;
+    }
+
     if (body.category === 'moon') {
       const km = body.physical.meanRadiusKm;
-      if (km < 100) return 0.22;
-      if (km < 600) return 0.45;
-      if (km < 1500) return 0.70;
-      return 0.95; // Large moons (Ganymede, Titan, Callisto, Io, Moon, Europa, Triton)
+      if (km < 100) return 0.18;
+      if (km < 500) return 0.32;
+      if (km < 1200) return 0.48;
+      if (km < 2000) return 0.65; // Europa (0.59), Moon (0.65), Io (0.69)
+      return 0.95; // Ganymede (0.99), Titan (0.97), Callisto (0.91)
     }
 
     if (body.category === 'dwarf_planet') {
-      return body.name === 'Pluto' ? 1.1 : 0.75;
+      return 0.45;
     }
 
     if (body.category === 'asteroid') {
       const km = body.physical.meanRadiusKm;
-      if (km < 5) return 0.20;
-      if (km < 50) return 0.30;
-      return 0.55; // Ceres, Vesta, Pallas, Hygiea
+      if (km < 10) return 0.18;
+      if (km < 100) return 0.25;
+      return 0.38; // Ceres, Vesta, Pallas, Hygiea
     }
 
-    // Major planets
-    const km = body.physical.meanRadiusKm;
-    if (km < 3000) return 1.6;
-    if (km < 7000) return 2.8;
-    if (km < 30000) return 5.5;
-    return 8.2;
+    // Proportional fallback from physical radius
+    return Math.max(0.18, (body.physical.meanRadiusKm / 6371.0) * 2.40);
   }
 }

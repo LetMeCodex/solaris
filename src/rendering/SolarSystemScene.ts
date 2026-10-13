@@ -50,6 +50,7 @@ export class SolarSystemScene {
 
   private isRunning: boolean = true;
   private animationFrameId: number | null = null;
+  private lastFrameTime: number = performance.now();
 
   // Selection
   public selectedBody: CelestialBodyDefinition;
@@ -72,12 +73,20 @@ export class SolarSystemScene {
       antialias: true,
       powerPreference: 'high-performance',
     });
-    this.renderer.setSize(container.clientWidth, container.clientHeight);
+    const initialWidth = container.clientWidth || window.innerWidth;
+    const initialHeight = container.clientHeight || window.innerHeight;
+    this.renderer.setSize(initialWidth, initialHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.0));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
 
+    this.renderer.domElement.style.position = 'absolute';
+    this.renderer.domElement.style.top = '0';
+    this.renderer.domElement.style.left = '0';
+    this.renderer.domElement.style.width = '100%';
+    this.renderer.domElement.style.height = '100%';
+    this.renderer.domElement.style.display = 'block';
     container.appendChild(this.renderer.domElement);
 
     // 3. Camera Rig
@@ -280,8 +289,8 @@ export class SolarSystemScene {
 
   private onResize = (): void => {
     if (!this.container) return;
-    const w = this.container.clientWidth;
-    const h = this.container.clientHeight;
+    const w = this.container.clientWidth || window.innerWidth;
+    const h = this.container.clientHeight || window.innerHeight;
     this.renderer.setSize(w, h);
     this.cameraRig.handleResize(w, h);
   };
@@ -410,6 +419,8 @@ export class SolarSystemScene {
     this.animationFrameId = requestAnimationFrame(this.animate);
 
     const now = performance.now();
+    const deltaSec = Math.min(Math.max((now - this.lastFrameTime) * 0.001, 0.001), 0.1);
+    this.lastFrameTime = now;
     this.clock.update(now);
 
     const currentJd = this.clock.getJulianDate();
@@ -446,6 +457,7 @@ export class SolarSystemScene {
     }
 
     this.cameraRig.update();
+    this.starfield.update(this.cameraRig.camera.position, deltaSec);
 
     this.renderer.render(this.scene, this.cameraRig.camera);
 

@@ -359,9 +359,9 @@ export class TexturePipeline {
   }
 
   /**
-   * Deep photographic Milky Way panorama
+   * Deep photographic ESA Gaia DR3 Milky Way panorama
    */
   public getMilkyWayTexture(): THREE.Texture {
-    return this.loadTexture('/textures/8k_stars_milky_way.jpg', true);
+    return this.loadTexture('/textures/gaia_sky.jpg', true);
   }
 }

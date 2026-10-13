@@ -10,6 +10,7 @@ build/
 # Testing & Coverage
 coverage/
 .playwright-mcp/
+.vite/
 
 # Local Environment & Logs
 .env

@@ -15,9 +15,9 @@ export class CameraRig {
   public lookAtTarget: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
 
   // Current smoothed spherical coordinates
-  private spherical: THREE.Spherical = new THREE.Spherical(260, Math.PI * 0.35, Math.PI * 0.25);
+  private spherical: THREE.Spherical = new THREE.Spherical(680, Math.PI * 0.30, Math.PI * 0.25);
   // Target spherical coordinates for silky damping & inertia
-  private targetSpherical: THREE.Spherical = new THREE.Spherical(260, Math.PI * 0.35, Math.PI * 0.25);
+  private targetSpherical: THREE.Spherical = new THREE.Spherical(680, Math.PI * 0.30, Math.PI * 0.25);
 
   // Pan offset in camera plane coordinates
   private panOffset: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
@@ -72,6 +72,9 @@ export class CameraRig {
       this.camera.position.lerpVectors(this.transition.startPos, this.transition.targetPos, ease);
       this.lookAtTarget.lerpVectors(this.transition.startLookAt, this.transition.targetLookAt, ease);
       this.camera.lookAt(this.lookAtTarget);
+      this.camera.near = Math.max(0.02, this.focusedRadius * 0.05);
+      this.camera.far = Math.max(30000, this.camera.position.distanceTo(this.lookAtTarget) * 25);
+      this.camera.updateProjectionMatrix();
 
       if (progress >= 1.0) {
         if (this.transition.onComplete) this.transition.onComplete();
@@ -115,7 +118,7 @@ export class CameraRig {
     const distToCenter = this.spherical.radius;
     const clearance = Math.max(0.05, distToCenter - this.focusedRadius);
     this.camera.near = Math.max(0.02, clearance * 0.1);
-    this.camera.far = Math.max(10000, distToCenter * 25);
+    this.camera.far = Math.max(30000, distToCenter * 25);
     this.camera.updateProjectionMatrix();
   }
 
@@ -155,18 +158,18 @@ export class CameraRig {
       toSun.normalize();
     }
 
-    let distanceFactor = 2.65;
+    let distanceFactor = 2.45;
     if (bodyName === 'Saturn') {
-      distanceFactor = 4.2; // Extra clearance for majestic rings
+      distanceFactor = 3.6; // Majestic clearance for rings
     } else if (bodyName === 'Sun') {
-      distanceFactor = 3.0;
+      distanceFactor = 2.2;
     } else if (bodyName === 'Jupiter') {
-      distanceFactor = 2.75;
-    } else if (radius < 1.5) {
-      distanceFactor = 3.0;
+      distanceFactor = 2.05; // Jupiter fills the screen with colossal curvature
+    } else if (radius < 1.0) {
+      distanceFactor = 2.8;
     }
 
-    const viewingDistance = Math.max(3.0, radius * distanceFactor);
+    const viewingDistance = Math.max(2.4, radius * distanceFactor);
     this.focusDistance = viewingDistance;
 
     // Natural 3/4 sunlit initial vantage point
@@ -222,11 +225,11 @@ export class CameraRig {
 
   public resetToOverview(durationMs: number = 1600): void {
     this.focusedObject = null;
-    this.focusedRadius = 14.0;
+    this.focusedRadius = 48.0;
     this.targetPanOffset.set(0, 0, 0);
     this.panOffset.set(0, 0, 0);
 
-    const targetSpherical = new THREE.Spherical(280, Math.PI * 0.32, Math.PI * 0.25);
+    const targetSpherical = new THREE.Spherical(680, Math.PI * 0.30, Math.PI * 0.25);
     const targetPos = new THREE.Vector3().setFromSpherical(targetSpherical);
 
     this.transition = {
@@ -306,7 +309,7 @@ export class CameraRig {
 
     const zoomFactor = Math.pow(0.95, e.deltaY * 0.015);
     const minDistance = this.focusedObject ? this.focusedRadius * 1.15 : 8.0;
-    const maxDistance = 1800.0;
+    const maxDistance = 4500.0;
 
     this.targetSpherical.radius = Math.max(
       minDistance,
@@ -352,7 +355,7 @@ export class CameraRig {
       if (this.initialPinchDist > 0) {
         const scale = this.initialPinchDist / dist;
         const minDistance = this.focusedObject ? this.focusedRadius * 1.15 : 8.0;
-        this.targetSpherical.radius = Math.max(minDistance, Math.min(1800, this.initialRadiusOnPinch * scale));
+        this.targetSpherical.radius = Math.max(minDistance, Math.min(4500, this.initialRadiusOnPinch * scale));
       }
     }
   };

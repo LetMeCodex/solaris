@@ -25,45 +25,64 @@ export interface PlanetMeshBundle {
 export class PlanetFactory {
   /**
    * Exploration scale visual sizing.
-   * Compresses the Sun's 695,700 km to a prominent star anchor,
-   * while magnifying terrestrial worlds so they remain legible without clipping.
+   * Strictly grounded in NASA planetary dimensions and physical proportions:
+   * Jupiter is 11.2x Earth's diameter, Saturn is 9.5x Earth, Mars is 0.53x Earth.
+   * Sun is a majestic 48.0-unit star anchor at the system core.
    */
   public static getVisualRadius(body: CelestialBodyDefinition): number {
     if (body.category === 'star') {
-      return 14.0; // Sun visual radius
+      return 48.0; // Sun visual radius — colossal star anchor
     }
+
+    // Major planets: Strictly calibrated from real NASA equatorial/mean diameters
+    // Grounded relative to Earth = 2.40 units
+    switch (body.name) {
+      case 'Jupiter': return 26.90; // 11.2x Earth (142,984 km vs 12,756 km)
+      case 'Saturn':  return 22.68; // 9.46x Earth (120,536 km)
+      case 'Uranus':  return 9.62;  // 4.01x Earth (51,118 km)
+      case 'Neptune': return 9.32;  // 3.88x Earth (49,528 km)
+      case 'Earth':   return 2.40;  // Baseline terrestrial world (12,756 km)
+      case 'Venus':   return 2.28;  // 0.95x Earth (12,104 km)
+      case 'Mars':    return 1.28;  // 0.53x Earth (6,792 km — noticeably half Earth)
+      case 'Mercury': return 0.92;  // 0.38x Earth (4,879 km)
+      case 'Pluto':   return 0.45;  // 0.19x Earth (2,376 km)
+      default:
+        break;
+    }
+
     if (body.category === 'moon') {
       const km = body.physical.meanRadiusKm;
-      if (km < 100) return 0.22;
-      if (km < 600) return 0.45;
-      if (km < 1500) return 0.70;
-      return 0.95; // Large moons (Ganymede, Titan, Callisto, Io, Moon, Europa, Triton)
+      if (km < 100) return 0.18;
+      if (km < 500) return 0.32;
+      if (km < 1200) return 0.48;
+      if (km < 2000) return 0.65; // Europa (0.59), Moon (0.65), Io (0.69)
+      return 0.95; // Ganymede (0.99), Titan (0.97), Callisto (0.91)
     }
+
     if (body.category === 'dwarf_planet') {
-      return body.name === 'Pluto' ? 1.1 : 0.75;
+      return 0.45;
     }
+
     if (body.category === 'asteroid') {
       const km = body.physical.meanRadiusKm;
-      if (km < 5) return 0.20;
-      if (km < 50) return 0.30;
-      return 0.55; // Ceres, Vesta, Pallas, Hygiea
+      if (km < 10) return 0.18;
+      if (km < 100) return 0.25;
+      return 0.38; // Ceres, Vesta, Pallas, Hygiea
     }
-    // Major planets
-    const km = body.physical.meanRadiusKm;
-    if (km < 3000) return 1.6;        // Mercury
-    if (km < 7000) return 2.8;        // Venus, Earth, Mars
-    if (km < 30000) return 5.5;       // Uranus, Neptune
-    return 8.2;                       // Jupiter, Saturn
+
+    // Direct proportional fallback from physical radius
+    return Math.max(0.18, (body.physical.meanRadiusKm / 6371.0) * 2.40);
   }
 
   /**
    * Exploration scale distance mapping.
-   * Compresses astronomical AU distances (0.38 to 30 AU) into a navigable 3D range.
+   * Compresses astronomical AU distances into a navigable, beautifully separated 3D range.
+   * Ensures clear orbital spacing without overlap around colossal gas giants.
    */
   public static getVisualDistance(body: CelestialBodyDefinition): number {
     if (body.orderFromSun === 0) return 0;
     const au = body.orbit.semiMajorAxisAU;
-    return 30.0 + Math.sqrt(au) * 65.0;
+    return 50.0 + Math.pow(au, 0.58) * 65.0;
   }
 
   public static createPlanet(body: CelestialBodyDefinition): PlanetMeshBundle {
