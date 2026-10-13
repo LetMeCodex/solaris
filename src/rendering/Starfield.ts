@@ -95,12 +95,50 @@ export class Starfield {
   private buildMilkyWayBackground(): void {
     const geo = new THREE.SphereGeometry(Starfield.SPHERE_RADIUS * 1.6, 64, 48);
     const tex = TexturePipeline.getInstance().getMilkyWayTexture();
-    const mat = new THREE.MeshBasicMaterial({
-      map: tex,
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        milkyWayMap: { value: tex },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D milkyWayMap;
+        varying vec2 vUv;
+
+        void main() {
+          vec4 tex = texture2D(milkyWayMap, vUv);
+
+          // Luminance response
+          float lum = dot(tex.rgb, vec3(0.299, 0.587, 0.114));
+
+          // Contrast enhancement: deep space is true deep black, banishing flat grey haze
+          float contrast = smoothstep(0.035, 0.95, lum);
+
+          // Great Rift & interstellar dust absorption lanes
+          float dustLane = 1.0 - smoothstep(0.02, 0.28, lum) * 0.40;
+
+          // H-alpha ionized hydrogen emission nebular glow (656.3 nm deep ruby red)
+          // Concentrated along the galactic disk and central bulge
+          vec3 hAlphaGlow = vec3(0.68, 0.14, 0.25) * smoothstep(0.24, 0.88, tex.r) * 0.38;
+
+          // Cosmic color grading: rich starlight + warm galactic bulge
+          vec3 cosmicColor = tex.rgb * vec3(0.92, 0.95, 1.05) * contrast * 0.92;
+          cosmicColor += hAlphaGlow;
+          cosmicColor *= dustLane;
+
+          gl_FragColor = vec4(cosmicColor, 1.0);
+        }
+      `,
       side: THREE.BackSide,
       depthWrite: false,
-      color: 0x909cb0, // Dark calibrated cosmic luminance
     });
+
     this.milkyWayMesh = new THREE.Mesh(geo, mat);
     this.milkyWayMesh.name = 'milky_way_skybox';
     this.milkyWayMesh.renderOrder = -10;
@@ -148,7 +186,6 @@ export class Starfield {
       const bv = star[5];
 
       // Convert ICRF unit vector to Three.js coordinates (X, Z in ecliptic/equatorial plane, Y up)
-      // ICRS to Three.js orientation:
       positions[i * 3] = x * R;
       positions[i * 3 + 1] = z * R; // Celestial North is +Y in Three.js
       positions[i * 3 + 2] = -y * R;
@@ -170,27 +207,44 @@ export class Starfield {
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
 
-    // Custom shader for smooth antialiased circular stellar disks
+    // Custom shader for sharp pinpoint Gaussian cores and diffraction spikes on bright stars
     const vertexShader = `
       attribute float size;
       varying vec3 vColor;
+      varying float vBrightness;
+
       void main() {
         vColor = color;
+        vBrightness = size;
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = clamp(size, 1.2, 9.0);
+        gl_PointSize = clamp(size, 1.2, 12.0);
         gl_Position = projectionMatrix * mvPosition;
       }
     `;
 
     const fragmentShader = `
       varying vec3 vColor;
+      varying float vBrightness;
+
       void main() {
         vec2 coord = gl_PointCoord - vec2(0.5);
         float dist = length(coord);
         if (dist > 0.5) discard;
-        // Soft gaussian stellar core and diffraction halo
-        float alpha = smoothstep(0.5, 0.05, dist);
-        gl_FragColor = vec4(vColor, alpha * 0.95);
+
+        // Sharp pinpoint Airy disk & intense Gaussian core
+        float core = exp(-dist * dist * 32.0);
+        float halo = smoothstep(0.5, 0.05, dist) * 0.25;
+
+        // Telescopic 4-point diffraction spikes on brightest stars
+        float spikes = 0.0;
+        if (vBrightness > 4.6) {
+          float crossX = exp(-abs(coord.y) * 45.0) * max(0.0, 1.0 - abs(coord.x) * 2.0);
+          float crossY = exp(-abs(coord.x) * 45.0) * max(0.0, 1.0 - abs(coord.y) * 2.0);
+          spikes = max(crossX, crossY) * 0.42;
+        }
+
+        float alpha = clamp(core + halo + spikes, 0.0, 1.0);
+        gl_FragColor = vec4(vColor * 1.35, alpha * 0.95);
       }
     `;
 

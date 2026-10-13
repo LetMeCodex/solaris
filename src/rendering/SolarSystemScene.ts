@@ -416,6 +416,34 @@ export class SolarSystemScene {
 
     this.propagateAll(elapsedDaysSinceJ2000);
 
+    // Dynamic solar shader time propagation (photosphere convection, corona streamers, magnetic loops)
+    const sunBundle = this.planetBundles.get('Sun');
+    if (sunBundle) {
+      const timeSec = now * 0.001;
+      const sunMat = sunBundle.surfaceMesh.material as THREE.ShaderMaterial;
+      if (sunMat.uniforms?.time) {
+        sunMat.uniforms.time.value = timeSec;
+      }
+      if (sunBundle.glowMeshes) {
+        for (const glow of sunBundle.glowMeshes) {
+          const gMat = glow.material as THREE.ShaderMaterial;
+          if (gMat.uniforms?.time) {
+            gMat.uniforms.time.value = timeSec;
+          }
+        }
+      }
+      if (sunBundle.prominencesGroup) {
+        for (const child of sunBundle.prominencesGroup.children) {
+          if (child instanceof THREE.Mesh) {
+            const pMat = child.material as THREE.ShaderMaterial;
+            if (pMat.uniforms?.time) {
+              pMat.uniforms.time.value = timeSec;
+            }
+          }
+        }
+      }
+    }
+
     this.cameraRig.update();
 
     this.renderer.render(this.scene, this.cameraRig.camera);
@@ -505,6 +533,14 @@ export class SolarSystemScene {
         bundle.glowMeshes.forEach((g) => {
           g.geometry.dispose();
           (g.material as THREE.Material).dispose();
+        });
+      }
+      if (bundle.prominencesGroup) {
+        bundle.prominencesGroup.children.forEach((c) => {
+          if (c instanceof THREE.Mesh) {
+            c.geometry.dispose();
+            (c.material as THREE.Material).dispose();
+          }
         });
       }
     });

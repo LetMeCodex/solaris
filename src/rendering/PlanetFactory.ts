@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import { CelestialBodyDefinition } from '../types/catalogue';
 import { TexturePipeline } from './TexturePipeline';
+import { SolarShader } from './SolarShader';
+import { AtmosphereShader } from './AtmosphereShader';
+import { EarthMaterial } from './EarthMaterial';
+import { PlanetMaterial } from './PlanetMaterial';
 
 export interface PlanetMeshBundle {
   definition: CelestialBodyDefinition;
@@ -12,6 +16,7 @@ export interface PlanetMeshBundle {
   atmosphereMesh?: THREE.Mesh; // Rayleigh atmospheric limb glow
   ringMesh?: THREE.Mesh;       // Saturn's ring system
   glowMeshes?: THREE.Mesh[];   // Sun corona halos
+  prominencesGroup?: THREE.Group; // Solar prominence loops
   orbitLine?: THREE.Line;      // Visual Keplerian orbital path
   visualRadius: number;
   orbitalDistance: number;
@@ -113,33 +118,73 @@ export class PlanetFactory {
     let cloudMesh: THREE.Mesh | undefined;
     let atmosphereMesh: THREE.Mesh | undefined;
     let ringMesh: THREE.Mesh | undefined;
+    let prominencesGroup: THREE.Group | undefined;
     const glowMeshes: THREE.Mesh[] = [];
 
     if (body.category === 'star') {
-      // Sun: Photosphere with high-luminance emission
-      surfaceMaterial = new THREE.MeshBasicMaterial({
-        map: textures.map,
-        color: 0xffffff,
-      });
-    } else {
-      // PBR Standard Material
-      const roughness = body.name === 'Earth' ? 0.6 :
-                        (body.name === 'Europa' || body.name === 'Enceladus' ? 0.22 :
-                        (body.name === 'Venus' ? 0.85 : 0.8));
-      const metalness = body.name === 'Psyche' ? 0.6 : 0.02;
+      // 1. Photosphere with convection boiling, granulation & Eddington limb darkening
+      surfaceMaterial = SolarShader.createPhotosphereMaterial(textures.map);
 
-      const matParams: THREE.MeshStandardMaterialParameters = {
-        map: textures.map,
-        roughness: roughness,
-        metalness: metalness,
-      };
+      // 2. Exponential Corona (true exponential decay, dynamic streamers, zero opaque shell)
+      const coronaGeo = new THREE.SphereGeometry(2.45, 64, 48);
+      const coronaMat = SolarShader.createCoronaMaterial(visualRadius);
+      const coronaMesh = new THREE.Mesh(coronaGeo, coronaMat);
+      coronaMesh.name = 'sun_corona';
+      coronaMesh.scale.set(visualRadius, visualRadius, visualRadius);
+      bodyGroup.add(coronaMesh);
+      glowMeshes.push(coronaMesh);
 
-      if (textures.normalMap) {
-        matParams.normalMap = textures.normalMap;
-        matParams.normalScale = new THREE.Vector2(0.85, 0.85);
+      // 3. Dynamic Magnetic Prominence Loops (H-alpha 656.3 nm plasma)
+      prominencesGroup = SolarShader.createProminencesGroup(visualRadius);
+      bodyGroup.add(prominencesGroup);
+    } else if (body.name === 'Earth') {
+      // Earth: PBR Surface with Ocean Specular Mask, Normal Mapping & Night Lights
+      surfaceMaterial = EarthMaterial.createSurfaceMaterial(
+        textures.map,
+        textures.normalMap,
+        textures.nightMap
+      );
+
+      // Independent Rotating Clouds with Directional Shading & Soft Translucency
+      if (textures.cloudsMap) {
+        const cloudGeo = new THREE.SphereGeometry(1.016, 64, 48);
+        const cloudMat = EarthMaterial.createCloudMaterial(textures.cloudsMap);
+        cloudMesh = new THREE.Mesh(cloudGeo, cloudMat);
+        cloudMesh.name = 'earth_clouds';
+        cloudMesh.renderOrder = 2;
+        cloudMesh.scale.set(visualRadius, visualRadius, visualRadius);
+        bodyGroup.add(cloudMesh);
       }
 
-      surfaceMaterial = new THREE.MeshStandardMaterial(matParams);
+      // Physically Grounded Rayleigh & Mie Scattering Atmosphere (zero dark-side neon rim)
+      const atmoMat = AtmosphereShader.createAtmosphereMaterial('Earth');
+      if (atmoMat) {
+        const atmoGeo = new THREE.SphereGeometry(1.022, 64, 48);
+        atmosphereMesh = new THREE.Mesh(atmoGeo, atmoMat);
+        atmosphereMesh.name = 'earth_atmosphere';
+        atmosphereMesh.renderOrder = 3;
+        atmosphereMesh.scale.set(visualRadius, visualRadius, visualRadius);
+        bodyGroup.add(atmosphereMesh);
+      }
+    } else {
+      // All other celestial bodies (Jupiter, Saturn, Uranus, Neptune, Mars, Venus, Mercury, Moons, Asteroids)
+      surfaceMaterial = PlanetMaterial.createMaterial({
+        name: body.name,
+        category: body.category,
+        map: textures.map,
+        normalMap: textures.normalMap,
+      });
+
+      // Atmospheric limb scattering for worlds with substantial atmospheres (Venus, Mars, Uranus, Neptune)
+      const atmoMat = AtmosphereShader.createAtmosphereMaterial(body.name);
+      if (atmoMat) {
+        const atmoGeo = new THREE.SphereGeometry(1.018, 48, 36);
+        atmosphereMesh = new THREE.Mesh(atmoGeo, atmoMat);
+        atmosphereMesh.name = `${body.name.toLowerCase()}_atmosphere`;
+        atmosphereMesh.renderOrder = 3;
+        atmosphereMesh.scale.set(visualRadius, visualRadius, visualRadius);
+        bodyGroup.add(atmosphereMesh);
+      }
     }
 
     const surfaceMesh = new THREE.Mesh(sphereGeo, surfaceMaterial);
@@ -149,204 +194,6 @@ export class PlanetFactory {
     // Single-application scale from unit sphere
     surfaceMesh.scale.set(visualRadius, visualRadius * polarScale, visualRadius);
     bodyGroup.add(surfaceMesh);
-
-    // --- SUN CORONA HALO GLOW ---
-    if (body.category === 'star') {
-      const innerGlowGeo = new THREE.SphereGeometry(1.06, 32, 32);
-      const innerGlowMat = new THREE.MeshBasicMaterial({
-        color: 0xffaa33,
-        transparent: true,
-        opacity: 0.38,
-        blending: THREE.AdditiveBlending,
-        side: THREE.BackSide,
-      });
-      const innerMesh = new THREE.Mesh(innerGlowGeo, innerGlowMat);
-      innerMesh.scale.set(visualRadius, visualRadius, visualRadius);
-      bodyGroup.add(innerMesh);
-      glowMeshes.push(innerMesh);
-
-      const outerGlowGeo = new THREE.SphereGeometry(1.35, 32, 32);
-      const outerGlowMat = new THREE.MeshBasicMaterial({
-        color: 0xff6600,
-        transparent: true,
-        opacity: 0.16,
-        blending: THREE.AdditiveBlending,
-        side: THREE.BackSide,
-      });
-      const outerMesh = new THREE.Mesh(outerGlowGeo, outerGlowMat);
-      outerMesh.scale.set(visualRadius, visualRadius, visualRadius);
-      bodyGroup.add(outerMesh);
-      glowMeshes.push(outerMesh);
-    }
-
-    // --- EARTH NIGHT LIGHTS, CLOUDS & RAYLEIGH ATMOSPHERE ---
-    if (body.name === 'Earth') {
-      // Night-side city lights
-      if (textures.nightMap) {
-        const nightGeo = new THREE.SphereGeometry(1.002, 64, 48);
-        const nightMat = new THREE.ShaderMaterial({
-          uniforms: {
-            nightMap: { value: textures.nightMap },
-          },
-          vertexShader: `
-            varying vec2 vUv;
-            varying vec3 vWorldNormal;
-            varying vec3 vWorldPosition;
-            void main() {
-              vUv = uv;
-              vWorldNormal = normalize(mat3(modelMatrix) * normal);
-              vec4 worldPos = modelMatrix * vec4(position, 1.0);
-              vWorldPosition = worldPos.xyz;
-              gl_Position = projectionMatrix * viewMatrix * worldPos;
-            }
-          `,
-          fragmentShader: `
-            uniform sampler2D nightMap;
-            varying vec2 vUv;
-            varying vec3 vWorldNormal;
-            varying vec3 vWorldPosition;
-            void main() {
-              vec3 sunDir = normalize(-vWorldPosition);
-              float sunDot = dot(vWorldNormal, sunDir);
-              float nightFactor = 1.0 - smoothstep(-0.20, 0.05, sunDot);
-              vec4 cityCol = texture2D(nightMap, vUv);
-              gl_FragColor = vec4(cityCol.rgb * 1.35 * nightFactor, 1.0);
-            }
-          `,
-          blending: THREE.AdditiveBlending,
-          transparent: true,
-          depthWrite: false,
-        });
-        nightMesh = new THREE.Mesh(nightGeo, nightMat);
-        nightMesh.name = 'earth_night_lights';
-        nightMesh.renderOrder = 1;
-        nightMesh.scale.set(visualRadius, visualRadius * polarScale, visualRadius);
-        bodyGroup.add(nightMesh);
-      }
-
-      // Cloud shell with luminance transparency mask
-      if (textures.cloudsMap) {
-        const cloudGeo = new THREE.SphereGeometry(1.016, 64, 48);
-        const cloudMat = new THREE.MeshStandardMaterial({
-          map: textures.cloudsMap,
-          alphaMap: textures.cloudsMap,
-          transparent: true,
-          opacity: 0.88,
-          blending: THREE.NormalBlending,
-          roughness: 0.9,
-          depthWrite: false,
-        });
-        cloudMesh = new THREE.Mesh(cloudGeo, cloudMat);
-        cloudMesh.name = 'earth_clouds';
-        cloudMesh.renderOrder = 2;
-        cloudMesh.scale.set(visualRadius, visualRadius, visualRadius);
-        bodyGroup.add(cloudMesh);
-      }
-
-      // Rayleigh atmospheric rim glow
-      const atmoGeo = new THREE.SphereGeometry(1.022, 64, 48);
-      const atmoMat = new THREE.ShaderMaterial({
-        vertexShader: `
-          varying vec3 vWorldNormal;
-          varying vec3 vWorldPosition;
-          void main() {
-            vWorldNormal = normalize(mat3(modelMatrix) * normal);
-            vec4 worldPos = modelMatrix * vec4(position, 1.0);
-            vWorldPosition = worldPos.xyz;
-            gl_Position = projectionMatrix * viewMatrix * worldPos;
-          }
-        `,
-        fragmentShader: `
-          varying vec3 vWorldNormal;
-          varying vec3 vWorldPosition;
-          void main() {
-            vec3 worldNormal = normalize(vWorldNormal);
-            // Sun is at origin (0, 0, 0)
-            vec3 sunDir = normalize(-vWorldPosition);
-            vec3 viewDir = normalize(cameraPosition - vWorldPosition);
-
-            // Limb Fresnel rim peaking right at the silhouette horizon
-            float rim = 1.0 - clamp(abs(dot(worldNormal, viewDir)), 0.0, 1.0);
-            float rimFactor = pow(rim, 3.8);
-
-            // Sunlight modulation across the terminator:
-            // Eliminates artificial night-side glow while maintaining forward scatter on illuminated limb
-            float sunDot = dot(worldNormal, sunDir);
-            float dayFactor = smoothstep(-0.25, 0.35, sunDot);
-
-            // Forward scattering phase function (Rayleigh/Mie forward peak)
-            float viewSunCos = dot(viewDir, sunDir);
-            float forwardScatter = pow(max(0.0, viewSunCos), 2.5) * 0.45;
-
-            // Deep space Rayleigh blue gradient with soft cyan-white inner horizon
-            vec3 dayColor = mix(vec3(0.24, 0.52, 0.95), vec3(0.55, 0.82, 1.0), rimFactor * 0.5);
-            // Twilight ember warm glow right along the terminator
-            float terminatorFringe = smoothstep(-0.15, 0.05, sunDot) * (1.0 - smoothstep(0.05, 0.25, sunDot));
-            vec3 twilightColor = vec3(0.95, 0.45, 0.22);
-            vec3 atmoColor = mix(dayColor, twilightColor, terminatorFringe * 0.38);
-
-            // Atmospheric intensity: day scattering with forward peak, falling off to subtle dark-side airglow
-            float intensity = rimFactor * (dayFactor * 1.35 + forwardScatter + 0.02);
-
-            gl_FragColor = vec4(atmoColor, clamp(intensity, 0.0, 1.0));
-          }
-        `,
-        blending: THREE.AdditiveBlending,
-        side: THREE.BackSide,
-        transparent: true,
-        depthWrite: false,
-      });
-      atmosphereMesh = new THREE.Mesh(atmoGeo, atmoMat);
-      atmosphereMesh.name = 'earth_atmosphere';
-      atmosphereMesh.renderOrder = 3;
-      atmosphereMesh.scale.set(visualRadius, visualRadius, visualRadius);
-      bodyGroup.add(atmosphereMesh);
-    }
-
-    // --- MARS DELICATE ATMOSPHERIC RIM ---
-    if (body.name === 'Mars') {
-      const atmoGeo = new THREE.SphereGeometry(1.018, 48, 36);
-      const atmoMat = new THREE.ShaderMaterial({
-        vertexShader: `
-          varying vec3 vWorldNormal;
-          varying vec3 vWorldPosition;
-          void main() {
-            vWorldNormal = normalize(mat3(modelMatrix) * normal);
-            vec4 worldPos = modelMatrix * vec4(position, 1.0);
-            vWorldPosition = worldPos.xyz;
-            gl_Position = projectionMatrix * viewMatrix * worldPos;
-          }
-        `,
-        fragmentShader: `
-          varying vec3 vWorldNormal;
-          varying vec3 vWorldPosition;
-          void main() {
-            vec3 worldNormal = normalize(vWorldNormal);
-            vec3 sunDir = normalize(-vWorldPosition);
-            vec3 viewDir = normalize(cameraPosition - vWorldPosition);
-
-            float rim = 1.0 - clamp(abs(dot(worldNormal, viewDir)), 0.0, 1.0);
-            float rimFactor = pow(rim, 4.0);
-
-            float sunDot = dot(worldNormal, sunDir);
-            float dayFactor = smoothstep(-0.20, 0.30, sunDot);
-
-            vec3 atmoColor = vec3(0.85, 0.48, 0.30); // Amber thin CO2 haze
-            float intensity = rimFactor * (dayFactor * 0.85 + 0.015);
-            gl_FragColor = vec4(atmoColor, clamp(intensity, 0.0, 1.0));
-          }
-        `,
-        blending: THREE.AdditiveBlending,
-        side: THREE.BackSide,
-        transparent: true,
-        depthWrite: false,
-      });
-      atmosphereMesh = new THREE.Mesh(atmoGeo, atmoMat);
-      atmosphereMesh.name = 'mars_atmosphere';
-      atmosphereMesh.renderOrder = 3;
-      atmosphereMesh.scale.set(visualRadius, visualRadius, visualRadius);
-      bodyGroup.add(atmosphereMesh);
-    }
 
     // --- SATURN ANNULAR RING SYSTEM WITH PLANETARY SHADOW ---
     if (body.name === 'Saturn') {
@@ -474,6 +321,7 @@ export class PlanetFactory {
       atmosphereMesh,
       ringMesh,
       glowMeshes: glowMeshes.length > 0 ? glowMeshes : undefined,
+      prominencesGroup,
       orbitLine,
       visualRadius,
       orbitalDistance,
