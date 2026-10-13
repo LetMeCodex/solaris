@@ -5,11 +5,12 @@ import { CelestialBodyDefinition } from '../types/catalogue';
 
 export class OrbitalTrails {
   /**
-   * Generate an accurate 3D Keplerian elliptical orbit line for a heliocentric body.
+   * Generate the osculating 3D Keplerian ellipse of a heliocentric body at the given date.
    */
   public static createOrbitLine(
     body: CelestialBodyDefinition,
     transform: RenderSpaceTransform,
+    elapsedDaysSinceJ2000: number = 0,
     segments: number = 180
   ): THREE.Line | null {
     if (body.orderFromSun === 0 || body.orbit.semiMajorAxisKm <= 0) {
@@ -17,7 +18,7 @@ export class OrbitalTrails {
     }
 
     // Sample true physical Keplerian ellipse in heliocentric ecliptic space
-    const physicalPoints = KeplerSolver.sampleOrbitPath(body.orbit, segments);
+    const physicalPoints = KeplerSolver.sampleOrbitPath(body.orbit, segments, elapsedDaysSinceJ2000);
 
     // Transform points to Three.js render coordinates
     const renderVectors: THREE.Vector3[] = physicalPoints.map((pt) => {
@@ -45,11 +46,12 @@ export class OrbitalTrails {
     moon: CelestialBodyDefinition,
     parent: CelestialBodyDefinition,
     transform: RenderSpaceTransform,
+    elapsedDaysSinceJ2000: number = 0,
     segments: number = 96
   ): THREE.Line | null {
     if (moon.orbit.semiMajorAxisKm <= 0) return null;
 
-    const physicalPoints = KeplerSolver.sampleOrbitPath(moon.orbit, segments);
+    const physicalPoints = KeplerSolver.sampleOrbitPath(moon.orbit, segments, elapsedDaysSinceJ2000);
 
     const renderVectors: THREE.Vector3[] = physicalPoints.map((pt) => {
       const renderPt = transform.toMoonRenderPosition(pt, moon, [0, 0, 0], parent);

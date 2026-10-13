@@ -49,14 +49,26 @@ export const SOLAR_SYSTEM_BODIES: CelestialBodyDefinition[] = [
       colorHex: '#9c968f',
     },
     orbit: {
-      semiMajorAxisKm: 57909050,
-      semiMajorAxisAU: 0.387098,
-      eccentricity: 0.205630,
-      inclinationDeg: 7.005,
-      longitudeAscendingNodeDeg: 48.331,
-      argumentPeriapsisDeg: 29.124,
-      meanAnomalyAtEpochDeg: 174.796,
+      // JPL SSD "Keplerian Elements for Approximate Positions of the Major Planets", Table 1
+      // (Standish; J2000 ecliptic & equinox; valid 1800–2050 AD)
+      semiMajorAxisKm: 57909226.5,
+      semiMajorAxisAU: 0.38709927,
+      eccentricity: 0.20563593,
+      inclinationDeg: 7.00497902,
+      longitudeAscendingNodeDeg: 48.33076593,
+      argumentPeriapsisDeg: 29.12703035, // ϖ − Ω
+      meanAnomalyAtEpochDeg: 174.79252722, // L − ϖ
       orbitalPeriodDays: 87.969,
+      epochJd: 2451545.0,
+      ratesPerCentury: {
+        semiMajorAxisAU: 3.7e-07,
+        eccentricity: 1.906e-05,
+        inclinationDeg: -0.00594749,
+        longitudeAscendingNodeDeg: -0.12534081,
+        argumentPeriapsisDeg: 0.2858177,
+        meanAnomalyDeg: 149472.51363486,
+      },
+      source: 'JPL SSD approximate planetary positions (Standish), Table 1',
     },
     description: 'Smallest planet, heavily cratered with silicate crust and large iron core; lacks a substantial atmosphere.'
   },
@@ -78,14 +90,26 @@ export const SOLAR_SYSTEM_BODIES: CelestialBodyDefinition[] = [
       colorHex: '#e3bb7b',
     },
     orbit: {
-      semiMajorAxisKm: 108208000,
-      semiMajorAxisAU: 0.723332,
-      eccentricity: 0.006772,
-      inclinationDeg: 3.39458,
-      longitudeAscendingNodeDeg: 76.680,
-      argumentPeriapsisDeg: 54.884,
-      meanAnomalyAtEpochDeg: 50.115,
+      // JPL SSD "Keplerian Elements for Approximate Positions of the Major Planets", Table 1
+      // (Standish; J2000 ecliptic & equinox; valid 1800–2050 AD)
+      semiMajorAxisKm: 108209474.5,
+      semiMajorAxisAU: 0.72333566,
+      eccentricity: 0.00677672,
+      inclinationDeg: 3.39467605,
+      longitudeAscendingNodeDeg: 76.67984255,
+      argumentPeriapsisDeg: 54.92262463, // ϖ − Ω
+      meanAnomalyAtEpochDeg: 50.37663232, // L − ϖ
       orbitalPeriodDays: 224.701,
+      epochJd: 2451545.0,
+      ratesPerCentury: {
+        semiMajorAxisAU: 3.9e-06,
+        eccentricity: -4.107e-05,
+        inclinationDeg: -0.0007889,
+        longitudeAscendingNodeDeg: -0.27769418,
+        argumentPeriapsisDeg: 0.28037747,
+        meanAnomalyDeg: 58517.812704,
+      },
+      source: 'JPL SSD approximate planetary positions (Standish), Table 1',
     },
     description: 'Terrestrial planet shrouded in dense carbon dioxide atmosphere and sulfuric acid clouds with runaway greenhouse effect.'
   },
@@ -107,14 +131,26 @@ export const SOLAR_SYSTEM_BODIES: CelestialBodyDefinition[] = [
       colorHex: '#4b75a1',
     },
     orbit: {
-      semiMajorAxisKm: 149598023,
-      semiMajorAxisAU: 1.000000,
-      eccentricity: 0.0167086,
-      inclinationDeg: 0.00005,
-      longitudeAscendingNodeDeg: -11.26064,
-      argumentPeriapsisDeg: 114.20783,
-      meanAnomalyAtEpochDeg: 358.617,
+      // JPL SSD "Keplerian Elements for Approximate Positions of the Major Planets", Table 1
+      // (Standish; J2000 ecliptic & equinox; valid 1800–2050 AD) — Earth-Moon barycenter
+      semiMajorAxisKm: 149598261.2,
+      semiMajorAxisAU: 1.00000261,
+      eccentricity: 0.01671123,
+      inclinationDeg: -1.531e-05,
+      longitudeAscendingNodeDeg: 0.0,
+      argumentPeriapsisDeg: 102.93768193, // ϖ − Ω
+      meanAnomalyAtEpochDeg: 357.52688973, // L − ϖ
       orbitalPeriodDays: 365.256,
+      epochJd: 2451545.0,
+      ratesPerCentury: {
+        semiMajorAxisAU: 5.62e-06,
+        eccentricity: -4.392e-05,
+        inclinationDeg: -0.01294668,
+        longitudeAscendingNodeDeg: 0.0,
+        argumentPeriapsisDeg: 0.32327364,
+        meanAnomalyDeg: 35999.04917617,
+      },
+      source: 'JPL SSD approximate planetary positions (Standish), Table 1',
     },
     description: 'Dense rocky world featuring liquid surface water, active plate tectonics, oxygen-rich atmosphere, and planetary biosphere.'
   },
@@ -136,14 +172,26 @@ export const SOLAR_SYSTEM_BODIES: CelestialBodyDefinition[] = [
       colorHex: '#c16138',
     },
     orbit: {
-      semiMajorAxisKm: 227939200,
-      semiMajorAxisAU: 1.523679,
-      eccentricity: 0.0934,
-      inclinationDeg: 1.850,
-      longitudeAscendingNodeDeg: 49.558,
-      argumentPeriapsisDeg: 286.502,
-      meanAnomalyAtEpochDeg: 19.373,
+      // JPL SSD "Keplerian Elements for Approximate Positions of the Major Planets", Table 1
+      // (Standish; J2000 ecliptic & equinox; valid 1800–2050 AD)
+      semiMajorAxisKm: 227943822.4,
+      semiMajorAxisAU: 1.52371034,
+      eccentricity: 0.0933941,
+      inclinationDeg: 1.84969142,
+      longitudeAscendingNodeDeg: 49.55953891,
+      argumentPeriapsisDeg: -73.5031685, // ϖ − Ω
+      meanAnomalyAtEpochDeg: 19.39019754, // L − ϖ
       orbitalPeriodDays: 686.980,
+      epochJd: 2451545.0,
+      ratesPerCentury: {
+        semiMajorAxisAU: 1.847e-05,
+        eccentricity: 7.882e-05,
+        inclinationDeg: -0.00813131,
+        longitudeAscendingNodeDeg: -0.29257343,
+        argumentPeriapsisDeg: 0.73698431,
+        meanAnomalyDeg: 19139.85827411,
+      },
+      source: 'JPL SSD approximate planetary positions (Standish), Table 1',
     },
     description: 'Cold desert world with iron-oxide regolith, giant shield volcanoes (Olympus Mons), rift canyon Valles Marineris, and polar ice caps.'
   },
@@ -165,14 +213,26 @@ export const SOLAR_SYSTEM_BODIES: CelestialBodyDefinition[] = [
       colorHex: '#c8a679',
     },
     orbit: {
-      semiMajorAxisKm: 778570000,
-      semiMajorAxisAU: 5.2044,
-      eccentricity: 0.048498,
-      inclinationDeg: 1.303,
-      longitudeAscendingNodeDeg: 100.464,
-      argumentPeriapsisDeg: 273.867,
-      meanAnomalyAtEpochDeg: 20.020,
+      // JPL SSD "Keplerian Elements for Approximate Positions of the Major Planets", Table 1
+      // (Standish; J2000 ecliptic & equinox; valid 1800–2050 AD)
+      semiMajorAxisKm: 778340816.7,
+      semiMajorAxisAU: 5.202887,
+      eccentricity: 0.04838624,
+      inclinationDeg: 1.30439695,
+      longitudeAscendingNodeDeg: 100.47390909,
+      argumentPeriapsisDeg: -85.74542926, // ϖ − Ω
+      meanAnomalyAtEpochDeg: 19.66796068, // L − ϖ
       orbitalPeriodDays: 4332.589,
+      epochJd: 2451545.0,
+      ratesPerCentury: {
+        semiMajorAxisAU: -0.00011607,
+        eccentricity: -0.00013253,
+        inclinationDeg: -0.00183714,
+        longitudeAscendingNodeDeg: 0.20469106,
+        argumentPeriapsisDeg: 0.00783562,
+        meanAnomalyDeg: 3034.53360107,
+      },
+      source: 'JPL SSD approximate planetary positions (Standish), Table 1',
     },
     description: 'Largest planet; hydrogen-helium gas giant displaying zonal atmospheric jet streams, turbulent vortices, and the Great Red Spot.'
   },
@@ -194,14 +254,26 @@ export const SOLAR_SYSTEM_BODIES: CelestialBodyDefinition[] = [
       colorHex: '#dfcf9f',
     },
     orbit: {
-      semiMajorAxisKm: 1433530000,
-      semiMajorAxisAU: 9.5826,
-      eccentricity: 0.05555,
-      inclinationDeg: 2.485,
-      longitudeAscendingNodeDeg: 113.665,
-      argumentPeriapsisDeg: 339.392,
-      meanAnomalyAtEpochDeg: 317.020,
+      // JPL SSD "Keplerian Elements for Approximate Positions of the Major Planets", Table 1
+      // (Standish; J2000 ecliptic & equinox; valid 1800–2050 AD)
+      semiMajorAxisKm: 1426666414.2,
+      semiMajorAxisAU: 9.53667594,
+      eccentricity: 0.05386179,
+      inclinationDeg: 2.48599187,
+      longitudeAscendingNodeDeg: 113.66242448,
+      argumentPeriapsisDeg: -21.06354617, // ϖ − Ω
+      meanAnomalyAtEpochDeg: 317.35536592, // L − ϖ
       orbitalPeriodDays: 10759.22,
+      epochJd: 2451545.0,
+      ratesPerCentury: {
+        semiMajorAxisAU: -0.0012506,
+        eccentricity: -0.00050991,
+        inclinationDeg: 0.00193609,
+        longitudeAscendingNodeDeg: -0.28867794,
+        argumentPeriapsisDeg: -0.13029422,
+        meanAnomalyDeg: 1222.91259417,
+      },
+      source: 'JPL SSD approximate planetary positions (Standish), Table 1',
     },
     description: 'Gas giant celebrated for its extensive, brilliant ring system consisting of water ice particles, dust, and rock.'
   },
@@ -223,14 +295,26 @@ export const SOLAR_SYSTEM_BODIES: CelestialBodyDefinition[] = [
       colorHex: '#8fe0ea',
     },
     orbit: {
-      semiMajorAxisKm: 2872460000,
-      semiMajorAxisAU: 19.201,
-      eccentricity: 0.046381,
-      inclinationDeg: 0.773,
-      longitudeAscendingNodeDeg: 74.006,
-      argumentPeriapsisDeg: 96.998,
-      meanAnomalyAtEpochDeg: 142.238,
+      // JPL SSD "Keplerian Elements for Approximate Positions of the Major Planets", Table 1
+      // (Standish; J2000 ecliptic & equinox; valid 1800–2050 AD)
+      semiMajorAxisKm: 2870658170.7,
+      semiMajorAxisAU: 19.18916464,
+      eccentricity: 0.04725744,
+      inclinationDeg: 0.77263783,
+      longitudeAscendingNodeDeg: 74.01692503,
+      argumentPeriapsisDeg: 96.93735127, // ϖ − Ω
+      meanAnomalyAtEpochDeg: 142.28382821, // L − ϖ
       orbitalPeriodDays: 30685.4,
+      epochJd: 2451545.0,
+      ratesPerCentury: {
+        semiMajorAxisAU: -0.00196176,
+        eccentricity: -4.397e-05,
+        inclinationDeg: -0.00242939,
+        longitudeAscendingNodeDeg: 0.04240589,
+        argumentPeriapsisDeg: 0.36564692,
+        meanAnomalyDeg: 428.07397504,
+      },
+      source: 'JPL SSD approximate planetary positions (Standish), Table 1',
     },
     description: 'Ice giant composed of water, ammonia, and methane ices; extreme 98° axial tilt results in extreme seasonal variations.'
   },
@@ -252,14 +336,26 @@ export const SOLAR_SYSTEM_BODIES: CelestialBodyDefinition[] = [
       colorHex: '#4b70dd',
     },
     orbit: {
-      semiMajorAxisKm: 4495060000,
-      semiMajorAxisAU: 30.047,
-      eccentricity: 0.009456,
-      inclinationDeg: 1.770,
-      longitudeAscendingNodeDeg: 131.784,
-      argumentPeriapsisDeg: 273.187,
-      meanAnomalyAtEpochDeg: 256.228,
+      // JPL SSD "Keplerian Elements for Approximate Positions of the Major Planets", Table 1
+      // (Standish; J2000 ecliptic & equinox; valid 1800–2050 AD)
+      semiMajorAxisKm: 4498396417.0,
+      semiMajorAxisAU: 30.06992276,
+      eccentricity: 0.00859048,
+      inclinationDeg: 1.77004347,
+      longitudeAscendingNodeDeg: 131.78422574,
+      argumentPeriapsisDeg: -86.81946347, // ϖ − Ω
+      meanAnomalyAtEpochDeg: 259.91520804, // L − ϖ
       orbitalPeriodDays: 60189.0,
+      epochJd: 2451545.0,
+      ratesPerCentury: {
+        semiMajorAxisAU: 0.00026291,
+        eccentricity: 5.105e-05,
+        inclinationDeg: 0.00035372,
+        longitudeAscendingNodeDeg: -0.00508664,
+        argumentPeriapsisDeg: -0.317328,
+        meanAnomalyDeg: 218.78186789,
+      },
+      source: 'JPL SSD approximate planetary positions (Standish), Table 1',
     },
     description: 'Outermost major planet; deep azure ice giant driven by violent supersonic winds, methane haze, and high-altitude cirrus clouds.'
   }

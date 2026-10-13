@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { TexturePipeline } from './TexturePipeline';
 import { MilkyWayGalaxy } from './MilkyWayGalaxy';
 import { TravelParticles } from './TravelParticles';
+import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 
 interface RawStarHeader {
   count: number;
@@ -19,7 +20,8 @@ interface RawStarHeader {
   ]>;
 }
 
-// Major IAU Asterisms / Constellation line pairs (HIP_A, HIP_B)
+// Stick figures for nine bright constellations / asterisms (HIP_A, HIP_B).
+// This is a curated subset, not the full set of 88 IAU constellations.
 const CONSTELLATION_EDGES: Array<[number, number]> = [
   // --- URSA MAJOR (BIG DIPPER) ---
   [54061, 53910], // Dubhe - Merak (Pointers)
@@ -31,24 +33,25 @@ const CONSTELLATION_EDGES: Array<[number, number]> = [
   [65378, 67301], // Mizar - Alkaid
 
   // --- ORION ---
-  [27989, 25336], // Betelgeuse - Bellatrix
-  [27989, 27366], // Betelgeuse - Saiph
-  [25336, 24436], // Bellatrix - Rigel
-  [27366, 24436], // Saiph - Rigel
+  [27989, 25336], // Betelgeuse - Bellatrix (shoulders)
+  [27989, 26207], // Betelgeuse - Meissa (head)
+  [25336, 26207], // Bellatrix - Meissa
+  [27989, 26727], // Betelgeuse - Alnitak
+  [25336, 25930], // Bellatrix - Mintaka
   [25930, 26311], // Mintaka - Alnilam (Belt)
   [26311, 26727], // Alnilam - Alnitak (Belt)
-  [26727, 27989], // Alnitak - Betelgeuse
-  [25930, 25336], // Mintaka - Bellatrix
+  [26727, 27366], // Alnitak - Saiph
+  [25930, 24436], // Mintaka - Rigel
 
   // --- CASSIOPEIA ('W') ---
   [746, 3179],   // Caph - Schedar
-  [3179, 2920],  // Schedar - Navi (Gamma Cas)
-  [2920, 6686],  // Navi - Ruchbah
+  [3179, 4427],  // Schedar - Navi (Gamma Cas, HIP 4427)
+  [4427, 6686],  // Navi - Ruchbah
   [6686, 8886],  // Ruchbah - Segin
 
   // --- CRUX (SOUTHERN CROSS) ---
   [60718, 61084], // Acrux - Gacrux (Major axis)
-  [62434, 61932], // Becrux/Mimosa - Imai (Minor axis)
+  [62434, 59747], // Becrux/Mimosa - Imai (Delta Cru, minor axis)
 
   // --- CYGNUS (NORTHERN CROSS) ---
   [102098, 100453], // Deneb - Sadr
@@ -62,7 +65,8 @@ const CONSTELLATION_EDGES: Array<[number, number]> = [
   [50335, 48455], // Adhafera - Rasalas (Sickle)
   [50583, 54872], // Algieba - Zosma
   [54872, 57632], // Zosma - Denebola
-  [57632, 49669], // Denebola - Regulus
+  [57632, 54879], // Denebola - Chertan
+  [54879, 49669], // Chertan - Regulus
 
   // --- SCORPIUS ---
   [80763, 78820], // Antares - Dschubba
@@ -76,150 +80,14 @@ const CONSTELLATION_EDGES: Array<[number, number]> = [
   [32349, 33579], // Sirius - Adhara
   [33579, 34444], // Adhara - Wezen
   [34444, 35904], // Wezen - Aludra
+
+  // --- LYRA ---
+  [91262, 91971], // Vega - Zeta1 Lyr
+  [91971, 92420], // Zeta1 Lyr - Sheliak
+  [92420, 93194], // Sheliak - Sulafat
+  [93194, 92791], // Sulafat - Delta2 Lyr
+  [92791, 91971], // Delta2 Lyr - Zeta1 Lyr
 ];
-
-interface Meteor {
-  active: boolean;
-  startPos: THREE.Vector3;
-  dir: THREE.Vector3;
-  speed: number;
-  length: number;
-  progress: number;
-  cooldown: number;
-  color: THREE.Color;
-}
-
-class MeteorSystem {
-  public mesh: THREE.LineSegments;
-  private meteors: Meteor[] = [];
-  private positions: Float32Array;
-  private colors: Float32Array;
-  private count = 5;
-
-  constructor() {
-    this.positions = new Float32Array(this.count * 2 * 3);
-    this.colors = new Float32Array(this.count * 2 * 3);
-
-    for (let i = 0; i < this.count; i++) {
-      this.meteors.push({
-        active: false,
-        startPos: new THREE.Vector3(),
-        dir: new THREE.Vector3(),
-        speed: 380 + Math.random() * 260,
-        length: 28 + Math.random() * 24,
-        progress: 0,
-        cooldown: 2.0 + Math.random() * 8.0,
-        color: new THREE.Color(
-          Math.random() > 0.35 ? 0xdaf0ff : 0xffe8c2
-        ),
-      });
-    }
-
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
-    geo.setAttribute('color', new THREE.BufferAttribute(this.colors, 3));
-
-    const mat = new THREE.LineBasicMaterial({
-      vertexColors: true,
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-
-    this.mesh = new THREE.LineSegments(geo, mat);
-    this.mesh.name = 'meteor_streaks';
-    this.mesh.renderOrder = -1;
-  }
-
-  public update(deltaSec: number, cameraPos: THREE.Vector3): void {
-    const posAttr = this.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
-    const colAttr = this.mesh.geometry.getAttribute('color') as THREE.BufferAttribute;
-
-    for (let i = 0; i < this.count; i++) {
-      const m = this.meteors[i];
-      const i0 = i * 6;
-      const i1 = i * 6 + 3;
-
-      if (!m.active) {
-        m.cooldown -= deltaSec;
-        if (m.cooldown <= 0) {
-          m.active = true;
-          m.progress = 0;
-          m.speed = 360 + Math.random() * 320;
-          m.length = 26 + Math.random() * 26;
-
-          const angle = Math.random() * Math.PI * 2;
-          const height = (Math.random() - 0.5) * 180;
-          const dist = 160 + Math.random() * 240;
-          m.startPos.set(
-            cameraPos.x + Math.cos(angle) * dist,
-            cameraPos.y + height,
-            cameraPos.z + Math.sin(angle) * dist
-          );
-
-          const dirAngle = angle + Math.PI * 0.5 + (Math.random() - 0.5) * 1.2;
-          m.dir.set(
-            Math.cos(dirAngle),
-            (Math.random() - 0.5) * 0.45,
-            Math.sin(dirAngle)
-          ).normalize();
-        } else {
-          this.positions[i0] = 0; this.positions[i0 + 1] = 0; this.positions[i0 + 2] = 0;
-          this.positions[i1] = 0; this.positions[i1 + 1] = 0; this.positions[i1 + 2] = 0;
-          this.colors[i0] = 0; this.colors[i0 + 1] = 0; this.colors[i0 + 2] = 0;
-          this.colors[i1] = 0; this.colors[i1 + 1] = 0; this.colors[i1 + 2] = 0;
-          continue;
-        }
-      }
-
-      m.progress += (m.speed * deltaSec) / 260.0;
-      if (m.progress >= 1.0) {
-        m.active = false;
-        m.cooldown = 4.0 + Math.random() * 9.0;
-        this.positions[i0] = 0; this.positions[i0 + 1] = 0; this.positions[i0 + 2] = 0;
-        this.positions[i1] = 0; this.positions[i1 + 1] = 0; this.positions[i1 + 2] = 0;
-        this.colors[i0] = 0; this.colors[i0 + 1] = 0; this.colors[i0 + 2] = 0;
-        this.colors[i1] = 0; this.colors[i1 + 1] = 0; this.colors[i1 + 2] = 0;
-        continue;
-      }
-
-      const currentTravel = m.progress * 260.0;
-      const headX = m.startPos.x + m.dir.x * currentTravel;
-      const headY = m.startPos.y + m.dir.y * currentTravel;
-      const headZ = m.startPos.z + m.dir.z * currentTravel;
-
-      const tailTravel = Math.max(0, currentTravel - m.length);
-      const tailX = m.startPos.x + m.dir.x * tailTravel;
-      const tailY = m.startPos.y + m.dir.y * tailTravel;
-      const tailZ = m.startPos.z + m.dir.z * tailTravel;
-
-      this.positions[i0] = headX;
-      this.positions[i0 + 1] = headY;
-      this.positions[i0 + 2] = headZ;
-
-      this.positions[i1] = tailX;
-      this.positions[i1 + 1] = tailY;
-      this.positions[i1 + 2] = tailZ;
-
-      const alpha = Math.sin(m.progress * Math.PI) * 0.95;
-      this.colors[i0] = m.color.r * alpha * 1.6;
-      this.colors[i0 + 1] = m.color.g * alpha * 1.6;
-      this.colors[i0 + 2] = m.color.b * alpha * 1.6;
-
-      this.colors[i1] = m.color.r * alpha * 0.12;
-      this.colors[i1 + 1] = m.color.g * alpha * 0.12;
-      this.colors[i1 + 2] = m.color.b * alpha * 0.12;
-    }
-
-    posAttr.needsUpdate = true;
-    colAttr.needsUpdate = true;
-  }
-
-  public dispose(): void {
-    this.mesh.geometry.dispose();
-    (this.mesh.material as THREE.Material).dispose();
-  }
-}
 
 export class Starfield {
   public group: THREE.Group = new THREE.Group();
@@ -230,13 +98,18 @@ export class Starfield {
   private milkyWayMesh?: THREE.Mesh;
   private milkyWayOpacityUniform: { value: number } = { value: 1.0 };
   private stardustMesh?: THREE.Points;
-  private meteorSystem?: MeteorSystem;
   public externalGalaxy: MilkyWayGalaxy;
   public travelParticles: TravelParticles;
   public isLoaded: boolean = false;
 
   // Sphere radius for stars in Three.js coordinates
   public static readonly SPHERE_RADIUS = 8500.0;
+
+  // 3D local-neighbourhood stars (< 120 pc): radial offset and parsec scale (render units)
+  public static readonly LOCAL_STAR_OFFSET = 700.0;
+  private static readonly CONSTELLATION_OPACITY = 0.38;
+  public static readonly LOCAL_UNITS_PER_PC = 38.0;
+  private localStarsOpacity: { value: number } = { value: 0.0 };
 
   constructor() {
     this.group.name = 'starfield_hipparcos';
@@ -245,14 +118,10 @@ export class Starfield {
 
     this.buildMilkyWayBackground();
     this.build3DCosmicStardust();
-    this.meteorSystem = new MeteorSystem();
-    this.group.add(this.meteorSystem.mesh);
 
     // External 3D Milky Way Galaxy model
+    // (oriented to the real galactic frame and offset so its Sun locator sits at the scene origin)
     this.externalGalaxy = new MilkyWayGalaxy();
-    // Offset external galaxy so its Sun locator coincides exactly with scene origin (0, 0, 0)
-    const sunOffset = this.externalGalaxy.sunWorldPosition.clone().applyEuler(this.externalGalaxy.group.rotation);
-    this.externalGalaxy.group.position.copy(sunOffset).negate();
     this.group.add(this.externalGalaxy.group);
 
     // Velocity-aware travel streak particles
@@ -284,7 +153,8 @@ export class Starfield {
         varying vec2 vUv;
 
         void main() {
-          vec4 tex = texture2D(milkyWayMap, vUv);
+          // Mirror u: the panorama is drawn as seen from inside the celestial sphere
+          vec4 tex = texture2D(milkyWayMap, vec2(1.0 - vUv.x, vUv.y));
           vec3 rgb = tex.rgb;
 
           // Pure, natural photographic contrast matching the ESA Gaia DR3 reference (test_gaia.jpg):
@@ -303,10 +173,16 @@ export class Starfield {
     this.milkyWayMesh = new THREE.Mesh(geo, mat);
     this.milkyWayMesh.name = 'milky_way_skybox';
     this.milkyWayMesh.renderOrder = -10;
-    // Align Galactic Plane with astronomical orientation
-    this.milkyWayMesh.rotation.x = THREE.MathUtils.degToRad(62.87);
-    this.milkyWayMesh.rotation.y = THREE.MathUtils.degToRad(122.93);
-    this.milkyWayMesh.rotation.z = THREE.MathUtils.degToRad(282.25);
+    // The Gaia panorama is an equirectangular galactic map (l = 0 at the centre, l increasing to the
+    // left, b = +90° at the top). With the shader's u-flip, sphere-local +X is l = 0, local +Y is the
+    // north galactic pole and local −Z is l = 90°. Orient that frame onto the real galactic axes.
+    const gal = CoordinateFrames.galacticBasisThree();
+    const basis = new THREE.Matrix4().makeBasis(
+      new THREE.Vector3(...gal.x),
+      new THREE.Vector3(...gal.z),
+      new THREE.Vector3(...gal.y).negate()
+    );
+    this.milkyWayMesh.quaternion.setFromRotationMatrix(basis);
     this.celestialGroup.add(this.milkyWayMesh);
   }
 
@@ -367,7 +243,8 @@ export class Starfield {
 
         void main() {
           vColor = color;
-          vTwinkle = 0.65 + 0.35 * sin(time * 1.8 + aPhase);
+          // No scintillation in vacuum: twinkling is an atmospheric effect
+          vTwinkle = 0.8;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           float dist = -mvPosition.z;
           // Distance falloff: motes naturally vanish beyond 300 units so overview stays clean
@@ -440,9 +317,11 @@ export class Starfield {
       const vmag = star[4];
       const bv = star[5];
 
-      positions[i * 3] = x * R;
-      positions[i * 3 + 1] = z * R;
-      positions[i * 3 + 2] = -y * R;
+      // Catalogue vectors are ICRF (equatorial); rotate into the ecliptic render frame
+      const p = CoordinateFrames.icrfToThree([x, y, z]);
+      positions[i * 3] = p[0] * R;
+      positions[i * 3 + 1] = p[1] * R;
+      positions[i * 3 + 2] = p[2] * R;
 
       const color = this.bvToRGB(bv, star[8]);
       colors[i * 3] = color.r;
@@ -519,11 +398,14 @@ export class Starfield {
 
       for (let j = 0; j < localStars.length; j++) {
         const s = localStars[j];
-        // 1 parsec = 38 scene units (Alpha Centauri ~ 51 units, Sirius ~ 100 units, Vega ~ 290 units)
-        const distUnits = Math.max(12.0, (s[6] as number) * 38.0);
-        localPos[j * 3] = s[1] * distUnits;
-        localPos[j * 3 + 1] = s[3] * distUnits;
-        localPos[j * 3 + 2] = -s[2] * distUnits;
+        // Radial placement: LOCAL_STAR_OFFSET + 38 units per parsec, so even Alpha Centauri sits
+        // beyond the exploration-scale Solar System (Pluto's aphelion ≈ 680 units) while relative
+        // distances between stars are preserved. Directions are exact (ICRF → ecliptic).
+        const distUnits = Starfield.LOCAL_STAR_OFFSET + (s[6] as number) * Starfield.LOCAL_UNITS_PER_PC;
+        const p = CoordinateFrames.icrfToThree([s[1], s[2], s[3]]);
+        localPos[j * 3] = p[0] * distUnits;
+        localPos[j * 3 + 1] = p[1] * distUnits;
+        localPos[j * 3 + 2] = p[2] * distUnits;
 
         const col = this.bvToRGB(s[5], s[8]);
         localCol[j * 3] = col.r;
@@ -554,7 +436,11 @@ export class Starfield {
             gl_Position = projectionMatrix * mvPos;
           }
         `,
-        fragmentShader,
+        fragmentShader: 'uniform float uOpacity;\n' + fragmentShader.replace(
+          'gl_FragColor = vec4(vColor, alpha);',
+          'gl_FragColor = vec4(vColor, alpha * uOpacity);'
+        ),
+        uniforms: { uOpacity: this.localStarsOpacity },
         vertexColors: true,
         transparent: true,
         blending: THREE.AdditiveBlending,
@@ -562,6 +448,7 @@ export class Starfield {
       });
 
       this.localInterstellarStars = new THREE.Points(localGeo, localMat);
+      this.localInterstellarStars.visible = false;
       this.localInterstellarStars.name = 'local_interstellar_3d_stars';
       this.localInterstellarStars.renderOrder = 1;
       this.group.add(this.localInterstellarStars);
@@ -573,11 +460,8 @@ export class Starfield {
     const R = Starfield.SPHERE_RADIUS * 0.998;
 
     for (const star of data.stars) {
-      const hip = star[0];
-      const x = star[1] * R;
-      const y = star[3] * R;
-      const z = -star[2] * R;
-      starMap.set(hip, [x, y, z]);
+      const p = CoordinateFrames.icrfToThree([star[1], star[2], star[3]]);
+      starMap.set(star[0], [p[0] * R, p[1] * R, p[2] * R]);
     }
 
     const linePositions: number[] = [];
@@ -601,7 +485,7 @@ export class Starfield {
     const lineMat = new THREE.LineBasicMaterial({
       color: 0x4fd1c5,
       transparent: true,
-      opacity: 0.38,
+      opacity: Starfield.CONSTELLATION_OPACITY,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
@@ -694,6 +578,21 @@ export class Starfield {
     this.externalGalaxy.setOpacity(smoothT);
     this.milkyWayOpacityUniform.value = 1.0 - smoothT;
 
+    // Constellation figures only make sense from the Sun's vantage point
+    if (this.constellationLines) {
+      (this.constellationLines.material as THREE.LineBasicMaterial).opacity = Starfield.CONSTELLATION_OPACITY * (1.0 - smoothT);
+    }
+
+    // 3D neighbourhood stars only appear once the whole Solar System is in view, and hand over
+    // to the galaxy model as it fades in (the two use different stylised scales).
+    if (this.localInterstellarStars) {
+      const fadeIn = THREE.MathUtils.smoothstep(distToSun, 700.0, 1600.0);
+      const fadeOut = 1.0 - THREE.MathUtils.smoothstep(distToSun, 9000.0, 20000.0);
+      const o = fadeIn * fadeOut;
+      this.localStarsOpacity.value = o;
+      this.localInterstellarStars.visible = o > 0.005;
+    }
+
     this.externalGalaxy.update(performance.now() * 0.001, camera);
 
     // Update velocity-aware travel streak particles
@@ -704,18 +603,6 @@ export class Starfield {
       deltaSec
     );
 
-    // Update 3D cosmic stardust twinkling
-    if (this.stardustMesh) {
-      const mat = this.stardustMesh.material as THREE.ShaderMaterial;
-      if (mat.uniforms?.time) {
-        mat.uniforms.time.value += deltaSec;
-      }
-    }
-
-    // Update dynamic shooting star streaks (only visible within planetary/system domain)
-    if (this.meteorSystem && distToSun < 3200.0) {
-      this.meteorSystem.update(deltaSec, cameraPosition);
-    }
   }
 
   public setConstellationsVisible(visible: boolean): void {
@@ -758,9 +645,6 @@ export class Starfield {
     if (this.stardustMesh) {
       this.stardustMesh.geometry.dispose();
       (this.stardustMesh.material as THREE.Material).dispose();
-    }
-    if (this.meteorSystem) {
-      this.meteorSystem.dispose();
     }
   }
 }

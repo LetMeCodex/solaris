@@ -8,7 +8,7 @@
  * - NASA/JPL EHT Observations: https://www.jpl.nasa.gov/news/nasa-supports-event-horizon-telescope-in-studying-milky-ways-black-hole/
  * - NASA Swift Sgr A* Observations: https://www.nasa.gov/news-release/nasas-swift-catches-x-ray-action-at-milky-ways-center/
  * - Event Horizon Telescope Collaboration (2022, ApJL 930:L12, First Sgr A* Results)
- * - GRAVITY Collaboration (Abuter et al. 2021, A&A 647:A59, Mass & Distance Determination)
+ * - GRAVITY Collaboration (Abuter et al. 2022, A&A 657:L12, Mass & Distance Determination)
  * - Keck Galactic Center Group (Do et al. 2019, Science 365:664)
  */
 
@@ -32,9 +32,9 @@ export interface BlackHoleScientificModel {
     lightYearMeters: number;    // Light-year in meters
   };
   measurements: {
-    adoptedMassSolar: number;   // 4.297 x 10^6 M_sun (GRAVITY Collaboration 2021)
+    adoptedMassSolar: number;   // 4.297 x 10^6 M_sun (GRAVITY Collaboration 2022)
     massUncertaintySolar: number; // +/- 0.012 x 10^6 M_sun (stat)
-    adoptedDistanceKpc: number; // 8.277 kpc (GRAVITY Collaboration 2021)
+    adoptedDistanceKpc: number; // 8.277 kpc (GRAVITY Collaboration 2022)
     distanceUncertaintyKpc: number; // +/- 0.033 kpc (stat + sys)
     distanceLightYears: number; // ~26,990 ly
     spinParameterAStar: number; // Dimensionless Kerr spin a* = J / (G M^2 / c)

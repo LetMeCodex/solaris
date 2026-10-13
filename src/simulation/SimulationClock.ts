@@ -1,6 +1,6 @@
 /**
  * Centralized Astronomical Simulation Clock.
- * Maintains simulation epoch, Julian Date, Barycentric Dynamical Time (TDB),
+ * Maintains simulation epoch, UTC Julian Date, TDB Julian Date for ephemerides,
  * time multipliers, pause, reverse, and date scrubbing.
  */
 export class SimulationClock {
@@ -15,8 +15,9 @@ export class SimulationClock {
   public timeMultiplier: number = 1.0; // 1x, 10x, 100x, 10000x, etc. Negative for reverse time.
 
   // Standard Astronomical Reference Epochs
-  public static readonly J2000_JD = 2451545.0; // 2000-01-01T12:00:00.000Z
-  public static readonly J2000_UTC_MS = 946728000000; // Unix ms for J2000.0
+  public static readonly J2000_JD = 2451545.0; // 2000-01-01T12:00:00 TT
+  // J2000.0 is 2000-01-01T12:00:00 TT = 11:58:55.816 UTC (TT − UTC was 64.184 s in 2000)
+  public static readonly J2000_UTC_MS = 946727935816;
 
   constructor(initialUtcMs: number = Date.now()) {
     this.currentUtcMs = initialUtcMs;
@@ -70,11 +71,23 @@ export class SimulationClock {
   }
 
   /**
+   * Julian Date on the TDB (Barycentric Dynamical Time) scale, which is the time argument of
+   * every ephemeris in SOLARIS. TDB ≈ TT = TAI + 32.184 s, and TAI − UTC = 37 s since 2017-01-01
+   * (no leap second has been announced since). TDB − TT is below 2 ms and is neglected.
+   */
+  public getJulianDateTDB(): number {
+    return SimulationClock.utcMsToJulianDate(this.currentUtcMs) + SimulationClock.TT_MINUS_UTC_SECONDS / 86400.0;
+  }
+
+  /** TT − UTC in seconds (37 leap seconds + 32.184 s), valid from 2017-01-01. */
+  public static readonly TT_MINUS_UTC_SECONDS = 69.184;
+
+  /**
    * Convert Julian Date to Julian Centuries T since J2000.0.
    * T = (JD - 2451545.0) / 36525
    */
   public getJulianCenturiesJ2000(): number {
-    const jd = this.getJulianDate();
+    const jd = this.getJulianDateTDB();
     return (jd - SimulationClock.J2000_JD) / 36525.0;
   }
 

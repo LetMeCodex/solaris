@@ -9,7 +9,7 @@ import { CatalogueManager } from '../data/CatalogueManager';
 import { SAGITTARIUS_A_STAR_DEF } from '../data/CatalogueData';
 
 describe('Sagittarius A* Relativistic Physics and Telemetry Suite', () => {
-  it('1. Authoritative physical parameters match GRAVITY Collaboration (2021) within published tolerances', () => {
+  it('1. Authoritative physical parameters match GRAVITY Collaboration (2022) within published tolerances', () => {
     // Mass: 4.297 ± 0.012 × 10^6 M_sun
     expect(SAGITTARIUS_A_STAR_PHYSICAL.massSolarMasses).toBeCloseTo(4.297e6, -3);
     expect(SAGITTARIUS_A_STAR_PHYSICAL.massKg).toBeGreaterThan(8.5e36);

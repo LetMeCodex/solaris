@@ -359,16 +359,17 @@ export class TexturePipeline {
   }
 
   /**
-   * Deep photographic ESA Gaia DR3 Milky Way panorama
+   * ESA/Gaia/DPAC all-sky map (Gaia EDR3), equirectangular in galactic coordinates
    */
   public getMilkyWayTexture(): THREE.Texture {
-    return this.loadTexture('/textures/gaia_sky.jpg', true);
+    return this.loadTexture('/textures/gaia_sky.webp', true);
   }
 
   /**
-   * High-definition NASA/ESO master face-on Milky Way galactic disk texture
+   * Face-on Milky Way disk artwork (NASA/JPL-Caltech/ESO/R. Hurt), with alpha.
+   * Only requested once the galaxy view is reached (see MilkyWayGalaxy).
    */
   public getMilkyWayDiskTexture(): THREE.Texture {
-    return this.loadTexture('/textures/milky_way_disk.png', true);
+    return this.loadTexture('/textures/milky_way_disk.webp', true);
   }
 }

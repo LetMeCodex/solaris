@@ -1,5 +1,6 @@
 import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 import { CelestialBodyDefinition } from '../types/catalogue';
+import { explorationDistanceFromAU, explorationRadius } from './ExplorationScale';
 
 export type ScaleMode = 'exploration' | 'scientific';
 
@@ -7,7 +8,8 @@ export class RenderSpaceTransform {
   // Current active mode
   public mode: ScaleMode = 'exploration';
 
-  // Linear scale for 1:1 Scientific Mode: 1 Three.js unit = 1,000,000 km
+  // "True distances" (scientific) mode: linear distances, 1 Three.js unit = 1,000,000 km.
+  // Globe radii are NOT to scale in this mode (×4, minimum 0.015 units) — see getVisualRadius.
   public static readonly SCIENTIFIC_KM_PER_UNIT = 1000000.0;
   public static readonly AU_KM = 149597870.7;
 
@@ -24,7 +26,7 @@ export class RenderSpaceTransform {
     body?: CelestialBodyDefinition
   ): [number, number, number] {
     if (this.mode === 'scientific') {
-      // 1:1 Scientific Linear Scale
+      // Linear (true-distance) scale
       const scale = 1.0 / RenderSpaceTransform.SCIENTIFIC_KM_PER_UNIT;
       const scaledEcliptic: [number, number, number] = [
         physicalKm[0] * scale,
@@ -46,10 +48,9 @@ export class RenderSpaceTransform {
       return [0, 0, 0];
     }
 
-    // Distance in AU
+    // Distance in AU, compressed with the shared exploration scale: 50 + 65 · AU^0.58
     const rAU = rKm / RenderSpaceTransform.AU_KM;
-    // Calibrated power scaling: 50 + AU^0.58 * 65
-    const visualDistance = 50.0 + Math.pow(rAU, 0.58) * 65.0;
+    const visualDistance = explorationDistanceFromAU(rAU);
 
     // Unit direction in Ecliptic plane
     const dirX = physicalKm[0] / rKm;
@@ -70,12 +71,12 @@ export class RenderSpaceTransform {
    */
   public toMoonRenderPosition(
     moonRelPhysicalKm: [number, number, number],
-    _moonDef: CelestialBodyDefinition,
+    moonDef: CelestialBodyDefinition,
     parentRenderPos: [number, number, number],
     parentDef: CelestialBodyDefinition
   ): [number, number, number] {
     if (this.mode === 'scientific') {
-      // Linear 1:1 addition
+      // Linear true-distance offset from the parent
       const scale = 1.0 / RenderSpaceTransform.SCIENTIFIC_KM_PER_UNIT;
       const scaledEcliptic: [number, number, number] = [
         moonRelPhysicalKm[0] * scale,
@@ -83,6 +84,16 @@ export class RenderSpaceTransform {
         moonRelPhysicalKm[2] * scale,
       ];
       const relThree = CoordinateFrames.eclipticToThree(scaledEcliptic);
+      // Globes are enlarged 4× in this mode, which would swallow very close moons (Phobos orbits at
+      // 2.8 Mars radii). Push such moons just outside the enlarged parent, keeping their direction.
+      const relLen = Math.hypot(relThree[0], relThree[1], relThree[2]);
+      const minLen = this.getVisualRadius(parentDef) * 1.25 + this.getVisualRadius(moonDef);
+      if (relLen > 0 && relLen < minLen) {
+        const k = minLen / relLen;
+        relThree[0] *= k;
+        relThree[1] *= k;
+        relThree[2] *= k;
+      }
       return [
         parentRenderPos[0] + relThree[0],
         parentRenderPos[1] + relThree[1],
@@ -125,49 +136,11 @@ export class RenderSpaceTransform {
   public getVisualRadius(body: CelestialBodyDefinition): number {
     if (this.mode === 'scientific') {
       // Physical radius in units (e.g. Earth: 6371 km -> 0.006371 units)
-      // Clamped to a minimal visible threshold (0.015 units) so planets and moons don't completely vanish in 1:1 mode
+      // Clamped to a minimal visible threshold (0.015 units) so planets and moons stay visible at true distances
       const rawRadiusUnits = body.physical.meanRadiusKm / RenderSpaceTransform.SCIENTIFIC_KM_PER_UNIT;
       return Math.max(0.015, rawRadiusUnits * 4.0);
     }
 
-    // Exploration Mode: NASA dimension-grounded proportional scaling
-    if (body.category === 'star') return 48.0;
-
-    switch (body.name) {
-      case 'Jupiter': return 26.90; // 11.2x Earth
-      case 'Saturn':  return 22.68; // 9.46x Earth
-      case 'Uranus':  return 9.62;  // 4.01x Earth
-      case 'Neptune': return 9.32;  // 3.88x Earth
-      case 'Earth':   return 2.40;  // Terrestrial baseline
-      case 'Venus':   return 2.28;  // 0.95x Earth
-      case 'Mars':    return 1.28;  // 0.53x Earth
-      case 'Mercury': return 0.92;  // 0.38x Earth
-      case 'Pluto':   return 0.45;  // 0.19x Earth
-      default:
-        break;
-    }
-
-    if (body.category === 'moon') {
-      const km = body.physical.meanRadiusKm;
-      if (km < 100) return 0.18;
-      if (km < 500) return 0.32;
-      if (km < 1200) return 0.48;
-      if (km < 2000) return 0.65; // Europa (0.59), Moon (0.65), Io (0.69)
-      return 0.95; // Ganymede (0.99), Titan (0.97), Callisto (0.91)
-    }
-
-    if (body.category === 'dwarf_planet') {
-      return 0.45;
-    }
-
-    if (body.category === 'asteroid') {
-      const km = body.physical.meanRadiusKm;
-      if (km < 10) return 0.18;
-      if (km < 100) return 0.25;
-      return 0.38; // Ceres, Vesta, Pallas, Hygiea
-    }
-
-    // Proportional fallback from physical radius
-    return Math.max(0.18, (body.physical.meanRadiusKm / 6371.0) * 2.40);
+    return explorationRadius(body);
   }
 }

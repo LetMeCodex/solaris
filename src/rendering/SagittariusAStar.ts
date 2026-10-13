@@ -25,7 +25,8 @@ export const DEFAULT_SGR_A_CONFIG: SagittariusAStarConfig = {
  * 4. NASA Black Hole Anatomy (Accretion disk, Event horizon shadow, Photon sphere, Relativistic Jet, ISCO).
  * 
  * Features:
- * - General Relativistic Ray-Marching Shader with numerical null-geodesic bending.
+ * - Ray-marching shader with an approximate light-bending term (a heuristic deflection that
+ *   grows towards the photon sphere; not an integration of Schwarzschild null geodesics).
  * - Pitch-black Event Horizon Shadow (b <= b_crit = 3*sqrt(3)/2 * r_s).
  * - Multi-octave Keplerian fibrous streamlines & turbulent MRI reconnection flares.
  * - Volumetric accretion disk with flared scale height H(r) slicing across front of the shadow.
@@ -74,7 +75,7 @@ export class SagittariusAStar {
   }
 
   /**
-   * 1. Relativistic Ray-Marching Null-Geodesic Bounding Mesh
+   * 1. Ray-marched bounding mesh with approximate gravitational lensing
    */
   private createRelativisticRayMarchMesh(): THREE.Mesh {
     const geo = new THREE.SphereGeometry(this.config.boundingRadius, 64, 48);

@@ -19,7 +19,7 @@ describe('RenderSpaceTransform — Physical/Render State Strict Separation', () 
     transform.mode = 'exploration';
     const renderPosExploration = transform.toRenderPosition(physicalStateBefore.positionKm, mars);
 
-    // Toggle to Scientific 1:1 Mode
+    // Toggle to true-distance (scientific) mode
     transform.mode = 'scientific';
     const renderPosScientific = transform.toRenderPosition(physicalStateBefore.positionKm, mars);
 

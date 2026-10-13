@@ -1,4 +1,11 @@
 import * as THREE from 'three';
+import { RenderSpaceTransform } from '../rendering/RenderSpaceTransform';
+import { explorationDistanceFromAU, auFromExplorationDistance } from '../rendering/ExplorationScale';
+import { Starfield } from '../rendering/Starfield';
+import { GALAXY_UNITS_PER_KPC } from '../rendering/MilkyWayGalaxy';
+import { DEFAULT_SGR_A_CONFIG } from '../rendering/SagittariusAStar';
+import { SAGITTARIUS_A_STAR_DATA } from '../data/SagittariusAStarData';
+import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 
 export type CameraShotMode =
   | 'cinematic_observation'
@@ -168,6 +175,9 @@ export class CameraRig {
   private lastRadius: number = 680;
   private zoomRate: number = 0;
   private lastUpdateTime: number = performance.now();
+  private hasMotionSample: boolean = false;
+  private motionBasis: 'absolute' | 'relative' = 'relative';
+  private tmpRelPos: THREE.Vector3 = new THREE.Vector3();
 
   // Smooth spherical coordinates (radius = observer distance from orbit pivot)
   private spherical: THREE.Spherical = new THREE.Spherical(680, Math.PI * 0.30, Math.PI * 0.25);
@@ -181,6 +191,10 @@ export class CameraRig {
   public focusedObject: THREE.Object3D | null = null;
   public focusDistance: number = 30;
   public focusedRadius: number = 2.8;
+  /** Physical radius (km) of the focused body, used to convert close-up distances to km. */
+  public focusedPhysicalRadiusKm: number | null = null;
+  /** Which render scale the scene is using, for converting render units to physical distances. */
+  public distanceModel: 'exploration' | 'scientific' = 'exploration';
 
   // Transition state
   private transition: CameraTransition | null = null;
@@ -365,6 +379,9 @@ export class CameraRig {
       this.camera.far = Math.max(160000, curRadius * 30);
       this.camera.updateProjectionMatrix();
 
+      // During a flight the camera genuinely travels: sample absolute motion.
+      this.trackMotion(this.tmpRelPos.copy(this.camera.position), curRadius, 'absolute');
+
       if (progress >= 1.0) {
         if (this.transition.onComplete) this.transition.onComplete();
         this.spherical.set(curRadius, curPhi, curTheta);
@@ -451,15 +468,29 @@ export class CameraRig {
     this.camera.far = Math.max(250000, distToCenter * 35);
     this.camera.updateProjectionMatrix();
 
-    // Track frame velocity and zoom rate for travel particles and HUD telemetry
+    // While tracking a body, measure motion relative to the orbit pivot: simply following a planet
+    // along its orbit is not "travel" and must not trigger speed streaks.
+    this.trackMotion(this.tmpRelPos.subVectors(this.camera.position, this.orbitPivot), this.spherical.radius, 'relative');
+  }
+
+  /** Update velocity / zoom-rate telemetry from a position sample (absolute or pivot-relative). */
+  private trackMotion(samplePos: THREE.Vector3, radius: number, basis: 'absolute' | 'relative'): void {
     const now = performance.now();
     const dt = Math.max(0.001, (now - this.lastUpdateTime) * 0.001);
-    this.currentVelocity.subVectors(this.camera.position, this.lastCameraPos).divideScalar(dt);
-    if (this.lastRadius > 0.001) {
-      this.zoomRate = (Math.log(this.spherical.radius) - Math.log(this.lastRadius)) / dt;
+    // Switching between absolute and pivot-relative sampling would produce a fake velocity spike
+    if (basis !== this.motionBasis) {
+      this.motionBasis = basis;
+      this.hasMotionSample = false;
     }
-    this.lastCameraPos.copy(this.camera.position);
-    this.lastRadius = this.spherical.radius;
+    if (this.hasMotionSample) {
+      this.currentVelocity.subVectors(samplePos, this.lastCameraPos).divideScalar(dt);
+      if (this.lastRadius > 0.001) {
+        this.zoomRate = (Math.log(radius) - Math.log(this.lastRadius)) / dt;
+      }
+    }
+    this.hasMotionSample = true;
+    this.lastCameraPos.copy(samplePos);
+    this.lastRadius = radius;
     this.lastUpdateTime = now;
   }
 
@@ -649,17 +680,24 @@ export class CameraRig {
     fov: number = 45.0,
     shotMode: CameraShotMode = 'deep_space_overview',
     durationMs: number = 1600,
-    preferredPhi?: number
+    preferredPhi?: number,
+    preferredDirection?: THREE.Vector3
   ): void {
     if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       durationMs = 150;
     }
 
-    const curTheta = this.targetSpherical.theta;
-    const curPhi = preferredPhi !== undefined
-      ? preferredPhi
-      : Math.max(0.08, Math.min(Math.PI * 0.45, this.targetSpherical.phi));
-    const targetSpherical = new THREE.Spherical(distance, curPhi, curTheta);
+    let targetSpherical: THREE.Spherical;
+    if (preferredDirection) {
+      targetSpherical = new THREE.Spherical().setFromVector3(preferredDirection.clone().normalize().multiplyScalar(distance));
+      targetSpherical.phi = Math.max(0.04, Math.min(Math.PI - 0.04, targetSpherical.phi));
+    } else {
+      const curTheta = this.targetSpherical.theta;
+      const curPhi = preferredPhi !== undefined
+        ? preferredPhi
+        : Math.max(0.08, Math.min(Math.PI * 0.45, this.targetSpherical.phi));
+      targetSpherical = new THREE.Spherical(distance, curPhi, curTheta);
+    }
 
     this.shotMode = shotMode;
     this.targetPanOffset.set(0, 0, 0);
@@ -714,6 +752,7 @@ export class CameraRig {
     let targetShot: CameraShotMode = 'scientific_overview';
     let targetFov = 45.0;
     let targetPhi: number | undefined = undefined;
+    let targetDirection: THREE.Vector3 | undefined = undefined;
 
     switch (domain) {
       case 'planetary':
@@ -743,12 +782,19 @@ export class CameraRig {
         targetDist = 52000.0;
         targetShot = 'deep_space_overview';
         targetFov = 48.0;
-        // Elevated perspective looking down onto the sweeping spiral disk
-        targetPhi = Math.PI * 0.24;
+        {
+          // The galactic plane is inclined ~60° to the ecliptic, so an ecliptic-based elevation would
+          // show the disk nearly edge-on. Look down from 35° off the north galactic pole, from the
+          // anti-centre side, so the spiral disk spreads out beyond the Sun.
+          const gal = CoordinateFrames.galacticBasisThree();
+          const tilt = THREE.MathUtils.degToRad(35.0);
+          targetDirection = new THREE.Vector3(...gal.z).multiplyScalar(Math.cos(tilt))
+            .addScaledVector(new THREE.Vector3(...gal.x), -Math.sin(tilt));
+        }
         break;
     }
 
-    this.transitionToDistance(targetDist, targetFov, targetShot, durationMs, targetPhi);
+    this.transitionToDistance(targetDist, targetFov, targetShot, durationMs, targetPhi, targetDirection);
   }
 
   public getVelocity(): THREE.Vector3 {
@@ -769,31 +815,45 @@ export class CameraRig {
     domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic';
   } {
     const d = this.spherical.radius;
+    const fmtKm = (km: number) => `${Math.round(km).toLocaleString('en-US')} KM`;
 
     if (this.focusedObject && (this.focusedObject.name.includes('sagittarius') || this.focusedObject.name === 'Sagittarius A*')) {
-      const rsMulti = (d / 20.0).toFixed(1);
-      const km = Math.round(d * 634520);
-      return { distance: d, formatted: `${rsMulti} r_s (${km.toLocaleString()} KM)`, domain: 'planetary' };
+      // Black-hole close-ups are drawn in units of the Schwarzschild radius
+      const rs = d / DEFAULT_SGR_A_CONFIG.schwarzschildRadius;
+      const km = rs * SAGITTARIUS_A_STAR_DATA.derivedParameters.schwarzschildRadiusKm;
+      return { distance: d, formatted: `${rs.toFixed(1)} r_s (${fmtKm(km)})`, domain: 'planetary' };
     }
 
-    if (d < 30.0) {
-      const km = Math.round(d * 4200.0);
-      return { distance: d, formatted: `${km.toLocaleString()} KM`, domain: 'planetary' };
-    }
-    if (d < 380.0) {
-      const au = (d / 28.0).toFixed(2);
-      return { distance: d, formatted: `${au} AU`, domain: 'inner_system' };
+    // Each zoom tier is drawn at its own (stylised) scale; convert with the scale actually rendered.
+    // While a body is in focus (before the pivot hands off to the Sun at 320 units), distances are
+    // measured from that body and converted with its own globe scale.
+    const focusedOnBody = this.focusedObject !== null && this.focusedPhysicalRadiusKm !== null && d < 320.0;
+    if (d < 30.0 || focusedOnBody) {
+      const kmPerUnit = this.distanceModel === 'scientific'
+        ? RenderSpaceTransform.SCIENTIFIC_KM_PER_UNIT
+        : (this.focusedPhysicalRadiusKm && this.focusedRadius > 0
+          ? this.focusedPhysicalRadiusKm / this.focusedRadius
+          : 6371.0 / 2.4); // Earth-based fallback
+      return { distance: d, formatted: fmtKm(d * kmPerUnit), domain: 'planetary' };
     }
     if (d < 3500.0) {
-      const au = (d / 28.0).toFixed(1);
-      return { distance: d, formatted: `${au} AU`, domain: 'outer_system' };
+      let au: number;
+      if (this.distanceModel === 'scientific') {
+        au = (d * RenderSpaceTransform.SCIENTIFIC_KM_PER_UNIT) / RenderSpaceTransform.AU_KM;
+      } else {
+        // Inverse of the exploration distance law, linear inside Earth's orbit (1 AU ↔ 115 units)
+        const earthUnits = explorationDistanceFromAU(1.0);
+        au = d < earthUnits ? d / earthUnits : auFromExplorationDistance(d);
+      }
+      const domain = d < 380.0 ? 'inner_system' : 'outer_system';
+      return { distance: d, formatted: `${au.toFixed(au < 10 ? 2 : 1)} AU`, domain };
     }
     if (d < 25000.0) {
-      const ly = (d / 380.0).toFixed(2);
-      return { distance: d, formatted: `${ly} LY`, domain: 'interstellar' };
+      // Local-neighbourhood star layer: 700 + 38 units per parsec
+      const pc = Math.max(0, d - Starfield.LOCAL_STAR_OFFSET) / Starfield.LOCAL_UNITS_PER_PC;
+      return { distance: d, formatted: `${(pc * 3.26156).toFixed(1)} LY`, domain: 'interstellar' };
     }
-    const kpc = (d / 6200.0).toFixed(1);
-    return { distance: d, formatted: `${kpc} KPC`, domain: 'galactic' };
+    return { distance: d, formatted: `${(d / GALAXY_UNITS_PER_KPC).toFixed(1)} KPC`, domain: 'galactic' };
   }
 
   /**

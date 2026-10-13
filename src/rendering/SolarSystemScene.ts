@@ -9,6 +9,7 @@ import { RenderSpaceTransform, ScaleMode } from './RenderSpaceTransform';
 import { OrbitalTrails } from './OrbitalTrails';
 import { Starfield } from './Starfield';
 import { AsteroidBelt } from './AsteroidBelt';
+import { BodyFrame, getBodyFrame, getSynchronousFrame } from '../astronomy/BodyOrientation';
 
 export interface TelemetryData {
   speedKmS: number;
@@ -44,6 +45,13 @@ export class SolarSystemScene {
   private orbitLinesGroup: THREE.Group = new THREE.Group();
   private moonOrbitLines: Map<string, THREE.Line> = new Map();
   private latestPhysicalStates: Map<string, StateVector> = new Map();
+  private orbitLinesEpochDays: number = 0;
+
+  // Scratch objects reused every frame
+  private tmpMatrix = new THREE.Matrix4();
+  private tmpX = new THREE.Vector3();
+  private tmpY = new THREE.Vector3();
+  private tmpZ = new THREE.Vector3();
 
   // GPU Background & Asteroid Belt
   public starfield: Starfield;
@@ -59,7 +67,8 @@ export class SolarSystemScene {
   // Selection
   public selectedBody: CelestialBodyDefinition;
   private onTelemetryUpdate?: (telemetry: TelemetryData) => void;
-  private telemetryThrottleCounter: number = 0;
+  private lastTelemetryTime: number = 0;
+  private static readonly TELEMETRY_INTERVAL_MS = 100;
 
   constructor(container: HTMLElement, onTelemetryUpdate?: (telemetry: TelemetryData) => void) {
     this.container = container;
@@ -111,10 +120,12 @@ export class SolarSystemScene {
     this.orbitLinesGroup.visible = false; // Restrained cinematic aesthetic by default
     this.scene.add(this.orbitLinesGroup);
     this.setupBodies();
+    this.orbitLinesEpochDays = this.clock.getJulianDateTDB() - SimulationClock.J2000_JD;
     this.rebuildOrbitLines();
 
-    // Initial propagation & matrix update so meshes are placed before initial focus
-    this.propagateAll(0);
+    // Initial propagation at the clock's current time so the opening camera vantage is computed
+    // against where the bodies actually are (not where they were at J2000)
+    this.propagateAll(this.clock.getJulianDateTDB() - SimulationClock.J2000_JD);
     this.scene.updateMatrixWorld(true);
     this.selectBody('Mercury', 1800);
 
@@ -163,7 +174,7 @@ export class SolarSystemScene {
     // 1. Heliocentric orbit lines (Planets, Dwarf Planets, Asteroids)
     for (const def of bodies) {
       if (def.category !== 'moon' && def.orderFromSun > 0) {
-        const line = OrbitalTrails.createOrbitLine(def, this.transform);
+        const line = OrbitalTrails.createOrbitLine(def, this.transform, this.orbitLinesEpochDays);
         if (line) {
           this.orbitLinesGroup.add(line);
         }
@@ -175,7 +186,7 @@ export class SolarSystemScene {
       if (def.category === 'moon' && def.parentId) {
         const parentDef = CatalogueManager.getParent(def);
         if (parentDef) {
-          const line = OrbitalTrails.createMoonOrbitLine(def, parentDef, this.transform);
+          const line = OrbitalTrails.createMoonOrbitLine(def, parentDef, this.transform, this.orbitLinesEpochDays);
           if (line) {
             this.orbitLinesGroup.add(line);
             this.moonOrbitLines.set(def.name, line);
@@ -188,6 +199,7 @@ export class SolarSystemScene {
   public setScaleMode(mode: ScaleMode): void {
     if (this.transform.mode === mode) return;
     this.transform.mode = mode;
+    this.cameraRig.distanceModel = mode;
 
     // Update planetary mesh visual radii according to scale mode
     this.planetBundles.forEach((bundle) => {
@@ -372,11 +384,13 @@ export class SolarSystemScene {
 
     this.selectedBody = bundle.definition;
     this.cameraRig.focusCinematic(bundle.bodyGroup, bundle.visualRadius, bundle.definition.name, durationMs);
+    this.cameraRig.focusedPhysicalRadiusKm = bundle.definition.physical.meanRadiusKm;
   }
 
   public resetView(): void {
     this.selectedBody = CatalogueManager.getBody('Sun') || CatalogueManager.getAllBodies()[0];
     this.cameraRig.resetToOverview();
+    this.cameraRig.focusedPhysicalRadiusKm = this.selectedBody.physical.meanRadiusKm;
   }
 
   private onResize = (): void => {
@@ -387,9 +401,34 @@ export class SolarSystemScene {
     this.cameraRig.handleResize(w, h);
   };
 
+  /** Orient a body group to a body-fixed frame and spin its surface layers by W. */
+  private applyBodyFrame(bundle: PlanetMeshBundle, frame: BodyFrame, cloudDriftRad: number = 0): void {
+    this.tmpMatrix.makeBasis(
+      this.tmpX.set(frame.xAxis[0], frame.xAxis[1], frame.xAxis[2]),
+      this.tmpY.set(frame.yAxis[0], frame.yAxis[1], frame.yAxis[2]),
+      this.tmpZ.set(frame.zAxis[0], frame.zAxis[1], frame.zAxis[2])
+    );
+    bundle.bodyGroup.quaternion.setFromRotationMatrix(this.tmpMatrix);
+    bundle.surfaceMesh.rotation.y = frame.spinRad;
+    if (bundle.nightMesh) bundle.nightMesh.rotation.y = frame.spinRad;
+    if (bundle.cloudMesh) bundle.cloudMesh.rotation.y = frame.spinRad + cloudDriftRad;
+  }
+
+  /**
+   * Fallback orientation for bodies without a published pole: tilt the spin axis away from
+   * ecliptic north by the catalogue obliquity and spin with the catalogue rotation period.
+   */
+  private applyFallbackSpin(bundle: PlanetMeshBundle, days: number): void {
+    const def = bundle.definition;
+    bundle.bodyGroup.rotation.set(0, 0, THREE.MathUtils.degToRad(def.physical.axialTiltDeg || 0));
+    const periodHours = def.physical.rotationPeriodHours || def.orbit.orbitalPeriodDays * 24.0 || 24.0;
+    bundle.surfaceMesh.rotation.y = ((days * 24.0) / periodHours) * Math.PI * 2;
+  }
+
   public propagateAll(elapsedDaysSinceJ2000: number): void {
     const bodies = CatalogueManager.getAllBodies();
     const parentPositionsRender: Map<string, [number, number, number]> = new Map();
+    const d = elapsedDaysSinceJ2000;
 
     // Heliocentric bodies (Sun, Planets, Dwarf Planets, Asteroids)
     for (const body of bodies) {
@@ -402,40 +441,33 @@ export class SolarSystemScene {
         // Sun sits at center (0, 0, 0)
         bundle.bodyGroup.position.set(0, 0, 0);
         parentPositionsRender.set(body.id, [0, 0, 0]);
-        const spinAngle = (elapsedDaysSinceJ2000 * 24.0 / 609.12) * Math.PI * 2;
-        bundle.surfaceMesh.rotation.y = spinAngle;
-        continue;
-      }
+      } else {
+        // Keplerian physical state propagation
+        const state = KeplerSolver.propagate(body.orbit, d);
+        this.latestPhysicalStates.set(body.name, state);
 
-      // High-precision Keplerian physical state propagation
-      const state = KeplerSolver.propagate(body.orbit, elapsedDaysSinceJ2000);
-      this.latestPhysicalStates.set(body.name, state);
+        // Transform physical position (km) to active render scale position
+        const renderPos = this.transform.toRenderPosition(state.positionKm, body);
+        bundle.bodyGroup.position.set(renderPos[0], renderPos[1], renderPos[2]);
+        parentPositionsRender.set(body.id, renderPos);
 
-      // Transform physical position (km) to active render scale position
-      const renderPos = this.transform.toRenderPosition(state.positionKm, body);
-      bundle.bodyGroup.position.set(renderPos[0], renderPos[1], renderPos[2]);
-      parentPositionsRender.set(body.id, renderPos);
-
-      // Diurnal sidereal rotation
-      const periodHours = body.physical.rotationPeriodHours || 24.0;
-      const spinAngle = (elapsedDaysSinceJ2000 * 24.0 / periodHours) * Math.PI * 2;
-      bundle.surfaceMesh.rotation.y = spinAngle;
-      if (bundle.nightMesh) {
-        bundle.nightMesh.rotation.y = spinAngle;
-      }
-
-      // Independent Earth cloud drift
-      if (bundle.cloudMesh) {
-        bundle.cloudMesh.rotation.y = spinAngle * 1.05;
-      }
-
-      // Update Saturn planetary shadow on rings
-      if (body.name === 'Saturn' && bundle.ringMesh) {
-        const ringMat = bundle.ringMesh.material as THREE.ShaderMaterial;
-        if (ringMat.uniforms && ringMat.uniforms.saturnCenter) {
-          ringMat.uniforms.saturnCenter.value.set(renderPos[0], renderPos[1], renderPos[2]);
-          ringMat.uniforms.saturnRadius.value = bundle.visualRadius;
+        // Update Saturn planetary shadow on rings
+        if (body.name === 'Saturn' && bundle.ringMesh) {
+          const ringMat = bundle.ringMesh.material as THREE.ShaderMaterial;
+          if (ringMat.uniforms && ringMat.uniforms.saturnCenter) {
+            ringMat.uniforms.saturnCenter.value.set(renderPos[0], renderPos[1], renderPos[2]);
+            ringMat.uniforms.saturnRadius.value = bundle.visualRadius;
+          }
         }
+      }
+
+      // IAU pole + prime meridian orientation (falls back to obliquity + period)
+      const frame = getBodyFrame(body.name, d);
+      if (frame) {
+        // Earth's clouds drift slowly relative to the surface (~1 revolution per 40 days)
+        this.applyBodyFrame(bundle, frame, body.name === 'Earth' ? (d / 40.0) * Math.PI * 2 : 0);
+      } else {
+        this.applyFallbackSpin(bundle, d);
       }
     }
 
@@ -458,7 +490,7 @@ export class SolarSystemScene {
         (moon.physical.massKg ? moon.physical.massKg * 6.6743e-20 : 0);
       const mu = (parentGm !== undefined) ? (parentGm + moonGm) : KeplerSolver.GM_SUN;
 
-      const moonRelState = KeplerSolver.propagate(moon.orbit, elapsedDaysSinceJ2000, mu);
+      const moonRelState = KeplerSolver.propagate(moon.orbit, d, mu);
 
       const parentPosKm = parentState?.positionKm || [0, 0, 0];
       const parentVelKmS = parentState?.velocityKmPerSec || [0, 0, 0];
@@ -497,13 +529,23 @@ export class SolarSystemScene {
         moonOrbitLine.position.set(parentRenderPos[0], parentRenderPos[1], parentRenderPos[2]);
       }
 
-      const periodHours = moon.physical.rotationPeriodHours || moon.orbit.orbitalPeriodDays * 24.0;
-      const spinAngle = (elapsedDaysSinceJ2000 * 24.0 / periodHours) * Math.PI * 2;
-      moonBundle.surfaceMesh.rotation.y = spinAngle;
+      // Tidally locked satellites keep longitude 0 facing the parent; Hyperion tumbles chaotically.
+      if (moon.name === 'Hyperion') {
+        this.applyFallbackSpin(moonBundle, d);
+      } else {
+        this.applyBodyFrame(moonBundle, getSynchronousFrame(moonRelState.positionKm, moonRelState.velocityKmPerSec));
+      }
     }
 
     // Instanced Asteroid Belt
-    this.asteroidBelt.updatePositions(elapsedDaysSinceJ2000);
+    this.asteroidBelt.updatePositions(d);
+
+    // Osculating orbits drift slowly (secular rates, precession): refresh the guide lines when the
+    // simulated date has moved far enough for the change to be visible.
+    if (Math.abs(d - this.orbitLinesEpochDays) > 365.0) {
+      this.orbitLinesEpochDays = d;
+      this.rebuildOrbitLines();
+    }
   }
 
   private animate = (): void => {
@@ -515,8 +557,8 @@ export class SolarSystemScene {
     this.lastFrameTime = now;
     this.clock.update(now);
 
-    const currentJd = this.clock.getJulianDate();
-    const elapsedDaysSinceJ2000 = currentJd - SimulationClock.J2000_JD;
+    // Ephemerides take TDB; the clock keeps UTC
+    const elapsedDaysSinceJ2000 = this.clock.getJulianDateTDB() - SimulationClock.J2000_JD;
 
     this.propagateAll(elapsedDaysSinceJ2000);
 
@@ -559,8 +601,10 @@ export class SolarSystemScene {
 
     this.renderer.render(this.scene, this.cameraRig.camera);
 
-    this.telemetryThrottleCounter++;
-    if (this.telemetryThrottleCounter % 3 === 0 && this.onTelemetryUpdate) {
+    // React only needs ~10 updates/s for the HUD readouts; re-rendering the HUD every few frames
+    // at 120–144 Hz is wasted work
+    if (this.onTelemetryUpdate && now - this.lastTelemetryTime >= SolarSystemScene.TELEMETRY_INTERVAL_MS) {
+      this.lastTelemetryTime = now;
       this.dispatchTelemetry();
     }
   };

@@ -267,7 +267,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   }
 
   return (
-    <div className="absolute inset-0 pointer-events-none select-none flex flex-col justify-between p-6 z-20 font-sans text-white/90 overflow-hidden">
+    <div className="absolute inset-0 pointer-events-none select-none flex flex-col justify-between p-3 md:p-6 z-20 font-sans text-white/90 overflow-hidden">
       
       {/* ========================================================
           1. TOP CENTER SUBTLE STELLAR CORONA HIGHLIGHT
@@ -277,7 +277,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
       {/* ========================================================
           2. TOP BAR CONTROLS & EPHEMERIS READOUT
           ======================================================== */}
-      <header className="flex justify-between items-start pointer-events-auto w-full z-30">
+      <header className="flex flex-col md:flex-row md:justify-between items-start gap-2 pointer-events-auto w-full z-30">
         {/* Top-Left: SOLARIS Brand & Live Ephemeris Time */}
         <div
           className={`flex flex-col gap-1.5 transition-all duration-1000 ${
@@ -288,6 +288,15 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           <div
             className="flex items-baseline gap-3 relative group cursor-pointer"
             onClick={onResetView}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onResetView();
+              }
+            }}
+            role="button"
+            tabIndex={0}
+            aria-label="SOLARIS — reset to system overview"
             title="Reset to Solaris Overview"
           >
             {/* Luminous stellar aura behind title */}
@@ -296,13 +305,13 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             <h1 className="relative text-xl md:text-2xl uppercase tracking-[0.52em] font-extralight drop-shadow-md select-none animate-solaris-shimmer">
               SOLARIS
             </h1>
-            <span className="text-[9px] uppercase tracking-[0.32em] text-white/35 font-light hidden sm:inline">
+            <span className="text-[9px] uppercase tracking-[0.32em] text-white/35 font-light hidden 2xl:inline">
               Solar System Explorer
             </span>
           </div>
 
           {/* Ephemeris Time Readout with Image 1's Typography */}
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] font-light text-white/60 bg-black/40 backdrop-blur-md px-3.5 py-1 rounded-full border border-white/10 shadow-lg w-fit mt-0.5">
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] font-light text-white/60 bg-black/40 backdrop-blur-md px-3.5 py-1 rounded-full border border-white/10 shadow-lg w-fit max-w-full mt-0.5 flex-wrap md:flex-nowrap md:whitespace-nowrap">
             <span
               className={`w-1.5 h-1.5 rounded-full ${
                 isPaused ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'
@@ -393,7 +402,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         </div>
 
         {/* Top-Right: Astronomical Layer Toggles & Catalogue Trigger */}
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-start md:justify-end gap-2 min-w-0">
           {/* Layer toggles */}
           <div className="flex items-center bg-black/40 backdrop-blur-md border border-white/10 rounded-full p-0.5 text-[10px] uppercase tracking-[0.2em] font-light shadow-lg">
             <button
@@ -402,6 +411,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 onToggleOrbits?.();
               }}
               title="Toggle Orbit Lines (O)"
+              aria-pressed={orbitsOn}
               className={`px-3 py-1 rounded-full transition-all duration-200 ${
                 orbitsOn
                   ? 'bg-white/15 text-white shadow-sm border border-white/20'
@@ -415,7 +425,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 e.stopPropagation();
                 onToggleConstellations?.();
               }}
-              title="Toggle IAU Constellations (C)"
+              title="Toggle constellation figures (C)"
+              aria-pressed={constellationsOn}
               className={`px-3 py-1 rounded-full transition-all duration-200 ${
                 constellationsOn
                   ? 'bg-white/15 text-white shadow-sm border border-white/20'
@@ -430,6 +441,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 onToggleAsteroidBelt?.();
               }}
               title="Toggle Asteroid Belt (B)"
+              aria-pressed={asteroidBeltOn}
               className={`px-3 py-1 rounded-full transition-all duration-200 ${
                 asteroidBeltOn
                   ? 'bg-white/15 text-white shadow-sm border border-white/20'
@@ -447,6 +459,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 e.stopPropagation();
                 onSetScaleMode('exploration');
               }}
+              aria-pressed={scaleMode === 'exploration'}
+              title="Compressed distances and enlarged bodies for exploring"
               className={`px-3 py-1 rounded-full transition-all duration-200 ${
                 scaleMode === 'exploration'
                   ? 'bg-white/15 text-white shadow-sm border border-white/20'
@@ -460,13 +474,15 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 e.stopPropagation();
                 onSetScaleMode('scientific');
               }}
+              aria-pressed={scaleMode === 'scientific'}
+              title="Orbital distances to true scale (1 unit = 1,000,000 km); globes are enlarged 4× (minimum 15,000 km) so they stay visible"
               className={`px-3 py-1 rounded-full transition-all duration-200 ${
                 scaleMode === 'scientific'
                   ? 'bg-white/15 text-white shadow-sm border border-white/20'
                   : 'text-white/40 hover:text-white/80'
               }`}
             >
-              Scientific 1:1
+              True Distances
             </button>
           </div>
 
@@ -479,7 +495,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             className="flex items-center gap-1.5 px-3.5 py-1.5 bg-black/40 hover:bg-black/70 backdrop-blur-md border border-white/10 hover:border-white/20 rounded-full text-[10px] uppercase tracking-[0.2em] font-light text-white/80 transition shadow-lg"
           >
             <Search size={11} className="text-white/50" />
-            <span>Catalogue (42)</span>
+            <span>Catalogue ({allBodies.length})</span>
           </button>
 
           {/* System Overview Reset */}
@@ -502,6 +518,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               setIsHudVisible(false);
             }}
             title="Hide Interface (H)"
+            aria-label="Hide interface"
             className="p-2 bg-black/40 hover:bg-black/70 backdrop-blur-md border border-white/10 rounded-full text-white/40 hover:text-white transition shadow-lg"
           >
             <EyeOff size={12} />
@@ -513,7 +530,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           3. LEFT VERTICAL PLANETARY SELECTOR (MATCHING REFERENCE)
           ======================================================== */}
       <nav
-        className={`absolute left-8 top-1/2 -translate-y-1/2 flex flex-col gap-3 pointer-events-auto transition-all duration-1000 z-30 ${
+        className={`absolute left-8 top-1/2 -translate-y-1/2 hidden md:flex flex-col gap-3 [@media(max-height:720px)]:gap-1 [@media(max-height:720px)]:top-[calc(50%+28px)] [@media(max-height:560px)]:hidden pointer-events-auto transition-all duration-1000 z-30 ${
           introPhase >= 1 ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-8'
         }`}
       >
@@ -525,6 +542,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           return (
             <button
               key={planetName}
+              aria-current={isSelected ? 'true' : undefined}
+              aria-label={`Fly to ${planetName}`}
               onClick={(e) => {
                 e.stopPropagation();
                 if (planetName === 'Sagittarius A*') {
@@ -533,7 +552,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 onSelectPlanet(planetName);
                 handleRevealMonograph();
               }}
-              className="flex items-center gap-3.5 group text-left cursor-pointer transition-all duration-200 outline-none focus:outline-none"
+              className="flex items-center gap-3.5 group text-left cursor-pointer transition-all duration-200 outline-none focus-visible:ring-1 focus-visible:ring-white/60 rounded"
             >
               {/* Radio Indicator (14px circle with inner dot) */}
               <div
@@ -621,7 +640,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             </span>
 
             {/* Huge Title: MERCURY / EARTH / SATURN */}
-            <h2 className="text-5xl md:text-6xl lg:text-7xl font-extralight tracking-[0.36em] text-white uppercase drop-shadow-2xl my-1.5 transition-all duration-500">
+            <h2 className="text-3xl sm:text-5xl md:text-6xl lg:text-7xl font-extralight tracking-[0.2em] sm:tracking-[0.36em] text-white uppercase drop-shadow-2xl my-1.5 transition-all duration-500">
               {activeTargetName}
             </h2>
 
@@ -636,7 +655,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 e.stopPropagation();
                 setIsReadMoreOpen(true);
               }}
-              className="group mt-2.5 flex flex-col items-center cursor-pointer transition-all duration-300 outline-none focus:outline-none"
+              className="group mt-2.5 flex flex-col items-center cursor-pointer transition-all duration-300 outline-none focus-visible:ring-1 focus-visible:ring-white/60 rounded"
             >
               <span
                 className="text-xs uppercase tracking-[0.32em] font-light transition-colors duration-300"
@@ -679,7 +698,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           5. BOTTOM TIMELINE CONTROLLER & DATE CONTROLS
           ======================================================== */}
       <footer className="flex flex-col items-center gap-2 w-full pointer-events-auto z-30">
-        <div className="flex items-center gap-3 bg-black/40 backdrop-blur-md border border-white/10 rounded-full px-4 py-1 text-[10px] uppercase tracking-[0.2em] font-light shadow-xl">
+        <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 max-w-full bg-black/40 backdrop-blur-md border border-white/10 rounded-2xl md:rounded-full px-4 py-1 text-[10px] uppercase tracking-[0.2em] font-light shadow-xl">
           {/* Play/Pause */}
           <button
             onClick={(e) => {
@@ -688,6 +707,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             }}
             className="p-1 text-white/70 hover:text-white transition rounded-full"
             title="Space to toggle play"
+            aria-label={isPaused ? 'Play simulation' : 'Pause simulation'}
           >
             {isPaused ? <Play size={11} /> : <Pause size={11} />}
           </button>
@@ -699,6 +719,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               return (
                 <button
                   key={step.label}
+                  aria-pressed={active}
                   onClick={(e) => {
                     e.stopPropagation();
                     onSetTimeMultiplier(step.val);
@@ -742,6 +763,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 e.stopPropagation();
                 setIsDatePickerOpen(!isDatePickerOpen);
               }}
+              aria-label={`Jump to date (current ${dateInput})`}
+              aria-expanded={isDatePickerOpen}
               className="flex items-center gap-1 text-white/50 hover:text-white px-1.5 py-0.5 rounded transition"
             >
               <Calendar size={10} />
@@ -758,6 +781,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           >
             <input
               type="date"
+              aria-label="Simulation date (UTC)"
               value={dateInput}
               onFocus={() => setIsEditingDate(true)}
               onChange={(e) => {
@@ -777,6 +801,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               type="button"
               onClick={() => setIsDatePickerOpen(false)}
               className="p-1 text-white/40 hover:text-white"
+              aria-label="Close date picker"
             >
               <X size={12} />
             </button>
@@ -813,6 +838,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               <button
                 onClick={() => setIsReadMoreOpen(false)}
                 className="text-white/40 hover:text-white transition p-1.5 rounded-full hover:bg-white/10"
+                aria-label="Close details"
               >
                 <X size={18} />
               </button>
@@ -888,7 +914,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                     Relativistic Optical Phenomena:
                   </span>
                   <p>
-                    • <strong className="text-amber-200 font-normal">Event Horizon Shadow:</strong> Null-geodesic ray tracing confirms absolute photon capture for impact parameters b &lt; 2.598 r_s (3√3/2 r_s).
+                    • <strong className="text-amber-200 font-normal">Event Horizon Shadow:</strong> In the Schwarzschild metric every photon with impact parameter b Null-geodesic ray tracing confirms absolute photon capture for impact parameters b &lt; 2.598 r_s (3√3/2 r_s).lt; 3√3/2 r_s ≈ 2.598 r_s is captured.
                   </p>
                   <p>
                     • <strong className="text-amber-200 font-normal">Lensed Accretion Arches:</strong> Light emitted from the rear accretion disk loops over and under the black hole's gravitational potential well, projecting primary and secondary lensed arcs.
@@ -1031,15 +1057,30 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
             {/* Provenance Badge */}
             <div className="pt-3 border-t border-white/10 flex justify-between items-center text-[10px] font-light text-white/30 uppercase tracking-[0.2em]">
-              <span>NASA JPL SSD Horizons DE440</span>
+              <span>{fullTargetDef?.orbit.source ?? 'NASA JPL orbital elements'}</span>
               <span>Keplerian 2-Body Solver</span>
             </div>
+
+            {/* Third-party data & image credits (required by CC BY / CC BY-SA licences) */}
+            <p className="text-[10px] leading-relaxed font-light text-white/35">
+              Textures: Solar System Scope (CC BY 4.0) · Sky map: ESA/Gaia/DPAC (CC BY-SA 3.0 IGO) ·
+              Stars: ESA/Hipparcos (CC BY-NC 3.0 IGO) · Galaxy art: NASA/JPL-Caltech/ESO/R. Hurt (CC BY 4.0) ·
+              Orbits: NASA JPL.{' '}
+              <a
+                href="https://github.com/LetMeCodex/solaris/blob/main/ASSETS.md"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline hover:text-white/70"
+              >
+                Full credits
+              </a>
+            </p>
           </aside>
         </div>
       )}
 
       {/* ========================================================
-          7. FULL CELESTIAL CATALOGUE SLIDE-OVER DRAWER (42 BODIES)
+          7. FULL CELESTIAL CATALOGUE SLIDE-OVER DRAWER (42 BODIES + SGR A*)
           ======================================================== */}
       {isCatalogueOpen && (
         <div className="fixed inset-0 z-50 pointer-events-auto flex">
@@ -1058,12 +1099,13 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                   Astronomical Catalogue
                 </h3>
                 <span className="text-[10px] uppercase tracking-[0.2em] font-light text-white/40">
-                  42 bodies · NASA JPL DE440
+                  {allBodies.length} bodies · NASA JPL elements
                 </span>
               </div>
               <button
                 onClick={() => setIsCatalogueOpen(false)}
                 className="text-white/40 hover:text-white transition p-1.5 rounded-full hover:bg-white/5"
+                aria-label="Close catalogue"
               >
                 <X size={16} />
               </button>
@@ -1076,6 +1118,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 <input
                   type="text"
                   placeholder="FILTER BY NAME, CATEGORY..."
+                  aria-label="Filter catalogue by name or category"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-3 py-2 text-white placeholder-white/30 text-[11px] uppercase tracking-[0.15em] outline-none focus:border-white/30"
@@ -1088,6 +1131,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                   <button
                     key={tab}
                     onClick={() => setCatalogueFilter(tab)}
+                    aria-pressed={catalogueFilter === tab}
                     className={`py-1 rounded-lg text-center uppercase tracking-wider transition-all duration-200 ${
                       catalogueFilter === tab
                         ? 'bg-white/15 text-white font-normal border border-white/20'
@@ -1095,7 +1139,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                     }`}
                   >
                     {tab === 'all'
-                      ? 'All (42)'
+                      ? `All (${allBodies.length})`
                       : tab === 'planet'
                       ? 'Planets'
                       : tab === 'moon'

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { TexturePipeline } from './TexturePipeline';
 import { SagittariusAStar } from './SagittariusAStar';
+import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 
 export interface GalaxyConfig {
   radius: number;          // Outer radius of galactic disk in scene units (e.g. 28,000)
@@ -8,10 +9,20 @@ export interface GalaxyConfig {
   sunDistance: number;     // Distance of Sun from Galactic Center (e.g. 15,600, ~26,000 ly)
 }
 
+/**
+ * Galaxy-model scale. The disk artwork (NASA/JPL-Caltech/ESO, R. Hurt) shows the stellar disk out
+ * to ~16 kpc at 0.75 of the plane half-width (28,000 units), i.e. ~1,320 render units per kpc.
+ */
+export const GALAXY_UNITS_PER_KPC = 1320.0;
+/** Sun–Galactic Centre distance R0 = 8.277 kpc (GRAVITY Collaboration 2022). */
+export const SUN_GALACTOCENTRIC_KPC = 8.277;
+/** Sun's height above the galactic mid-plane, ~20.8 pc (Bennett & Bovy 2019). */
+export const SUN_HEIGHT_KPC = 0.0208;
+
 export const DEFAULT_GALAXY_CONFIG: GalaxyConfig = {
   radius: 28000,
   coreRadius: 4800,
-  sunDistance: 15600, // 26,000 ly scaled to ~56% of galaxy radius
+  sunDistance: SUN_GALACTOCENTRIC_KPC * GALAXY_UNITS_PER_KPC, // ≈ 10,926 units
 };
 
 /**
@@ -24,14 +35,15 @@ export const DEFAULT_GALAXY_CONFIG: GalaxyConfig = {
  *    and warm golden Population II halo light scattering that does NOT blow out.
  * 3. 3D Midplane Dust Extinction Layer: Multi-layer absorption sheet that physically silhouettes
  *    and occludes the far side of the core when viewed at oblique angles.
- * 4. 14,000 Real 3D Stars: Dispersed in 3D ellipsoidal bulge, flared disk, and extended halo
+ * 4. 14,000 procedural 3D stars: randomly dispersed in an ellipsoidal bulge, flared disk and halo
  *    with realistic Morgan-Keenan spectral colors and Gaussian point-spread functions.
  * 5. Dwarf Companion Satellite Galaxies: Realistic Large & Small Magellanic Clouds (LMC & SMC)
  *    and Sagittarius Dwarf Spheroidal providing authentic cosmic scale.
- * 6. High-Tech Orion Spur Sun Beacon: Precision astronomical reticle marking the Solar System at
- *    26,000 ly from Sagittarius A*, with vertical altitude stalk to the galactic midplane.
+ * 6. Orion Spur Sun Beacon: reticle marking the Solar System R0 = 8.277 kpc (≈27,000 ly) from
+ *    Sagittarius A*, with a stalk down to the galactic mid-plane.
  * 7. Sagittarius A* Relativistic Black Hole: Supermassive black hole at local (0, 0, 0) with
- *    Kerr/Schwarzschild null-geodesic ray tracing, event horizon shadow, photon ring, and accretion disk.
+ *    a ray-marched shader with approximate (Schwarzschild-inspired) light bending, shadow, photon
+ *    ring and accretion disk.
  */
 export class MilkyWayGalaxy {
   public group: THREE.Group = new THREE.Group();
@@ -56,6 +68,9 @@ export class MilkyWayGalaxy {
   private opacityUniform: { value: number } = { value: 0.0 };
   private timeUniform: { value: number } = { value: 0.0 };
   private bulgeFadeUniform: { value: number } = { value: 1.0 };
+  // The ~1 MB disk artwork is only fetched the first time the galaxy becomes visible
+  private diskTextureUniform: { value: THREE.Texture } = { value: MilkyWayGalaxy.createEmptyTexture() };
+  private diskTextureRequested: boolean = false;
 
   public readonly config: GalaxyConfig;
   public readonly sunWorldPosition: THREE.Vector3 = new THREE.Vector3();
@@ -63,12 +78,18 @@ export class MilkyWayGalaxy {
   constructor(config: GalaxyConfig = DEFAULT_GALAXY_CONFIG) {
     this.config = config;
     this.group.name = 'milky_way_external_galaxy';
-    this.group.position.set(0, 0, 0);
 
-    // Astronomical tilt: Milky Way galactic plane inclined relative to solar ecliptic (~63 deg)
-    this.group.rotation.x = THREE.MathUtils.degToRad(62.87);
-    this.group.rotation.y = THREE.MathUtils.degToRad(122.93);
-    this.group.rotation.z = THREE.MathUtils.degToRad(282.25);
+    // Local model frame: disk in the XZ plane, +Y = north galactic pole (the disk artwork is a
+    // face-on view from the NGP), Sun on the +Z axis so the galactic centre lies towards −Z and
+    // l = 90° towards −X. Map that onto the real galactic axes in render (ecliptic) coordinates:
+    //   local +X → −ŷ_gal,  local +Y → ẑ_gal,  local +Z → −x̂_gal
+    const gal = CoordinateFrames.galacticBasisThree();
+    const basis = new THREE.Matrix4().makeBasis(
+      new THREE.Vector3(...gal.y).negate(),
+      new THREE.Vector3(...gal.z),
+      new THREE.Vector3(...gal.x).negate()
+    );
+    this.group.quaternion.setFromRotationMatrix(basis);
 
     // 1. Build Master High-Definition Galactic Disk
     this.masterDiskMesh = this.createMasterDisk();
@@ -99,6 +120,9 @@ export class MilkyWayGalaxy {
     this.sunWorldPosition.copy(sunPos);
     this.group.add(this.sunBeaconGroup);
 
+    // Offset the whole model so the Sun locator coincides with the scene origin (the Sun)
+    this.group.position.copy(sunPos.clone().applyQuaternion(this.group.quaternion)).negate();
+
     // 7. Build Sagittarius A* Supermassive Black Hole at Galactic Center (0, 0, 0)
     this.sagittariusAStar = new SagittariusAStar();
     this.group.add(this.sagittariusAStar.group);
@@ -115,16 +139,10 @@ export class MilkyWayGalaxy {
     // Align with galactic X-Z midplane: rotate around X so normal faces +Y
     geo.rotateX(-Math.PI * 0.5);
 
-    const tex = TexturePipeline.getInstance().getMilkyWayDiskTexture();
-    tex.wrapS = THREE.ClampToEdgeWrapping;
-    tex.wrapT = THREE.ClampToEdgeWrapping;
-    tex.generateMipmaps = true;
-    tex.minFilter = THREE.LinearMipmapLinearFilter;
-    tex.magFilter = THREE.LinearFilter;
 
     const mat = new THREE.ShaderMaterial({
       uniforms: {
-        uGalaxyMap: { value: tex },
+        uGalaxyMap: this.diskTextureUniform,
         uOpacity: this.opacityUniform,
         uBulgeFade: this.bulgeFadeUniform,
         uTime: this.timeUniform,
@@ -258,11 +276,9 @@ export class MilkyWayGalaxy {
     const geo = new THREE.PlaneGeometry(this.config.radius * 1.85, this.config.radius * 1.85, 48, 48);
     geo.rotateX(-Math.PI * 0.5);
 
-    const tex = TexturePipeline.getInstance().getMilkyWayDiskTexture();
-
     const mat = new THREE.ShaderMaterial({
       uniforms: {
-        uGalaxyMap: { value: tex },
+        uGalaxyMap: this.diskTextureUniform,
         uOpacity: this.opacityUniform,
         uBulgeFade: this.bulgeFadeUniform,
       },
@@ -306,7 +322,7 @@ export class MilkyWayGalaxy {
   }
 
   /**
-   * 4. 14,000 Real 3D Galactic Stars (Bulge + Disk + Halo)
+   * 4. 14,000 procedural (randomly placed) 3D galactic stars (Bulge + Disk + Halo)
    * Calibrated with delicate point sizes and realistic Morgan-Keenan spectral classes.
    */
   private create3DStars(): THREE.Points {
@@ -475,12 +491,28 @@ export class MilkyWayGalaxy {
   /**
    * 5. Satellite Dwarf Galaxies (LMC, SMC, Sagittarius Dwarf)
    */
+  /** 1×1 fully transparent placeholder used until the disk artwork is requested. */
+  private static createEmptyTexture(): THREE.Texture {
+    const tex = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1, THREE.RGBAFormat);
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  /**
+   * Galactocentric Cartesian (kpc; x from the Sun towards the centre, y towards l = 90°, z to the
+   * NGP) → local model coordinates. Positions below come from heliocentric (l, b, d):
+   * LMC (280.47°, −32.89°, 49.59 kpc), SMC (302.80°, −44.30°, 62.44 kpc), Sgr dSph (5.6°, −14.2°, ~26.5 kpc).
+   */
+  private static galactocentricToLocal(xKpc: number, yKpc: number, zKpc: number): THREE.Vector3 {
+    return new THREE.Vector3(-yKpc, zKpc, -xKpc).multiplyScalar(GALAXY_UNITS_PER_KPC);
+  }
+
   private buildSatelliteGalaxies(): void {
     // Large Magellanic Cloud (LMC)
     const lmcGroup = this.createDwarfGalaxy(
       'large_magellanic_cloud',
-      new THREE.Vector3(-9500, -13500, 11800),
-      3600,
+      MilkyWayGalaxy.galactocentricToLocal(-0.71, -40.95, -26.93),
+      4.0 * GALAXY_UNITS_PER_KPC,
       new THREE.Color(0xd2e8ff),
       450
     );
@@ -489,8 +521,8 @@ export class MilkyWayGalaxy {
     // Small Magellanic Cloud (SMC)
     const smcGroup = this.createDwarfGalaxy(
       'small_magellanic_cloud',
-      new THREE.Vector3(-14800, -18200, 7800),
-      2100,
+      MilkyWayGalaxy.galactocentricToLocal(15.93, -37.57, -43.61),
+      2.0 * GALAXY_UNITS_PER_KPC,
       new THREE.Color(0xe0eeff),
       220
     );
@@ -499,8 +531,8 @@ export class MilkyWayGalaxy {
     // Sagittarius Dwarf Spheroidal
     const sgrGroup = this.createDwarfGalaxy(
       'sagittarius_dwarf_spheroidal',
-      new THREE.Vector3(-1600, -6200, 3200),
-      2400,
+      MilkyWayGalaxy.galactocentricToLocal(17.29, 2.51, -6.48),
+      2.5 * GALAXY_UNITS_PER_KPC,
       new THREE.Color(0xffe6c4),
       280
     );
@@ -599,17 +631,11 @@ export class MilkyWayGalaxy {
     const beaconGroup = new THREE.Group();
     beaconGroup.name = 'sun_orion_spur_beacon';
 
-    // Place Sun in the Orion Spur at radius ~15,600 (scaled ~26,000 ly)
-    // Angle in galactic plane: bottom-left sector matching NASA map (~215 deg)
+    // Sun in the Orion Spur, R0 from the centre on the +Z axis (towards the bottom of the
+    // face-on artwork, where the artist placed the Sun), slightly north of the mid-plane
     const sunR = this.config.sunDistance;
-    const sunTheta = THREE.MathUtils.degToRad(215.0);
-    const sunY = 55.0; // Sun sits slightly above the galactic midplane (~20 pc)
-
-    const sunPos = new THREE.Vector3(
-      Math.cos(sunTheta) * sunR,
-      sunY,
-      Math.sin(sunTheta) * sunR
-    );
+    const sunY = SUN_HEIGHT_KPC * GALAXY_UNITS_PER_KPC;
+    const sunPos = new THREE.Vector3(0, sunY, sunR);
 
     beaconGroup.position.copy(sunPos);
 
@@ -697,6 +723,14 @@ export class MilkyWayGalaxy {
     const clamped = Math.max(0.0, Math.min(1.0, opacity));
     this.opacityUniform.value = clamped;
     this.group.visible = clamped > 0.005;
+
+    if (this.group.visible && !this.diskTextureRequested) {
+      this.diskTextureRequested = true;
+      const tex = TexturePipeline.getInstance().getMilkyWayDiskTexture();
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      this.diskTextureUniform.value = tex;
+    }
 
     // Synchronize relativistic black hole opacity
     if (this.sagittariusAStar) {
