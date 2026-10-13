@@ -20,43 +20,43 @@ export interface AtmosphereConfig {
 
 export const ATMOSPHERE_CONFIGS: Record<string, AtmosphereConfig> = {
   Earth: {
-    radiusScale: 1.022,
-    rayleighColor: new THREE.Color(0.22, 0.55, 0.98), // Deep Rayleigh azure
-    twilightColor: new THREE.Color(0.95, 0.42, 0.16), // Sunset ember orange
-    density: 1.25,
-    falloffPower: 3.5,
-    mieG: 0.76,
+    radiusScale: 1.008,
+    rayleighColor: new THREE.Color(0.24, 0.52, 0.92), // Natural Rayleigh sky blue
+    twilightColor: new THREE.Color(0.95, 0.42, 0.16), // Sunset amber
+    density: 0.65,
+    falloffPower: 4.5,
+    mieG: 0.72,
   },
   Venus: {
-    radiusScale: 1.032,
-    rayleighColor: new THREE.Color(0.95, 0.88, 0.62), // Creamy sulfuric acid haze
+    radiusScale: 1.012,
+    rayleighColor: new THREE.Color(0.92, 0.86, 0.64), // Creamy sulfuric acid haze
     twilightColor: new THREE.Color(0.85, 0.58, 0.32), // Warm amber
-    density: 1.85,
-    falloffPower: 2.8,
+    density: 1.10,
+    falloffPower: 3.5,
     mieG: 0.65,
   },
   Mars: {
-    radiusScale: 1.012,
-    rayleighColor: new THREE.Color(0.82, 0.52, 0.35), // Thin ferric dust / CO2
-    twilightColor: new THREE.Color(0.45, 0.62, 0.85), // Blue Martian sunsets!
-    density: 0.55,
-    falloffPower: 4.8,
+    radiusScale: 1.004,
+    rayleighColor: new THREE.Color(0.65, 0.55, 0.50), // Ultra-tenuous 0.6 kPa dust/CO2 haze (subtle, non-emissive)
+    twilightColor: new THREE.Color(0.35, 0.50, 0.70), // Subtle blue Martian twilight
+    density: 0.12,
+    falloffPower: 6.0,
     mieG: 0.55,
   },
   Uranus: {
-    radiusScale: 1.028,
+    radiusScale: 1.014,
     rayleighColor: new THREE.Color(0.48, 0.85, 0.82), // Aquamarine methane haze
     twilightColor: new THREE.Color(0.32, 0.65, 0.72),
-    density: 1.10,
-    falloffPower: 3.0,
+    density: 0.75,
+    falloffPower: 3.8,
     mieG: 0.70,
   },
   Neptune: {
-    radiusScale: 1.028,
+    radiusScale: 1.014,
     rayleighColor: new THREE.Color(0.20, 0.45, 0.95), // Deep azure methane absorption
     twilightColor: new THREE.Color(0.15, 0.30, 0.75),
-    density: 1.20,
-    falloffPower: 3.0,
+    density: 0.80,
+    falloffPower: 3.8,
     mieG: 0.70,
   },
 };
@@ -106,9 +106,9 @@ export class AtmosphereShader {
           float limbFresnel = pow(1.0 - cosTheta, falloffPower);
 
           // 2. Solar illumination factor:
-          // Smoothly extinguishes on the dark hemisphere, eliminating fake neon rim
+          // Strictly extinguished on the dark hemisphere, eliminating fake neon rim
           float sunDot = dot(worldNormal, sunDir);
-          float dayFactor = smoothstep(-0.02, 0.32, sunDot);
+          float dayFactor = smoothstep(-0.02, 0.28, sunDot);
 
           // 3. Henyey-Greenstein Mie forward scattering phase function:
           float cosViewSun = dot(viewDir, sunDir);
@@ -118,16 +118,19 @@ export class AtmosphereShader {
 
           // 4. Twilight reddening / sunset ember fringe at the terminator:
           float terminatorBand = smoothstep(-0.05, 0.08, sunDot) * (1.0 - smoothstep(0.08, 0.28, sunDot));
-          vec3 scatterColor = mix(rayleighColor, twilightColor, terminatorBand * 0.82);
+          vec3 scatterColor = mix(rayleighColor, twilightColor, terminatorBand * 0.75);
 
-          // 5. Total scattered radiance (pow(dayFactor, 1.4) yields soft natural terminator rolloff)
-          float intensity = limbFresnel * density * (pow(dayFactor, 1.4) + forwardScatter * 1.5);
+          // 5. Total scattered radiance
+          float intensity = limbFresnel * density * (pow(dayFactor, 1.4) + forwardScatter * 1.2);
           if (intensity < 0.002) {
             discard; // Absolute dark-side transparency with zero overhead or halo artifacts
           }
           intensity = clamp(intensity, 0.0, 1.0);
 
-          gl_FragColor = vec4(scatterColor * 1.15, intensity);
+          gl_FragColor = vec4(scatterColor * intensity, intensity);
+
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
       blending: THREE.AdditiveBlending,

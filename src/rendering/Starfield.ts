@@ -114,25 +114,23 @@ export class Starfield {
         void main() {
           vec4 tex = texture2D(milkyWayMap, vUv);
 
-          // Luminance response
-          float lum = dot(tex.rgb, vec3(0.299, 0.587, 0.114));
+          // Subtle gamma curve to reveal delicate interstellar clouds and cosmic nebulosity
+          vec3 baseColor = pow(tex.rgb, vec3(1.1));
+          float lum = dot(baseColor, vec3(0.299, 0.587, 0.114));
 
-          // Contrast enhancement: deep space is true deep black, banishing flat grey haze
-          float contrast = smoothstep(0.035, 0.95, lum);
-
-          // Great Rift & interstellar dust absorption lanes
-          float dustLane = 1.0 - smoothstep(0.02, 0.28, lum) * 0.40;
+          // Soft astronomical contrast: deep vacuum is pure black without crushing faint dust lanes
+          float skyFloor = smoothstep(0.005, 0.15, lum);
 
           // H-alpha ionized hydrogen emission nebular glow (656.3 nm deep ruby red)
-          // Concentrated along the galactic disk and central bulge
-          vec3 hAlphaGlow = vec3(0.68, 0.14, 0.25) * smoothstep(0.24, 0.88, tex.r) * 0.38;
+          vec3 hAlphaGlow = vec3(0.55, 0.15, 0.25) * smoothstep(0.20, 0.75, tex.r) * 0.30;
 
-          // Cosmic color grading: rich starlight + warm galactic bulge
-          vec3 cosmicColor = tex.rgb * vec3(0.92, 0.95, 1.05) * contrast * 0.92;
-          cosmicColor += hAlphaGlow;
-          cosmicColor *= dustLane;
+          // Natural cosmic color grading: cool starlight highlights + warm galactic core
+          vec3 cosmicColor = baseColor * vec3(0.96, 0.98, 1.04) * (0.85 + 0.35 * skyFloor) + hAlphaGlow;
 
           gl_FragColor = vec4(cosmicColor, 1.0);
+
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
       side: THREE.BackSide,

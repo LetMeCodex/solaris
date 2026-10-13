@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CelestialBodyDefinition } from '../types/catalogue';
 import { TexturePipeline } from './TexturePipeline';
 import { SolarShader } from './SolarShader';
-import { AtmosphereShader } from './AtmosphereShader';
+import { AtmosphereShader, ATMOSPHERE_CONFIGS } from './AtmosphereShader';
 import { EarthMaterial } from './EarthMaterial';
 import { PlanetMaterial } from './PlanetMaterial';
 
@@ -142,7 +142,8 @@ export class PlanetFactory {
       surfaceMaterial = EarthMaterial.createSurfaceMaterial(
         textures.map,
         textures.normalMap,
-        textures.nightMap
+        textures.nightMap,
+        textures.cloudsMap
       );
 
       // Independent Rotating Clouds with Directional Shading & Soft Translucency
@@ -159,7 +160,7 @@ export class PlanetFactory {
       // Physically Grounded Rayleigh & Mie Scattering Atmosphere (zero dark-side neon rim)
       const atmoMat = AtmosphereShader.createAtmosphereMaterial('Earth');
       if (atmoMat) {
-        const atmoGeo = new THREE.SphereGeometry(1.022, 64, 48);
+        const atmoGeo = new THREE.SphereGeometry(1.008, 64, 48);
         atmosphereMesh = new THREE.Mesh(atmoGeo, atmoMat);
         atmosphereMesh.name = 'earth_atmosphere';
         atmosphereMesh.renderOrder = 3;
@@ -178,7 +179,8 @@ export class PlanetFactory {
       // Atmospheric limb scattering for worlds with substantial atmospheres (Venus, Mars, Uranus, Neptune)
       const atmoMat = AtmosphereShader.createAtmosphereMaterial(body.name);
       if (atmoMat) {
-        const atmoGeo = new THREE.SphereGeometry(1.018, 48, 36);
+        const rScale = ATMOSPHERE_CONFIGS[body.name]?.radiusScale || 1.012;
+        const atmoGeo = new THREE.SphereGeometry(rScale, 48, 36);
         atmosphereMesh = new THREE.Mesh(atmoGeo, atmoMat);
         atmosphereMesh.name = `${body.name.toLowerCase()}_atmosphere`;
         atmosphereMesh.renderOrder = 3;
@@ -271,6 +273,9 @@ export class PlanetFactory {
 
             vec3 color = ringTexCol.rgb * (directIllum + ambientIllum);
             gl_FragColor = vec4(color, ringTexCol.a * 0.96);
+
+            #include <tonemapping_fragment>
+            #include <colorspace_fragment>
           }
         `,
         side: THREE.DoubleSide,

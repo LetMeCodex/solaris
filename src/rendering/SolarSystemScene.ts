@@ -74,8 +74,9 @@ export class SolarSystemScene {
     });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.0));
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    this.renderer.toneMappingExposure = 1.05;
 
     container.appendChild(this.renderer.domElement);
 
@@ -113,13 +114,13 @@ export class SolarSystemScene {
 
   private setupLighting(): void {
     // Primary solar omnidirectional point light at the Sun (zero decay for crisp interplanetary sunlight)
-    const sunLight = new THREE.PointLight(0xfffaed, 2.6, 0, 0);
+    const sunLight = new THREE.PointLight(0xfffaed, 2.4, 0, 0);
     sunLight.position.set(0, 0, 0);
     sunLight.castShadow = false;
     this.scene.add(sunLight);
 
     // Subtle cosmic ambient light for night-side planetary visibility
-    const ambientLight = new THREE.AmbientLight(0x282c3c, 0.28);
+    const ambientLight = new THREE.AmbientLight(0x222638, 0.25);
     this.scene.add(ambientLight);
   }
 
