@@ -115,7 +115,7 @@ export const BODY_FRAMING_PROFILES: Record<string, FramingProfile> = {
   },
   'Sagittarius A*': {
     targetCoverageY: 0.88,
-    ndcOffsetX: -0.24,
+    ndcOffsetX: 0.22,
     ndcOffsetY: -0.02,
     fov: 40.0,
     preferredElevation: Math.PI * 0.42,

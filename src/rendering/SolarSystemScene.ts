@@ -241,6 +241,39 @@ export class SolarSystemScene {
     this.pointerDownPos = { x: e.clientX, y: e.clientY };
   };
 
+  private onCanvasMouseMove = (e: MouseEvent): void => {
+    if (e.target !== this.renderer.domElement) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const mx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    const my = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+    // Check if hovering near Galactic Center / Sagittarius A*
+    if (this.starfield?.externalGalaxy?.sagittariusAStar) {
+      const gcWorldPos = this.starfield.externalGalaxy.getGalacticCenterWorldPosition();
+      const screenPos = gcWorldPos.clone().project(this.cameraRig.camera);
+
+      // Visible in front of camera
+      if (screenPos.z >= -1.0 && screenPos.z <= 1.0) {
+        const aspect = rect.width / Math.max(1, rect.height);
+        const dx = (mx - screenPos.x) * aspect;
+        const dy = (my - screenPos.y);
+        const distNdc = Math.hypot(dx, dy);
+
+        const camDistToGc = this.cameraRig.camera.position.distanceTo(gcWorldPos);
+        const hoverThreshold = camDistToGc > 12000.0 ? 0.18 : 0.25;
+
+        if (distNdc < hoverThreshold) {
+          this.renderer.domElement.style.cursor = 'pointer';
+          return;
+        }
+      }
+    }
+
+    if (this.renderer.domElement.style.cursor === 'pointer') {
+      this.renderer.domElement.style.cursor = '';
+    }
+  };
+
   private onCanvasClick = (e: MouseEvent): void => {
     // Only handle clicks directly on the WebGL canvas
     if (e.target !== this.renderer.domElement) return;
@@ -253,6 +286,29 @@ export class SolarSystemScene {
     this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
+    // 1. Direct screen-space proximity click for Galactic Center / Sagittarius A*
+    if (this.starfield?.externalGalaxy?.sagittariusAStar) {
+      const gcWorldPos = this.starfield.externalGalaxy.getGalacticCenterWorldPosition();
+      const screenPos = gcWorldPos.clone().project(this.cameraRig.camera);
+
+      // If Galactic Center is within camera frustum in front of camera
+      if (screenPos.z >= -1.0 && screenPos.z <= 1.0) {
+        const aspect = rect.width / Math.max(1, rect.height);
+        const dx = (this.mouse.x - screenPos.x) * aspect;
+        const dy = (this.mouse.y - screenPos.y);
+        const distNdc = Math.hypot(dx, dy);
+
+        // At galactic or interstellar scales, clicking the central black hole or core navigates to it!
+        const camDistToGc = this.cameraRig.camera.position.distanceTo(gcWorldPos);
+        const clickThreshold = camDistToGc > 12000.0 ? 0.18 : 0.25;
+
+        if (distNdc < clickThreshold) {
+          this.selectBody('Sagittarius A*', 2200);
+          return;
+        }
+      }
+    }
+
     this.raycaster.setFromCamera(this.mouse, this.cameraRig.camera);
 
     const interactiveMeshes: THREE.Object3D[] = [];
@@ -260,9 +316,30 @@ export class SolarSystemScene {
       interactiveMeshes.push(bundle.surfaceMesh);
     });
 
+    // Also include Sagittarius A* hit mesh and lensing volume
+    if (this.starfield?.externalGalaxy?.sagittariusAStar) {
+      if (this.starfield.externalGalaxy.sagittariusAStar.hitMesh) {
+        interactiveMeshes.push(this.starfield.externalGalaxy.sagittariusAStar.hitMesh);
+      }
+      if (this.starfield.externalGalaxy.sagittariusAStar.boundingMesh) {
+        interactiveMeshes.push(this.starfield.externalGalaxy.sagittariusAStar.boundingMesh);
+      }
+    }
+
     const intersects = this.raycaster.intersectObjects(interactiveMeshes, false);
     if (intersects.length > 0) {
       const hit = intersects[0].object;
+
+      // Check if Sagittarius A* was intersected
+      if (
+        hit === this.starfield?.externalGalaxy?.sagittariusAStar?.hitMesh ||
+        hit === this.starfield?.externalGalaxy?.sagittariusAStar?.boundingMesh ||
+        hit.name.includes('sagittarius')
+      ) {
+        this.selectBody('Sagittarius A*', 2200);
+        return;
+      }
+
       for (const bundle of this.planetBundles.values()) {
         if (bundle.surfaceMesh === hit) {
           this.selectBody(bundle.definition.name);
@@ -274,6 +351,7 @@ export class SolarSystemScene {
 
   private setupInteraction(): void {
     this.renderer.domElement.addEventListener('mousedown', this.onPointerDown);
+    this.renderer.domElement.addEventListener('mousemove', this.onCanvasMouseMove);
     this.renderer.domElement.addEventListener('click', this.onCanvasClick);
     window.addEventListener('resize', this.onResize);
   }
@@ -558,6 +636,7 @@ export class SolarSystemScene {
     }
     window.removeEventListener('resize', this.onResize);
     this.renderer.domElement.removeEventListener('mousedown', this.onPointerDown);
+    this.renderer.domElement.removeEventListener('mousemove', this.onCanvasMouseMove);
     this.renderer.domElement.removeEventListener('click', this.onCanvasClick);
     this.cameraRig.dispose();
     this.starfield.dispose();

@@ -377,6 +377,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             </button>
             <button
               onClick={() => {
+                onJumpToScale?.('sgr_a');
                 onSelectPlanet('Sagittarius A*');
                 handleRevealMonograph();
               }}
@@ -526,6 +527,9 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               key={planetName}
               onClick={(e) => {
                 e.stopPropagation();
+                if (planetName === 'Sagittarius A*') {
+                  onJumpToScale?.('sgr_a');
+                }
                 onSelectPlanet(planetName);
                 handleRevealMonograph();
               }}

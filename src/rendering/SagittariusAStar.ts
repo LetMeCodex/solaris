@@ -39,6 +39,7 @@ export class SagittariusAStar {
   public boundingMesh: THREE.Mesh;
   public sStarsPoints: THREE.Points;
   public jetPolesGroup: THREE.Group = new THREE.Group();
+  public hitMesh: THREE.Mesh;
 
   public readonly config: SagittariusAStarConfig;
   public readonly scientificData = SAGITTARIUS_A_STAR_DATA;
@@ -59,8 +60,16 @@ export class SagittariusAStar {
     this.sStarsPoints = this.createNuclearStarCluster();
     this.group.add(this.sStarsPoints);
 
-    // 3. Build Collimated Relativistic Polar Jets & Magnetic Funnels (NASA Anatomy)
+    // 3. Build Invisible Raycasting Hit Mesh for Galactic & Interstellar Scale Click Navigation
+    const hitGeo = new THREE.SphereGeometry(Math.max(3200, this.config.boundingRadius * 2.0), 16, 16);
+    const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+    this.hitMesh = new THREE.Mesh(hitGeo, hitMat);
+    this.hitMesh.name = 'sagittarius_a_star_hit_target';
+    this.group.add(this.hitMesh);
+
+    // 4. Build Collimated Relativistic Polar Jets (Hidden to match pure Interstellar reference image)
     this.createPolarOutflowJets();
+    this.jetPolesGroup.visible = false; // Preserved for NASA anatomy mode, hidden for pure cinematic view
     this.group.add(this.jetPolesGroup);
   }
 
@@ -122,46 +131,52 @@ export class SagittariusAStar {
         // Multi-frequency Keplerian sheared streamline generator
         float computeStreamlineFibers(float r, float phi, float time, float rIn) {
           float omega = 3.6 * pow(rIn / r, 1.5);
-          float phiOrbit = phi + omega * time * 0.35;
+          float phiOrbit = phi + omega * time * 0.32;
           float logR = log(max(1.0, r / rIn));
 
-          // 5 octaves of logarithmic spiral shear
-          float s1 = phiOrbit * 3.0 - logR * 4.2;
-          float s2 = phiOrbit * 8.0 - logR * 11.5;
-          float s3 = phiOrbit * 22.0 - logR * 31.0;
-          float s4 = phiOrbit * 58.0 - logR * 82.0;
-          float s5 = phiOrbit * 140.0 - logR * 195.0;
+          // 6 octaves of Keplerian sheared logarithmic spiral rays
+          float s1 = phiOrbit * 3.0 - logR * 4.0;
+          float s2 = phiOrbit * 7.0 - logR * 9.5;
+          float s3 = phiOrbit * 18.0 - logR * 25.0;
+          float s4 = phiOrbit * 45.0 - logR * 62.0;
+          float s5 = phiOrbit * 110.0 - logR * 152.0;
+          float s6 = phiOrbit * 260.0 - logR * 360.0;
 
-          float fibers = 0.52
-                       + 0.16 * sin(s1)
-                       + 0.13 * sin(s2)
-                       + 0.09 * sin(s3)
-                       + 0.07 * sin(s4)
-                       + 0.05 * cos(s5);
+          // Power-law sharpening creates crisp, silky light rays with distinct troughs
+          float r1 = pow(sin(s1) * 0.5 + 0.5, 1.4);
+          float r2 = pow(sin(s2) * 0.5 + 0.5, 1.6);
+          float r3 = pow(sin(s3) * 0.5 + 0.5, 1.8);
+          float r4 = pow(sin(s4) * 0.5 + 0.5, 2.0);
+          float r5 = pow(sin(s5) * 0.5 + 0.5, 2.2);
+          float r6 = pow(cos(s6) * 0.5 + 0.5, 2.4);
+
+          float rays = 0.35 + 0.28 * r1 + 0.22 * r2 + 0.16 * r3 + 0.12 * r4 + 0.08 * r5 + 0.05 * r6;
 
           // Fine concentric Keplerian striations
-          float concentric = 0.86 + 0.14 * sin(r * 2.4 + sin(r * 0.75) * 1.6);
-          return clamp(fibers * concentric, 0.08, 1.25);
+          float concentric = pow(sin(r * 3.2 + sin(r * 0.8) * 1.5) * 0.5 + 0.5, 1.6);
+          rays *= (0.75 + 0.35 * concentric);
+
+          return clamp(rays, 0.06, 1.45);
         }
 
-        // Magnetorotational instability (MRI) reconnection flare clumps
+        // Magnetorotational instability (MRI) reconnection flare clumps (turbulent plumes on inner rim)
         float computePlasmaFlares(float r, float phi, float time, float rIn) {
           float omega = 3.6 * pow(rIn / r, 1.5);
-          float phiOrbit = phi + omega * time * 0.35;
+          float phiOrbit = phi + omega * time * 0.32;
           float logR = log(max(1.0, r / rIn));
 
-          float n1 = sin(phiOrbit * 4.0 + logR * 5.0 + time * 0.7) * cos(phiOrbit * 7.0 - logR * 8.0 - time * 1.1);
-          float n2 = sin(phiOrbit * 14.0 - logR * 18.0 + time * 1.5);
-          float flareVal = clamp((n1 * 0.72 + n2 * 0.28) * 0.5 + 0.5, 0.0, 1.0);
+          float n1 = sin(phiOrbit * 3.5 + logR * 4.5 + time * 0.6) * cos(phiOrbit * 6.5 - logR * 7.5 - time * 0.9);
+          float n2 = sin(phiOrbit * 12.0 - logR * 16.0 + time * 1.4) * cos(phiOrbit * 20.0 + logR * 26.0 - time * 1.8);
+          float puff = clamp((n1 * 0.65 + n2 * 0.35) * 0.5 + 0.5, 0.0, 1.0);
 
-          float innerRamp = smoothstep(rIn * 2.8, rIn * 1.05, r);
-          return pow(flareVal, 3.4) * 2.6 * innerRamp;
+          float innerRamp = smoothstep(rIn * 2.4, rIn * 1.02, r);
+          return pow(puff, 2.8) * 2.4 * innerRamp;
         }
 
         // Interstellar soot / carbon-silicate dust absorption lanes
         float computeDustExtinction(float r, float phi, float time, float rIn, float rOut) {
           float omega = 3.6 * pow(rIn / r, 1.5);
-          float phiOrbit = phi + omega * time * 0.35;
+          float phiOrbit = phi + omega * time * 0.32;
           float logR = log(max(1.0, r / rIn));
 
           float sDust = sin(phiOrbit * 6.5 - logR * 9.0) * cos(phiOrbit * 15.0 - logR * 21.0);
@@ -171,21 +186,28 @@ export class SagittariusAStar {
           return dust * outerMask * 0.85;
         }
 
-        // Spectral blackbody emission curve calibrated for extreme dynamic range (HDR)
-        vec3 spectralPlasmaColor(float temp, float dust) {
-          // Palette: Deep soot -> Carmine -> Honey Copper -> Incandescent Gold -> Electric Cyan-White
-          vec3 colSoot   = vec3(0.07, 0.02, 0.008);
-          vec3 colCrimson= vec3(1.15, 0.22, 0.04);
-          vec3 colCopper = vec3(1.90, 0.95, 0.26);
-          vec3 colGold   = vec3(2.65, 1.95, 0.68);
-          vec3 colHot    = vec3(3.20, 3.60, 4.80);
+        // Spectral blackbody emission curve calibrated exactly to Reference Image 1:
+        // Deep espresso soot -> Warm caramel amber -> Glowing copper terracotta -> Luminous golden peach -> Incandescent warm white -> Blinding core
+        vec3 spectralPlasmaColor(float temp, float dust, float flare) {
+          vec3 colSoot    = vec3(0.04, 0.015, 0.008);
+          vec3 colCaramel = vec3(0.68, 0.28, 0.09);
+          vec3 colCopper  = vec3(1.28, 0.62, 0.22);
+          vec3 colPeach   = vec3(2.15, 1.35, 0.66);
+          vec3 colIncand  = vec3(3.60, 3.10, 2.40);
+          vec3 colCore    = vec3(5.20, 4.90, 4.40);
 
-          vec3 plasma = mix(colCrimson, colCopper, smoothstep(0.04, 0.30, temp));
-          plasma = mix(plasma, colGold, smoothstep(0.30, 0.68, temp));
-          plasma = mix(plasma, colHot, smoothstep(0.68, 1.15, temp));
+          vec3 plasma = mix(colCaramel, colCopper, smoothstep(0.02, 0.25, temp));
+          plasma = mix(plasma, colPeach, smoothstep(0.25, 0.65, temp));
+          plasma = mix(plasma, colIncand, smoothstep(0.65, 0.95, temp));
+          plasma = mix(plasma, colCore, smoothstep(0.95, 1.25, temp));
 
-          // Interstellar dust extinction absorbs light and cools emission
-          plasma = mix(plasma, colSoot, dust * 0.82);
+          // Delicate ethereal ice-white plumes ONLY on the inner turbulent plasma flares
+          // (matching the subtle blue puffs on the inner rim in Image 1)
+          vec3 colFlareWisp = vec3(3.40, 4.10, 5.00);
+          plasma = mix(plasma, colFlareWisp, smoothstep(0.35, 1.0, flare) * 0.42);
+
+          // Interstellar dust extinction absorbs light
+          plasma = mix(plasma, colSoot, dust * 0.75);
           return plasma;
         }
 
@@ -249,9 +271,9 @@ export class SagittariusAStar {
               // 1. Vertical Gaussian density profile
               float vertProfile = exp(-0.5 * (pos.y * pos.y) / (diskH * diskH));
 
-              // 2. Novikov-Thorne Relativistic Radial Temperature Flux
+              // 2. Novikov-Thorne Relativistic Radial Temperature Flux with extended outer radiance
               float normR = rCyl / uRIn;
-              float flux = pow(normR, -2.1) * max(0.0, 1.0 - sqrt(1.0 / normR));
+              float flux = (0.42 * pow(normR, -0.92) + 0.58 * pow(normR, -1.85)) * max(0.0, 1.0 - sqrt(0.97 / normR));
 
               // 3. Gravitational Redshift: g_grav = sqrt(1 - rs / r)
               float gravRedshift = sqrt(max(0.04, 1.0 - uRs / rCyl));
@@ -265,8 +287,8 @@ export class SagittariusAStar {
               float cosAlpha = dot(vel, -rayDir) / max(0.001, beta);
               float delta = 1.0 / (gamma * (1.0 - beta * cosAlpha));
 
-              // Relativistic Doppler Beaming boost: I_obs = I_emit * delta^3.8
-              float dopplerBoost = pow(clamp(delta, 0.20, 3.8), 3.8);
+              // Subtle physical Doppler Beaming boost: I_obs = I_emit * delta^2.6
+              float dopplerBoost = pow(clamp(delta, 0.40, 2.8), 2.6);
 
               // 5. Multi-octave Procedural Fibers & MRI Flares
               float phi = atan(pos.z, pos.x);
@@ -274,17 +296,17 @@ export class SagittariusAStar {
               float flares = computePlasmaFlares(rCyl, phi, uTime, uRIn);
               float dust   = computeDustExtinction(rCyl, phi, uTime, uRIn, uROut);
 
-              // Relativistic effective temperature
-              float effTemp = clamp((flux * 3.8 + flares * 0.38) * delta * gravRedshift, 0.0, 1.35);
-              vec3 plasmaRgb = spectralPlasmaColor(effTemp, dust);
+              // Relativistic effective temperature: warm radial flux + flares
+              float effTemp = clamp((flux * 3.6 + flares * 0.40) * gravRedshift, 0.0, 1.40);
+              vec3 plasmaRgb = spectralPlasmaColor(effTemp, dust, flares);
 
               // Boundaries: sharp ISCO inner cutoff, soft outer fade
               float innerCut = smoothstep(uRIn, uRIn * 1.05, rCyl);
-              float outerCut = smoothstep(uROut, uROut * 0.72, rCyl);
-              float density = vertProfile * innerCut * outerCut * fibers * (1.0 + flares * 0.5);
+              float outerCut = smoothstep(uROut, uROut * 0.76, rCyl);
+              float density = vertProfile * innerCut * outerCut * (fibers * 0.85 + 0.15) * (1.0 + flares * 0.5);
 
-              float stepAlpha = clamp(density * stepSize * 0.045, 0.0, 0.85);
-              vec3 stepEmission = plasmaRgb * dopplerBoost * (fibers * 0.75 + 0.25) * (1.0 + flares);
+              float stepAlpha = clamp(density * stepSize * 0.048, 0.0, 0.88);
+              vec3 stepEmission = plasmaRgb * dopplerBoost * (fibers * 0.90 + 0.20) * (1.0 + flares * 0.7);
 
               accumColor += (1.0 - accumAlpha) * stepEmission * stepAlpha;
               accumAlpha += (1.0 - accumAlpha) * stepAlpha;
@@ -300,7 +322,7 @@ export class SagittariusAStar {
 
               if (rCross >= uRIn && rCross <= uROut) {
                 float normR = rCross / uRIn;
-                float flux = pow(normR, -2.1) * max(0.0, 1.0 - sqrt(1.0 / normR));
+                float flux = (0.42 * pow(normR, -0.92) + 0.58 * pow(normR, -1.85)) * max(0.0, 1.0 - sqrt(0.97 / normR));
                 float gravRedshift = sqrt(max(0.04, 1.0 - uRs / rCross));
 
                 float beta = clamp(sqrt(uRs / (2.0 * rCross)), 0.0, 0.55);
@@ -308,20 +330,20 @@ export class SagittariusAStar {
                 vec3 vel = normalize(vec3(crossPos.z, 0.0, -crossPos.x)) * beta;
                 float cosAlpha = dot(vel, -rayDir) / max(0.001, beta);
                 float delta = 1.0 / (gamma * (1.0 - beta * cosAlpha));
-                float dopplerBoost = pow(clamp(delta, 0.20, 3.8), 3.8);
+                float dopplerBoost = pow(clamp(delta, 0.40, 2.8), 2.6);
 
                 float phi = atan(crossPos.z, crossPos.x);
                 float fibers = computeStreamlineFibers(rCross, phi, uTime, uRIn);
                 float flares = computePlasmaFlares(rCross, phi, uTime, uRIn);
                 float dust   = computeDustExtinction(rCross, phi, uTime, uRIn, uROut);
 
-                float effTemp = clamp((flux * 3.8 + flares * 0.38) * delta * gravRedshift, 0.0, 1.35);
-                vec3 plasmaRgb = spectralPlasmaColor(effTemp, dust);
+                float effTemp = clamp((flux * 3.6 + flares * 0.40) * gravRedshift, 0.0, 1.40);
+                vec3 plasmaRgb = spectralPlasmaColor(effTemp, dust, flares);
 
                 float innerCut = smoothstep(uRIn, uRIn * 1.04, rCross);
-                float outerCut = smoothstep(uROut, uROut * 0.75, rCross);
-                float midOpacity = clamp(innerCut * outerCut * fibers * 0.42 * (1.0 + flares * 0.4), 0.0, 0.95);
-                vec3 midEmission = plasmaRgb * dopplerBoost * (fibers * 0.8 + 0.2) * (1.0 + flares);
+                float outerCut = smoothstep(uROut, uROut * 0.78, rCross);
+                float midOpacity = clamp(innerCut * outerCut * (fibers * 0.85 + 0.15) * 0.48 * (1.0 + flares * 0.4), 0.0, 0.96);
+                vec3 midEmission = plasmaRgb * dopplerBoost * (fibers * 0.92 + 0.18) * (1.0 + flares * 0.7);
 
                 accumColor += (1.0 - accumAlpha) * midEmission * midOpacity;
                 accumAlpha += (1.0 - accumAlpha) * midOpacity;
@@ -341,7 +363,7 @@ export class SagittariusAStar {
           // everything directly behind is profound pitch black (alpha = 1.0)!
           if (hitShadow) {
             // Apply subtle Reinhard HDR tone mapping
-            vec3 finalHdr = accumColor / (vec3(1.0) + accumColor * 0.18);
+            vec3 finalHdr = accumColor / (vec3(1.0) + accumColor * 0.16);
             gl_FragColor = vec4(finalHdr, 1.0 * uOpacity);
             return;
           }
@@ -349,11 +371,20 @@ export class SagittariusAStar {
           // F. Ultra-Sharp Relativistic Photon Ring:
           // Ring of looping photons at the critical shadow boundary (b ~ b_crit)
           float shadowDist = abs(b - uRShadow);
-          float photonRing = exp(-pow(shadowDist / (uRs * 0.055), 2.0));
-          if (photonRing > 0.008) {
-            vec3 ringColor = vec3(3.6, 3.2, 2.6) * photonRing * 3.8;
+          float photonRing = exp(-pow(shadowDist / (uRs * 0.038), 2.0));
+          if (photonRing > 0.005) {
+            vec3 ringColor = vec3(4.8, 4.4, 3.8) * photonRing * 4.2;
             accumColor += (1.0 - accumAlpha) * ringColor;
-            accumAlpha += (1.0 - accumAlpha) * photonRing * 0.96;
+            accumAlpha += (1.0 - accumAlpha) * photonRing * 0.98;
+          }
+
+          // Secondary lensed sub-ring (higher-order relativistic image)
+          float subRingDist = abs(b - (uRShadow + uRs * 0.22));
+          float subRing = exp(-pow(subRingDist / (uRs * 0.024), 2.0));
+          if (subRing > 0.008) {
+            vec3 subRingColor = vec3(3.2, 2.4, 1.6) * subRing * 1.8;
+            accumColor += (1.0 - accumAlpha) * subRingColor;
+            accumAlpha += (1.0 - accumAlpha) * subRing * 0.65;
           }
 
           // G. Einstein Gravitational Deflection Glow of Background Cosmos:
@@ -367,7 +398,7 @@ export class SagittariusAStar {
           if (accumAlpha < 0.005) discard;
 
           // H. High Dynamic Range (HDR) Tone-Mapping
-          vec3 finalToneMapped = accumColor / (vec3(1.0) + accumColor * 0.18);
+          vec3 finalToneMapped = accumColor / (vec3(1.0) + accumColor * 0.16);
           gl_FragColor = vec4(finalToneMapped, clamp(accumAlpha, 0.0, 1.0) * uOpacity);
         }
       `,
