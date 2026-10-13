@@ -108,11 +108,13 @@ export class PlanetFactory {
     const polarScale = 1.0 - flattening;
 
     // Create unit surface sphere (R = 1.0)
+    // High subdivision count for major worlds guarantees seamless spherical silhouette without visible facets
     const isSmallBody = body.category === 'moon' || body.category === 'asteroid';
+    const isMajorWorld = body.category === 'planet' || body.category === 'star';
     const sphereGeo = new THREE.SphereGeometry(
       1.0,
-      isSmallBody ? 36 : 64,
-      isSmallBody ? 24 : 48
+      isMajorWorld ? 96 : (isSmallBody ? 36 : 64),
+      isMajorWorld ? 64 : (isSmallBody ? 24 : 48)
     );
 
     // Irregular asteroid/minor moon mesh deformation for realistic non-spherical shape
@@ -145,7 +147,7 @@ export class PlanetFactory {
       surfaceMaterial = SolarShader.createPhotosphereMaterial(textures.map);
 
       // 2. Exponential Corona (true exponential decay, dynamic streamers, zero opaque shell)
-      const coronaGeo = new THREE.SphereGeometry(2.45, 64, 48);
+      const coronaGeo = new THREE.SphereGeometry(2.45, 96, 64);
       const coronaMat = SolarShader.createCoronaMaterial(visualRadius);
       const coronaMesh = new THREE.Mesh(coronaGeo, coronaMat);
       coronaMesh.name = 'sun_corona';
@@ -165,9 +167,9 @@ export class PlanetFactory {
         textures.cloudsMap
       );
 
-      // Independent Rotating Clouds with Directional Shading & Soft Translucency
+      // Independent Rotating Clouds (Troposphere shell at 1.004)
       if (textures.cloudsMap) {
-        const cloudGeo = new THREE.SphereGeometry(1.016, 64, 48);
+        const cloudGeo = new THREE.SphereGeometry(1.004, 96, 64);
         const cloudMat = EarthMaterial.createCloudMaterial(textures.cloudsMap);
         cloudMesh = new THREE.Mesh(cloudGeo, cloudMat);
         cloudMesh.name = 'earth_clouds';
@@ -176,10 +178,10 @@ export class PlanetFactory {
         bodyGroup.add(cloudMesh);
       }
 
-      // Physically Grounded Rayleigh & Mie Scattering Atmosphere (zero dark-side neon rim)
+      // Physically Grounded Rayleigh & Mie Scattering Atmosphere (Exosphere shell at 1.012 encompassing clouds)
       const atmoMat = AtmosphereShader.createAtmosphereMaterial('Earth');
       if (atmoMat) {
-        const atmoGeo = new THREE.SphereGeometry(1.008, 64, 48);
+        const atmoGeo = new THREE.SphereGeometry(1.012, 96, 64);
         atmosphereMesh = new THREE.Mesh(atmoGeo, atmoMat);
         atmosphereMesh.name = 'earth_atmosphere';
         atmosphereMesh.renderOrder = 3;

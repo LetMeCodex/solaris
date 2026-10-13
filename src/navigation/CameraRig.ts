@@ -1,29 +1,165 @@
 import * as THREE from 'three';
 
+export type CameraShotMode =
+  | 'cinematic_observation'
+  | 'free_inspection'
+  | 'deep_space_overview'
+  | 'scientific_overview';
+
+export interface FramingProfile {
+  targetCoverageY: number;    // Desired fraction of vertical screen height occupied by target (0.85 - 1.10)
+  ndcOffsetX: number;         // Normalized horizontal position in screen space (-0.34 = left-third placement)
+  ndcOffsetY: number;         // Normalized vertical position in screen space (0.0 = centered vertically)
+  fov: number;                // Perspective field of view in degrees (38° - 45°)
+  effectiveRadiusMultiplier?: number; // Radial clearance factor (e.g. 1.95 for Saturn rings)
+  preferredElevation?: number; // Spherical phi angle in radians (e.g. 0.36 * PI)
+  preferredAzimuthOffset?: number; // Azimuth offset from sun direction
+}
+
 export interface CameraTransition {
   startPos: THREE.Vector3;
-  targetPos: THREE.Vector3;
-  startLookAt: THREE.Vector3;
-  targetLookAt: THREE.Vector3;
+  startAimPoint: THREE.Vector3;
+  startFov: number;
+  startNdcOffsetX: number;
+  startNdcOffsetY: number;
+  startPivot: THREE.Vector3;
+  startSpherical: THREE.Spherical;
+
+  targetObject: THREE.Object3D | null;
+  targetRadius: number;
+  targetBodyName: string;
+  targetShotMode: CameraShotMode;
+  targetFov: number;
+  targetNdcOffsetX: number;
+  targetNdcOffsetY: number;
+  targetDistance: number;
+  targetTheta: number;
+  targetPhi: number;
+
   startTime: number;
   durationMs: number;
   onComplete?: () => void;
 }
 
+export const BODY_FRAMING_PROFILES: Record<string, FramingProfile> = {
+  Sun: {
+    targetCoverageY: 0.85,
+    ndcOffsetX: -0.28,
+    ndcOffsetY: 0.0,
+    fov: 42.0,
+    preferredElevation: Math.PI * 0.35,
+  },
+  Mercury: {
+    targetCoverageY: 0.92,
+    ndcOffsetX: -0.34,
+    ndcOffsetY: 0.0,
+    fov: 40.0,
+    preferredElevation: Math.PI * 0.38,
+  },
+  Venus: {
+    targetCoverageY: 0.92,
+    ndcOffsetX: -0.34,
+    ndcOffsetY: 0.0,
+    fov: 40.0,
+    preferredElevation: Math.PI * 0.38,
+  },
+  Earth: {
+    targetCoverageY: 0.94,
+    ndcOffsetX: -0.35,
+    ndcOffsetY: 0.0,
+    fov: 40.0,
+    preferredElevation: Math.PI * 0.37,
+  },
+  Mars: {
+    targetCoverageY: 0.92,
+    ndcOffsetX: -0.34,
+    ndcOffsetY: 0.0,
+    fov: 40.0,
+    preferredElevation: Math.PI * 0.38,
+  },
+  Jupiter: {
+    targetCoverageY: 1.08, // Grand planetary scale: fills screen with monumental spherical curvature
+    ndcOffsetX: -0.38,     // Placed proudly on the left
+    ndcOffsetY: 0.0,
+    fov: 41.0,
+    preferredElevation: Math.PI * 0.39,
+  },
+  Saturn: {
+    targetCoverageY: 0.88,
+    ndcOffsetX: -0.28,
+    ndcOffsetY: 0.0,
+    fov: 41.0,
+    effectiveRadiusMultiplier: 1.95, // Clearance for expansive rings
+    preferredElevation: Math.PI * 0.32, // 32° elevation reveals ring disc and planetary shadow
+  },
+  Uranus: {
+    targetCoverageY: 0.92,
+    ndcOffsetX: -0.34,
+    ndcOffsetY: 0.0,
+    fov: 40.0,
+    preferredElevation: Math.PI * 0.38,
+  },
+  Neptune: {
+    targetCoverageY: 0.92,
+    ndcOffsetX: -0.34,
+    ndcOffsetY: 0.0,
+    fov: 40.0,
+    preferredElevation: Math.PI * 0.38,
+  },
+  Pluto: {
+    targetCoverageY: 0.90,
+    ndcOffsetX: -0.32,
+    ndcOffsetY: 0.0,
+    fov: 39.0,
+    preferredElevation: Math.PI * 0.38,
+  },
+};
+
+export const DEFAULT_PLANET_FRAMING: FramingProfile = {
+  targetCoverageY: 0.92,
+  ndcOffsetX: -0.34,
+  ndcOffsetY: 0.0,
+  fov: 40.0,
+  preferredElevation: Math.PI * 0.38,
+};
+
+export const DEFAULT_MOON_FRAMING: FramingProfile = {
+  targetCoverageY: 0.88,
+  ndcOffsetX: -0.33,
+  ndcOffsetY: 0.0,
+  fov: 39.0,
+  preferredElevation: Math.PI * 0.38,
+};
+
 export class CameraRig {
   public camera: THREE.PerspectiveCamera;
-  public lookAtTarget: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
 
-  // Current smoothed spherical coordinates
+  // --- CORE CINEMATIC CAMERA MODEL ---
+  // 1. Subject Anchor: Real-time world-space position of target celestial body
+  public subjectAnchor: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
+
+  // 2. Orbit Pivot: Stable world-space center around which user rotates/inspects
+  public orbitPivot: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
+
+  // 3. Aim Point: Actual point in 3D world space the camera's optical center looks at
+  public aimPoint: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
+
+  // 4. Composition Offset: Normalized device coordinates for target placement
+  public currentNdcOffset: THREE.Vector2 = new THREE.Vector2(-0.34, 0.0);
+  public targetNdcOffset: THREE.Vector2 = new THREE.Vector2(-0.34, 0.0);
+
+  // Active shot mode
+  public shotMode: CameraShotMode = 'cinematic_observation';
+
+  // Smooth spherical coordinates (radius = observer distance from orbit pivot)
   private spherical: THREE.Spherical = new THREE.Spherical(680, Math.PI * 0.30, Math.PI * 0.25);
-  // Target spherical coordinates for silky damping & inertia
   private targetSpherical: THREE.Spherical = new THREE.Spherical(680, Math.PI * 0.30, Math.PI * 0.25);
 
-  // Pan offset in camera plane coordinates
+  // User Pan offset in camera plane
   private panOffset: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
   private targetPanOffset: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
 
-  // Focus lock
+  // Target tracking state
   public focusedObject: THREE.Object3D | null = null;
   public focusDistance: number = 30;
   public focusedRadius: number = 2.8;
@@ -31,17 +167,20 @@ export class CameraRig {
   // Transition state
   private transition: CameraTransition | null = null;
 
-  // Mouse interaction state
+  // Mouse & Touch interaction state
   private isOrbiting: boolean = false;
   private isPanning: boolean = false;
   private previousMousePosition = { x: 0, y: 0 };
+  private lastInteractionTime: number = performance.now();
 
-  // Touch interaction state
   private activeTouches = new Map<number, { x: number; y: number }>();
   private initialPinchDist: number = 0;
   private initialRadiusOnPinch: number = 0;
 
-  // Damping factor (0.1 = smooth inertial response)
+  // Idle drift settings (very subtle, slow celestial rotation when idle)
+  public enableIdleDrift: boolean = true;
+
+  // Damping factor for silky inertial responsiveness
   private readonly damping: number = 0.12;
 
   private domElement: HTMLElement;
@@ -51,57 +190,205 @@ export class CameraRig {
     this.camera = new THREE.PerspectiveCamera(
       45,
       domElement.clientWidth / domElement.clientHeight,
-      0.1,
-      100000
+      0.05,
+      160000
     );
     this.updateCameraPosition();
     this.setupEventListeners(domElement);
   }
 
+  /**
+   * Calculates the viewing distance required for a celestial body to achieve
+   * the desired vertical screen coverage under a specific perspective FOV.
+   * D = R_effective / (coverage * tan(fov / 2))
+   */
+  public static calculateViewingDistance(
+    visualRadius: number,
+    profile: FramingProfile,
+    fovDegrees: number = profile.fov
+  ): number {
+    const effectiveRadius = visualRadius * (profile.effectiveRadiusMultiplier || 1.0);
+    const halfFovRad = THREE.MathUtils.degToRad(fovDegrees * 0.5);
+    const tanHalfFov = Math.tan(halfFovRad);
+    const coverage = Math.max(0.1, profile.targetCoverageY);
+    const distance = effectiveRadius / (coverage * tanHalfFov);
+    return Math.max(effectiveRadius * 1.15, distance);
+  }
+
+  /**
+   * Adapts the target NDC composition offset responsively based on viewport aspect ratio.
+   * On wide screens (16:9), full left-third composition is preserved.
+   * On square screens, it gently shifts toward center.
+   * On mobile portrait screens, it centers horizontally and offsets slightly lower.
+   */
+  public getResponsiveNdcOffset(
+    profileNdcX: number,
+    profileNdcY: number,
+    aspect: number
+  ): { x: number; y: number } {
+    let x = profileNdcX;
+    let y = profileNdcY;
+
+    if (aspect >= 1.5) {
+      // Wide desktop (16:9, 16:10, 21:9)
+      x = profileNdcX;
+      y = profileNdcY;
+    } else if (aspect >= 1.0) {
+      // Medium / square viewport
+      const factor = (aspect - 1.0) / 0.5;
+      x = profileNdcX * (0.45 + 0.55 * factor);
+      y = profileNdcY;
+    } else {
+      // Mobile portrait (aspect < 1.0)
+      x = profileNdcX * 0.15;
+      y = -0.10;
+    }
+
+    return { x, y };
+  }
+
+  /**
+   * Computes the optical aim point in world space such that the subject anchor
+   * appears precisely at the desired NDC offset (ndcOffsetX, ndcOffsetY) on screen.
+   */
+  public calculateAimPoint(
+    cameraPos: THREE.Vector3,
+    pivotPos: THREE.Vector3,
+    ndcOffsetX: number,
+    ndcOffsetY: number,
+    fovDeg: number,
+    aspect: number
+  ): THREE.Vector3 {
+    if (Math.abs(ndcOffsetX) < 0.001 && Math.abs(ndcOffsetY) < 0.001) {
+      return pivotPos.clone();
+    }
+
+    const toTarget = new THREE.Vector3().subVectors(pivotPos, cameraPos);
+    const dist = toTarget.length();
+    if (dist < 0.001) return pivotPos.clone();
+
+    const forward = toTarget.clone().divideScalar(dist);
+    const worldUp = new THREE.Vector3(0, 1, 0);
+
+    let right = new THREE.Vector3().crossVectors(forward, worldUp);
+    if (right.lengthSq() < 0.0001) {
+      right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 0, 1));
+    }
+    right.normalize();
+
+    const up = new THREE.Vector3().crossVectors(right, forward).normalize();
+
+    // Responsive aspect ratio adaptation
+    const responsiveOffset = this.getResponsiveNdcOffset(ndcOffsetX, ndcOffsetY, aspect);
+
+    const halfFovRad = THREE.MathUtils.degToRad(fovDeg * 0.5);
+    const tanHalfFovY = Math.tan(halfFovRad);
+    const tanHalfFovX = aspect * tanHalfFovY;
+
+    const xCam = responsiveOffset.x * dist * tanHalfFovX;
+    const yCam = responsiveOffset.y * dist * tanHalfFovY;
+
+    // Aim point = Pivot - (right * xCam + up * yCam)
+    return new THREE.Vector3()
+      .copy(pivotPos)
+      .addScaledVector(right, -xCam)
+      .addScaledVector(up, -yCam);
+  }
+
   private updateCameraPosition(): void {
+    // --- 1. TRANSITION INTERPOLATION ---
     if (this.transition) {
       const now = performance.now();
       const elapsed = now - this.transition.startTime;
       const progress = Math.min(1.0, elapsed / this.transition.durationMs);
 
-      // Smooth quintic ease-in-out curve
+      // Smooth quintic ease-in-out
       const ease = progress < 0.5
         ? 16 * Math.pow(progress, 5)
         : 1 - Math.pow(-2 * progress + 2, 5) / 2;
 
-      this.camera.position.lerpVectors(this.transition.startPos, this.transition.targetPos, ease);
-      this.lookAtTarget.lerpVectors(this.transition.startLookAt, this.transition.targetLookAt, ease);
-      this.camera.lookAt(this.lookAtTarget);
-      this.camera.near = Math.max(0.02, this.focusedRadius * 0.05);
-      this.camera.far = Math.max(30000, this.camera.position.distanceTo(this.lookAtTarget) * 25);
+      // Real-time moving target tracking during transition
+      if (this.transition.targetObject) {
+        this.transition.targetObject.updateWorldMatrix(true, false);
+        this.transition.targetObject.getWorldPosition(this.subjectAnchor);
+      } else {
+        this.subjectAnchor.set(0, 0, 0);
+      }
+
+      // Interpolate optical parameters
+      this.camera.fov = THREE.MathUtils.lerp(this.transition.startFov, this.transition.targetFov, ease);
+      this.currentNdcOffset.x = THREE.MathUtils.lerp(this.transition.startNdcOffsetX, this.transition.targetNdcOffsetX, ease);
+      this.currentNdcOffset.y = THREE.MathUtils.lerp(this.transition.startNdcOffsetY, this.transition.targetNdcOffsetY, ease);
+
+      // Interpolate spherical orbit coordinates
+      const curTheta = THREE.MathUtils.lerp(this.spherical.theta, this.transition.targetTheta, ease);
+      const curPhi = THREE.MathUtils.lerp(this.spherical.phi, this.transition.targetPhi, ease);
+      const curRadius = THREE.MathUtils.lerp(this.spherical.radius, this.transition.targetDistance, ease);
+
+      this.orbitPivot.lerpVectors(this.transition.startPivot, this.subjectAnchor, ease);
+
+      const sphericalOffset = new THREE.Vector3().setFromSphericalCoords(curRadius, curPhi, curTheta);
+      this.camera.position.copy(this.orbitPivot).add(sphericalOffset);
+
+      // Calculate optical aim point ensuring the target is framed at currentNdcOffset
+      this.aimPoint = this.calculateAimPoint(
+        this.camera.position,
+        this.orbitPivot,
+        this.currentNdcOffset.x,
+        this.currentNdcOffset.y,
+        this.camera.fov,
+        this.camera.aspect
+      );
+      this.camera.lookAt(this.aimPoint);
+
+      // Dynamic depth buffer calibration: razor-sharp closeups without z-fighting or skybox clipping
+      const clearance = Math.max(0.05, curRadius - this.focusedRadius);
+      this.camera.near = Math.max(0.04, clearance * 0.08);
+      this.camera.far = Math.max(160000, curRadius * 30);
       this.camera.updateProjectionMatrix();
 
       if (progress >= 1.0) {
         if (this.transition.onComplete) this.transition.onComplete();
-        this.transition = null;
-        // Synchronize spherical coordinates from current position relative to target
-        const offset = new THREE.Vector3().subVectors(this.camera.position, this.lookAtTarget);
-        this.spherical.setFromVector3(offset);
+        this.spherical.set(curRadius, curPhi, curTheta);
         this.targetSpherical.copy(this.spherical);
         this.panOffset.set(0, 0, 0);
         this.targetPanOffset.set(0, 0, 0);
+        this.transition = null;
       }
       return;
     }
 
+    // --- 2. ACTIVE TRACKING & USER INTERACTION ---
     // Follow the tracked body in real time as it moves along its Keplerian orbit
     if (this.focusedObject) {
       this.focusedObject.updateWorldMatrix(true, false);
-      this.focusedObject.getWorldPosition(this.lookAtTarget);
+      this.focusedObject.getWorldPosition(this.subjectAnchor);
     } else {
-      this.lookAtTarget.set(0, 0, 0);
+      this.subjectAnchor.set(0, 0, 0);
     }
 
-    // Apply smoothed pan offset
-    this.panOffset.lerp(this.targetPanOffset, this.damping);
-    this.lookAtTarget.add(this.panOffset);
+    // Smoothly blend NDC composition offset toward target
+    this.currentNdcOffset.x += (this.targetNdcOffset.x - this.currentNdcOffset.x) * this.damping;
+    this.currentNdcOffset.y += (this.targetNdcOffset.y - this.currentNdcOffset.y) * this.damping;
 
-    // Apply silky damping to spherical coordinates
+    // Orbit pivot tracks subject anchor + smoothed pan offset
+    this.panOffset.lerp(this.targetPanOffset, this.damping);
+    this.orbitPivot.copy(this.subjectAnchor).add(this.panOffset);
+
+    // Apply idle celestial drift if enabled and user has been idle for > 3s
+    if (
+      this.enableIdleDrift &&
+      !this.isOrbiting &&
+      !this.isPanning &&
+      this.shotMode === 'cinematic_observation'
+    ) {
+      const now = performance.now();
+      if ((now - this.lastInteractionTime) > 3000) {
+        this.targetSpherical.theta += 0.00008; // Delicate, imperceptible celestial drift
+      }
+    }
+
+    // Smooth spherical coordinates
     this.spherical.theta += (this.targetSpherical.theta - this.spherical.theta) * this.damping;
     this.spherical.phi += (this.targetSpherical.phi - this.spherical.phi) * this.damping;
     this.spherical.radius += (this.targetSpherical.radius - this.spherical.radius) * this.damping;
@@ -109,16 +396,26 @@ export class CameraRig {
     // Strict polar singularity protection: clamps phi between 0.02 and PI - 0.02
     this.spherical.phi = Math.max(0.02, Math.min(Math.PI - 0.02, this.spherical.phi));
 
-    // Calculate 3D camera position from spherical offset
+    // Observer camera position in 3D world space
     const offset = new THREE.Vector3().setFromSpherical(this.spherical);
-    this.camera.position.copy(this.lookAtTarget).add(offset);
-    this.camera.lookAt(this.lookAtTarget);
+    this.camera.position.copy(this.orbitPivot).add(offset);
 
-    // Dynamic depth buffer calibration: ensures extreme close-ups remain razor-sharp without z-fighting
+    // Compute optical aim point ensuring the target is framed at currentNdcOffset
+    this.aimPoint = this.calculateAimPoint(
+      this.camera.position,
+      this.orbitPivot,
+      this.currentNdcOffset.x,
+      this.currentNdcOffset.y,
+      this.camera.fov,
+      this.camera.aspect
+    );
+    this.camera.lookAt(this.aimPoint);
+
+    // Dynamic depth buffer calibration: razor-sharp closeups without z-fighting or skybox clipping
     const distToCenter = this.spherical.radius;
     const clearance = Math.max(0.05, distToCenter - this.focusedRadius);
-    this.camera.near = Math.max(0.02, clearance * 0.1);
-    this.camera.far = Math.max(30000, distToCenter * 25);
+    this.camera.near = Math.max(0.04, clearance * 0.08);
+    this.camera.far = Math.max(160000, distToCenter * 30);
     this.camera.updateProjectionMatrix();
   }
 
@@ -127,9 +424,16 @@ export class CameraRig {
   }
 
   /**
+   * Backward-compatibility alias for code reading lookAtTarget.
+   */
+  public get lookAtTarget(): THREE.Vector3 {
+    return this.aimPoint;
+  }
+
+  /**
    * Focuses on a celestial body with cinematic framing.
-   * Centers the body precisely at the orbit pivot so the user can freely inspect
-   * every angle (day, night, north pole, south pole, terminator).
+   * Places the body gracefully off-center (left-third composition) filling 85-110%
+   * of viewport height, revealing its spherical curvature and deep galactic cosmos.
    */
   public focusCinematic(
     object: THREE.Object3D,
@@ -140,6 +444,7 @@ export class CameraRig {
   ): void {
     this.focusedObject = object;
     this.focusedRadius = radius;
+    this.shotMode = 'cinematic_observation';
 
     if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       durationMs = 150;
@@ -149,7 +454,15 @@ export class CameraRig {
     const worldPos = new THREE.Vector3();
     object.getWorldPosition(worldPos);
 
-    // Sun vector (Sun sits at 0, 0, 0)
+    // Framing profile lookup
+    const profile = BODY_FRAMING_PROFILES[bodyName] || (radius < 1.0 ? DEFAULT_MOON_FRAMING : DEFAULT_PLANET_FRAMING);
+    this.targetNdcOffset.set(profile.ndcOffsetX, profile.ndcOffsetY);
+
+    // Calculate viewing distance based on visual radius, FOV, and target screen coverage
+    const viewingDistance = CameraRig.calculateViewingDistance(radius, profile, profile.fov);
+    this.focusDistance = viewingDistance;
+
+    // Direction to Sun (Sun sits at 0, 0, 0)
     const toSun = new THREE.Vector3().copy(worldPos).negate();
     const isSun = toSun.lengthSq() < 1 || bodyName === 'Sun';
     if (isSun) {
@@ -158,62 +471,68 @@ export class CameraRig {
       toSun.normalize();
     }
 
-    let distanceFactor = 2.45;
-    if (bodyName === 'Saturn') {
-      distanceFactor = 3.6; // Majestic clearance for rings
-    } else if (bodyName === 'Sun') {
-      distanceFactor = 2.2;
-    } else if (bodyName === 'Jupiter') {
-      distanceFactor = 2.05; // Jupiter fills the screen with colossal curvature
-    } else if (radius < 1.0) {
-      distanceFactor = 2.8;
-    }
-
-    const viewingDistance = Math.max(2.4, radius * distanceFactor);
-    this.focusDistance = viewingDistance;
-
     // Natural 3/4 sunlit initial vantage point
+    // Orbital tangent vector in X-Z plane
     const side = new THREE.Vector3(-toSun.z, 0, toSun.x).normalize();
     const up = new THREE.Vector3(0, 1, 0);
 
     let cameraOffset: THREE.Vector3;
     if (isSun) {
-      cameraOffset = new THREE.Vector3(0, 0.4, 1.0).normalize().multiplyScalar(viewingDistance);
+      cameraOffset = new THREE.Vector3(0, 0.40, 1.0).normalize().multiplyScalar(viewingDistance);
     } else if (bodyName === 'Saturn') {
-      // 28° oblique tilt to view Saturn's rings and shadows
+      // 32° oblique elevation to show Saturn's ring system and shadow
       cameraOffset = new THREE.Vector3()
-        .copy(toSun).multiplyScalar(-0.45)
-        .addScaledVector(side, 0.55)
-        .addScaledVector(up, 0.55)
+        .copy(toSun).multiplyScalar(-0.35)
+        .addScaledVector(side, 0.65)
+        .addScaledVector(up, 0.58)
         .normalize()
         .multiplyScalar(viewingDistance);
     } else {
-      // 3/4 illuminated angle showing both sunlight, atmosphere, and terminator
+      // 3/4 sunlit vantage point: illuminated surface + terminator + limb
+      // Looking past the planet towards the deep cosmos and Milky Way
       cameraOffset = new THREE.Vector3()
-        .copy(toSun).multiplyScalar(0.45)
-        .addScaledVector(side, 0.65)
-        .addScaledVector(up, 0.35)
+        .copy(toSun).multiplyScalar(0.48)
+        .addScaledVector(side, 0.72)
+        .addScaledVector(up, 0.36)
         .normalize()
         .multiplyScalar(viewingDistance);
     }
 
-    const targetCameraPos = new THREE.Vector3().copy(worldPos).add(cameraOffset);
-    const targetSpherical = new THREE.Spherical().setFromVector3(cameraOffset);
+    const targetSph = new THREE.Spherical().setFromVector3(cameraOffset);
+    // Polar singularity safety
+    targetSph.phi = Math.max(0.04, Math.min(Math.PI - 0.04, targetSph.phi));
 
-    // Reset pan offset so orbit pivot is centered exactly on the planet
+    // Reset pan offset
     this.targetPanOffset.set(0, 0, 0);
     this.panOffset.set(0, 0, 0);
 
     this.transition = {
       startPos: this.camera.position.clone(),
-      targetPos: targetCameraPos,
-      startLookAt: this.lookAtTarget.clone(),
-      targetLookAt: worldPos.clone(),
+      startAimPoint: this.aimPoint.clone(),
+      startFov: this.camera.fov,
+      startNdcOffsetX: this.currentNdcOffset.x,
+      startNdcOffsetY: this.currentNdcOffset.y,
+      startPivot: this.orbitPivot.clone(),
+      startSpherical: this.spherical.clone(),
+
+      targetObject: object,
+      targetRadius: radius,
+      targetBodyName: bodyName,
+      targetShotMode: 'cinematic_observation',
+      targetFov: profile.fov,
+      targetNdcOffsetX: profile.ndcOffsetX,
+      targetNdcOffsetY: profile.ndcOffsetY,
+      targetDistance: viewingDistance,
+      targetTheta: targetSph.theta,
+      targetPhi: targetSph.phi,
+
       startTime: performance.now(),
       durationMs,
       onComplete: () => {
-        this.spherical.copy(targetSpherical);
-        this.targetSpherical.copy(targetSpherical);
+        this.spherical.copy(targetSph);
+        this.targetSpherical.copy(targetSph);
+        this.camera.fov = profile.fov;
+        this.currentNdcOffset.set(profile.ndcOffsetX, profile.ndcOffsetY);
         if (onComplete) onComplete();
       }
     };
@@ -226,34 +545,79 @@ export class CameraRig {
   public resetToOverview(durationMs: number = 1600): void {
     this.focusedObject = null;
     this.focusedRadius = 48.0;
+    this.shotMode = 'deep_space_overview';
     this.targetPanOffset.set(0, 0, 0);
     this.panOffset.set(0, 0, 0);
+    this.targetNdcOffset.set(0, 0);
+
+    if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      durationMs = 150;
+    }
 
     const targetSpherical = new THREE.Spherical(680, Math.PI * 0.30, Math.PI * 0.25);
-    const targetPos = new THREE.Vector3().setFromSpherical(targetSpherical);
 
     this.transition = {
       startPos: this.camera.position.clone(),
-      targetPos,
-      startLookAt: this.lookAtTarget.clone(),
-      targetLookAt: new THREE.Vector3(0, 0, 0),
+      startAimPoint: this.aimPoint.clone(),
+      startFov: this.camera.fov,
+      startNdcOffsetX: this.currentNdcOffset.x,
+      startNdcOffsetY: this.currentNdcOffset.y,
+      startPivot: this.orbitPivot.clone(),
+      startSpherical: this.spherical.clone(),
+
+      targetObject: null,
+      targetRadius: 48.0,
+      targetBodyName: 'Overview',
+      targetShotMode: 'deep_space_overview',
+      targetFov: 45.0,
+      targetNdcOffsetX: 0.0,
+      targetNdcOffsetY: 0.0,
+      targetDistance: 680.0,
+      targetTheta: targetSpherical.theta,
+      targetPhi: targetSpherical.phi,
+
       startTime: performance.now(),
       durationMs,
       onComplete: () => {
         this.spherical.copy(targetSpherical);
         this.targetSpherical.copy(targetSpherical);
-        this.lookAtTarget.set(0, 0, 0);
+        this.subjectAnchor.set(0, 0, 0);
+        this.orbitPivot.set(0, 0, 0);
+        this.camera.fov = 45.0;
+        this.currentNdcOffset.set(0, 0);
       }
     };
+  }
+
+  /**
+   * Toggles between cinematic left-third composition and centered scientific inspection.
+   */
+  public toggleFramingOffset(): boolean {
+    if (Math.abs(this.targetNdcOffset.x) > 0.05) {
+      // Switch to centered inspection
+      this.targetNdcOffset.set(0, 0);
+      this.shotMode = 'free_inspection';
+      return false; // isCentered = true
+    } else {
+      // Restore cinematic observation
+      const profile = this.focusedObject
+        ? (BODY_FRAMING_PROFILES[this.focusedObject.name] || DEFAULT_PLANET_FRAMING)
+        : DEFAULT_PLANET_FRAMING;
+      this.targetNdcOffset.set(profile.ndcOffsetX, profile.ndcOffsetY);
+      this.shotMode = 'cinematic_observation';
+      return true; // isCinematic = true
+    }
   }
 
   // --- INTERACTION CONTROLS ---
 
   private onMouseDown = (e: MouseEvent): void => {
+    this.lastInteractionTime = performance.now();
+
     // Interruption: if a transition is in flight and user interacts, cancel it immediately
     if (this.transition) {
       this.transition = null;
-      const offset = new THREE.Vector3().subVectors(this.camera.position, this.lookAtTarget);
+      const offset = new THREE.Vector3().subVectors(this.camera.position, this.orbitPivot);
       this.spherical.setFromVector3(offset);
       this.targetSpherical.copy(this.spherical);
     }
@@ -274,9 +638,11 @@ export class CameraRig {
   private onMouseUp = (): void => {
     this.isOrbiting = false;
     this.isPanning = false;
+    this.lastInteractionTime = performance.now();
   };
 
   private onMouseMove = (e: MouseEvent): void => {
+    this.lastInteractionTime = performance.now();
     if (!this.isOrbiting && !this.isPanning) return;
 
     const deltaX = e.clientX - this.previousMousePosition.x;
@@ -302,9 +668,13 @@ export class CameraRig {
 
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
+    this.lastInteractionTime = performance.now();
 
     if (this.transition) {
       this.transition = null;
+      const offset = new THREE.Vector3().subVectors(this.camera.position, this.orbitPivot);
+      this.spherical.setFromVector3(offset);
+      this.targetSpherical.copy(this.spherical);
     }
 
     const zoomFactor = Math.pow(0.95, e.deltaY * 0.015);
@@ -318,12 +688,18 @@ export class CameraRig {
   };
 
   private onContextMenu = (e: MouseEvent): void => {
-    e.preventDefault(); // Prevent default browser context menu on right-click drag
+    e.preventDefault();
   };
 
   // Touch Support
   private onTouchStart = (e: TouchEvent): void => {
-    if (this.transition) this.transition = null;
+    this.lastInteractionTime = performance.now();
+    if (this.transition) {
+      this.transition = null;
+      const offset = new THREE.Vector3().subVectors(this.camera.position, this.orbitPivot);
+      this.spherical.setFromVector3(offset);
+      this.targetSpherical.copy(this.spherical);
+    }
 
     for (let i = 0; i < e.changedTouches.length; i++) {
       const touch = e.changedTouches[i];
@@ -338,6 +714,7 @@ export class CameraRig {
   };
 
   private onTouchMove = (e: TouchEvent): void => {
+    this.lastInteractionTime = performance.now();
     if (this.activeTouches.size === 1 && e.touches.length === 1) {
       const touch = e.touches[0];
       const prev = this.activeTouches.get(touch.identifier);
@@ -361,6 +738,7 @@ export class CameraRig {
   };
 
   private onTouchEnd = (e: TouchEvent): void => {
+    this.lastInteractionTime = performance.now();
     for (let i = 0; i < e.changedTouches.length; i++) {
       this.activeTouches.delete(e.changedTouches[i].identifier);
     }
@@ -371,15 +749,19 @@ export class CameraRig {
 
   private setupEventListeners(element: HTMLElement): void {
     this.domElement = element;
-    element.addEventListener('mousedown', this.onMouseDown);
-    window.addEventListener('mouseup', this.onMouseUp);
-    window.addEventListener('mousemove', this.onMouseMove);
-    element.addEventListener('wheel', this.onWheel, { passive: false });
-    element.addEventListener('contextmenu', this.onContextMenu);
+    if (element && element.addEventListener) {
+      element.addEventListener('mousedown', this.onMouseDown);
+      element.addEventListener('wheel', this.onWheel, { passive: false });
+      element.addEventListener('contextmenu', this.onContextMenu);
+      element.addEventListener('touchstart', this.onTouchStart, { passive: true });
+    }
 
-    element.addEventListener('touchstart', this.onTouchStart, { passive: true });
-    window.addEventListener('touchmove', this.onTouchMove, { passive: true });
-    window.addEventListener('touchend', this.onTouchEnd, { passive: true });
+    if (typeof window !== 'undefined') {
+      window.addEventListener('mouseup', this.onMouseUp);
+      window.addEventListener('mousemove', this.onMouseMove);
+      window.addEventListener('touchmove', this.onTouchMove, { passive: true });
+      window.addEventListener('touchend', this.onTouchEnd, { passive: true });
+    }
   }
 
   public handleResize(width: number, height: number): void {
@@ -388,15 +770,17 @@ export class CameraRig {
   }
 
   public dispose(): void {
-    if (this.domElement) {
+    if (this.domElement && this.domElement.removeEventListener) {
       this.domElement.removeEventListener('mousedown', this.onMouseDown);
       this.domElement.removeEventListener('wheel', this.onWheel);
       this.domElement.removeEventListener('contextmenu', this.onContextMenu);
       this.domElement.removeEventListener('touchstart', this.onTouchStart);
     }
-    window.removeEventListener('mouseup', this.onMouseUp);
-    window.removeEventListener('mousemove', this.onMouseMove);
-    window.removeEventListener('touchmove', this.onTouchMove);
-    window.removeEventListener('touchend', this.onTouchEnd);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('mouseup', this.onMouseUp);
+      window.removeEventListener('mousemove', this.onMouseMove);
+      window.removeEventListener('touchmove', this.onTouchMove);
+      window.removeEventListener('touchend', this.onTouchEnd);
+    }
   }
 }
