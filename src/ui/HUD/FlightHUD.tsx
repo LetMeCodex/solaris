@@ -27,6 +27,7 @@ interface FlightHUDProps {
   onToggleConstellations?: () => void;
   onToggleAsteroidBelt?: () => void;
   onToggleOrbits?: () => void;
+  onJumpToScale?: (domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic') => void;
 }
 
 type CatalogueFilter = 'all' | 'planet' | 'moon' | 'minor';
@@ -57,6 +58,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   onToggleConstellations,
   onToggleAsteroidBelt,
   onToggleOrbits,
+  onJumpToScale,
 }) => {
   const target = telemetry?.activeTarget;
   const isPaused = telemetry?.isPaused ?? false;
@@ -68,6 +70,10 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const constellationsOn = telemetry?.constellationsVisible ?? true;
   const asteroidBeltOn = telemetry?.asteroidBeltVisible ?? true;
   const orbitsOn = telemetry?.orbitsVisible ?? true;
+
+  const observerScale = telemetry?.observerScaleMetric ?? '1.00 AU';
+  const observerDomain = telemetry?.observerDomain ?? 'inner_system';
+  const travelSpeed = telemetry?.travelSpeed ?? 0;
 
   // Interface state
   const [isHudVisible, setIsHudVisible] = useState<boolean>(true);
@@ -295,7 +301,69 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             <span className="text-white/20">·</span>
             <span>JD {julianDate.toFixed(2)}</span>
             <span className="text-white/20">·</span>
-            <span className="text-white/40">ICRF J2000</span>
+            <span className="text-amber-300/90 font-mono tracking-wider">{observerScale}</span>
+          </div>
+        </div>
+
+        {/* Top-Center: Multiscale Cosmological Domain & Scale Navigator */}
+        <div className="hidden xl:flex items-center gap-1.5 bg-black/40 backdrop-blur-md border border-white/10 rounded-full p-1 shadow-lg pointer-events-auto">
+          <div className="flex items-center gap-1.5 px-3 py-1 bg-white/5 rounded-full border border-white/10 text-[10px] tracking-[0.2em] font-light">
+            <span className={`w-1.5 h-1.5 rounded-full ${travelSpeed > 4 ? 'bg-cyan-400 animate-ping' : 'bg-amber-400'}`} />
+            <span className="text-white/40 uppercase">SCALE:</span>
+            <span className="text-white font-medium tracking-[0.12em]">{observerScale}</span>
+          </div>
+
+          <div className="flex items-center gap-0.5 text-[9px] uppercase tracking-[0.2em] font-light">
+            <button
+              onClick={() => onJumpToScale?.('planetary')}
+              className={`px-2.5 py-1 rounded-full transition-all duration-200 ${
+                observerDomain === 'planetary'
+                  ? 'bg-white/20 text-white font-medium shadow-sm border border-white/25'
+                  : 'text-white/40 hover:text-white/80'
+              }`}
+            >
+              Planet
+            </button>
+            <button
+              onClick={() => onJumpToScale?.('inner_system')}
+              className={`px-2.5 py-1 rounded-full transition-all duration-200 ${
+                observerDomain === 'inner_system'
+                  ? 'bg-white/20 text-white font-medium shadow-sm border border-white/25'
+                  : 'text-white/40 hover:text-white/80'
+              }`}
+            >
+              Inner Sys
+            </button>
+            <button
+              onClick={() => onJumpToScale?.('outer_system')}
+              className={`px-2.5 py-1 rounded-full transition-all duration-200 ${
+                observerDomain === 'outer_system'
+                  ? 'bg-white/20 text-white font-medium shadow-sm border border-white/25'
+                  : 'text-white/40 hover:text-white/80'
+              }`}
+            >
+              Outer Sys
+            </button>
+            <button
+              onClick={() => onJumpToScale?.('interstellar')}
+              className={`px-2.5 py-1 rounded-full transition-all duration-200 ${
+                observerDomain === 'interstellar'
+                  ? 'bg-cyan-400/25 text-cyan-200 font-medium shadow-sm border border-cyan-400/35'
+                  : 'text-white/40 hover:text-white/80'
+              }`}
+            >
+              Interstellar
+            </button>
+            <button
+              onClick={() => onJumpToScale?.('galactic')}
+              className={`px-2.5 py-1 rounded-full transition-all duration-200 ${
+                observerDomain === 'galactic'
+                  ? 'bg-purple-400/25 text-purple-200 font-medium shadow-sm border border-purple-400/35'
+                  : 'text-white/40 hover:text-white/80'
+              }`}
+            >
+              Milky Way
+            </button>
           </div>
         </div>
 

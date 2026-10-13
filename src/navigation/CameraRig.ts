@@ -151,6 +151,17 @@ export class CameraRig {
   // Active shot mode
   public shotMode: CameraShotMode = 'cinematic_observation';
 
+  // Multiscale Anchor Handoff & Origin reference
+  private static readonly ORIGIN_VEC = new THREE.Vector3(0, 0, 0);
+  private effectiveAnchor: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
+
+  // Velocity & Travel Tracking for Streak Particles
+  private currentVelocity: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
+  private lastCameraPos: THREE.Vector3 = new THREE.Vector3(0, 0, 0);
+  private lastRadius: number = 680;
+  private zoomRate: number = 0;
+  private lastUpdateTime: number = performance.now();
+
   // Smooth spherical coordinates (radius = observer distance from orbit pivot)
   private spherical: THREE.Spherical = new THREE.Spherical(680, Math.PI * 0.30, Math.PI * 0.25);
   private targetSpherical: THREE.Spherical = new THREE.Spherical(680, Math.PI * 0.30, Math.PI * 0.25);
@@ -360,20 +371,33 @@ export class CameraRig {
 
     // --- 2. ACTIVE TRACKING & USER INTERACTION ---
     // Follow the tracked body in real time as it moves along its Keplerian orbit
+    let currentAnchor = this.subjectAnchor;
     if (this.focusedObject) {
       this.focusedObject.updateWorldMatrix(true, false);
       this.focusedObject.getWorldPosition(this.subjectAnchor);
+
+      // Seamless anchor handoff: as observer zooms beyond planetary domain (> 350 units),
+      // the orbit pivot smoothly transfers from the individual body towards the Solar System barycenter (0,0,0).
+      const r = this.spherical.radius;
+      if (r > 320.0) {
+        const handoffFactor = Math.min(1.0, (r - 320.0) / 480.0);
+        this.effectiveAnchor.lerpVectors(this.subjectAnchor, CameraRig.ORIGIN_VEC, handoffFactor);
+        currentAnchor = this.effectiveAnchor;
+      } else {
+        currentAnchor = this.subjectAnchor;
+      }
     } else {
       this.subjectAnchor.set(0, 0, 0);
+      currentAnchor = this.subjectAnchor;
     }
 
     // Smoothly blend NDC composition offset toward target
     this.currentNdcOffset.x += (this.targetNdcOffset.x - this.currentNdcOffset.x) * this.damping;
     this.currentNdcOffset.y += (this.targetNdcOffset.y - this.currentNdcOffset.y) * this.damping;
 
-    // Orbit pivot tracks subject anchor + smoothed pan offset
+    // Orbit pivot tracks effective anchor + smoothed pan offset
     this.panOffset.lerp(this.targetPanOffset, this.damping);
-    this.orbitPivot.copy(this.subjectAnchor).add(this.panOffset);
+    this.orbitPivot.copy(currentAnchor).add(this.panOffset);
 
     // Apply idle celestial drift if enabled and user has been idle for > 3s
     if (
@@ -411,12 +435,23 @@ export class CameraRig {
     );
     this.camera.lookAt(this.aimPoint);
 
-    // Dynamic depth buffer calibration: razor-sharp closeups without z-fighting or skybox clipping
+    // Dynamic depth buffer calibration across 9 orders of magnitude
     const distToCenter = this.spherical.radius;
     const clearance = Math.max(0.05, distToCenter - this.focusedRadius);
-    this.camera.near = Math.max(0.04, clearance * 0.08);
-    this.camera.far = Math.max(160000, distToCenter * 30);
+    this.camera.near = Math.max(0.04, Math.min(30.0, clearance * 0.08));
+    this.camera.far = Math.max(250000, distToCenter * 35);
     this.camera.updateProjectionMatrix();
+
+    // Track frame velocity and zoom rate for travel particles and HUD telemetry
+    const now = performance.now();
+    const dt = Math.max(0.001, (now - this.lastUpdateTime) * 0.001);
+    this.currentVelocity.subVectors(this.camera.position, this.lastCameraPos).divideScalar(dt);
+    if (this.lastRadius > 0.001) {
+      this.zoomRate = (Math.log(this.spherical.radius) - Math.log(this.lastRadius)) / dt;
+    }
+    this.lastCameraPos.copy(this.camera.position);
+    this.lastRadius = this.spherical.radius;
+    this.lastUpdateTime = now;
   }
 
   public update(): void {
@@ -590,6 +625,154 @@ export class CameraRig {
   }
 
   /**
+   * Smoothly transitions camera to a target distance and field of view.
+   */
+  public transitionToDistance(
+    distance: number,
+    fov: number = 45.0,
+    shotMode: CameraShotMode = 'deep_space_overview',
+    durationMs: number = 1600,
+    preferredPhi?: number
+  ): void {
+    if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      durationMs = 150;
+    }
+
+    const curTheta = this.targetSpherical.theta;
+    const curPhi = preferredPhi !== undefined
+      ? preferredPhi
+      : Math.max(0.08, Math.min(Math.PI * 0.45, this.targetSpherical.phi));
+    const targetSpherical = new THREE.Spherical(distance, curPhi, curTheta);
+
+    this.shotMode = shotMode;
+    this.targetPanOffset.set(0, 0, 0);
+
+    const targetNdcX = shotMode === 'cinematic_observation' ? -0.34 : 0.0;
+    const targetNdcY = 0.0;
+
+    this.transition = {
+      startPos: this.camera.position.clone(),
+      startAimPoint: this.aimPoint.clone(),
+      startFov: this.camera.fov,
+      startNdcOffsetX: this.currentNdcOffset.x,
+      startNdcOffsetY: this.currentNdcOffset.y,
+      startPivot: this.orbitPivot.clone(),
+      startSpherical: this.spherical.clone(),
+
+      targetObject: distance < 350.0 ? this.focusedObject : null,
+      targetRadius: this.focusedRadius,
+      targetBodyName: this.focusedObject ? this.focusedObject.name : 'Cosmos',
+      targetShotMode: shotMode,
+      targetFov: fov,
+      targetNdcOffsetX: targetNdcX,
+      targetNdcOffsetY: targetNdcY,
+      targetDistance: distance,
+      targetTheta: targetSpherical.theta,
+      targetPhi: targetSpherical.phi,
+
+      startTime: performance.now(),
+      durationMs,
+      onComplete: () => {
+        this.spherical.copy(targetSpherical);
+        this.targetSpherical.copy(targetSpherical);
+        if (distance >= 350.0) {
+          this.subjectAnchor.set(0, 0, 0);
+          this.orbitPivot.set(0, 0, 0);
+        }
+        this.camera.fov = fov;
+        this.currentNdcOffset.set(targetNdcX, targetNdcY);
+        this.targetNdcOffset.set(targetNdcX, targetNdcY);
+      }
+    };
+  }
+
+  /**
+   * One-click navigation to discrete multiscale cosmological tiers.
+   */
+  public jumpToScale(
+    domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic',
+    durationMs: number = 1800
+  ): void {
+    let targetDist = 680.0;
+    let targetShot: CameraShotMode = 'scientific_overview';
+    let targetFov = 45.0;
+    let targetPhi: number | undefined = undefined;
+
+    switch (domain) {
+      case 'planetary':
+        targetDist = this.focusedRadius > 0 ? this.focusedRadius * 2.8 : 12.0;
+        targetShot = 'cinematic_observation';
+        targetFov = 40.0;
+        break;
+      case 'inner_system':
+        targetDist = 180.0;
+        targetShot = 'scientific_overview';
+        targetFov = 45.0;
+        targetPhi = Math.PI * 0.32;
+        break;
+      case 'outer_system':
+        targetDist = 1100.0;
+        targetShot = 'deep_space_overview';
+        targetFov = 46.0;
+        targetPhi = Math.PI * 0.28;
+        break;
+      case 'interstellar':
+        targetDist = 8200.0;
+        targetShot = 'deep_space_overview';
+        targetFov = 48.0;
+        targetPhi = Math.PI * 0.26;
+        break;
+      case 'galactic':
+        targetDist = 45000.0;
+        targetShot = 'deep_space_overview';
+        targetFov = 50.0;
+        // Elevated perspective looking down onto the sweeping spiral disk
+        targetPhi = Math.PI * 0.20;
+        break;
+    }
+
+    this.transitionToDistance(targetDist, targetFov, targetShot, durationMs, targetPhi);
+  }
+
+  public getVelocity(): THREE.Vector3 {
+    return this.currentVelocity;
+  }
+
+  public getZoomVelocity(): number {
+    return this.zoomRate;
+  }
+
+  public getTravelSpeed(): number {
+    return this.currentVelocity.length();
+  }
+
+  public getObserverScaleMetric(): {
+    distance: number;
+    formatted: string;
+    domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic';
+  } {
+    const d = this.spherical.radius;
+    if (d < 30.0) {
+      const km = Math.round(d * 4200.0);
+      return { distance: d, formatted: `${km.toLocaleString()} KM`, domain: 'planetary' };
+    }
+    if (d < 380.0) {
+      const au = (d / 28.0).toFixed(2);
+      return { distance: d, formatted: `${au} AU`, domain: 'inner_system' };
+    }
+    if (d < 3500.0) {
+      const au = (d / 28.0).toFixed(1);
+      return { distance: d, formatted: `${au} AU`, domain: 'outer_system' };
+    }
+    if (d < 25000.0) {
+      const ly = (d / 380.0).toFixed(2);
+      return { distance: d, formatted: `${ly} LY`, domain: 'interstellar' };
+    }
+    const kpc = (d / 6200.0).toFixed(1);
+    return { distance: d, formatted: `${kpc} KPC`, domain: 'galactic' };
+  }
+
+  /**
    * Toggles between cinematic left-third composition and centered scientific inspection.
    */
   public toggleFramingOffset(): boolean {
@@ -677,9 +860,10 @@ export class CameraRig {
       this.targetSpherical.copy(this.spherical);
     }
 
-    const zoomFactor = Math.pow(0.95, e.deltaY * 0.015);
-    const minDistance = this.focusedObject ? this.focusedRadius * 1.15 : 8.0;
-    const maxDistance = 4500.0;
+    // Logarithmic zoom scaling across 9 orders of magnitude
+    const zoomFactor = Math.pow(0.92, e.deltaY * 0.012);
+    const minDistance = this.focusedObject ? this.focusedRadius * 1.15 : 0.35;
+    const maxDistance = 180000.0;
 
     this.targetSpherical.radius = Math.max(
       minDistance,
@@ -731,8 +915,8 @@ export class CameraRig {
       const dist = Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
       if (this.initialPinchDist > 0) {
         const scale = this.initialPinchDist / dist;
-        const minDistance = this.focusedObject ? this.focusedRadius * 1.15 : 8.0;
-        this.targetSpherical.radius = Math.max(minDistance, Math.min(4500, this.initialRadiusOnPinch * scale));
+        const minDistance = this.focusedObject ? this.focusedRadius * 1.15 : 0.35;
+        this.targetSpherical.radius = Math.max(minDistance, Math.min(180000.0, this.initialRadiusOnPinch * scale));
       }
     }
   };

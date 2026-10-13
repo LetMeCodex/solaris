@@ -74,6 +74,10 @@ export const App: React.FC = () => {
     sceneRef.current?.toggleOrbits();
   }, []);
 
+  const handleJumpToScale = useCallback((domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic') => {
+    sceneRef.current?.jumpToScale(domain);
+  }, []);
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#030206]" style={{ width: '100vw', height: '100vh', position: 'relative', overflow: 'hidden' }}>
       {/* 3D WebGL Canvas Viewport */}
@@ -93,6 +97,7 @@ export const App: React.FC = () => {
         onToggleConstellations={handleToggleConstellations}
         onToggleAsteroidBelt={handleToggleAsteroidBelt}
         onToggleOrbits={handleToggleOrbits}
+        onJumpToScale={handleJumpToScale}
       />
     </div>
   );

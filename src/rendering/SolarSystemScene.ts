@@ -23,6 +23,10 @@ export interface TelemetryData {
   constellationsVisible: boolean;
   asteroidBeltVisible: boolean;
   orbitsVisible: boolean;
+  observerScaleMetric: string;
+  observerDomain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic';
+  travelSpeed: number;
+  cameraDistance: number;
 }
 
 export class SolarSystemScene {
@@ -457,7 +461,12 @@ export class SolarSystemScene {
     }
 
     this.cameraRig.update();
-    this.starfield.update(this.cameraRig.camera.position, deltaSec);
+    this.starfield.update(
+      this.cameraRig.camera.position,
+      deltaSec,
+      this.cameraRig.getVelocity(),
+      this.cameraRig.getZoomVelocity()
+    );
 
     this.renderer.render(this.scene, this.cameraRig.camera);
 
@@ -466,6 +475,10 @@ export class SolarSystemScene {
       this.dispatchTelemetry();
     }
   };
+
+  public jumpToScale(domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic'): void {
+    this.cameraRig.jumpToScale(domain);
+  }
 
   private dispatchTelemetry(): void {
     const selectedState = this.latestPhysicalStates.get(this.selectedBody.name);
@@ -479,6 +492,9 @@ export class SolarSystemScene {
     this.cameraRig.camera.getWorldDirection(lookDir);
     const azimuth = Math.atan2(lookDir.x, lookDir.z) * THREE.MathUtils.RAD2DEG;
     const elevation = Math.asin(lookDir.y) * THREE.MathUtils.RAD2DEG;
+
+    const scaleMetric = this.cameraRig.getObserverScaleMetric();
+    const travelSpeed = this.cameraRig.getTravelSpeed();
 
     const targetInfo: SelectedTargetInfo = {
       id: this.selectedBody.id,
@@ -507,6 +523,10 @@ export class SolarSystemScene {
       constellationsVisible: this.starfield.areConstellationsVisible(),
       asteroidBeltVisible: this.asteroidBelt.isVisible(),
       orbitsVisible: this.orbitLinesGroup.visible,
+      observerScaleMetric: scaleMetric.formatted,
+      observerDomain: scaleMetric.domain,
+      travelSpeed: Math.round(travelSpeed),
+      cameraDistance: Math.round(scaleMetric.distance),
     });
   }
 

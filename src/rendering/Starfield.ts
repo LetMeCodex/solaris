@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { TexturePipeline } from './TexturePipeline';
+import { MilkyWayGalaxy } from './MilkyWayGalaxy';
+import { TravelParticles } from './TravelParticles';
 
 interface RawStarHeader {
   count: number;
@@ -223,10 +225,14 @@ export class Starfield {
   public group: THREE.Group = new THREE.Group();
   private celestialGroup: THREE.Group = new THREE.Group();
   private pointsMesh?: THREE.Points;
+  private localInterstellarStars?: THREE.Points;
   private constellationLines?: THREE.LineSegments;
   private milkyWayMesh?: THREE.Mesh;
+  private milkyWayOpacityUniform: { value: number } = { value: 1.0 };
   private stardustMesh?: THREE.Points;
   private meteorSystem?: MeteorSystem;
+  public externalGalaxy: MilkyWayGalaxy;
+  public travelParticles: TravelParticles;
   public isLoaded: boolean = false;
 
   // Sphere radius for stars in Three.js coordinates
@@ -242,6 +248,17 @@ export class Starfield {
     this.meteorSystem = new MeteorSystem();
     this.group.add(this.meteorSystem.mesh);
 
+    // External 3D Milky Way Galaxy model
+    this.externalGalaxy = new MilkyWayGalaxy();
+    // Offset external galaxy so its Sun locator coincides exactly with scene origin (0, 0, 0)
+    const sunOffset = this.externalGalaxy.sunWorldPosition.clone().applyEuler(this.externalGalaxy.group.rotation);
+    this.externalGalaxy.group.position.copy(sunOffset).negate();
+    this.group.add(this.externalGalaxy.group);
+
+    // Velocity-aware travel streak particles
+    this.travelParticles = new TravelParticles();
+    this.group.add(this.travelParticles.mesh);
+
     this.loadCatalog();
   }
 
@@ -252,6 +269,7 @@ export class Starfield {
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         milkyWayMap: { value: tex },
+        uOpacity: this.milkyWayOpacityUniform,
       },
       vertexShader: `
         varying vec2 vUv;
@@ -262,6 +280,7 @@ export class Starfield {
       `,
       fragmentShader: `
         uniform sampler2D milkyWayMap;
+        uniform float uOpacity;
         varying vec2 vUv;
 
         void main() {
@@ -273,10 +292,11 @@ export class Starfield {
           // preserving the authentic golden galactic core and dark absorption dust lanes.
           rgb = smoothstep(vec3(0.016), vec3(1.0), rgb);
 
-          gl_FragColor = vec4(rgb, 1.0);
+          gl_FragColor = vec4(rgb, uOpacity);
         }
       `,
       side: THREE.BackSide,
+      transparent: true,
       depthWrite: false,
     });
 
@@ -489,6 +509,63 @@ export class Starfield {
     this.pointsMesh = new THREE.Points(geometry, material);
     this.pointsMesh.renderOrder = 0;
     this.celestialGroup.add(this.pointsMesh);
+
+    // 3D Local Interstellar Neighborhood: real stars with measured Hipparcos distance (distancePc < 120 pc)
+    const localStars = data.stars.filter((s) => s[6] !== null && s[6]! > 0 && s[6]! < 120);
+    if (localStars.length > 0) {
+      const localPos = new Float32Array(localStars.length * 3);
+      const localCol = new Float32Array(localStars.length * 3);
+      const localSizes = new Float32Array(localStars.length);
+
+      for (let j = 0; j < localStars.length; j++) {
+        const s = localStars[j];
+        // 1 parsec = 38 scene units (Alpha Centauri ~ 51 units, Sirius ~ 100 units, Vega ~ 290 units)
+        const distUnits = Math.max(12.0, (s[6] as number) * 38.0);
+        localPos[j * 3] = s[1] * distUnits;
+        localPos[j * 3 + 1] = s[3] * distUnits;
+        localPos[j * 3 + 2] = -s[2] * distUnits;
+
+        const col = this.bvToRGB(s[5], s[8]);
+        localCol[j * 3] = col.r;
+        localCol[j * 3 + 1] = col.g;
+        localCol[j * 3 + 2] = col.b;
+
+        const vmag = s[4];
+        localSizes[j] = Math.max(0.8, 2.6 - 0.30 * vmag);
+      }
+
+      const localGeo = new THREE.BufferGeometry();
+      localGeo.setAttribute('position', new THREE.BufferAttribute(localPos, 3));
+      localGeo.setAttribute('color', new THREE.BufferAttribute(localCol, 3));
+      localGeo.setAttribute('size', new THREE.BufferAttribute(localSizes, 1));
+
+      const localMat = new THREE.ShaderMaterial({
+        vertexShader: `
+          attribute float size;
+          varying vec3 vColor;
+          varying float vBrightness;
+
+          void main() {
+            vColor = color;
+            vBrightness = size;
+            vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+            float dist = -mvPos.z;
+            gl_PointSize = clamp(size * (750.0 / max(dist, 10.0)), 1.0, 5.5);
+            gl_Position = projectionMatrix * mvPos;
+          }
+        `,
+        fragmentShader,
+        vertexColors: true,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+
+      this.localInterstellarStars = new THREE.Points(localGeo, localMat);
+      this.localInterstellarStars.name = 'local_interstellar_3d_stars';
+      this.localInterstellarStars.renderOrder = 1;
+      this.group.add(this.localInterstellarStars);
+    }
   }
 
   private buildConstellations(data: RawStarHeader): void {
@@ -590,9 +667,34 @@ export class Starfield {
     this.celestialGroup.add(this.pointsMesh);
   }
 
-  public update(cameraPosition: THREE.Vector3, deltaSec: number): void {
-    // Keep infinite celestial sphere and real Hipparcos stars centered on camera
+  public update(
+    cameraPosition: THREE.Vector3,
+    deltaSec: number,
+    cameraVelocity?: THREE.Vector3,
+    zoomRate?: number
+  ): void {
+    // Keep infinite celestial sphere and real Hipparcos distant stars centered on camera
     this.celestialGroup.position.copy(cameraPosition);
+
+    // Distance from camera to Solar System barycenter (0, 0, 0)
+    const distToSun = cameraPosition.length();
+
+    // Multiscale Crossfade: local skybox <-> external 3D galaxy
+    // Between 3,500 units (outer solar system edge) and 24,000 units (external galaxy view)
+    const t = THREE.MathUtils.clamp((distToSun - 3500.0) / 18500.0, 0.0, 1.0);
+    const smoothT = t * t * (3.0 - 2.0 * t);
+    this.externalGalaxy.setOpacity(smoothT);
+    this.milkyWayOpacityUniform.value = 1.0 - smoothT;
+
+    this.externalGalaxy.update(performance.now() * 0.001);
+
+    // Update velocity-aware travel streak particles
+    this.travelParticles.update(
+      cameraPosition,
+      cameraVelocity || new THREE.Vector3(),
+      zoomRate || 0,
+      deltaSec
+    );
 
     // Update 3D cosmic stardust twinkling
     if (this.stardustMesh) {
@@ -602,8 +704,8 @@ export class Starfield {
       }
     }
 
-    // Update dynamic shooting star streaks
-    if (this.meteorSystem) {
+    // Update dynamic shooting star streaks (only visible within planetary/system domain)
+    if (this.meteorSystem && distToSun < 3200.0) {
       this.meteorSystem.update(deltaSec, cameraPosition);
     }
   }
@@ -627,6 +729,12 @@ export class Starfield {
   }
 
   public dispose(): void {
+    this.externalGalaxy.dispose();
+    this.travelParticles.dispose();
+    if (this.localInterstellarStars) {
+      this.localInterstellarStars.geometry.dispose();
+      (this.localInterstellarStars.material as THREE.Material).dispose();
+    }
     if (this.milkyWayMesh) {
       this.milkyWayMesh.geometry.dispose();
       (this.milkyWayMesh.material as THREE.Material).dispose();
