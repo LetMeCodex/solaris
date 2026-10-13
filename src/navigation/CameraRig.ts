@@ -723,11 +723,11 @@ export class CameraRig {
         targetPhi = Math.PI * 0.26;
         break;
       case 'galactic':
-        targetDist = 45000.0;
+        targetDist = 52000.0;
         targetShot = 'deep_space_overview';
-        targetFov = 50.0;
+        targetFov = 48.0;
         // Elevated perspective looking down onto the sweeping spiral disk
-        targetPhi = Math.PI * 0.20;
+        targetPhi = Math.PI * 0.24;
         break;
     }
 

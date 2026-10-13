@@ -364,4 +364,11 @@ export class TexturePipeline {
   public getMilkyWayTexture(): THREE.Texture {
     return this.loadTexture('/textures/gaia_sky.jpg', true);
   }
+
+  /**
+   * High-definition NASA/ESO master face-on Milky Way galactic disk texture
+   */
+  public getMilkyWayDiskTexture(): THREE.Texture {
+    return this.loadTexture('/textures/milky_way_disk.png', true);
+  }
 }

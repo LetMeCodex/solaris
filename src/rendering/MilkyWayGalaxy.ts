@@ -1,41 +1,52 @@
 import * as THREE from 'three';
+import { TexturePipeline } from './TexturePipeline';
 
 export interface GalaxyConfig {
-  radius: number;          // Outer radius of galactic disk in scene units (e.g. 24,000)
-  coreRadius: number;      // Radius of central bulge (e.g. 4,200)
-  sunDistance: number;     // Distance of Sun from Galactic Center (e.g. 14,500, ~26,000 ly)
-  starCount: number;       // Number of instanced stars (e.g. 18,000)
-  numArms: number;         // 4 major spiral arms
-  armPitchAngleDeg: number;// 12 degrees
+  radius: number;          // Outer radius of galactic disk in scene units (e.g. 28,000)
+  coreRadius: number;      // Radius of central bulge (e.g. 4,800)
+  sunDistance: number;     // Distance of Sun from Galactic Center (e.g. 15,600, ~26,000 ly)
 }
 
 export const DEFAULT_GALAXY_CONFIG: GalaxyConfig = {
-  radius: 26000,
-  coreRadius: 4600,
-  sunDistance: 15600, // 26,000 ly scaled to ~60% of galaxy radius
-  starCount: 22000,
-  numArms: 4,
-  armPitchAngleDeg: 12.0,
+  radius: 28000,
+  coreRadius: 4800,
+  sunDistance: 15600, // 26,000 ly scaled to ~56% of galaxy radius
 };
 
 /**
- * 3D Procedural Milky Way Galaxy Model
- * Features:
- * 1. Dense central bulge with Population II warm golden stars & supermassive black hole marker.
- * 2. Four logarithmic spiral arms (Scutum-Centaurus, Sagittarius, Perseus, Outer) with 12° pitch.
- * 3. Realistic stellar populations: blue-white OB stars, golden dwarfs, and pink H II starbirth knots.
- * 4. Dark dust absorption lanes along inner spiral arm boundaries.
- * 5. Orion Spur / Solar System locator beacon with pulsing reticle and telemetry callout.
- * 6. Smooth GPU crossfade opacity control as observer moves between local space and galactic exterior.
+ * Master Photorealistic 3D Milky Way Galaxy Model
+ * Grounded in authentic NASA/ESO astrophysics and deep-space astrophotography:
+ * 
+ * 1. Master High-Definition Galactic Disk: Samples the NASA/ESO master Milky Way map with
+ *    grazing-angle depth enhancement, micro-twinkle of OB associations, and HDR tone curves.
+ * 2. 3D Volumetric Bulge Spheroid: True 3D ellipsoidal core with incandescent white-hot nucleus
+ *    and warm golden Population II halo light scattering that does NOT blow out.
+ * 3. 3D Midplane Dust Extinction Layer: Multi-layer absorption sheet that physically silhouettes
+ *    and occludes the far side of the core when viewed at oblique angles.
+ * 4. 14,000 Real 3D Stars: Dispersed in 3D ellipsoidal bulge, flared disk, and extended halo
+ *    with realistic Morgan-Keenan spectral colors and Gaussian point-spread functions.
+ * 5. Dwarf Companion Satellite Galaxies: Realistic Large & Small Magellanic Clouds (LMC & SMC)
+ *    and Sagittarius Dwarf Spheroidal providing authentic cosmic scale.
+ * 6. High-Tech Orion Spur Sun Beacon: Precision astronomical reticle marking the Solar System at
+ *    26,000 ly from Sagittarius A*, with vertical altitude stalk to the galactic midplane.
  */
 export class MilkyWayGalaxy {
   public group: THREE.Group = new THREE.Group();
+
+  // Core visual subsystems
+  private masterDiskMesh: THREE.Mesh;
+  private coreBulgeMesh: THREE.Mesh;
+  private dustExtinctionMesh: THREE.Mesh;
   private starPoints: THREE.Points;
-  private coreGlowMesh: THREE.Mesh;
-  private dustPoints: THREE.Points;
+  private satelliteGroup: THREE.Group = new THREE.Group();
+
+  // Solar system locator
   private sunBeaconGroup: THREE.Group = new THREE.Group();
   private sunReticleMesh: THREE.Line;
   private sunPulseMesh: THREE.Mesh;
+  private sunRadarRing: THREE.Line;
+
+  // Uniform controllers
   private opacityUniform: { value: number } = { value: 0.0 };
   private timeUniform: { value: number } = { value: 0.0 };
 
@@ -47,39 +58,127 @@ export class MilkyWayGalaxy {
     this.group.name = 'milky_way_external_galaxy';
     this.group.position.set(0, 0, 0);
 
-    // Astronomical tilt: Milky Way galactic plane inclined relative to solar ecliptic
+    // Astronomical tilt: Milky Way galactic plane inclined relative to solar ecliptic (~63 deg)
     this.group.rotation.x = THREE.MathUtils.degToRad(62.87);
     this.group.rotation.y = THREE.MathUtils.degToRad(122.93);
     this.group.rotation.z = THREE.MathUtils.degToRad(282.25);
 
-    // 1. Build Galactic Core Glow
-    this.coreGlowMesh = this.createCoreGlow();
-    this.group.add(this.coreGlowMesh);
+    // 1. Build Master High-Definition Galactic Disk
+    this.masterDiskMesh = this.createMasterDisk();
+    this.group.add(this.masterDiskMesh);
 
-    // 2. Build 3D Galactic Stars (Bulge + Spiral Arms)
-    this.starPoints = this.createGalacticStars();
+    // 2. Build 3D Volumetric Bulge Spheroid
+    this.coreBulgeMesh = this.createVolumetricCore();
+    this.group.add(this.coreBulgeMesh);
+
+    // 3. Build Midplane Dust Extinction Layer
+    this.dustExtinctionMesh = this.createDustExtinction();
+    this.group.add(this.dustExtinctionMesh);
+
+    // 4. Build 3D Galactic Stars (Bulge + Disk + Halo)
+    this.starPoints = this.create3DStars();
     this.group.add(this.starPoints);
 
-    // 3. Build Interstellar Dust Lanes
-    this.dustPoints = this.createDustLanes();
-    this.group.add(this.dustPoints);
+    // 5. Build Satellite Dwarf Galaxies (LMC, SMC, Sagittarius Dwarf)
+    this.buildSatelliteGalaxies();
+    this.group.add(this.satelliteGroup);
 
-    // 4. Build Orion Spur / Solar System Locator Beacon
-    const { beaconGroup, reticleMesh, pulseMesh, sunPos } = this.createSunBeacon();
+    // 6. Build Orion Spur / Solar System Locator Beacon
+    const { beaconGroup, reticleMesh, pulseMesh, radarRing, sunPos } = this.createSunBeacon();
     this.sunBeaconGroup = beaconGroup;
     this.sunReticleMesh = reticleMesh;
     this.sunPulseMesh = pulseMesh;
+    this.sunRadarRing = radarRing;
     this.sunWorldPosition.copy(sunPos);
     this.group.add(this.sunBeaconGroup);
 
-    // Initially transparent (fades in when zooming past interstellar boundary)
+    // Initially transparent (crossfades in when camera pulls out into interstellar space)
     this.setOpacity(0.0);
   }
 
-  private createCoreGlow(): THREE.Mesh {
+  /**
+   * 1. Master High-Definition Galactic Disk Mesh
+   */
+  private createMasterDisk(): THREE.Mesh {
+    const geo = new THREE.PlaneGeometry(this.config.radius * 2.0, this.config.radius * 2.0, 64, 64);
+    // Align with galactic X-Z midplane: rotate around X so normal faces +Y
+    geo.rotateX(-Math.PI * 0.5);
+
+    const tex = TexturePipeline.getInstance().getMilkyWayDiskTexture();
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.generateMipmaps = true;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uGalaxyMap: { value: tex },
+        uOpacity: this.opacityUniform,
+        uTime: this.timeUniform,
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        varying vec3 vWorldPos;
+        varying vec3 vViewDir;
+        varying vec3 vNormalVec;
+
+        void main() {
+          vUv = uv;
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldPos = worldPos.xyz;
+          vNormalVec = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
+          vViewDir = normalize(cameraPosition - worldPos.xyz);
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D uGalaxyMap;
+        uniform float uOpacity;
+        uniform float uTime;
+        varying vec2 vUv;
+        varying vec3 vViewDir;
+        varying vec3 vNormalVec;
+
+        void main() {
+          vec4 tex = texture2D(uGalaxyMap, vUv);
+          if (tex.a < 0.005) discard;
+
+          // Glancing angle depth enhancement:
+          // Viewing at an oblique angle increases line-of-sight optical depth
+          float cosView = clamp(abs(dot(vNormalVec, vViewDir)), 0.22, 1.0);
+          float depthFactor = 1.0 + 0.25 * (1.0 - cosView);
+
+          // Subtle organic micro-scintillation in OB star-forming clusters
+          float isBlueStar = max(0.0, tex.b - tex.r * 0.92);
+          float twinkle = 1.0 + isBlueStar * 0.18 * sin(uTime * 3.0 + vUv.x * 50.0 + vUv.y * 65.0);
+
+          vec3 rgb = tex.rgb * 1.25 * depthFactor * twinkle;
+          float alpha = clamp(tex.a * 1.10, 0.0, 1.0) * uOpacity;
+
+          gl_FragColor = vec4(rgb, alpha);
+        }
+      `,
+      transparent: true,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+    });
+
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = 'milky_way_master_disk';
+    mesh.renderOrder = -8;
+    return mesh;
+  }
+
+  /**
+   * 2. 3D Volumetric Bulge Spheroid
+   * Calibrated with incandescent white-hot nucleus and warm golden-amber Population II halo.
+   */
+  private createVolumetricCore(): THREE.Mesh {
     const geo = new THREE.SphereGeometry(this.config.coreRadius, 32, 24);
-    // Flatten into ellipsoidal galactic bulge (flattened along Z/Y)
-    geo.scale(1.0, 0.45, 1.0);
+    // Flatten into ellipsoidal barred bulge (X=1.0, Y=0.42, Z=0.82)
+    geo.scale(1.0, 0.42, 0.82);
 
     const mat = new THREE.ShaderMaterial({
       uniforms: {
@@ -104,15 +203,21 @@ export class MilkyWayGalaxy {
 
         void main() {
           float rim = max(0.0, dot(vNormal, vViewDir));
-          float coreIntensity = pow(rim, 2.5);
           
-          // Warm golden/amber galactic core color (Population II old stars)
-          vec3 coreCol = vec3(1.0, 0.88, 0.62) * 1.8;
-          vec3 haloCol = vec3(0.95, 0.65, 0.35) * 0.9;
-          vec3 rgb = mix(haloCol, coreCol, coreIntensity);
+          // Concentrated pinhead nucleus (innermost 5%)
+          float nucleus = pow(rim, 6.5);
+          // Luminous golden Population II core halo
+          float halo = pow(rim, 2.8);
+          
+          vec3 nucleusCol = vec3(1.20, 1.15, 1.05);
+          vec3 goldenBulgeCol = vec3(1.0, 0.78, 0.42);
+          vec3 amberHaloCol = vec3(0.85, 0.45, 0.18);
 
-          float alpha = coreIntensity * 0.75 * uOpacity;
-          gl_FragColor = vec4(rgb, alpha);
+          vec3 rgb = mix(amberHaloCol, goldenBulgeCol, halo);
+          rgb = mix(rgb, nucleusCol, nucleus);
+
+          float alpha = (nucleus * 0.50 + halo * 0.22) * uOpacity;
+          gl_FragColor = vec4(rgb * 1.05, alpha);
         }
       `,
       transparent: true,
@@ -122,109 +227,173 @@ export class MilkyWayGalaxy {
     });
 
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.name = 'galactic_core_glow';
+    mesh.name = 'galactic_volumetric_core';
+    mesh.renderOrder = -7;
     return mesh;
   }
 
-  private createGalacticStars(): THREE.Points {
-    const count = this.config.starCount;
+  /**
+   * 3. 3D Midplane Dust Extinction Layer
+   */
+  private createDustExtinction(): THREE.Mesh {
+    const geo = new THREE.PlaneGeometry(this.config.radius * 1.85, this.config.radius * 1.85, 48, 48);
+    geo.rotateX(-Math.PI * 0.5);
+
+    const tex = TexturePipeline.getInstance().getMilkyWayDiskTexture();
+
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uGalaxyMap: { value: tex },
+        uOpacity: this.opacityUniform,
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D uGalaxyMap;
+        uniform float uOpacity;
+        varying vec2 vUv;
+
+        void main() {
+          vec4 tex = texture2D(uGalaxyMap, vUv);
+          // Detect dark dust lanes: high red/amber relative to blue with moderate luminance
+          float dustMask = clamp((tex.r * 1.1 - tex.b) * 1.8, 0.0, 1.0) * (1.0 - tex.b * 0.6);
+          float alpha = dustMask * 0.38 * uOpacity;
+          if (alpha < 0.01) discard;
+
+          // Deep interstellar coal-dust absorption tone
+          gl_FragColor = vec4(0.04, 0.02, 0.012, alpha);
+        }
+      `,
+      transparent: true,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+    });
+
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.name = 'galactic_dust_extinction_sheet';
+    mesh.position.y = 80.0; // Slightly above midplane to occlude far-side core
+    mesh.renderOrder = -6;
+    return mesh;
+  }
+
+  /**
+   * 4. 14,000 Real 3D Galactic Stars (Bulge + Disk + Halo)
+   * Calibrated with delicate point sizes and realistic Morgan-Keenan spectral classes.
+   */
+  private create3DStars(): THREE.Points {
+    const count = 14000;
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
     const sizes = new Float32Array(count);
 
     const R = this.config.radius;
     const Rc = this.config.coreRadius;
-    const B = 1.0 / Math.tan(THREE.MathUtils.degToRad(this.config.armPitchAngleDeg));
-    const armOffsets = [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5]; // 4 logarithmic arms
 
     let ptr = 0;
 
-    // A. Central Bulge Stars (30% of total)
-    const bulgeCount = Math.floor(count * 0.30);
+    // A. 3D Bulge Stars (4,000 stars)
+    const bulgeCount = 4000;
     for (let i = 0; i < bulgeCount; i++) {
-      // Exponential density falloff towards core
       const u = Math.random();
-      const r = Math.pow(u, 1.8) * Rc;
+      const r = Math.pow(u, 1.6) * Rc;
       const theta = Math.random() * Math.PI * 2;
       const phi = (Math.random() - 0.5) * Math.PI;
 
-      const x = r * Math.cos(theta) * Math.cos(phi);
-      const z = r * Math.sin(theta) * Math.cos(phi);
-      // Flattened vertical bulge
-      const y = (r * Math.sin(phi)) * 0.40;
+      const x = r * Math.cos(theta) * Math.cos(phi) * 1.15;
+      const z = r * Math.sin(theta) * Math.cos(phi) * 0.85;
+      const y = (r * Math.sin(phi)) * 0.42;
 
       positions[ptr * 3] = x;
       positions[ptr * 3 + 1] = y;
       positions[ptr * 3 + 2] = z;
 
-      // Golden core population
-      const tempVar = Math.random();
-      if (tempVar < 0.6) {
+      // Population II golden-amber stars
+      const s = Math.random();
+      if (s < 0.6) {
         colors[ptr * 3] = 1.0;
-        colors[ptr * 3 + 1] = 0.88;
-        colors[ptr * 3 + 2] = 0.65;
+        colors[ptr * 3 + 1] = 0.85;
+        colors[ptr * 3 + 2] = 0.60;
       } else {
         colors[ptr * 3] = 0.98;
-        colors[ptr * 3 + 1] = 0.72;
-        colors[ptr * 3 + 2] = 0.42;
+        colors[ptr * 3 + 1] = 0.70;
+        colors[ptr * 3 + 2] = 0.40;
       }
 
-      sizes[ptr] = 1.5 + Math.random() * 2.0;
+      sizes[ptr] = 1.0 + Math.random() * 1.5;
       ptr++;
     }
 
-    // B. Spiral Arm Stars (70% of total)
-    const armStarCount = count - bulgeCount;
-    for (let i = 0; i < armStarCount; i++) {
-      const armIdx = i % this.config.numArms;
-      const baseArmAngle = armOffsets[armIdx];
+    // B. Disk Stars (8,000 stars)
+    const diskCount = 8000;
+    for (let i = 0; i < diskCount; i++) {
+      const u = Math.random();
+      const r = Rc * 0.8 + Math.pow(u, 1.1) * (R * 0.9 - Rc * 0.8);
+      const theta = Math.random() * Math.PI * 2;
 
-      // Radius along spiral arm from core edge to outer disc
-      const t = Math.pow(Math.random(), 0.85);
-      const r = Rc * 0.85 + t * (R - Rc * 0.85);
+      // Flared vertical thin-disk distribution
+      const thickness = 550.0 + (r / R) * 450.0;
+      const y = (Math.random() - 0.5 + (Math.random() - 0.5)) * thickness;
 
-      // Logarithmic spiral formula: theta = theta0 + B * ln(r / r0)
-      const armAngle = baseArmAngle + B * Math.log(r / (Rc * 0.85));
-
-      // Gaussian dispersion perpendicular to spiral arm
-      const dispersion = (Math.random() - 0.5 + (Math.random() - 0.5)) * (r * 0.18 + 400.0);
-      const finalAngle = armAngle + (dispersion / r);
-
-      // Vertical Gaussian thickness (thin disc ~ 800-1200 ly)
-      const zScale = (1.0 - (r / R) * 0.5) * 850.0;
-      const y = (Math.random() - 0.5 + (Math.random() - 0.5)) * zScale;
-
-      const x = Math.cos(finalAngle) * r;
-      const z = Math.sin(finalAngle) * r;
+      const x = Math.cos(theta) * r;
+      const z = Math.sin(theta) * r;
 
       positions[ptr * 3] = x;
       positions[ptr * 3 + 1] = y;
       positions[ptr * 3 + 2] = z;
 
-      // Color based on stellar type in spiral arms:
-      // - Young hot OB stars (blue-white)
-      // - H II emission nebulae knots (pink/magenta)
-      // - Intermediate solar-type stars (white-cream)
-      const randType = Math.random();
-      if (randType < 0.35) {
-        // Luminous OB associations (young blue giants)
-        colors[ptr * 3] = 0.72;
-        colors[ptr * 3 + 1] = 0.84;
+      // Morgan-Keenan spectral classification:
+      const spec = Math.random();
+      if (spec < 0.28) {
+        // Young OB stars (cyan-blue)
+        colors[ptr * 3] = 0.75;
+        colors[ptr * 3 + 1] = 0.88;
         colors[ptr * 3 + 2] = 1.0;
-        sizes[ptr] = 2.0 + Math.random() * 2.2;
-      } else if (randType < 0.50) {
-        // H II star-forming regions (ionized hydrogen pink)
+        sizes[ptr] = 1.4 + Math.random() * 1.8;
+      } else if (spec < 0.38) {
+        // H II knots (pink)
         colors[ptr * 3] = 1.0;
-        colors[ptr * 3 + 1] = 0.55;
+        colors[ptr * 3 + 1] = 0.52;
         colors[ptr * 3 + 2] = 0.78;
-        sizes[ptr] = 2.4 + Math.random() * 2.0;
+        sizes[ptr] = 1.6 + Math.random() * 1.6;
+      } else if (spec < 0.72) {
+        // Solar-type G/F stars (white/yellow)
+        colors[ptr * 3] = 0.98;
+        colors[ptr * 3 + 1] = 0.96;
+        colors[ptr * 3 + 2] = 0.92;
+        sizes[ptr] = 0.9 + Math.random() * 1.2;
       } else {
-        // Field Population I stars (white/yellow)
-        colors[ptr * 3] = 0.95;
-        colors[ptr * 3 + 1] = 0.94;
-        colors[ptr * 3 + 2] = 0.90;
-        sizes[ptr] = 1.2 + Math.random() * 1.5;
+        // Golden K-dwarfs
+        colors[ptr * 3] = 1.0;
+        colors[ptr * 3 + 1] = 0.82;
+        colors[ptr * 3 + 2] = 0.52;
+        sizes[ptr] = 1.0 + Math.random() * 1.4;
       }
+
+      ptr++;
+    }
+
+    // C. Extended Halo Stars (2,000 stars)
+    const haloCount = 2000;
+    for (let i = 0; i < haloCount; i++) {
+      const u = Math.random();
+      const r = Math.pow(u, 1.4) * (R * 1.35);
+      const theta = Math.random() * Math.PI * 2;
+      const phi = (Math.random() - 0.5) * Math.PI;
+
+      positions[ptr * 3] = r * Math.cos(theta) * Math.cos(phi);
+      positions[ptr * 3 + 1] = r * Math.sin(phi) * 0.7;
+      positions[ptr * 3 + 2] = r * Math.sin(theta) * Math.cos(phi);
+
+      colors[ptr * 3] = 0.92;
+      colors[ptr * 3 + 1] = 0.90;
+      colors[ptr * 3 + 2] = 0.95;
+      sizes[ptr] = 0.8 + Math.random() * 1.0;
 
       ptr++;
     }
@@ -248,8 +417,7 @@ export class MilkyWayGalaxy {
           vColor = color;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           float dist = -mvPosition.z;
-          // Scale point size cleanly with distance across galactic depths
-          gl_PointSize = clamp(size * (42000.0 / max(dist, 100.0)), 1.2, 8.5);
+          gl_PointSize = clamp(size * (36000.0 / max(dist, 100.0)), 0.8, 4.5);
           gl_Position = projectionMatrix * mvPosition;
         }
       `,
@@ -262,12 +430,11 @@ export class MilkyWayGalaxy {
           float d = length(coord);
           if (d > 0.5) discard;
 
-          // Luminous Gaussian point glow with soft celestial halo
           float core = exp(-d * d * 18.0);
-          float halo = smoothstep(0.5, 0.05, d) * 0.25;
-          float alpha = clamp(core + halo, 0.0, 1.0) * uOpacity;
+          float halo = smoothstep(0.5, 0.05, d) * 0.22;
+          float alpha = clamp(core + halo, 0.0, 1.0) * uOpacity * 0.65;
 
-          gl_FragColor = vec4(vColor * 1.45, alpha);
+          gl_FragColor = vec4(vColor * 1.3, alpha);
         }
       `,
       vertexColors: true,
@@ -277,88 +444,142 @@ export class MilkyWayGalaxy {
     });
 
     const points = new THREE.Points(geo, mat);
-    points.name = 'galactic_spiral_stars';
+    points.name = 'galactic_3d_stars';
+    points.renderOrder = -5;
     return points;
   }
 
-  private createDustLanes(): THREE.Points {
-    // Dark absorption dust motes along the inner edges of spiral arms
-    const count = 4500;
-    const positions = new Float32Array(count * 3);
-    const R = this.config.radius * 0.85;
-    const Rc = this.config.coreRadius * 0.9;
-    const B = 1.0 / Math.tan(THREE.MathUtils.degToRad(this.config.armPitchAngleDeg));
-    const armOffsets = [0, Math.PI * 0.5, Math.PI, Math.PI * 1.5];
+  /**
+   * 5. Satellite Dwarf Galaxies (LMC, SMC, Sagittarius Dwarf)
+   */
+  private buildSatelliteGalaxies(): void {
+    // Large Magellanic Cloud (LMC)
+    const lmcGroup = this.createDwarfGalaxy(
+      'large_magellanic_cloud',
+      new THREE.Vector3(-9500, -13500, 11800),
+      3600,
+      new THREE.Color(0xd2e8ff),
+      450
+    );
+    this.satelliteGroup.add(lmcGroup);
 
-    for (let i = 0; i < count; i++) {
-      const armIdx = i % 4;
-      // Offset slightly to inner concave edge of arm
-      const baseArmAngle = armOffsets[armIdx] - 0.14;
-      const t = Math.pow(Math.random(), 0.8);
-      const r = Rc + t * (R - Rc);
-      const armAngle = baseArmAngle + B * Math.log(r / Rc);
-      const disp = (Math.random() - 0.5) * (r * 0.12 + 200.0);
-      const finalAngle = armAngle + (disp / r);
+    // Small Magellanic Cloud (SMC)
+    const smcGroup = this.createDwarfGalaxy(
+      'small_magellanic_cloud',
+      new THREE.Vector3(-14800, -18200, 7800),
+      2100,
+      new THREE.Color(0xe0eeff),
+      220
+    );
+    this.satelliteGroup.add(smcGroup);
 
-      const x = Math.cos(finalAngle) * r;
-      const z = Math.sin(finalAngle) * r;
-      const y = (Math.random() - 0.5) * 450.0;
+    // Sagittarius Dwarf Spheroidal
+    const sgrGroup = this.createDwarfGalaxy(
+      'sagittarius_dwarf_spheroidal',
+      new THREE.Vector3(-1600, -6200, 3200),
+      2400,
+      new THREE.Color(0xffe6c4),
+      280
+    );
+    this.satelliteGroup.add(sgrGroup);
+  }
 
-      positions[i * 3] = x;
-      positions[i * 3 + 1] = y;
-      positions[i * 3 + 2] = z;
-    }
+  private createDwarfGalaxy(
+    name: string,
+    pos: THREE.Vector3,
+    radius: number,
+    color: THREE.Color,
+    starCount: number
+  ): THREE.Group {
+    const group = new THREE.Group();
+    group.name = name;
+    group.position.copy(pos);
 
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    // Soft volumetric cloud glow
+    const geo = new THREE.SphereGeometry(radius, 24, 16);
+    geo.scale(1.25, 0.55, 0.95);
 
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         uOpacity: this.opacityUniform,
+        uColor: { value: color },
       },
       vertexShader: `
-        uniform float uOpacity;
+        varying vec3 vNormal;
+        varying vec3 vViewDir;
         void main() {
-          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-          float dist = -mvPosition.z;
-          gl_PointSize = clamp(2.8 * (24000.0 / max(dist, 100.0)), 1.5, 7.0);
-          gl_Position = projectionMatrix * mvPosition;
+          vNormal = normalize(normalMatrix * normal);
+          vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+          vViewDir = normalize(-mvPos.xyz);
+          gl_Position = projectionMatrix * mvPos;
         }
       `,
       fragmentShader: `
         uniform float uOpacity;
+        uniform vec3 uColor;
+        varying vec3 vNormal;
+        varying vec3 vViewDir;
         void main() {
-          vec2 coord = gl_PointCoord - vec2(0.5);
-          float d = length(coord);
-          if (d > 0.5) discard;
-          // Subtly absorb background (dark dust reddish tint)
-          float alpha = exp(-d * d * 18.0) * 0.40 * uOpacity;
-          gl_FragColor = vec4(0.06, 0.03, 0.02, alpha);
+          float rim = max(0.0, dot(vNormal, vViewDir));
+          float alpha = pow(rim, 2.5) * 0.38 * uOpacity;
+          gl_FragColor = vec4(uColor * 1.15, alpha);
         }
       `,
       transparent: true,
-      blending: THREE.NormalBlending,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.BackSide,
+    });
+    const cloud = new THREE.Mesh(geo, mat);
+    cloud.renderOrder = -9;
+    group.add(cloud);
+
+    // Embedded star cluster motes
+    const starGeo = new THREE.BufferGeometry();
+    const starPos = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+      const u = Math.random();
+      const r = Math.pow(u, 1.8) * radius;
+      const th = Math.random() * Math.PI * 2;
+      const ph = (Math.random() - 0.5) * Math.PI;
+
+      starPos[i * 3] = r * Math.cos(th) * Math.cos(ph) * 1.25;
+      starPos[i * 3 + 1] = (r * Math.sin(ph)) * 0.55;
+      starPos[i * 3 + 2] = r * Math.sin(th) * Math.cos(ph);
+    }
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+
+    const starMat = new THREE.PointsMaterial({
+      color: color,
+      size: 1.2,
+      transparent: true,
+      opacity: 0.55,
+      blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
+    const stars = new THREE.Points(starGeo, starMat);
+    group.add(stars);
 
-    const points = new THREE.Points(geo, mat);
-    points.name = 'galactic_dust_lanes';
-    return points;
+    return group;
   }
 
+  /**
+   * 6. High-Tech Orion Spur / Solar System Locator Beacon
+   */
   private createSunBeacon(): {
     beaconGroup: THREE.Group;
     reticleMesh: THREE.Line;
     pulseMesh: THREE.Mesh;
+    radarRing: THREE.Line;
     sunPos: THREE.Vector3;
   } {
     const beaconGroup = new THREE.Group();
     beaconGroup.name = 'sun_orion_spur_beacon';
 
     // Place Sun in the Orion Spur at radius ~15,600 (scaled ~26,000 ly)
-    // Angle in galactic plane: between Sagittarius and Perseus arm
+    // Angle in galactic plane: bottom-left sector matching NASA map (~215 deg)
     const sunR = this.config.sunDistance;
-    const sunTheta = THREE.MathUtils.degToRad(72.0);
+    const sunTheta = THREE.MathUtils.degToRad(215.0);
     const sunY = 55.0; // Sun sits slightly above the galactic midplane (~20 pc)
 
     const sunPos = new THREE.Vector3(
@@ -371,7 +592,7 @@ export class MilkyWayGalaxy {
 
     // 1. Concentric Target Reticle Ring
     const ringGeo = new THREE.BufferGeometry();
-    const segs = 48;
+    const segs = 64;
     const ringPts: THREE.Vector3[] = [];
     const reticleRadius = 450.0;
     for (let i = 0; i <= segs; i++) {
@@ -381,14 +602,34 @@ export class MilkyWayGalaxy {
     ringGeo.setFromPoints(ringPts);
 
     const reticleMat = new THREE.LineBasicMaterial({
-      color: 0xffdb6b,
+      color: 0xffd700,
       transparent: true,
-      opacity: 0.85,
+      opacity: 0.9,
     });
     const reticleMesh = new THREE.Line(ringGeo, reticleMat);
     beaconGroup.add(reticleMesh);
 
-    // 2. Pulsing Golden Core Marker
+    // 2. Dashed Outer Radar Ring
+    const radarGeo = new THREE.BufferGeometry();
+    const radarPts: THREE.Vector3[] = [];
+    const radarRadius = 750.0;
+    for (let i = 0; i <= segs; i++) {
+      const a = (i / segs) * Math.PI * 2;
+      radarPts.push(new THREE.Vector3(Math.cos(a) * radarRadius, 0, Math.sin(a) * radarRadius));
+    }
+    radarGeo.setFromPoints(radarPts);
+    const radarMat = new THREE.LineDashedMaterial({
+      color: 0xffea78,
+      dashSize: 40,
+      gapSize: 25,
+      transparent: true,
+      opacity: 0.65,
+    });
+    const radarRing = new THREE.Line(radarGeo, radarMat);
+    radarRing.computeLineDistances();
+    beaconGroup.add(radarRing);
+
+    // 3. Pulsing Golden Core Marker
     const pulseGeo = new THREE.SphereGeometry(180.0, 16, 12);
     const pulseMat = new THREE.MeshBasicMaterial({
       color: 0xffeb88,
@@ -399,28 +640,27 @@ export class MilkyWayGalaxy {
     const pulseMesh = new THREE.Mesh(pulseGeo, pulseMat);
     beaconGroup.add(pulseMesh);
 
-    // 3. Vertical Stalk connecting to galactic midplane
+    // 4. Vertical Stalk connecting to galactic midplane
     const stalkGeo = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(0, -sunY, 0),
       new THREE.Vector3(0, 0, 0),
     ]);
     const stalkMat = new THREE.LineDashedMaterial({
       color: 0xffe072,
-      dashSize: 30,
-      gapSize: 20,
+      dashSize: 22,
+      gapSize: 15,
       transparent: true,
-      opacity: 0.5,
+      opacity: 0.55,
     });
     const stalk = new THREE.Line(stalkGeo, stalkMat);
     stalk.computeLineDistances();
     beaconGroup.add(stalk);
 
-    return { beaconGroup, reticleMesh, pulseMesh, sunPos };
+    return { beaconGroup, reticleMesh, pulseMesh, radarRing, sunPos };
   }
 
   /**
    * Updates opacity of 3D galaxy based on camera distance.
-   * Smoothly crossfades in as camera pulls out past the solar system.
    */
   public setOpacity(opacity: number): void {
     const clamped = Math.max(0.0, Math.min(1.0, opacity));
@@ -430,6 +670,9 @@ export class MilkyWayGalaxy {
     // Scale beacon visibility
     if (this.sunReticleMesh) {
       (this.sunReticleMesh.material as THREE.LineBasicMaterial).opacity = clamped * 0.9;
+    }
+    if (this.sunRadarRing) {
+      (this.sunRadarRing.material as THREE.LineDashedMaterial).opacity = clamped * 0.65;
     }
     if (this.sunPulseMesh) {
       (this.sunPulseMesh.material as THREE.MeshBasicMaterial).opacity = clamped * 0.95;
@@ -441,28 +684,48 @@ export class MilkyWayGalaxy {
 
     // Gentle pulsing effect for the Sun beacon
     if (this.sunPulseMesh && this.group.visible) {
-      const pulse = 1.0 + 0.25 * Math.sin(timeSec * 3.5);
+      const pulse = 1.0 + 0.22 * Math.sin(timeSec * 3.5);
       this.sunPulseMesh.scale.set(pulse, pulse, pulse);
     }
     if (this.sunReticleMesh && this.group.visible) {
-      this.sunReticleMesh.rotation.y = timeSec * 0.3;
+      this.sunReticleMesh.rotation.y = timeSec * 0.35;
+    }
+    if (this.sunRadarRing && this.group.visible) {
+      this.sunRadarRing.rotation.y = -timeSec * 0.22;
     }
   }
 
   public dispose(): void {
+    this.masterDiskMesh.geometry.dispose();
+    (this.masterDiskMesh.material as THREE.Material).dispose();
+
+    this.coreBulgeMesh.geometry.dispose();
+    (this.coreBulgeMesh.material as THREE.Material).dispose();
+
+    this.dustExtinctionMesh.geometry.dispose();
+    (this.dustExtinctionMesh.material as THREE.Material).dispose();
+
     this.starPoints.geometry.dispose();
     (this.starPoints.material as THREE.Material).dispose();
-
-    this.coreGlowMesh.geometry.dispose();
-    (this.coreGlowMesh.material as THREE.Material).dispose();
-
-    this.dustPoints.geometry.dispose();
-    (this.dustPoints.material as THREE.Material).dispose();
 
     this.sunReticleMesh.geometry.dispose();
     (this.sunReticleMesh.material as THREE.Material).dispose();
 
+    this.sunRadarRing.geometry.dispose();
+    (this.sunRadarRing.material as THREE.Material).dispose();
+
     this.sunPulseMesh.geometry.dispose();
     (this.sunPulseMesh.material as THREE.Material).dispose();
+
+    this.satelliteGroup.traverse((obj) => {
+      if (obj instanceof THREE.Mesh || obj instanceof THREE.Points) {
+        obj.geometry.dispose();
+        if (Array.isArray(obj.material)) {
+          obj.material.forEach((m) => m.dispose());
+        } else {
+          obj.material.dispose();
+        }
+      }
+    });
   }
 }
