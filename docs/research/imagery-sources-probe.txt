@@ -55,3 +55,12 @@ BlueMarble_ShadedRelief_Bathymetry/default/default/500m/0/0/0.jpeg              
 BlueMarble_ShadedRelief_Bathymetry/default/2004-08-01/500m/0/0/0.jpeg                              200   image/jpeg                  38143  ACAO=*
    z=7                                                                                             200   image/jpeg                   5560  ACAO=*
    z=8                                                                                             400   text/xml                      427  ACAO=*
+
+== Venus radar & gas-giant maps ==
+https://planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/venus/venus_simp_cyl.map&service=WMS&requ 200   text/xml; charset=UTF-8     14885  ACAO=*
+   layers: WMS, Venus_Simple_Cylindrical_Rasters, MAGELLAN, MAGELLAN_RightLook, MAGELLAN_color, MAGELLAN_topography, Venus5M_Quads, default
+https://planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/venus/venus_simp_cyl.map&service=WMS&vers 200   image/jpeg                  28813  ACAO=*
+https://www.solarsystemscope.com/textures/download/8k_jupiter.jpg                                  202   text/html                     203  ACAO=null
+https://www.solarsystemscope.com/textures/download/8k_saturn.jpg                                   202   text/html                     202  ACAO=null
+https://www.solarsystemscope.com/textures/download/2k_venus_surface.jpg                            202   text/html                     209  ACAO=null
+https://www.solarsystemscope.com/textures/download/8k_venus_surface.jpg                            202   text/html                     209  ACAO=null
