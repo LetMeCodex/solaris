@@ -1,0 +1,21 @@
+Olympus Mons                     18.65	226.2	mars	landmark
+Tycho (lunar crater)             -43.31	-11.36	moon	landmark
+Valles Marineris                 -13.9	300.8	mars	landmark
+Mare Imbrium                     32.8	-15.6	moon	landmark
+Copernicus (lunar crater)        9.62	-20.08	moon	landmark
+Hellas Planitia                  -42.4	70.5	mars	landmark
+Shackleton (crater)              -89.67	129.78	moon	landmark
+Tranquility Base                 0.6875	23.43333333	moon	
+Jezero (crater)                  18.38	77.58	mars	landmark
+Gale (crater)                    -5.4	137.8	mars	
+Mount Everest                    27.98833333	86.92527778	earth	mountain
+Grand Canyon                     36.3	-112.75	earth	landmark
+Lake Baikal                      53.5	108	earth	waterbody
+Caloris Planitia                 30.5	198.8	mercury	
+Richat Structure                 21.1147	-11.3943	earth	landmark
+Maat Mons                        0.5	194.6	venus	landmark
+Maxwell Montes                   65.2	3.3	venus	landmark
+Aphrodite Terra                  -5.8	104.8	venus	landmark
+Hokusai (crater)                 58.3	342.3	mercury	landmark
+Rachmaninoff (crater)            27.6	302.4	mercury	landmark
+Nile Delta                       30.9	31.11666667	earth	

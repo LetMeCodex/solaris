@@ -55,7 +55,26 @@ Bodies without a texture (most moons and asteroids) use procedural canvas textur
 
 `scripts/download_textures.cjs` re-fetches the planet textures from these original publishers.
 
-## 6. Galactic constants
+## 6. Streamed surface imagery (`src/explorer/ImageryRegistry.ts`)
+
+The browser streams these tiles at runtime; they are not stored in the repository. All endpoints are public and need no key.
+
+| Body | Product | Endpoint | Credit |
+| :--- | :--- | :--- | :--- |
+| Earth | Blue Marble: Next Generation, Aug 2004 (500 m) | `gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_NextGeneration` | NASA Earth Observatory / NASA GIBS (EOSDIS) |
+| Moon | LRO WAC Global Mosaic 303 ppd v02 | `trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02` | NASA/GSFC/Arizona State University (LROC) via NASA Solar System Treks |
+| Mercury | MESSENGER MDIS Basemap BDR Mosaic 166 m | `trek.nasa.gov/tiles/Mercury/EQ/Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_166m` | NASA/JHUAPL/Carnegie Institution of Washington via NASA Solar System Treks |
+| Mars | Viking MDIM 2.1 colour mosaic 232 m | `trek.nasa.gov/tiles/Mars/EQ/Mars_Viking_MDIM21_ClrMosaic_global_232m` | NASA/JPL/USGS via NASA Solar System Treks |
+| Venus | Magellan SAR mosaic (layer `MAGELLAN`) | `planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/venus/venus_simp_cyl.map` (WMS 1.1.1) | NASA/JPL Magellan; USGS Astrogeology Science Center |
+
+**Provenance.**
+- `docs/research/imagery-sources-probe.txt` is written by `scripts/verify-tile-sources.mjs`, run in GitHub Actions on 2026-10-14 with `Origin: https://letmecodex.github.io`. It records:
+  - WMTS capabilities and tile-matrix sets
+  - the deepest level that returns HTTP 200
+  - the `Access-Control-Allow-Origin` header
+- `docs/research/landmark-coords.txt` is written by `scripts/fetch-landmark-coords.mjs`. It records the source coordinates for each landmark. Planetocentric east-positive longitudes from 0° to 360° are converted to −180° to 180°.
+
+## 7. Galactic constants
 
 | Quantity | Value | Source |
 | :--- | :--- | :--- |

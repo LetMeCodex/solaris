@@ -10,6 +10,8 @@ import { OrbitalTrails } from './OrbitalTrails';
 import { Starfield } from './Starfield';
 import { AsteroidBelt } from './AsteroidBelt';
 import { LensPipeline, LensProfileName } from './LensPipeline';
+import { PlanetaryExplorer, ExplorerStatus } from '../explorer/PlanetaryExplorer';
+import { Landmark } from '../explorer/Landmarks';
 import { BodyFrame, getBodyFrame, getSynchronousFrame } from '../astronomy/BodyOrientation';
 
 export interface TelemetryData {
@@ -30,6 +32,7 @@ export interface TelemetryData {
   travelSpeed: number;
   cameraDistance: number;
   lensProfile: LensProfileName;
+  explorer: ExplorerStatus;
 }
 
 export class SolarSystemScene {
@@ -68,6 +71,9 @@ export class SolarSystemScene {
 
   // Observation-camera optics (bloom, lens, grain, motion blur)
   public lens: LensPipeline;
+
+  // Google Maps–style surface imagery streaming and landmark navigation
+  public explorer: PlanetaryExplorer;
 
   // Selection
   public selectedBody: CelestialBodyDefinition;
@@ -126,6 +132,18 @@ export class SolarSystemScene {
     this.orbitLinesGroup.visible = false; // Restrained cinematic aesthetic by default
     this.scene.add(this.orbitLinesGroup);
     this.setupBodies();
+    this.explorer = new PlanetaryExplorer(this.cameraRig, (name) => {
+      const b = this.planetBundles.get(name);
+      if (!b) return null;
+      return {
+        name,
+        bodyGroup: b.bodyGroup,
+        surfaceMesh: b.surfaceMesh,
+        cloudMesh: b.cloudMesh,
+        visualRadius: b.visualRadius,
+        radiusKm: b.definition.physical.meanRadiusKm,
+      };
+    });
     this.orbitLinesEpochDays = this.clock.getJulianDateTDB() - SimulationClock.J2000_JD;
     this.rebuildOrbitLines();
 
@@ -237,6 +255,24 @@ export class SolarSystemScene {
     });
 
     this.rebuildOrbitLines();
+  }
+
+  /** Fly to a curated landmark (selects its body). */
+  public flyToLandmark(id: string): Landmark | null {
+    const lm = this.explorer.flyToLandmark(id);
+    if (lm) {
+      const def = this.planetBundles.get(lm.body)?.definition;
+      if (def) this.selectedBody = def;
+    }
+    return lm;
+  }
+
+  public setExplorerDaylight(on: boolean): void {
+    this.explorer.setDaylight(on);
+  }
+
+  public getExplorerStatus(): ExplorerStatus {
+    return this.explorer.getStatus();
   }
 
   public setLensProfile(name: LensProfileName): void {
@@ -407,6 +443,9 @@ export class SolarSystemScene {
     if (!bundle) return;
 
     this.selectedBody = bundle.definition;
+    this.explorer.clearLandmark();
+    // The previous body's zoom floor must not clamp the new approach; the explorer sets the new one
+    this.cameraRig.surfaceMinAltitude = null;
     this.cameraRig.focusCinematic(
       bundle.bodyGroup,
       bundle.visualRadius,
@@ -419,6 +458,7 @@ export class SolarSystemScene {
 
   public resetView(): void {
     this.selectedBody = CatalogueManager.getBody('Sun') || CatalogueManager.getAllBodies()[0];
+    this.explorer.clearLandmark();
     this.cameraRig.resetToOverview();
     this.cameraRig.focusedPhysicalRadiusKm = this.selectedBody.physical.meanRadiusKm;
   }
@@ -622,6 +662,11 @@ export class SolarSystemScene {
     }
 
     this.cameraRig.update();
+
+    const isBlackHole = this.selectedBody.name === 'Sagittarius A*';
+    const focusedName = this.cameraRig.focusedObject && !isBlackHole ? this.selectedBody.name : null;
+    this.explorer.update(focusedName, this.cameraRig.camera, this.renderer.domElement.height);
+
     this.starfield.update(
       this.cameraRig.camera.position,
       deltaSec,
@@ -702,6 +747,7 @@ export class SolarSystemScene {
       travelSpeed: Math.round(travelSpeed),
       cameraDistance: Math.round(scaleMetric.distance),
       lensProfile: this.lens.profile.name,
+      explorer: this.explorer.getStatus(),
     });
   }
 
@@ -715,6 +761,7 @@ export class SolarSystemScene {
     this.renderer.domElement.removeEventListener('mousemove', this.onCanvasMouseMove);
     this.renderer.domElement.removeEventListener('click', this.onCanvasClick);
     this.cameraRig.dispose();
+    this.explorer.dispose();
     this.lens.dispose();
     this.starfield.dispose();
     this.asteroidBelt.dispose();

@@ -220,6 +220,11 @@ export class CameraRig {
   public focusedRadius: number = 2.8;
   /** Physical radius (km) of the focused body, used to convert close-up distances to km. */
   public focusedPhysicalRadiusKm: number | null = null;
+  /**
+   * Lowest permitted altitude above the focused body's surface (render units), set by the
+   * Planetary Explorer from the imagery resolution. null = default close-approach limit.
+   */
+  public surfaceMinAltitude: number | null = null;
   /** Which render scale the scene is using, for converting render units to physical distances. */
   public distanceModel: 'exploration' | 'scientific' = 'exploration';
 
@@ -414,8 +419,8 @@ export class CameraRig {
       this.applyLookOffset();
 
       // Dynamic depth buffer calibration: razor-sharp closeups without z-fighting or skybox clipping
-      const clearance = Math.max(0.05, curRadius - this.focusedRadius);
-      this.camera.near = Math.max(0.04, clearance * 0.08);
+      const clearance = Math.max(this.focusedObject ? 1e-4 : 0.05, curRadius - this.focusedRadius);
+      this.camera.near = Math.max(this.focusedObject ? 1e-5 : 0.04, clearance * 0.08);
       this.camera.far = Math.max(160000, curRadius * 30);
       this.camera.updateProjectionMatrix();
 
@@ -491,11 +496,12 @@ export class CameraRig {
     this.camera.position.copy(this.orbitPivot).add(offset);
 
     // Compute optical aim point ensuring the target is framed at currentNdcOffset
+    const w = this.compositionWeight();
     this.aimPoint = this.calculateAimPoint(
       this.camera.position,
       this.orbitPivot,
-      this.currentNdcOffset.x,
-      this.currentNdcOffset.y,
+      this.currentNdcOffset.x * w,
+      this.currentNdcOffset.y * w,
       this.camera.fov,
       this.camera.aspect
     );
@@ -504,8 +510,9 @@ export class CameraRig {
 
     // Dynamic depth buffer calibration across 9 orders of magnitude
     const distToCenter = this.spherical.radius;
-    const clearance = Math.max(0.05, distToCenter - this.focusedRadius);
-    this.camera.near = Math.max(0.04, Math.min(30.0, clearance * 0.08));
+    const clearance = Math.max(this.focusedObject ? 1e-4 : 0.05, distToCenter - this.focusedRadius);
+    // Close to a surface the near plane follows the altitude down (Planetary Explorer)
+    this.camera.near = Math.max(this.focusedObject ? 1e-5 : 0.04, Math.min(30.0, clearance * 0.08));
     this.camera.far = Math.max(250000, distToCenter * 35);
     this.camera.updateProjectionMatrix();
 
@@ -565,6 +572,112 @@ export class CameraRig {
     if (Math.abs(this.lookYaw) < 1e-6 && Math.abs(this.lookPitch) < 1e-6) return;
     this.camera.rotateY(this.lookYaw);
     this.camera.rotateX(this.lookPitch);
+  }
+
+  private isBlackHoleFocus(): boolean {
+    return !!this.focusedObject && (this.focusedObject.name.includes('sagittarius') || this.focusedObject.name === 'Sagittarius A*');
+  }
+
+  /** Closest permitted camera-to-centre distance for the current focus. */
+  public minimumDistance(): number {
+    if (this.isBlackHoleFocus()) return 65.0;
+    if (!this.focusedObject) return 0.35;
+    if (this.surfaceMinAltitude !== null) return this.focusedRadius + this.surfaceMinAltitude;
+    return this.focusedRadius * 1.15;
+  }
+
+  /** Altitude above the focused body's surface in body radii (Infinity when nothing is focused). */
+  public altitudeInRadii(radius: number = this.spherical.radius): number {
+    if (!this.focusedObject || this.focusedRadius <= 0 || this.isBlackHoleFocus()) return Infinity;
+    return Math.max(0, radius / this.focusedRadius - 1);
+  }
+
+  /**
+   * Off-centre composition fades out as the camera descends towards a surface, so close-ups look
+   * straight down at the point under the view centre (map-style), and returns as it climbs.
+   */
+  private compositionWeight(): number {
+    const alt = this.altitudeInRadii();
+    if (!isFinite(alt)) return 1;
+    return THREE.MathUtils.smoothstep(alt, 0.25, 1.2);
+  }
+
+  /**
+   * Rotate the camera's orbit offset by `q` (world space) — used to ride along with a rotating
+   * body so the ground stays put under the camera, as in Google Earth.
+   */
+  public applyFrameRotation(q: THREE.Quaternion): void {
+    if (this.transition) return;
+    const v = new THREE.Vector3().setFromSpherical(this.spherical).applyQuaternion(q);
+    const t = new THREE.Vector3().setFromSpherical(this.targetSpherical).applyQuaternion(q);
+    this.spherical.setFromVector3(v);
+    this.targetSpherical.setFromVector3(t);
+    this.makeSphericalContinuous();
+  }
+
+  /** Keep target θ within ±π of the current θ so damping never spins the long way round. */
+  private makeSphericalContinuous(): void {
+    const twoPi = Math.PI * 2;
+    while (this.targetSpherical.theta - this.spherical.theta > Math.PI) this.targetSpherical.theta -= twoPi;
+    while (this.targetSpherical.theta - this.spherical.theta < -Math.PI) this.targetSpherical.theta += twoPi;
+  }
+
+  /**
+   * Fly to look straight down at a surface point of a body (Planetary Explorer).
+   * @param worldDir unit vector from the body's centre to the surface point (world space)
+   * @param altitude camera altitude above the surface, render units
+   */
+  public focusSurfacePoint(
+    object: THREE.Object3D,
+    radius: number,
+    worldDir: THREE.Vector3,
+    altitude: number,
+    durationMs: number = 2200
+  ): void {
+    this.focusedObject = object;
+    this.focusedRadius = radius;
+    this.shotMode = 'free_inspection';
+    this.resetLook();
+    if (typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      durationMs = 150;
+    }
+    const distance = Math.max(this.minimumDistance(), radius + altitude);
+    const targetSph = new THREE.Spherical().setFromVector3(worldDir.clone().normalize().multiplyScalar(distance));
+    targetSph.phi = Math.max(0.02, Math.min(Math.PI - 0.02, targetSph.phi));
+    // Take the short way round in azimuth
+    while (targetSph.theta - this.spherical.theta > Math.PI) targetSph.theta -= Math.PI * 2;
+    while (targetSph.theta - this.spherical.theta < -Math.PI) targetSph.theta += Math.PI * 2;
+    this.targetNdcOffset.set(0, 0);
+    this.targetPanOffset.set(0, 0, 0);
+    this.panOffset.set(0, 0, 0);
+
+    this.transition = {
+      startPos: this.camera.position.clone(),
+      startAimPoint: this.aimPoint.clone(),
+      startFov: this.camera.fov,
+      startNdcOffsetX: this.currentNdcOffset.x,
+      startNdcOffsetY: this.currentNdcOffset.y,
+      startPivot: this.orbitPivot.clone(),
+      startSpherical: this.spherical.clone(),
+      targetObject: object,
+      targetRadius: radius,
+      targetBodyName: object.name,
+      targetShotMode: 'free_inspection',
+      targetFov: OBSERVATION_FOV_DEG,
+      targetNdcOffsetX: 0,
+      targetNdcOffsetY: 0,
+      targetDistance: distance,
+      targetTheta: targetSph.theta,
+      targetPhi: targetSph.phi,
+      startTime: performance.now(),
+      durationMs,
+      onComplete: () => {
+        this.spherical.copy(targetSph);
+        this.targetSpherical.copy(targetSph);
+        this.camera.fov = OBSERVATION_FOV_DEG;
+        this.currentNdcOffset.set(0, 0);
+      },
+    };
   }
 
   /** Smoothly return the free-look to the composed shot. */
@@ -1081,7 +1194,8 @@ export class CameraRig {
     }
 
     if (this.isOrbiting) {
-      const rotateSpeed = 0.005;
+      // Near a surface, a drag moves the ground with the cursor rather than spinning the globe
+      const rotateSpeed = 0.005 * Math.min(1, Math.max(0.0005, this.altitudeInRadii()));
       this.targetSpherical.theta -= deltaX * rotateSpeed;
       this.targetSpherical.phi -= deltaY * rotateSpeed;
       // Clamp phi to prevent pole flip
@@ -1108,16 +1222,19 @@ export class CameraRig {
       this.targetSpherical.copy(this.spherical);
     }
 
-    // Logarithmic zoom scaling across 9 orders of magnitude
+    // Logarithmic zoom across 9 orders of magnitude. Around a body the zoom acts on altitude, so it
+    // keeps slowing down all the way to the surface instead of stalling at a fixed distance.
     const zoomFactor = Math.pow(0.92, e.deltaY * 0.012);
-    const isBlackHole = this.focusedObject && (this.focusedObject.name.includes('sagittarius') || this.focusedObject.name === 'Sagittarius A*');
-    const minDistance = isBlackHole ? 65.0 : (this.focusedObject ? this.focusedRadius * 1.15 : 0.35);
+    const minDistance = this.minimumDistance();
     const maxDistance = 180000.0;
-
-    this.targetSpherical.radius = Math.max(
-      minDistance,
-      Math.min(maxDistance, this.targetSpherical.radius * zoomFactor)
-    );
+    let next: number;
+    if (this.focusedObject && !this.isBlackHoleFocus() && this.targetSpherical.radius < this.focusedRadius * 4) {
+      const alt = this.targetSpherical.radius - this.focusedRadius;
+      next = this.focusedRadius + alt * zoomFactor;
+    } else {
+      next = this.targetSpherical.radius * zoomFactor;
+    }
+    this.targetSpherical.radius = Math.max(minDistance, Math.min(maxDistance, next));
   };
 
   private onContextMenu = (e: MouseEvent): void => {
@@ -1154,8 +1271,9 @@ export class CameraRig {
       if (prev) {
         const deltaX = touch.clientX - prev.x;
         const deltaY = touch.clientY - prev.y;
-        this.targetSpherical.theta -= deltaX * 0.006;
-        this.targetSpherical.phi -= deltaY * 0.006;
+        const touchSpeed = 0.006 * Math.min(1, Math.max(0.0005, this.altitudeInRadii()));
+        this.targetSpherical.theta -= deltaX * touchSpeed;
+        this.targetSpherical.phi -= deltaY * touchSpeed;
         this.targetSpherical.phi = Math.max(0.02, Math.min(Math.PI - 0.02, this.targetSpherical.phi));
         this.activeTouches.set(touch.identifier, { x: touch.clientX, y: touch.clientY });
       }
@@ -1164,9 +1282,12 @@ export class CameraRig {
       const dist = Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
       if (this.initialPinchDist > 0) {
         const scale = this.initialPinchDist / dist;
-        const isBlackHole = this.focusedObject && (this.focusedObject.name.includes('sagittarius') || this.focusedObject.name === 'Sagittarius A*');
-        const minDistance = isBlackHole ? 65.0 : (this.focusedObject ? this.focusedRadius * 1.15 : 0.35);
-        this.targetSpherical.radius = Math.max(minDistance, Math.min(180000.0, this.initialRadiusOnPinch * scale));
+        const minDistance = this.minimumDistance();
+        let next = this.initialRadiusOnPinch * scale;
+        if (this.focusedObject && !this.isBlackHoleFocus() && this.initialRadiusOnPinch < this.focusedRadius * 4) {
+          next = this.focusedRadius + (this.initialRadiusOnPinch - this.focusedRadius) * scale;
+        }
+        this.targetSpherical.radius = Math.max(minDistance, Math.min(180000.0, next));
       }
     }
   };

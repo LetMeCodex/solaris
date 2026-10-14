@@ -80,6 +80,14 @@ export const App: React.FC = () => {
     sceneRef.current?.setLensProfile(name);
   }, []);
 
+  const handleFlyToLandmark = useCallback((id: string) => {
+    sceneRef.current?.flyToLandmark(id);
+  }, []);
+
+  const handleExplorerDaylight = useCallback((on: boolean) => {
+    sceneRef.current?.setExplorerDaylight(on);
+  }, []);
+
   const handleCycleLens = useCallback(() => {
     sceneRef.current?.cycleLensProfile();
   }, []);
@@ -110,6 +118,8 @@ export const App: React.FC = () => {
         onJumpToScale={handleJumpToScale}
         onSetLens={handleSetLens}
         onCycleLens={handleCycleLens}
+        onFlyToLandmark={handleFlyToLandmark}
+        onExplorerDaylight={handleExplorerDaylight}
       />
     </div>
   );

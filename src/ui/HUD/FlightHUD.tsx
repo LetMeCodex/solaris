@@ -4,6 +4,7 @@ import { CatalogueManager } from '../../data/CatalogueManager';
 import { ScaleMode } from '../../rendering/RenderSpaceTransform';
 import { getPlanetNarrative, PLANET_NARRATIVES } from '../../data/PlanetNarratives';
 import { LENS_ORDER, LENS_PROFILES, LensProfileName } from '../../rendering/LensPipeline';
+import { ExplorerPanel } from './ExplorerPanel';
 import {
   Play,
   Pause,
@@ -31,6 +32,8 @@ interface FlightHUDProps {
   onJumpToScale?: (domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic' | 'sgr_a') => void;
   onSetLens?: (name: LensProfileName) => void;
   onCycleLens?: () => void;
+  onFlyToLandmark?: (id: string) => void;
+  onExplorerDaylight?: (on: boolean) => void;
 }
 
 type CatalogueFilter = 'all' | 'planet' | 'moon' | 'minor';
@@ -65,6 +68,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   onJumpToScale,
   onSetLens,
   onCycleLens,
+  onFlyToLandmark,
+  onExplorerDaylight,
 }) => {
   const target = telemetry?.activeTarget;
   const isPaused = telemetry?.isPaused ?? false;
@@ -728,6 +733,15 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           </button>
         </div>
       )}
+
+      {/* Planetary Explorer (surface imagery, landmarks) */}
+      <ExplorerPanel
+        status={telemetry?.explorer}
+        onFlyToLandmark={(id) => onFlyToLandmark?.(id)}
+        onDaylight={(on) => onExplorerDaylight?.(on)}
+        onSelectBody={onSelectPlanet}
+        onResetView={onResetView}
+      />
 
       {/* ========================================================
           5. BOTTOM TIMELINE CONTROLLER & DATE CONTROLS

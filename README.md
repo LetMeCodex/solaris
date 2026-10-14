@@ -70,6 +70,44 @@ Selecting a body flies an *observation camera* to it, modelled on a real spacecr
   - Motion blur re-projects each pixel's view ray with the previous frame's orientation. It is exact for the sky, and a tracked planet that moves with the camera is not smeared. It is disabled under `prefers-reduced-motion`.
 - **Resolved Milky Way.** 26,000 pinpoint stars are importance-sampled from the Gaia map (weight ∝ brightness² × cos b), so star density follows the real band, bulge and dust lanes. The panorama's off-plane count noise is filtered to a clean black sky.
 
+### Planetary Explorer
+
+Select a body and keep zooming: the view goes from the whole globe down to the finest imagery NASA and USGS publish for it, much like a web map.
+
+- **Streaming tiles.** Below 2.5 body radii, equirectangular tiles stream onto the globe. Tile choice uses screen-space error, so a source pixel is never drawn larger than about 1.3 screen pixels. Tiles behind the horizon or outside the view are skipped.
+- **Loading behaviour.**
+  - Requests go coarse-to-fine and nearest-first, at most 6 at a time.
+  - Requests the view no longer needs are aborted.
+  - A failed tile is retried up to 3 times with backoff.
+  - Up to 220 tiles are cached, with least-recently-used eviction.
+- **No holes.** Until a tile arrives, its nearest loaded ancestor is drawn, then the base globe map. If a source is unreachable (offline, blocked, or 8 tiles given up with none ever loaded), the layer switches off and says so. The globe stays usable.
+- **Zoom limit set by the data.** The closest approach allows 2× over-zoom of the finest level. With a 1000 px viewport that is about 235 km on Earth, 40 km on the Moon, 112 km on Mercury, 139 km on Venus and 156 km on Mars. The giants have only a global cloud map and keep the observation shot.
+- **Surface-following camera.** Below 1.5 radii the camera rotates with the body, so the ground stays put. Earth's clouds hide below 0.2 R. Wheel and pinch zoom act on altitude, and drag speed slows near the ground.
+- **Lighting.** Imagery is lit by the real Sun for the current simulation time. The panel shows the Sun's elevation below the camera. **Daylight view** lights the map evenly so you can read the night side.
+- **Landmarks.**
+  - Earth: Everest, Grand Canyon, Richat Structure, Lake Baikal, Nile Delta.
+  - Moon: Tycho, Copernicus, Tranquility Base, Mare Imbrium, Shackleton.
+  - Mercury: Caloris, Hokusai, Rachmaninoff.
+  - Venus: Maxwell Montes, Maat Mons, Aphrodite Terra.
+  - Mars: Olympus Mons, Valles Marineris, Gale, Jezero, Hellas.
+  - Coordinates come from the Wikipedia coordinate records saved in `docs/research/landmark-coords.txt`.
+  - Search covers every body. A breadcrumb (Solar System › Body › Landmark) steps back out.
+- **Honest labels.**
+  - Venus is a Magellan **radar** mosaic, not a visible-light image.
+  - The Moon and Mercury mosaics are monochrome.
+  - Jupiter, Saturn, Uranus and Neptune show **cloud tops**: they have no solid surface, and no tiled high-resolution global map is published for them.
+
+| Body | Imagery | Endpoint | Levels | Finest |
+| :--- | :--- | :--- | :--- | :--- |
+| Earth | Blue Marble NG (Aug 2004) | NASA GIBS WMTS (EPSG:4326) | 0–7 | ≈ 489 m/px |
+| Moon | LRO WAC global mosaic 303 ppd | NASA Moon Trek WMTS | 0–8 | ≈ 83 m/px |
+| Mercury | MESSENGER MDIS BDR 166 m | NASA Mercury Trek WMTS | 0–7 | ≈ 234 m/px |
+| Venus | Magellan SAR mosaic | USGS Astrogeology WMS | 0–8 (resampled) | ≈ 290 m/px requested |
+| Mars | Viking MDIM 2.1 colour 232 m | NASA Mars Trek WMTS | 0–7 | ≈ 325 m/px |
+| Giants | Solar System Scope 2k maps | bundled | — | global only |
+
+The endpoints, deepest levels and CORS headers were checked from GitHub Actions with the deployed site's origin; see `docs/research/imagery-sources-probe.txt` and `scripts/verify-tile-sources.mjs`. No API keys are used.
+
 ### Scale modes
 
 - **Exploration** (default): compressed distances; planet sizes keep true ratios to Earth (Sun shrunk to 48 units).
@@ -97,6 +135,8 @@ Selecting a body flies an *observation camera* to it, modelled on a real spacecr
 | Double-click | Return free look to the composed shot |
 | Left-drag / Shift-drag or middle-drag / wheel | Orbit / pan / zoom |
 | `Esc` | Close drawers / reset to overview |
+| Wheel / pinch near a body | Zoom by altitude down to the imagery's limit |
+| Explorer panel | Landmarks, search, breadcrumb, Daylight view |
 
 ---
 
