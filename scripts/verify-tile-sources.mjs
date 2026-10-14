@@ -75,3 +75,21 @@ for (const [layer, tms, ext, times] of GIBS) {
     line(`   z=${z}`, await probe(url));
   }
 }
+
+console.log('\n== Venus radar & gas-giant maps ==');
+const EXTRA = [
+  'https://planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/venus/venus_simp_cyl.map&service=WMS&request=GetCapabilities',
+  'https://planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/venus/venus_simp_cyl.map&service=WMS&version=1.1.1&request=GetMap&layers=MAGELLAN&srs=EPSG:4326&bbox=-180,-90,180,90&width=512&height=256&format=image/jpeg&styles=',
+  'https://www.solarsystemscope.com/textures/download/8k_jupiter.jpg',
+  'https://www.solarsystemscope.com/textures/download/8k_saturn.jpg',
+  'https://www.solarsystemscope.com/textures/download/2k_venus_surface.jpg',
+  'https://www.solarsystemscope.com/textures/download/8k_venus_surface.jpg',
+];
+for (const u of EXTRA) {
+  const r = await probe(u);
+  line(u.slice(0, 98), r);
+  if (r.text) {
+    const names = [...r.text.matchAll(/<Name>([^<]+)<\/Name>/g)].map((m) => m[1]).slice(0, 40);
+    console.log('   layers: ' + names.join(', '));
+  }
+}
