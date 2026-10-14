@@ -687,6 +687,17 @@ export class Starfield {
     this.celestialGroup.add(this.pointsMesh);
   }
 
+  /** Surface view: shrink the sky sphere inside a short far plane and hide in-space effects. */
+  private groundMode = false;
+
+  public setGroundMode(on: boolean, skyRadius: number = 3): void {
+    this.groundMode = on;
+    this.celestialGroup.scale.setScalar(on ? skyRadius / (Starfield.SPHERE_RADIUS * 1.06) : 1);
+    if (this.stardustMesh) this.stardustMesh.visible = !on;
+    this.travelParticles.mesh.visible = !on;
+    this.externalGalaxy.group.visible = !on;
+  }
+
   public update(
     cameraPosition: THREE.Vector3,
     deltaSec: number,
@@ -731,6 +742,7 @@ export class Starfield {
 
     this.externalGalaxy.update(performance.now() * 0.001, camera);
 
+    if (this.groundMode) return;
     // Update velocity-aware travel streak particles
     this.travelParticles.update(
       cameraPosition,

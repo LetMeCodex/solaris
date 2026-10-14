@@ -11,7 +11,13 @@ import { Starfield } from './Starfield';
 import { AsteroidBelt } from './AsteroidBelt';
 import { LensPipeline, LensProfileName } from './LensPipeline';
 import { PlanetaryExplorer, ExplorerStatus } from '../explorer/PlanetaryExplorer';
+import { SurfaceObserver, SurfaceStatus } from '../explorer/SurfaceObserver';
+import { ScreenLabels } from '../explorer/ScreenLabels';
+import { SkyBodySource } from '../explorer/SkyBodies';
+import { TimeOfDay } from '../explorer/SkyAstronomy';
 import { Landmark } from '../explorer/Landmarks';
+import { localToLatLon } from '../explorer/TileMath';
+import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 import { BodyFrame, getBodyFrame, getSynchronousFrame } from '../astronomy/BodyOrientation';
 
 export interface TelemetryData {
@@ -33,6 +39,7 @@ export interface TelemetryData {
   cameraDistance: number;
   lensProfile: LensProfileName;
   explorer: ExplorerStatus;
+  surface: SurfaceStatus | null;
 }
 
 export class SolarSystemScene {
@@ -50,6 +57,8 @@ export class SolarSystemScene {
   private orbitLinesGroup: THREE.Group = new THREE.Group();
   private moonOrbitLines: Map<string, THREE.Line> = new Map();
   private latestPhysicalStates: Map<string, StateVector> = new Map();
+  /** A surface view requested for a body that is not focused yet (entered once the explorer has it). */
+  private pendingSkyView: { body: string; lat: number; lon: number; place: string } | null = null;
   private orbitLinesEpochDays: number = 0;
 
   // Scratch objects reused every frame
@@ -74,6 +83,9 @@ export class SolarSystemScene {
 
   // Google Maps–style surface imagery streaming and landmark navigation
   public explorer: PlanetaryExplorer;
+  public surface: SurfaceObserver;
+  private labels: ScreenLabels;
+  private surfaceSaved: Array<[THREE.Object3D, boolean]> = [];
 
   // Selection
   public selectedBody: CelestialBodyDefinition;
@@ -140,9 +152,51 @@ export class SolarSystemScene {
         bodyGroup: b.bodyGroup,
         surfaceMesh: b.surfaceMesh,
         cloudMesh: b.cloudMesh,
+        baseMap: (() => {
+          const u = (b.surfaceMesh.material as THREE.ShaderMaterial).uniforms;
+          return (u?.map?.value ?? u?.dayMap?.value ?? null) as THREE.Texture | null;
+        })(),
         visualRadius: b.visualRadius,
         radiusKm: b.definition.physical.meanRadiusKm,
       };
+    });
+    this.explorer.setMaxAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
+    this.labels = new ScreenLabels(container, (id) => {
+      if (id.startsWith('sky:')) this.surface.lookAt(id.slice(4));
+      else this.flyToLandmark(id);
+    });
+    this.surface = new SurfaceObserver({
+      camera: this.cameraRig.camera,
+      dom: container,
+      scene: this.scene,
+      getBody: (name) => {
+        const b = this.planetBundles.get(name);
+        if (!b) return null;
+        return {
+          name,
+          bodyGroup: b.bodyGroup,
+          surfaceMesh: b.surfaceMesh,
+          visualRadius: b.visualRadius,
+          radiusKm: b.definition.physical.meanRadiusKm,
+        };
+      },
+      getSources: () => this.skySources(),
+      getPositionKm: (name) => {
+        if (name === 'Sun') return [0, 0, 0];
+        const st = this.latestPhysicalStates.get(name);
+        return st ? (st.positionKm as [number, number, number]) : null;
+      },
+      getDays: () => this.clock.getJulianDateTDB() - SimulationClock.J2000_JD,
+      setDays: (d) => {
+        // TDB → UTC (TT − UTC = 69.184 s) → Unix ms
+        const jdUtc = d + SimulationClock.J2000_JD - 69.184 / 86400;
+        this.clock.setUtcMs((jdUtc - 2440587.5) * 86400000);
+      },
+      setSceneMode: (on, body, skyRadius) => this.setSurfaceSceneMode(on, body, skyRadius),
+      setGround: (light, haze) => {
+        this.explorer.groundLight = light;
+        this.explorer.groundHaze = haze;
+      },
     });
     this.orbitLinesEpochDays = this.clock.getJulianDateTDB() - SimulationClock.J2000_JD;
     this.rebuildOrbitLines();
@@ -257,8 +311,172 @@ export class SolarSystemScene {
     this.rebuildOrbitLines();
   }
 
+  // --- Surface view ("stand here and look up") ---
+
+  private skySourceCache = new Map<string, SkyBodySource>();
+
+  /** Sun, planets and moons with their true heliocentric positions for the surface sky. */
+  private skySources(): SkyBodySource[] {
+    const out: SkyBodySource[] = [];
+    for (const def of CatalogueManager.getAllBodies()) {
+      const isSun = def.orderFromSun === 0 || def.category === 'star';
+      const st = this.latestPhysicalStates.get(def.name);
+      if (!isSun && !st) continue;
+      const bundle = this.planetBundles.get(def.name);
+      let src = this.skySourceCache.get(def.name);
+      if (!src) {
+        const u = bundle ? (bundle.surfaceMesh.material as THREE.ShaderMaterial).uniforms : undefined;
+        const ringU = bundle?.ringMesh ? (bundle.ringMesh.material as THREE.ShaderMaterial).uniforms : undefined;
+        src = {
+          name: def.name,
+          radiusKm: def.physical.meanRadiusKm,
+          positionKm: [0, 0, 0],
+          map: (u?.map?.value ?? u?.dayMap?.value ?? null) as THREE.Texture | null,
+          ringMap: (ringU?.ringMap?.value ?? null) as THREE.Texture | null,
+          orientation: new THREE.Quaternion(),
+          colorHex: def.physical.colorHex,
+        };
+        this.skySourceCache.set(def.name, src);
+      }
+      src.positionKm = isSun ? [0, 0, 0] : (st!.positionKm as [number, number, number]);
+      if (bundle && src.orientation) bundle.surfaceMesh.getWorldQuaternion(src.orientation);
+      out.push(src);
+    }
+    return out;
+  }
+
+  /** Hide everything that is not part of a surface sky (other globes are drawn by SkyBodies). */
+  private setSurfaceSceneMode(on: boolean, body: string, skyRadius: number): void {
+    if (on) {
+      this.surfaceSaved = [];
+      const hide = (o: THREE.Object3D | undefined) => {
+        if (!o) return;
+        this.surfaceSaved.push([o, o.visible]);
+        o.visible = false;
+      };
+      for (const [name, b] of this.planetBundles) {
+        if (name === body) {
+          hide(b.atmosphereMesh);
+          hide(b.cloudMesh);
+        } else {
+          hide(b.bodyGroup);
+        }
+      }
+      hide(this.orbitLinesGroup);
+      for (const l of this.moonOrbitLines.values()) hide(l);
+      hide(this.asteroidBelt.mesh);
+      this.starfield.setGroundMode(true, skyRadius);
+    } else {
+      for (const [o, v] of this.surfaceSaved) o.visible = v;
+      this.surfaceSaved = [];
+      this.starfield.setGroundMode(false);
+    }
+  }
+
+  /** Stand on the focused body (at the landmark if one is active, else below the camera). */
+  public enterSurface(lat?: number, lon?: number, place?: string): boolean {
+    const st = this.explorer.getStatus();
+    const body = st.body;
+    if (!body) return false;
+    const lm = st.landmark && st.landmark.body === body ? st.landmark : null;
+    const la = lat ?? lm?.lat ?? st.subCamera?.lat;
+    const lo = lon ?? lm?.lon ?? st.subCamera?.lon;
+    if (la === undefined || lo === undefined) return false;
+    this.cameraRig.suspended = true;
+    this.lens.setEffectScale(0.3);
+    // A daylit sky is near white in HDR terms; only the Sun itself should bloom
+    this.lens.setBloomThreshold(2.5);
+    return this.surface.enter(body, la, lo, place ?? lm?.name ?? null);
+  }
+
+  /**
+   * Stand on any solid body. With `facing`, the standing point is chosen so that body hangs about
+   * 40° above the horizon, on the side the Sun lights (e.g. Saturn from Enceladus, Earth from the
+   * Moon); it is computed from the real positions and the body's IAU orientation at this moment.
+   */
+  public enterSkyView(body: string, facing?: string): boolean {
+    const b = this.planetBundles.get(body);
+    if (!b || body === 'Sun') return false;
+    if (this.surface.isActive()) this.exitSurface(false);
+    const spot = this.standingPointFacing(body, facing) ?? { lat: 0, lon: 0 };
+    this.selectedBody = b.definition;
+    this.explorer.clearLandmark();
+    this.cameraRig.surfaceMinAltitude = null;
+    this.cameraRig.focusCinematic(b.bodyGroup, b.visualRadius, body, 150, undefined, b.definition.physical.meanRadiusKm);
+    this.pendingSkyView = { body, lat: spot.lat, lon: spot.lon, place: facing ? `${facing} in the sky` : body };
+    return true;
+  }
+
+  /** Body-fixed point from which `facing` stands ~40° above the horizon, towards the Sun's side. */
+  private standingPointFacing(body: string, facing?: string): { lat: number; lon: number } | null {
+    const b = this.planetBundles.get(body);
+    const me = this.latestPhysicalStates.get(body);
+    if (!b || !me) return null;
+    const toLocal = b.surfaceMesh.getWorldQuaternion(new THREE.Quaternion()).invert();
+    const dirTo = (km: number[]): THREE.Vector3 => {
+      const rel: [number, number, number] = [km[0] - me.positionKm[0], km[1] - me.positionKm[1], km[2] - me.positionKm[2]];
+      const t = CoordinateFrames.eclipticToThree(rel);
+      return new THREE.Vector3(t[0], t[1], t[2]).normalize().applyQuaternion(toLocal);
+    };
+    const sun = dirTo([0, 0, 0]);
+    const target = facing ? this.latestPhysicalStates.get(facing) : null;
+    // Without a target, stand where the Sun is ~40° up (morning light, long shadows, sky colour)
+    const t = target ? dirTo(target.positionKm as number[]) : sun.clone();
+    let u = target
+      ? sun.clone().sub(t.clone().multiplyScalar(sun.dot(t)))
+      : new THREE.Vector3(0, 1, 0).cross(t).negate();
+    if (u.lengthSq() < 1e-6) u = new THREE.Vector3(0, 1, 0).cross(t);
+    u.normalize();
+    const away = THREE.MathUtils.degToRad(50); // target at ~40° altitude
+    const p = t.multiplyScalar(Math.cos(away)).add(u.multiplyScalar(Math.sin(away)));
+    const ll = localToLatLon(p.x, p.y, p.z);
+    return { lat: ll.lat, lon: ll.lon };
+  }
+
+  /** Leave the surface and rise back above it. */
+  public exitSurface(fly: boolean = true): void {
+    if (!this.surface.isActive()) return;
+    const loc = this.surface.getLocation();
+    this.surface.exit();
+    this.lens.setBloomThreshold(null);
+    this.cameraRig.suspended = false;
+    this.cameraRig.syncFromCamera();
+    if (fly && loc) {
+      const b = this.planetBundles.get(loc.body);
+      if (b) {
+        const dir = this.explorer.surfaceDirection(
+          { name: loc.body, bodyGroup: b.bodyGroup, surfaceMesh: b.surfaceMesh, visualRadius: b.visualRadius, radiusKm: b.definition.physical.meanRadiusKm },
+          loc.lat,
+          loc.lon
+        );
+        this.cameraRig.focusSurfacePoint(b.bodyGroup, b.visualRadius, dir, b.visualRadius * 0.12, 1800);
+      }
+    }
+  }
+
+  public setSurfaceMagnification(m: number): void {
+    this.surface.setMagnification(m);
+  }
+
+  public setSurfaceAtmosphere(on: boolean): void {
+    this.surface.setAtmosphere(on);
+  }
+
+  public setSurfaceTimeOfDay(what: TimeOfDay): boolean {
+    return this.surface.setTimeOfDay(what);
+  }
+
+  public surfaceLookAt(name: string): void {
+    this.surface.lookAt(name);
+  }
+
+  public resetSurfaceZoom(): void {
+    this.surface.resetZoom();
+  }
+
   /** Fly to a curated landmark (selects its body). */
   public flyToLandmark(id: string): Landmark | null {
+    if (this.surface.isActive()) this.exitSurface(false);
     const lm = this.explorer.flyToLandmark(id);
     if (lm) {
       const def = this.planetBundles.get(lm.body)?.definition;
@@ -343,6 +561,7 @@ export class SolarSystemScene {
   private onCanvasClick = (e: MouseEvent): void => {
     // Only handle clicks directly on the WebGL canvas
     if (e.target !== this.renderer.domElement) return;
+    if (this.surface.isActive()) return;
 
     // Ignore drags
     const dist = Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y);
@@ -414,6 +633,8 @@ export class SolarSystemScene {
 
       for (const bundle of this.planetBundles.values()) {
         if (bundle.surfaceMesh === hit) {
+          // Clicking the globe you are exploring must not yank the camera back to orbit
+          if (bundle.definition.name === this.selectedBody.name && this.cameraRig.altitudeInRadii() < 4) break;
           this.selectBody(bundle.definition.name);
           break;
         }
@@ -429,6 +650,7 @@ export class SolarSystemScene {
   }
 
   public selectBody(name: string, durationMs: number = 1800): void {
+    if (this.surface?.isActive()) this.exitSurface(false);
     if (name === 'Sagittarius A*' || name === 'Sgr A*' || name === 'sagittarius_a_star') {
       const sgrDef = CatalogueManager.getSagittariusAStar();
       if (sgrDef) {
@@ -457,6 +679,7 @@ export class SolarSystemScene {
   }
 
   public resetView(): void {
+    if (this.surface?.isActive()) this.exitSurface(false);
     this.selectedBody = CatalogueManager.getBody('Sun') || CatalogueManager.getAllBodies()[0];
     this.explorer.clearLandmark();
     this.cameraRig.resetToOverview();
@@ -662,10 +885,28 @@ export class SolarSystemScene {
     }
 
     this.cameraRig.update();
+    this.surface.update();
 
     const isBlackHole = this.selectedBody.name === 'Sagittarius A*';
     const focusedName = this.cameraRig.focusedObject && !isBlackHole ? this.selectedBody.name : null;
     this.explorer.update(focusedName, this.cameraRig.camera, this.renderer.domElement.height);
+    if (this.pendingSkyView && this.explorer.getStatus().body === this.pendingSkyView.body) {
+      const p = this.pendingSkyView;
+      this.pendingSkyView = null;
+      this.enterSurface(p.lat, p.lon, p.place);
+    }
+
+    // Over a map the lens character steps aside (clean, web-map look); it returns in space
+    if (!this.surface.isActive()) {
+      const alt = this.cameraRig.altitudeInRadii();
+      this.lens.setEffectScale(isFinite(alt) ? THREE.MathUtils.smoothstep(alt, 0.3, 1.5) : 1);
+    }
+    this.labels.update(
+      this.surface.isActive() ? this.surface.labelItems() : this.explorer.featureLabels(this.cameraRig.camera),
+      this.cameraRig.camera,
+      this.container.clientWidth,
+      this.container.clientHeight
+    );
 
     this.starfield.update(
       this.cameraRig.camera.position,
@@ -742,12 +983,18 @@ export class SolarSystemScene {
       constellationsVisible: this.starfield.areConstellationsVisible(),
       asteroidBeltVisible: this.asteroidBelt.isVisible(),
       orbitsVisible: this.orbitLinesGroup.visible,
-      observerScaleMetric: scaleMetric.formatted,
+      observerScaleMetric: this.surface.isActive()
+        ? (() => {
+            const km = this.surface.getStatus()?.eyeHeightKm ?? 0;
+            return `ON SURFACE · EYE ${km >= 1 ? `${km.toFixed(0)} KM` : `${(km * 1000).toFixed(0)} M`}`;
+          })()
+        : scaleMetric.formatted,
       observerDomain: scaleMetric.domain,
       travelSpeed: Math.round(travelSpeed),
       cameraDistance: Math.round(scaleMetric.distance),
       lensProfile: this.lens.profile.name,
       explorer: this.explorer.getStatus(),
+      surface: this.surface.getStatus(),
     });
   }
 
@@ -760,6 +1007,8 @@ export class SolarSystemScene {
     this.renderer.domElement.removeEventListener('mousedown', this.onPointerDown);
     this.renderer.domElement.removeEventListener('mousemove', this.onCanvasMouseMove);
     this.renderer.domElement.removeEventListener('click', this.onCanvasClick);
+    this.surface.dispose();
+    this.labels.dispose();
     this.cameraRig.dispose();
     this.explorer.dispose();
     this.lens.dispose();

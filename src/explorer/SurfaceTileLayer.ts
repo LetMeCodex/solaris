@@ -64,33 +64,56 @@ const vertexShader = /* glsl */ `
   varying vec2 vUv;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
+  varying vec3 vViewPosition;
   void main() {
     vUv = uv;
-    vec4 worldPos = modelMatrix * vec4(position, 1.0);
-    vWorldPosition = worldPos.xyz;
+    vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
     vWorldNormal = normalize(mat3(modelMatrix) * normal);
-    gl_Position = projectionMatrix * viewMatrix * worldPos;
+    // modelViewMatrix is composed in double precision on the CPU, so vertices stay steady even
+    // a few hundred metres above a globe that sits far from the scene origin
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vViewPosition = mv.xyz;
+    gl_Position = projectionMatrix * mv;
   }
 `;
 
 const fragmentShader = /* glsl */ `
   uniform sampler2D map;
+  uniform sampler2D uBaseMap;
+  uniform vec4 uBounds;       // nominal tile extent: west, south, east, north (degrees)
+  uniform float uColorize;    // 1: luminance from the tile, hue from the global colour map
   uniform float uOpacity;
   uniform float uAmbient;
-  uniform float uDaylight;
+  uniform float uDaylight;    // 0: lit by the real Sun · 1: evenly lit, like a web map
+  uniform vec3 uSunTint;      // sunlight colour after the atmosphere (surface view)
+  uniform vec3 uHazeColor;
+  uniform float uHazeDensity; // per view-space unit; aerial perspective near the ground
   varying vec2 vUv;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
+  varying vec3 vViewPosition;
+
+  float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
   void main() {
     vec4 tex = texture2D(map, vUv);
-    // Sunlight from the Sun at the origin, with a soft terminator; a faint ambient keeps the
-    // night side legible for exploration
+    vec3 col = tex.rgb;
+    if (uColorize > 0.5) {
+      float lon = mix(uBounds.x, uBounds.z, vUv.x);
+      float lat = mix(uBounds.y, uBounds.w, vUv.y);
+      vec3 base = texture2D(uBaseMap, vec2((lon + 180.0) / 360.0, (lat + 90.0) / 180.0)).rgb;
+      col = clamp(base * (luma(tex.rgb) / max(luma(base), 0.03)), 0.0, 1.0);
+    }
     vec3 sunDir = normalize(-vWorldPosition);
     float ndl = dot(normalize(vWorldNormal), sunDir);
-    float light = smoothstep(-0.08, 0.35, ndl) * 1.1 + uAmbient;
-    // Optional "daylight" view: even illumination for reading the map on the night side
-    light = mix(light, 0.85 + 0.25 * max(ndl, 0.0), uDaylight);
-    gl_FragColor = vec4(tex.rgb * light, uOpacity);
+    vec3 sunlit = uSunTint * (smoothstep(-0.08, 0.35, ndl) * 1.1) + vec3(uAmbient);
+    vec3 light = mix(sunlit, vec3(1.0), uDaylight);
+    col *= light;
+    if (uHazeDensity > 0.0) {
+      float h = 1.0 - exp(-length(vViewPosition) * uHazeDensity);
+      col = mix(col, uHazeColor, clamp(h, 0.0, 1.0));
+    }
+    gl_FragColor = vec4(col, tex.a * uOpacity);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }
@@ -112,8 +135,18 @@ export class SurfaceTileLayer {
   private consecutiveFailures = 0;
   private disabled = false;
   private everLoaded = false;
-  /** Shared by every tile material, so toggling it is free. */
-  private daylight = { value: 0 };
+  /** Shared by every tile material, so changing them is free. */
+  private shared = {
+    uOpacity: { value: 1 },
+    uAmbient: { value: 0.07 },
+    uDaylight: { value: 0 },
+    uSunTint: { value: new THREE.Vector3(1, 1, 1) },
+    uColorize: { value: 0 },
+    uBaseMap: { value: null as THREE.Texture | null },
+    uHazeColor: { value: new THREE.Color(0, 0, 0) },
+    uHazeDensity: { value: 0 },
+  };
+  private anisotropy = 8;
   private frame = 0;
   private status: LayerStatus = { state: 'idle', inFlight: 0, queued: 0, cached: 0, drawn: 0, deepestLevel: -1, failures: 0 };
 
@@ -124,8 +157,36 @@ export class SurfaceTileLayer {
   }
 
   /** Even illumination instead of the real Sun angle (for exploring the night side). */
-  public setDaylight(on: boolean): void {
-    this.daylight.value = on ? 1 : 0;
+  public setDaylight(on: boolean | number): void {
+    this.shared.uDaylight.value = typeof on === 'number' ? on : on ? 1 : 0;
+  }
+
+  /** Whole-layer opacity (fades the imagery in over the globe map while descending). */
+  public setOpacity(opacity: number): void {
+    this.shared.uOpacity.value = opacity;
+    this.group.visible = opacity > 0.001;
+  }
+
+  /** Global colour map used to tint greyscale sources (`colorize` providers). */
+  public setBaseMap(tex: THREE.Texture | null): void {
+    this.shared.uBaseMap.value = tex;
+    this.shared.uColorize.value = tex && this.provider.kind === 'wmts' && this.provider.colorize ? 1 : 0;
+  }
+
+  /** Aerial perspective: fade ground imagery to `color` with view distance (0 disables). */
+  public setHaze(color: THREE.Color, densityPerUnit: number): void {
+    this.shared.uHazeColor.value.copy(color);
+    this.shared.uHazeDensity.value = densityPerUnit;
+  }
+
+  /** Sunlight colour and ambient (sky) light for the surface view; (1,1,1), 0.07 in space. */
+  public setLighting(sunTint: [number, number, number], ambient: number): void {
+    this.shared.uSunTint.value.set(sunTint[0], sunTint[1], sunTint[2]);
+    this.shared.uAmbient.value = ambient;
+  }
+
+  public setMaxAnisotropy(n: number): void {
+    this.anisotropy = Math.max(1, n);
   }
 
   public getStatus(): LayerStatus {
@@ -273,7 +334,7 @@ export class SurfaceTileLayer {
         tex.wrapS = THREE.ClampToEdgeWrapping;
         tex.wrapT = THREE.ClampToEdgeWrapping;
         tex.minFilter = THREE.LinearMipmapLinearFilter;
-        tex.anisotropy = 4;
+        tex.anisotropy = this.anisotropy;
         tex.needsUpdate = true;
         entry.texture = tex;
         entry.state = 'loaded';
@@ -365,9 +426,15 @@ export class SurfaceTileLayer {
     geo.computeBoundingSphere();
 
     const mat = new THREE.ShaderMaterial({
-      uniforms: { map: { value: entry.texture }, uOpacity: { value: 1 }, uAmbient: { value: 0.07 }, uDaylight: this.daylight },
+      uniforms: {
+        ...this.shared,
+        map: { value: entry.texture },
+        uBounds: { value: new THREE.Vector4(b.west, b.south, b.east, b.north) },
+      },
       vertexShader,
       fragmentShader,
+      transparent: true,
+      depthWrite: true,
     });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.name = `tile_${entry.id}`;

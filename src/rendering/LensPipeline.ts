@@ -43,7 +43,7 @@ export const LENS_PROFILES: Record<LensProfileName, LensProfile> = {
     edgeBlur: 2.2,
     vignette: 0.42,
     grain: 0.016,
-    shutter: 0.5,
+    shutter: 0,
     bloomStrength: 0.4,
     bloomRadius: 0.55,
     bloomThreshold: 0.9,
@@ -57,7 +57,7 @@ export const LENS_PROFILES: Record<LensProfileName, LensProfile> = {
     edgeBlur: 4.5,
     vignette: 0.6,
     grain: 0.03,
-    shutter: 0.5,
+    shutter: 0,
     bloomStrength: 0.48,
     bloomRadius: 0.6,
     bloomThreshold: 0.88,
@@ -262,19 +262,46 @@ export class LensPipeline {
     this.setProfile('cinematic');
   }
 
+  /** 0–1: how much of the lens character is applied (fades to a clean view over a map). */
+  private effectScale = 1;
+
+  public setEffectScale(k: number): void {
+    const v = THREE.MathUtils.clamp(k, 0, 1);
+    if (Math.abs(v - this.effectScale) < 1e-3) return;
+    this.effectScale = v;
+    this.applyProfileUniforms();
+  }
+
+  private applyProfileUniforms(): void {
+    const k = this.effectScale;
+    const u = this.lensPass.uniforms;
+    u.uDistortion.value = this.profile.distortion * k;
+    u.uFisheyeMask.value = k > 0.5 ? this.profile.fisheyeMask : 0;
+    u.uChromatic.value = this.profile.chromatic * k;
+    u.uEdgeBlur.value = this.profile.edgeBlur * k;
+    u.uVignette.value = this.profile.vignette * (0.35 + 0.65 * k);
+    u.uGrain.value = this.profile.grain * k;
+    // No glow over a map (bright snow and desert would bloom into haze)
+    this.bloomPass.strength = this.profile.bloomStrength * k;
+    this.bloomPass.threshold = this.bloomThresholdOverride ?? this.profile.bloomThreshold;
+  }
+
+  /** Raise the bloom threshold (e.g. under a bright daytime sky) or null to use the profile's. */
+  private bloomThresholdOverride: number | null = null;
+
+  public setBloomThreshold(t: number | null): void {
+    if (t === this.bloomThresholdOverride) return;
+    this.bloomThresholdOverride = t;
+    this.applyProfileUniforms();
+  }
+
   public setProfile(name: LensProfileName): void {
     this.profile = LENS_PROFILES[name];
     const u = this.lensPass.uniforms;
-    u.uDistortion.value = this.profile.distortion;
-    u.uFisheyeMask.value = this.profile.fisheyeMask;
-    u.uChromatic.value = this.profile.chromatic;
-    u.uEdgeBlur.value = this.profile.edgeBlur;
-    u.uVignette.value = this.profile.vignette;
-    u.uGrain.value = this.profile.grain;
+    this.applyProfileUniforms();
     u.uShutter.value = this.reducedMotion ? 0 : this.profile.shutter;
-    this.bloomPass.strength = this.profile.bloomStrength;
     this.bloomPass.radius = this.profile.bloomRadius;
-    this.bloomPass.threshold = this.profile.bloomThreshold;
+    this.applyProfileUniforms();
     this.hasPrev = false;
   }
 
@@ -292,13 +319,13 @@ export class LensPipeline {
 
   /** Map a click in output NDC to the NDC the scene was rendered at (inverse of the lens warp). */
   public outputToSceneNdc(x: number, y: number, aspect: number): [number, number] {
-    const [sx, sy] = lensSourcePoint(x * aspect, y, aspect, this.profile.distortion);
+    const [sx, sy] = lensSourcePoint(x * aspect, y, aspect, this.profile.distortion * this.effectScale);
     return [sx / aspect, sy];
   }
 
   /** True if the output NDC point lies outside the fisheye image circle. */
   public isMasked(x: number, y: number, aspect: number): boolean {
-    if (this.profile.fisheyeMask <= 0) return false;
+    if (this.profile.fisheyeMask <= 0 || this.effectScale <= 0.5) return false;
     return Math.hypot(x * aspect, y) > this.profile.fisheyeMask;
   }
 

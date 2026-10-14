@@ -1,3 +1,4 @@
+import { SurfaceAction } from './ui/HUD/SurfacePanel';
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { SolarSystemScene, TelemetryData } from './rendering/SolarSystemScene';
 import { FlightHUD } from './ui/HUD/FlightHUD';
@@ -88,6 +89,21 @@ export const App: React.FC = () => {
     sceneRef.current?.setExplorerDaylight(on);
   }, []);
 
+  const handleSurface = useCallback((a: SurfaceAction) => {
+    const sc = sceneRef.current;
+    if (!sc) return;
+    switch (a.type) {
+      case 'enter': sc.enterSurface(); break;
+      case 'exit': sc.exitSurface(); break;
+      case 'magnification': sc.setSurfaceMagnification(a.value); break;
+      case 'atmosphere': sc.setSurfaceAtmosphere(a.on); break;
+      case 'time': sc.setSurfaceTimeOfDay(a.what); break;
+      case 'lookAt': sc.surfaceLookAt(a.name); break;
+      case 'resetZoom': sc.resetSurfaceZoom(); break;
+      case 'skyFrom': sc.enterSkyView(a.body, a.facing); break;
+    }
+  }, []);
+
   const handleCycleLens = useCallback(() => {
     sceneRef.current?.cycleLensProfile();
   }, []);
@@ -120,6 +136,7 @@ export const App: React.FC = () => {
         onCycleLens={handleCycleLens}
         onFlyToLandmark={handleFlyToLandmark}
         onExplorerDaylight={handleExplorerDaylight}
+        onSurface={handleSurface}
       />
     </div>
   );

@@ -1,11 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import { ExplorerStatus } from '../../explorer/PlanetaryExplorer';
 import { landmarksFor, searchLandmarks } from '../../explorer/Landmarks';
+import { SkyDestinations } from './SkyDestinations';
 
 interface ExplorerPanelProps {
   status: ExplorerStatus | undefined;
   onFlyToLandmark: (id: string) => void;
   onDaylight: (on: boolean) => void;
+  onStandHere: () => void;
+  onSkyFrom: (body: string, facing?: string) => void;
   onSelectBody: (name: string) => void;
   onResetView: () => void;
 }
@@ -35,7 +38,7 @@ function fmtLatLon(lat: number, lon: number): string {
  * Compact Planetary Explorer panel: breadcrumb, imagery source and honesty labels, live streaming
  * state, and landmark navigation/search. Kept small so the globe stays the focus.
  */
-export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLandmark, onDaylight, onSelectBody, onResetView }) => {
+export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLandmark, onDaylight, onStandHere, onSkyFrom, onSelectBody, onResetView }) => {
   // Start collapsed on narrow (phone) screens so the globe stays visible
   const [open, setOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 640);
   const [query, setQuery] = useState('');
@@ -100,6 +103,14 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
             <span>ALT {fmtDistance(status.altitudeKm)}</span>
             {status.subCamera && <span>{fmtLatLon(status.subCamera.lat, status.subCamera.lon)}</span>}
           </div>
+          {/* Stand on the surface and look up */}
+          <button
+            onClick={onStandHere}
+            className="w-full flex items-center justify-between px-3 py-1.5 rounded-xl border border-amber-300/30 bg-amber-300/10 text-amber-50 hover:bg-amber-300/20 hover:border-amber-300/50 transition text-[11px] focus-visible:ring-1 focus-visible:ring-white/60"
+          >
+            <span>Stand {status.landmark ? `at ${status.landmark.name}` : 'here'} · look up</span>
+            <span aria-hidden>↑</span>
+          </button>
           {status.streaming && status.sunElevationDeg !== null && (
             <div className="flex items-center justify-between text-[10px] text-white/50">
               <span>
@@ -108,14 +119,14 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
                   : `Night side · Sun ${Math.abs(status.sunElevationDeg).toFixed(0)}° below horizon`}
               </span>
               <button
-                onClick={() => onDaylight(!status.daylight)}
-                aria-pressed={status.daylight}
-                title="Light the imagery evenly instead of by the real Sun angle at this moment"
+                onClick={() => onDaylight(status.lighting === 'sun')}
+                aria-pressed={status.lighting === 'sun'}
+                title="Auto lights the map evenly near the ground, like a web map; Real sun keeps the true day and night"
                 className={`px-2 py-0.5 rounded-full border transition ${
-                  status.daylight ? 'border-amber-300/50 text-amber-100 bg-amber-300/10' : 'border-white/15 text-white/60 hover:text-white'
+                  status.lighting === 'sun' ? 'border-amber-300/50 text-amber-100 bg-amber-300/10' : 'border-white/15 text-white/60 hover:text-white'
                 }`}
               >
-                Daylight view
+                Real sunlight
               </button>
             </div>
           )}
@@ -133,6 +144,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
             </div>
             <div className="text-[10px] text-white/40 mt-1 leading-snug">{img.coverage}</div>
             {img.note && <div className="text-[10px] text-white/40 mt-1 leading-snug">{img.note}</div>}
+            <div className="text-[9px] text-white/35 mt-1 leading-snug">{img.attribution}</div>
             <a
               href={img.sourceUrl}
               target="_blank"
@@ -175,6 +187,8 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
               </div>
             </div>
           )}
+
+          <SkyDestinations current={null} onGo={onSkyFrom} />
 
           {/* Search across all bodies */}
           <div className="border-t border-white/10 pt-2">

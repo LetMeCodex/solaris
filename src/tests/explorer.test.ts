@@ -16,7 +16,8 @@ import { LANDMARKS, searchLandmarks } from '../explorer/Landmarks';
 import { SurfaceTileLayer, TileImageLoader } from '../explorer/SurfaceTileLayer';
 
 const trek = BODY_IMAGERY.Moon.provider!;
-const gibs = BODY_IMAGERY.Earth.provider!;
+// A NASA GIBS EPSG:4326 grid (288° level-0 tiles of 512 px) — kept to cover partial edge tiles
+const gibs = { tileSize: 512, level0TileDeg: 288, minLevel: 0, maxLevel: 7 };
 
 describe('Equirectangular tile grids', () => {
   it('matches the Trek capabilities: 2×1 at level 0, doubling each level (256 px, 180° tiles)', () => {
@@ -71,7 +72,7 @@ describe('Tile selection', () => {
   it('stays coarse from far away and refines to the deepest level near the surface', () => {
     const far = selectTiles(trek, camAbove(0, 0, 3));
     expect(Math.max(...far.map((k) => k.z))).toBeLessThanOrEqual(3);
-    const near = selectTiles(trek, camAbove(-43.31, -11.36, 0.02));
+    const near = selectTiles(trek, camAbove(-43.31, -11.36, 0.003));
     expect(Math.max(...near.map((k) => k.z))).toBe(trek.maxLevel);
   });
 
@@ -99,16 +100,20 @@ describe('Tile selection', () => {
 
 describe('Imagery registry', () => {
   it('derives the finest ground sample from verified maximum levels', () => {
-    expect(metresPerPixel(trek, 8, 1737.4)).toBeCloseTo(83.3, 0); // LRO WAC 303 ppd ≈ 100 m/px nominal
-    expect(BODY_IMAGERY.Earth.bestMetresPerPixel).toBeCloseTo(489, -1); // GIBS 500m set
+    expect(metresPerPixel(trek, 10, 1737.4)).toBeCloseTo(20.8, 1); // Kaguya TC served to level 10
+    expect(BODY_IMAGERY.Moon.bestMetresPerPixel).toBeCloseTo(20.8, 1);
+    expect(BODY_IMAGERY.Earth.bestMetresPerPixel).toBeCloseTo(9.5, 1); // Sentinel-2 10 m at level 13
+    expect(BODY_IMAGERY.Mars.bestMetresPerPixel).toBeCloseTo(10.1, 0); // CTX level 12
     expect(BODY_IMAGERY.Jupiter.provider).toBeNull();
   });
 
   it('limits zoom by data resolution: finer imagery allows lower altitudes', () => {
     const moon = minimumAltitudeKm(BODY_IMAGERY.Moon, 55);
+    const mercury = minimumAltitudeKm(BODY_IMAGERY.Mercury, 55);
     const earth = minimumAltitudeKm(BODY_IMAGERY.Earth, 55);
-    expect(moon).toBeLessThan(earth);
-    expect(moon).toBeGreaterThan(10);
+    expect(moon).toBeLessThan(mercury);
+    expect(earth).toBeLessThan(moon);
+    expect(earth).toBeGreaterThan(2);
   });
 
   it('labels Venus as radar and the giants as cloud tops', () => {

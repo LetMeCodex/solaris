@@ -2,7 +2,9 @@ import * as THREE from 'three';
 import { BodyImagery, getBodyImagery, minimumAltitudeKm } from './ImageryRegistry';
 import { SurfaceTileLayer, LayerStatus, TileImageLoader } from './SurfaceTileLayer';
 import { latLonToLocal, localToLatLon } from './TileMath';
-import { getLandmark, Landmark } from './Landmarks';
+import { getLandmark, Landmark, landmarksFor } from './Landmarks';
+import { ScreenLabelItem } from './ScreenLabels';
+import { TILE_SHELL } from './SurfaceTileLayer';
 import { CameraRig, OBSERVATION_FOV_DEG } from '../navigation/CameraRig';
 
 /** What the explorer needs to know about a rendered body. */
@@ -11,9 +13,13 @@ export interface ExplorerBody {
   bodyGroup: THREE.Object3D;
   surfaceMesh: THREE.Mesh;
   cloudMesh?: THREE.Mesh;
+  /** The bundled global colour map (used to tint greyscale imagery). */
+  baseMap?: THREE.Texture | null;
   visualRadius: number;
   radiusKm: number;
 }
+
+export type LightingMode = 'auto' | 'sun';
 
 export interface ExplorerStatus {
   body: string | null;
@@ -22,11 +28,15 @@ export interface ExplorerStatus {
   layer: LayerStatus | null;
   maxLevel: number;
   altitudeKm: number;
+  /** Altitude above the surface in body radii (Infinity when nothing is focused). */
+  altitudeRadii: number;
   minAltitudeKm: number;
   atZoomLimit: boolean;
   subCamera: { lat: number; lon: number } | null;
   /** Sun elevation (degrees) above the local horizon at the point below the camera. */
   sunElevationDeg: number | null;
+  /** Lighting of the streamed imagery: 'auto' evens it out near the ground, 'sun' keeps real sunlight. */
+  lighting: LightingMode;
   daylight: boolean;
   landmark: Landmark | null;
 }
@@ -35,8 +45,15 @@ export interface ExplorerStatus {
 const STREAM_BELOW_ALTITUDE = 2.5;
 /** Ride along with the body's rotation below this altitude (body radii). */
 const CO_ROTATE_BELOW_ALTITUDE = 1.5;
-/** Earth's cloud deck is hidden close to the ground so the surface imagery is visible. */
-const HIDE_CLOUDS_BELOW_ALTITUDE = 0.2;
+/** Imagery fades in over the globe map between these altitudes (body radii). */
+const FADE_IN_FROM = 2.4;
+const FADE_IN_TO = 1.6;
+/** 'auto' lighting evens the imagery out between these altitudes (body radii), like a web map. */
+const EVEN_LIGHT_FROM = 1.4;
+const EVEN_LIGHT_TO = 0.35;
+/** Earth's cloud deck fades out between these altitudes so the ground stays visible. */
+const CLOUDS_FADE_FROM = 1.0;
+const CLOUDS_FADE_TO = 0.3;
 const MAX_LIVE_LAYERS = 2;
 
 /**
@@ -57,9 +74,16 @@ export class PlanetaryExplorer {
   private projView = new THREE.Matrix4();
   private tmpV = new THREE.Vector3();
   private tmpS = new THREE.Sphere();
+  private tmpColor = new THREE.Color(0, 0, 0);
   private frameCounter = 0;
   private landmark: Landmark | null = null;
-  private daylight = false;
+  private lighting: LightingMode = 'auto';
+  private daylightFactor = 0;
+  /** Extra hooks while the surface observer is active. */
+  public groundHaze: { color: THREE.Color; density: number } | null = null;
+  /** Surface view: real sunlight with this tint and sky ambient (null in space). */
+  public groundLight: { sunTint: [number, number, number]; ambient: number } | null = null;
+  private maxAnisotropy = 8;
   private lastViewportPx = 1000;
   private status: ExplorerStatus = PlanetaryExplorer.emptyStatus();
 
@@ -72,7 +96,7 @@ export class PlanetaryExplorer {
   private static emptyStatus(): ExplorerStatus {
     return {
       body: null, imagery: null, streaming: false, layer: null, maxLevel: 0,
-      altitudeKm: 0, minAltitudeKm: 0, atZoomLimit: false, subCamera: null, sunElevationDeg: null, daylight: false, landmark: null,
+      altitudeKm: 0, altitudeRadii: Infinity, minAltitudeKm: 0, atZoomLimit: false, subCamera: null, sunElevationDeg: null, lighting: 'auto', daylight: false, landmark: null,
     };
   }
 
@@ -87,7 +111,7 @@ export class PlanetaryExplorer {
   public update(focusedBody: string | null, camera: THREE.PerspectiveCamera, viewportHeightPx: number): void {
     this.frameCounter++;
     const body = focusedBody ? this.getBody(focusedBody) : null;
-    const imagery = focusedBody ? getBodyImagery(focusedBody) : null;
+    const imagery = focusedBody && body ? getBodyImagery(focusedBody, body.radiusKm) : null;
 
     if (this.activeBody && this.activeBody !== focusedBody) {
       this.layers.get(this.activeBody)?.hide();
@@ -123,12 +147,24 @@ export class PlanetaryExplorer {
     this.prevSurfaceQuat.copy(q);
     this.prevSurfaceBody = body.name;
 
-    // Earth's clouds would hide the surface imagery close up
-    if (body.cloudMesh) body.cloudMesh.visible = altitudeRadii > HIDE_CLOUDS_BELOW_ALTITUDE;
+    // Earth's clouds fade out close to the ground so the surface imagery shows
+    if (body.cloudMesh) {
+      const fade = THREE.MathUtils.smoothstep(altitudeRadii, CLOUDS_FADE_TO, CLOUDS_FADE_FROM);
+      const mat = body.cloudMesh.material as THREE.ShaderMaterial;
+      if (mat.uniforms?.uFade) mat.uniforms.uFade.value = fade;
+      body.cloudMesh.visible = fade > 0.01;
+    }
+    this.daylightFactor = this.lighting === 'sun' || this.groundLight ? 0 : 1 - THREE.MathUtils.smoothstep(altitudeRadii, EVEN_LIGHT_TO, EVEN_LIGHT_FROM);
 
     let layerStatus: LayerStatus | null = null;
     if (imagery.provider) {
       const layer = this.ensureLayer(body, imagery);
+      layer.setDaylight(this.daylightFactor);
+      layer.setOpacity(1 - THREE.MathUtils.smoothstep(altitudeRadii, FADE_IN_TO, FADE_IN_FROM));
+      if (this.groundHaze) layer.setHaze(this.groundHaze.color, this.groundHaze.density);
+      else layer.setHaze(this.tmpColor, 0);
+      if (this.groundLight) layer.setLighting(this.groundLight.sunTint, this.groundLight.ambient);
+      else layer.setLighting([1, 1, 1], 0.07);
       if (altitudeRadii < STREAM_BELOW_ALTITUDE) {
         // Selection is cheap but not free — run it every other frame
         if (this.frameCounter % 2 === 0) {
@@ -177,11 +213,13 @@ export class PlanetaryExplorer {
       layer: layerStatus,
       maxLevel: imagery.provider?.maxLevel ?? 0,
       altitudeKm,
+      altitudeRadii,
       minAltitudeKm: minAltKm,
       atZoomLimit: camera.position.distanceTo(centre) <= minDist * 1.01,
       subCamera: { lat: sub.lat, lon: sub.lon },
       sunElevationDeg,
-      daylight: this.daylight,
+      lighting: this.lighting,
+      daylight: this.daylightFactor > 0.5,
       landmark: this.landmark,
     };
   }
@@ -191,6 +229,29 @@ export class PlanetaryExplorer {
     const km = minimumAltitudeKm(imagery, fovDeg, this.lastViewportPx);
     // Bodies with only a global map: don't forbid the observation shot itself
     return imagery.provider ? km : Math.min(km, 0.5 * body.radiusKm);
+  }
+
+  /**
+   * Place-name labels for the focused body's landmarks on the side facing the camera, shown once
+   * the globe fills the view (web-map style).
+   */
+  public featureLabels(camera: THREE.PerspectiveCamera): ScreenLabelItem[] {
+    const s = this.status;
+    if (!s.body || !(s.altitudeRadii < 1.6)) return [];
+    const body = this.getBody(s.body);
+    if (!body) return [];
+    body.surfaceMesh.updateWorldMatrix(true, false);
+    const centre = body.bodyGroup.getWorldPosition(new THREE.Vector3());
+    const out: ScreenLabelItem[] = [];
+    for (const lm of landmarksFor(s.body)) {
+      const [x, y, z] = latLonToLocal(lm.lat, lm.lon);
+      const p = body.surfaceMesh.localToWorld(new THREE.Vector3(x * TILE_SHELL, y * TILE_SHELL, z * TILE_SHELL));
+      const n = p.clone().sub(centre).normalize();
+      const toCam = camera.position.clone().sub(p).normalize();
+      if (n.dot(toCam) < 0.08) continue; // beyond the limb
+      out.push({ id: lm.id, text: lm.name, world: p, kind: 'feature' });
+    }
+    return out;
   }
 
   /** World-space unit direction from a body's centre to a surface point. */
@@ -212,7 +273,7 @@ export class PlanetaryExplorer {
     const dir = this.surfaceDirection(body, lm.lat, lm.lon);
     // Set the target body's zoom floor now: the previous focus (possibly a giant planet) still
     // owns it until the next frame, and the flight's end distance is clamped against it
-    const imagery = getBodyImagery(lm.body);
+    const imagery = getBodyImagery(lm.body, body.radiusKm);
     if (imagery) this.rig.surfaceMinAltitude = this.minAltitudeKmFor(body, imagery, OBSERVATION_FOV_DEG) / kmPerUnit;
     this.rig.focusedPhysicalRadiusKm = body.radiusKm;
     this.rig.focusSurfacePoint(body.bodyGroup, body.visualRadius, dir, lm.viewAltitudeKm / kmPerUnit);
@@ -220,10 +281,19 @@ export class PlanetaryExplorer {
     return lm;
   }
 
-  /** Switch streamed imagery between the real Sun angle and even "daylight" illumination. */
+  /** 'auto': imagery is evenly lit close to the ground (web-map style); 'sun': real sunlight only. */
+  public setLighting(mode: LightingMode): void {
+    this.lighting = mode;
+  }
+
+  /** Kept for the panel/API: true → auto (even near the ground), false → real sunlight. */
   public setDaylight(on: boolean): void {
-    this.daylight = on;
-    for (const l of this.layers.values()) l.setDaylight(on);
+    this.setLighting(on ? 'auto' : 'sun');
+  }
+
+  public setMaxAnisotropy(n: number): void {
+    this.maxAnisotropy = n;
+    for (const l of this.layers.values()) l.setMaxAnisotropy(n);
   }
 
   public clearLandmark(): void {
@@ -234,7 +304,8 @@ export class PlanetaryExplorer {
     let layer = this.layers.get(body.name);
     if (!layer) {
       layer = new SurfaceTileLayer(imagery.provider!, this.loader);
-      layer.setDaylight(this.daylight);
+      layer.setMaxAnisotropy(this.maxAnisotropy);
+      layer.setBaseMap(body.baseMap ?? null);
       body.surfaceMesh.add(layer.group);
       this.layers.set(body.name, layer);
     }
@@ -254,7 +325,11 @@ export class PlanetaryExplorer {
 
   private restoreClouds(name: string): void {
     const b = this.getBody(name);
-    if (b?.cloudMesh) b.cloudMesh.visible = true;
+    if (b?.cloudMesh) {
+      b.cloudMesh.visible = true;
+      const mat = b.cloudMesh.material as THREE.ShaderMaterial;
+      if (mat.uniforms?.uFade) mat.uniforms.uFade.value = 1;
+    }
   }
 
   public dispose(): void {

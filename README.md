@@ -72,18 +72,24 @@ Selecting a body flies an *observation camera* to it, modelled on a real spacecr
 
 ### Planetary Explorer
 
-Select a body and keep zooming: the view goes from the whole globe down to the finest imagery NASA and USGS publish for it, much like a web map.
+Select a body and keep scrolling: like Google Maps' space view, the globe turns into a map and then into the sharpest imagery that NASA, JAXA, ESA/Copernicus and USGS publish for it.
 
-- **Streaming tiles.** Below 2.5 body radii, equirectangular tiles stream onto the globe. Tile choice uses screen-space error, so a source pixel is never drawn larger than about 1.3 screen pixels. Tiles behind the horizon or outside the view are skipped.
+- **Web-map controls.**
+  - The wheel or trackpad zooms (up = in), towards the point under the cursor.
+  - Dragging grabs the ground: the grabbed point stays under the cursor.
+  - Pinch zooms on touch screens.
+  - Close to the surface the lens effects, glow and editorial text step aside.
+- **Streaming tiles.** Below 2.5 body radii, equirectangular tiles stream onto the globe and fade in over the globe map between 2.4 and 1.6 radii. Tile choice uses screen-space error, so a source pixel is never drawn larger than about 1.3 screen pixels. Tiles behind the horizon or outside the view are skipped.
 - **Loading behaviour.**
   - Requests go coarse-to-fine and nearest-first, at most 6 at a time.
   - Requests the view no longer needs are aborted.
   - A failed tile is retried up to 3 times with backoff.
   - Up to 220 tiles are cached, with least-recently-used eviction.
 - **No holes.** Until a tile arrives, its nearest loaded ancestor is drawn, then the base globe map. If a source is unreachable (offline, blocked, or 8 tiles given up with none ever loaded), the layer switches off and says so. The globe stays usable.
-- **Zoom limit set by the data.** The closest approach allows 2× over-zoom of the finest level. With a 1000 px viewport that is about 235 km on Earth, 40 km on the Moon, 112 km on Mercury, 139 km on Venus and 156 km on Mars. The giants have only a global cloud map and keep the observation shot.
-- **Surface-following camera.** Below 1.5 radii the camera rotates with the body, so the ground stays put. Earth's clouds hide below 0.2 R. Wheel and pinch zoom act on altitude, and drag speed slows near the ground.
-- **Lighting.** Imagery is lit by the real Sun for the current simulation time. The panel shows the Sun's elevation below the camera. **Daylight view** lights the map evenly so you can read the night side.
+- **Zoom limit set by the data.** The closest approach allows 2× over-zoom of the finest level. On a 1000 px tall view that is about 4.6 km on Earth, 4.9 km on Mars, 10 km on the Moon, 112 km on Mercury and 139 km on Venus. The giants have only a global cloud map and keep the observation shot.
+- **Surface-following camera.** Below 1.5 radii the camera rotates with the body, so the ground stays put. Earth's clouds fade out between 1.0 and 0.3 radii.
+- **Lighting.** Near the ground the imagery is evenly lit, as in a web map. **Real sunlight** keeps the true day and night for the current simulation time. The panel shows the Sun's elevation below the camera.
+- **Colour for greyscale data.** The Mars CTX mosaic is greyscale. It is drawn with the hue of the global colour map: detail comes from CTX, colour from the map.
 - **Landmarks.**
   - Earth: Everest, Grand Canyon, Richat Structure, Lake Baikal, Nile Delta.
   - Moon: Tycho, Copernicus, Tranquility Base, Mare Imbrium, Shackleton.
@@ -99,14 +105,45 @@ Select a body and keep zooming: the view goes from the whole globe down to the f
 
 | Body | Imagery | Endpoint | Levels | Finest |
 | :--- | :--- | :--- | :--- | :--- |
-| Earth | Blue Marble NG (Aug 2004) | NASA GIBS WMTS (EPSG:4326) | 0–7 | ≈ 489 m/px |
-| Moon | LRO WAC global mosaic 303 ppd | NASA Moon Trek WMTS | 0–8 | ≈ 83 m/px |
+| Earth | Sentinel-2 cloudless 2016 (10 m) | EOX WMTS, WGS84 grid | 0–13 | ≈ 9.5 m/px |
+| Moon | SELENE/Kaguya Terrain Camera ortho mosaic | NASA Moon Trek WMTS | 0–10 | ≈ 21 m/px |
+| Mars | MRO CTX global mosaic (Caltech Murray Lab), tinted | Trek → Esri-hosted cache | 0–12 | ≈ 10 m/px |
 | Mercury | MESSENGER MDIS BDR 166 m | NASA Mercury Trek WMTS | 0–7 | ≈ 234 m/px |
 | Venus | Magellan SAR mosaic | USGS Astrogeology WMS | 0–8 (resampled) | ≈ 290 m/px requested |
-| Mars | Viking MDIM 2.1 colour 232 m | NASA Mars Trek WMTS | 0–7 | ≈ 325 m/px |
 | Giants | Solar System Scope 2k maps | bundled | — | global only |
 
-The endpoints, deepest levels and CORS headers were checked from GitHub Actions with the deployed site's origin; see `docs/research/imagery-sources-probe.txt` and `scripts/verify-tile-sources.mjs`. No API keys are used.
+The endpoints, deepest levels and CORS headers were checked from GitHub Actions with the deployed site's origin. See `docs/research/imagery-sources-probe.txt`, `docs/research/imagery-sources-probe-2.txt` and `scripts/verify-tile-sources.mjs`. No API keys are used.
+
+### Stand on the surface and look up
+
+**Stand here · look up** (in the explorer panel) puts you on the ground. It uses the landmark you flew to, or the point below the camera. You then see that world's own sky, with everything in it where it really is at the simulated time.
+
+- **Sky.**
+  - A single-scattering Rayleigh + Mie atmosphere: Earth is blue by day and red at sunset. Mars is butterscotch by day with a blue glow around the setting Sun.
+  - Venus is a dim orange overcast; **Hide air** shows what its clouds hide.
+  - The Moon and Mercury have black skies with stars even by day.
+  - The giants' skies are rough models, labelled as approximate.
+- **What's up.**
+  - The Sun, the planets and the major moons are placed from their real positions (the orrery's ephemerides), as seen from your spot on the surface. They are shown at their true angular sizes.
+  - They are lit by the Sun, so phases show: Venus, and the Earth seen from the Moon.
+  - Near the horizon they are reddened and dimmed.
+  - Bodies too small to show a disc are drawn as star-like points with their real brightness (apparent magnitude from geometric albedo and phase).
+  - From Saturn's cloud tops the rings arch across the sky.
+- **Telescope.**
+  - Scroll to zoom the lens from 100° down to 0.2°. That shows Jupiter's moons and Saturn's rings from Earth, and fainter objects appear as you zoom.
+  - Drag to look around. Double-click resets the zoom.
+- **Poster.** Planet and moon sizes can be enlarged ×10, ×100 or ×1000 for an artistic, collage-like sky. The panel says so whenever sizes are not real. The Sun is never enlarged.
+- **Time of day.**
+  - Jumps to the next local sunrise, noon, sunset or night at your spot, on any body (Earth's 24 h day up to Mercury's 176-day solar day).
+  - Rise and set use the almanac altitude of −0.833°. A test checks Greenwich's 21 June sunrise to within 5 minutes.
+- **Ground.** The same streamed imagery, lit by the reddened sunlight plus sky light and fading into horizon haze. There is no terrain relief yet: the ground is a smooth sphere.
+- **Look up from…** One click stands you on a moon with its planet in the sky. The spot is computed so the planet hangs about 40° up on its sunlit side, from the real positions and the moon's IAU orientation:
+  - Earth from the Moon (about 2° across).
+  - Saturn from Enceladus or Mimas (about 28° and 37° across; the rings are edge-on, because these moons orbit in the ring plane).
+  - Saturn from Iapetus, whose tilted orbit shows the rings open.
+  - Jupiter from Europa or Io, Mars from Phobos, Uranus from Miranda, Neptune from Triton, Pluto from Charon.
+  - Titan's sky is a thick orange haze; Saturn is hidden from its ground, as it really is.
+  - Most moons have no real global map bundled; the panel labels their ground as illustrative.
 
 ### Scale modes
 
@@ -135,8 +172,10 @@ The endpoints, deepest levels and CORS headers were checked from GitHub Actions 
 | Double-click | Return free look to the composed shot |
 | Left-drag / Shift-drag or middle-drag / wheel | Orbit / pan / zoom |
 | `Esc` | Close drawers / reset to overview |
-| Wheel / pinch near a body | Zoom by altitude down to the imagery's limit |
-| Explorer panel | Landmarks, search, breadcrumb, Daylight view |
+| Wheel / pinch near a body | Zoom towards the cursor, down to the imagery's limit |
+| Drag near a body | Grab and move the ground |
+| Explorer panel | Landmarks, search, breadcrumb, Real sunlight, Stand here · look up |
+| Surface view | Drag to look, scroll to zoom the lens, Esc to rise back to orbit |
 
 ---
 

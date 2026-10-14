@@ -142,6 +142,7 @@ export class EarthMaterial {
     return new THREE.ShaderMaterial({
       uniforms: {
         cloudsMap: { value: cloudsMap },
+        uFade: { value: 1.0 },
       },
       vertexShader: `
         varying vec2 vUv;
@@ -158,6 +159,7 @@ export class EarthMaterial {
       `,
       fragmentShader: `
         uniform sampler2D cloudsMap;
+        uniform float uFade;
         varying vec2 vUv;
         varying vec3 vWorldNormal;
         varying vec3 vWorldPosition;
@@ -180,7 +182,7 @@ export class EarthMaterial {
 
           vec3 cloudColor = cloudSunColor * (dayFactor * 1.25 + 0.035);
 
-          gl_FragColor = vec4(cloudColor, cloudDensity * (0.35 + dayFactor * 0.55));
+          gl_FragColor = vec4(cloudColor, cloudDensity * (0.35 + dayFactor * 0.55) * uFade);
 
           #include <tonemapping_fragment>
           #include <colorspace_fragment>

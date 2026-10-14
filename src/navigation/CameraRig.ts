@@ -246,6 +246,9 @@ export class CameraRig {
 
   // Damping factor for silky inertial responsiveness
   private readonly damping: number = 0.12;
+  /** `damping` rescaled to the actual frame time (it is tuned for 60 fps). */
+  private frameDamping: number = 0.12;
+  private lastDampingTime = performance.now();
 
   // Free-look ("steer") offset applied on top of the composed shot: the observer turns their head
   // in place, like the reference footage, instead of orbiting the target
@@ -463,11 +466,11 @@ export class CameraRig {
     }
 
     // Smoothly blend NDC composition offset toward target
-    this.currentNdcOffset.x += (this.targetNdcOffset.x - this.currentNdcOffset.x) * this.damping;
-    this.currentNdcOffset.y += (this.targetNdcOffset.y - this.currentNdcOffset.y) * this.damping;
+    this.currentNdcOffset.x += (this.targetNdcOffset.x - this.currentNdcOffset.x) * this.frameDamping;
+    this.currentNdcOffset.y += (this.targetNdcOffset.y - this.currentNdcOffset.y) * this.frameDamping;
 
     // Orbit pivot tracks effective anchor + smoothed pan offset
-    this.panOffset.lerp(this.targetPanOffset, this.damping);
+    this.panOffset.lerp(this.targetPanOffset, this.frameDamping);
     this.orbitPivot.copy(currentAnchor).add(this.panOffset);
 
     // Apply idle celestial drift if enabled and user has been idle for > 3s
@@ -475,7 +478,8 @@ export class CameraRig {
       this.enableIdleDrift &&
       !this.isOrbiting &&
       !this.isPanning &&
-      this.shotMode === 'cinematic_observation'
+      this.shotMode === 'cinematic_observation' &&
+      !(this.altitudeInRadii() < 4)
     ) {
       const now = performance.now();
       if ((now - this.lastInteractionTime) > 3000) {
@@ -484,9 +488,9 @@ export class CameraRig {
     }
 
     // Smooth spherical coordinates
-    this.spherical.theta += (this.targetSpherical.theta - this.spherical.theta) * this.damping;
-    this.spherical.phi += (this.targetSpherical.phi - this.spherical.phi) * this.damping;
-    this.spherical.radius += (this.targetSpherical.radius - this.spherical.radius) * this.damping;
+    this.spherical.theta += (this.targetSpherical.theta - this.spherical.theta) * this.frameDamping;
+    this.spherical.phi += (this.targetSpherical.phi - this.spherical.phi) * this.frameDamping;
+    this.spherical.radius += (this.targetSpherical.radius - this.spherical.radius) * this.frameDamping;
 
     // Strict polar singularity protection: clamps phi between 0.02 and PI - 0.02
     this.spherical.phi = Math.max(0.02, Math.min(Math.PI - 0.02, this.spherical.phi));
@@ -542,7 +546,37 @@ export class CameraRig {
     this.lastUpdateTime = now;
   }
 
+  /** While true another controller (the surface observer) owns the camera and the input. */
+  public suspended = false;
+
+  /**
+   * Adopt the camera's current pose (after another controller moved it) so the next flight or
+   * drag continues smoothly from there.
+   */
+  public syncFromCamera(): void {
+    this.transition = null;
+    this.camera.up.set(0, 1, 0);
+    if (this.focusedObject) {
+      this.focusedObject.updateWorldMatrix(true, false);
+      this.focusedObject.getWorldPosition(this.subjectAnchor);
+    }
+    this.orbitPivot.copy(this.subjectAnchor);
+    this.panOffset.set(0, 0, 0);
+    this.targetPanOffset.set(0, 0, 0);
+    this.spherical.setFromVector3(new THREE.Vector3().subVectors(this.camera.position, this.orbitPivot));
+    this.targetSpherical.copy(this.spherical);
+    this.resetLook();
+    this.lookYaw = 0;
+    this.lookPitch = 0;
+    this.hasMotionSample = false;
+  }
+
   public update(): void {
+    if (this.suspended) return;
+    const now = performance.now();
+    const dt = Math.min(0.25, Math.max(0.001, (now - this.lastDampingTime) / 1000));
+    this.lastDampingTime = now;
+    this.frameDamping = 1 - Math.pow(1 - this.damping, dt * 60);
     this.updateLook();
     this.updateCameraPosition();
   }
@@ -563,8 +597,8 @@ export class CameraRig {
     }
     this.targetLookPitch = THREE.MathUtils.clamp(this.targetLookPitch, -CameraRig.MAX_LOOK_PITCH, CameraRig.MAX_LOOK_PITCH);
 
-    this.lookYaw += (this.targetLookYaw - this.lookYaw) * this.damping;
-    this.lookPitch += (this.targetLookPitch - this.lookPitch) * this.damping;
+    this.lookYaw += (this.targetLookYaw - this.lookYaw) * this.frameDamping;
+    this.lookPitch += (this.targetLookPitch - this.lookPitch) * this.frameDamping;
   }
 
   /** Turn the camera in place by the free-look angles (yaw about its up axis, then pitch). */
@@ -1144,6 +1178,7 @@ export class CameraRig {
   // --- INTERACTION CONTROLS ---
 
   private onMouseDown = (e: MouseEvent): void => {
+    if (this.suspended) return;
     this.lastInteractionTime = performance.now();
 
     // Interruption: if a transition is in flight and user interacts, cancel it immediately
@@ -1159,6 +1194,7 @@ export class CameraRig {
         this.isPanning = true;
       } else {
         this.isOrbiting = true;
+        this.beginGrab(e.clientX, e.clientY);
       }
     } else if (e.button === 1) {
       this.isPanning = true;
@@ -1171,6 +1207,7 @@ export class CameraRig {
   };
 
   private onMouseUp = (): void => {
+    this.grabLocal = null;
     this.isOrbiting = false;
     this.isPanning = false;
     this.isLooking = false;
@@ -1178,6 +1215,7 @@ export class CameraRig {
   };
 
   private onMouseMove = (e: MouseEvent): void => {
+    if (this.suspended) return;
     this.lastInteractionTime = performance.now();
     if (!this.isOrbiting && !this.isPanning && !this.isLooking) return;
 
@@ -1194,7 +1232,8 @@ export class CameraRig {
     }
 
     if (this.isOrbiting) {
-      // Near a surface, a drag moves the ground with the cursor rather than spinning the globe
+      // Near a globe the drag grabs the surface: the point under the cursor follows the cursor
+      if (this.grabSurface(e.clientX, e.clientY)) return;
       const rotateSpeed = 0.005 * Math.min(1, Math.max(0.0005, this.altitudeInRadii()));
       this.targetSpherical.theta -= deltaX * rotateSpeed;
       this.targetSpherical.phi -= deltaY * rotateSpeed;
@@ -1212,6 +1251,7 @@ export class CameraRig {
   };
 
   private onWheel = (e: WheelEvent): void => {
+    if (this.suspended) return;
     e.preventDefault();
     this.lastInteractionTime = performance.now();
 
@@ -1224,7 +1264,10 @@ export class CameraRig {
 
     // Logarithmic zoom across 9 orders of magnitude. Around a body the zoom acts on altitude, so it
     // keeps slowing down all the way to the surface instead of stalling at a fixed distance.
-    const zoomFactor = Math.pow(0.92, e.deltaY * 0.012);
+    // Wheel/trackpad up (negative deltaY) zooms in, as in web maps.
+    const lineScale = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
+    const dy = THREE.MathUtils.clamp(e.deltaY * lineScale, -600, 600);
+    const zoomFactor = Math.pow(0.92, -dy * 0.012);
     const minDistance = this.minimumDistance();
     const maxDistance = 180000.0;
     let next: number;
@@ -1234,8 +1277,109 @@ export class CameraRig {
     } else {
       next = this.targetSpherical.radius * zoomFactor;
     }
-    this.targetSpherical.radius = Math.max(minDistance, Math.min(maxDistance, next));
+    next = Math.max(minDistance, Math.min(maxDistance, next));
+    this.zoomTowardCursor(e.clientX, e.clientY, this.targetSpherical.radius, next);
+    this.targetSpherical.radius = next;
   };
+
+  // --- Globe interaction helpers (web-map style) ---
+
+  private raycaster = new THREE.Raycaster();
+  private tmpNdc = new THREE.Vector2();
+  private tmpSphere = new THREE.Sphere();
+
+  /** World point where the ray through a client pixel meets the focused globe, or null. */
+  private pickGlobe(clientX: number, clientY: number, out: THREE.Vector3, cam: THREE.Camera = this.camera): THREE.Vector3 | null {
+    if (!this.focusedObject || this.isBlackHoleFocus()) return null;
+    const rect = this.domElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    this.tmpNdc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    this.raycaster.setFromCamera(this.tmpNdc, cam);
+    this.tmpSphere.set(this.orbitPivot, this.focusedRadius);
+    return this.raycaster.ray.intersectSphere(this.tmpSphere, out);
+  }
+
+  /** Surface point grabbed at mouse-down, in the focused body's local frame (it rotates). */
+  private grabLocal: THREE.Vector3 | null = null;
+  private virtualCam = new THREE.PerspectiveCamera();
+
+  /**
+   * The camera as it will be once the damping reaches `sph`, looking at the globe centre (map
+   * framing, no composition offset). Used to make drags and cursor zooms exact without waiting.
+   */
+  private virtualCameraAt(sph: THREE.Spherical): THREE.PerspectiveCamera {
+    const v = this.virtualCam;
+    v.fov = this.camera.fov;
+    v.aspect = this.camera.aspect;
+    v.near = this.camera.near;
+    v.far = this.camera.far;
+    v.updateProjectionMatrix();
+    v.up.set(0, 1, 0);
+    v.position.copy(this.orbitPivot).add(new THREE.Vector3().setFromSpherical(sph));
+    v.lookAt(this.orbitPivot);
+    v.updateMatrixWorld();
+    return v;
+  }
+
+  /** Near a globe, interacting turns the editorial off-centre framing into a centred map view. */
+  private enterMapFraming(): void {
+    if (this.altitudeInRadii() < 4) this.targetNdcOffset.set(0, 0);
+  }
+
+  private beginGrab(x: number, y: number): void {
+    this.grabLocal = null;
+    if (!(this.altitudeInRadii() < 3) || !this.focusedObject) return;
+    this.enterMapFraming();
+    const p = this.pickGlobe(x, y, new THREE.Vector3());
+    if (!p) return;
+    this.focusedObject.updateWorldMatrix(true, false);
+    this.grabLocal = this.focusedObject.worldToLocal(p);
+  }
+
+  /** Rotate the target orbit so the ray through (x,y) from the target camera hits world point `g`. */
+  private steerTargetTo(x: number, y: number, g: THREE.Vector3): boolean {
+    for (let iter = 0; iter < 2; iter++) {
+      const cam = this.virtualCameraAt(this.targetSpherical);
+      const h = this.pickGlobe(x, y, new THREE.Vector3(), cam);
+      if (!h) return false;
+      const hd = h.sub(this.orbitPivot).normalize();
+      const gd = g.clone().sub(this.orbitPivot).normalize();
+      // Rotating the camera rigidly about the centre by hd→gd carries the cursor ray onto g
+      const q = new THREE.Quaternion().setFromUnitVectors(hd, gd);
+      const r = this.targetSpherical.radius;
+      const t = new THREE.Vector3().setFromSpherical(this.targetSpherical).applyQuaternion(q);
+      this.targetSpherical.setFromVector3(t);
+      this.targetSpherical.radius = r;
+      this.targetSpherical.phi = Math.max(0.02, Math.min(Math.PI - 0.02, this.targetSpherical.phi));
+      this.makeSphericalContinuous();
+    }
+    return true;
+  }
+
+  /**
+   * Keep the grabbed surface point under the cursor (web-map drag). Returns false when nothing
+   * was grabbed (cursor off the globe or camera far away) so the drag spins the view instead.
+   */
+  private grabSurface(x: number, y: number): boolean {
+    if (!this.grabLocal || !this.focusedObject || !(this.altitudeInRadii() < 3)) return false;
+    this.focusedObject.updateWorldMatrix(true, false);
+    const g = this.focusedObject.localToWorld(this.grabLocal.clone());
+    this.steerTargetTo(x, y, g);
+    return true;
+  }
+
+  /** While zooming near a globe, keep the point under the cursor fixed on screen. */
+  private zoomTowardCursor(clientX: number, clientY: number, fromRadius: number, toRadius: number): void {
+    if (!(this.altitudeInRadii(fromRadius) < 4)) return;
+    this.enterMapFraming();
+    // The point the user is pointing at, as currently drawn
+    const g = this.pickGlobe(clientX, clientY, new THREE.Vector3());
+    if (!g) return;
+    const saved = this.targetSpherical.radius;
+    this.targetSpherical.radius = toRadius;
+    if (!this.steerTargetTo(clientX, clientY, g)) this.targetSpherical.radius = saved;
+    this.targetSpherical.radius = toRadius;
+  }
 
   private onContextMenu = (e: MouseEvent): void => {
     e.preventDefault();
@@ -1243,6 +1387,7 @@ export class CameraRig {
 
   // Touch Support
   private onTouchStart = (e: TouchEvent): void => {
+    if (this.suspended) return;
     this.lastInteractionTime = performance.now();
     if (this.transition) {
       this.transition = null;
@@ -1264,6 +1409,7 @@ export class CameraRig {
   };
 
   private onTouchMove = (e: TouchEvent): void => {
+    if (this.suspended) return;
     this.lastInteractionTime = performance.now();
     if (this.activeTouches.size === 1 && e.touches.length === 1) {
       const touch = e.touches[0];
@@ -1305,6 +1451,7 @@ export class CameraRig {
   private static readonly LOOK_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
 
   private onKeyDown = (e: KeyboardEvent): void => {
+    if (this.suspended) return;
     if (!CameraRig.LOOK_KEYS.has(e.key)) return;
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
@@ -1322,6 +1469,7 @@ export class CameraRig {
   };
 
   private onDoubleClick = (): void => {
+    if (this.suspended) return;
     this.resetLook();
   };
 

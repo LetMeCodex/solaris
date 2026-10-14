@@ -25,6 +25,11 @@ export interface WmtsProvider extends EquirectGrid {
   kind: 'wmts';
   /** URL template with {z} {y} {x}. */
   template: string;
+  /**
+   * Greyscale source drawn with the hue of the bundled colour globe map (luminance from the tile,
+   * chroma from the global map), e.g. Mars CTX over the Viking-based colour map.
+   */
+  colorize?: boolean;
 }
 
 export interface WmsProvider extends EquirectGrid {
@@ -68,30 +73,31 @@ export const BODY_IMAGERY: Record<string, BodyImagery> = {
     body: 'Earth',
     provider: {
       kind: 'wmts',
-      template: 'https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_NextGeneration/default/500m/{z}/{y}/{x}.jpeg',
-      tileSize: 512,
-      level0TileDeg: 288, // GIBS EPSG:4326 level 0 = 0.5625°/px × 512 px
-      minLevel: 0,
-      maxLevel: 7, // 500m set: 8 levels (0–7); level 8 returns HTTP 400
+      // EOX "WGS84" matrix set: 2×1 tiles of 256 px at level 0 (same grid as Trek), levels 0–17;
+      // the Sentinel-2 data are 10 m, reached at level 13 (≈9.5 m/px). Level 18 returns 404.
+      template: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless/default/WGS84/{z}/{y}/{x}.jpg',
+      ...TREK_GRID,
+      maxLevel: 13,
     },
     kind: 'visible',
-    title: 'Blue Marble: Next Generation (Aug 2004)',
-    source: 'NASA GIBS · MODIS / NASA Earth Observatory',
-    sourceUrl: 'https://nasa-gibs.github.io/gibs-api-docs/',
-    attribution: 'NASA Earth Observatory / GIBS',
+    title: 'Sentinel-2 cloudless (2016, 10 m)',
+    source: 'EOX Sentinel-2 cloudless · Copernicus Sentinel-2',
+    sourceUrl: 'https://s2maps.eu',
+    attribution:
+      'Sentinel-2 cloudless – https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016), CC BY 4.0',
     bestMetresPerPixel: 0,
-    coverage: 'Global, cloud-free monthly composite',
+    coverage: 'Global cloud-free true-colour mosaic of the land; oceans are filled in by EOX',
   },
   Moon: {
     body: 'Moon',
-    provider: { kind: 'wmts', template: TREK('Moon', 'LRO_WAC_Mosaic_Global_303ppd_v02', 'jpg'), ...TREK_GRID, maxLevel: 8 },
+    provider: { kind: 'wmts', template: TREK('Moon', 'Kaguya_TCortho_Mosaic_Global_4096ppd', 'png'), ...TREK_GRID, maxLevel: 10 },
     kind: 'monochrome',
-    title: 'LRO WAC global mosaic (303 px/°)',
-    source: 'NASA Moon Trek · LRO Camera Wide Angle Camera',
+    title: 'SELENE/Kaguya Terrain Camera ortho mosaic',
+    source: 'NASA Moon Trek · JAXA SELENE (Kaguya) Terrain Camera',
     sourceUrl: 'https://trek.nasa.gov/moon/',
-    attribution: 'NASA/GSFC/Arizona State University (LROC) via NASA Solar System Treks',
+    attribution: 'JAXA/SELENE Terrain Camera via NASA Solar System Treks',
     bestMetresPerPixel: 0,
-    coverage: 'Global; poles are stretched in this equirectangular product',
+    coverage: 'Global monochrome mosaic; Trek serves it down to level 10 (≈21 m/px)',
   },
   Mercury: {
     body: 'Mercury',
@@ -126,14 +132,23 @@ export const BODY_IMAGERY: Record<string, BodyImagery> = {
   },
   Mars: {
     body: 'Mars',
-    provider: { kind: 'wmts', template: TREK('Mars', 'Mars_Viking_MDIM21_ClrMosaic_global_232m', 'jpg'), ...TREK_GRID, maxLevel: 7 },
+    provider: {
+      kind: 'wmts',
+      // Trek's capabilities for CTX_beta01_uncontrolled_5m_Caltech point at this Esri-hosted cache
+      // (same 2×1, 256 px grid); levels 0–12, level 13 returns 400.
+      template: 'https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/{z}/{y}/{x}',
+      ...TREK_GRID,
+      maxLevel: 12,
+      colorize: true,
+    },
     kind: 'visible',
-    title: 'Viking MDIM 2.1 colour mosaic (232 m)',
-    source: 'NASA Mars Trek · Viking Orbiter (USGS MDIM 2.1)',
+    title: 'MRO CTX global mosaic (Caltech Murray Lab), tinted',
+    source: 'NASA Mars Trek · MRO Context Camera mosaic',
     sourceUrl: 'https://trek.nasa.gov/mars/',
-    attribution: 'NASA/JPL/USGS via NASA Solar System Treks',
+    attribution: 'NASA/JPL/MSSS, Caltech Murray Lab CTX mosaic via NASA Solar System Treks / Esri',
     bestMetresPerPixel: 0,
-    coverage: 'Global; visible frame seams and tone steps between Viking images',
+    coverage: 'Near-global greyscale mosaic (beta, uncontrolled); colour comes from the global Mars map',
+    note: 'The CTX camera is monochrome: detail is CTX, hue is borrowed from the global colour map.',
   },
   Jupiter: {
     body: 'Jupiter',
@@ -198,8 +213,34 @@ for (const entry of Object.values(BODY_IMAGERY)) {
     : ((2 * Math.PI * r * KM) / 2048);
 }
 
-export function getBodyImagery(body: string): BodyImagery | null {
-  return BODY_IMAGERY[body] ?? null;
+const fallbackCache = new Map<string, BodyImagery>();
+
+/**
+ * Imagery for a body. Bodies without a verified tiled source (most moons, dwarf planets) get a
+ * "global map only" entry so they can still be explored and stood on; the label says the surface
+ * texture is illustrative. Pass the body's radius to size the zoom floor.
+ */
+export function getBodyImagery(body: string, radiusKm?: number): BodyImagery | null {
+  const known = BODY_IMAGERY[body];
+  if (known) return known;
+  if (!radiusKm || body === 'Sun') return null;
+  let e = fallbackCache.get(body);
+  if (!e) {
+    e = {
+      body,
+      provider: null,
+      kind: 'monochrome',
+      title: 'Illustrative global map',
+      source: 'SOLARIS procedural texture',
+      sourceUrl: 'https://ssd.jpl.nasa.gov/',
+      attribution: 'Procedural (no real map bundled)',
+      bestMetresPerPixel: (2 * Math.PI * radiusKm * KM) / 1024,
+      coverage: 'No real global map of this body is bundled; the surface texture is illustrative',
+      note: 'Positions, sizes and lighting of everything in its sky are computed from real ephemerides.',
+    };
+    fallbackCache.set(body, e);
+  }
+  return e;
 }
 
 /**

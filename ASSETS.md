@@ -61,10 +61,10 @@ The browser streams these tiles at runtime; they are not stored in the repositor
 
 | Body | Product | Endpoint | Credit |
 | :--- | :--- | :--- | :--- |
-| Earth | Blue Marble: Next Generation, Aug 2004 (500 m) | `gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_NextGeneration` | NASA Earth Observatory / NASA GIBS (EOSDIS) |
-| Moon | LRO WAC Global Mosaic 303 ppd v02 | `trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02` | NASA/GSFC/Arizona State University (LROC) via NASA Solar System Treks |
+| Earth | Sentinel-2 cloudless 2016 (10 m), layer `s2cloudless`, WGS84 grid | `tiles.maps.eox.at/wmts/1.0.0/s2cloudless/default/WGS84` | "Sentinel-2 cloudless – https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016)", CC BY 4.0. Attribution is shown in the explorer panel. |
+| Moon | SELENE/Kaguya Terrain Camera ortho mosaic (4096 ppd product, served to level 10) | `trek.nasa.gov/tiles/Moon/EQ/Kaguya_TCortho_Mosaic_Global_4096ppd` | JAXA/SELENE via NASA Solar System Treks |
 | Mercury | MESSENGER MDIS Basemap BDR Mosaic 166 m | `trek.nasa.gov/tiles/Mercury/EQ/Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_166m` | NASA/JHUAPL/Carnegie Institution of Washington via NASA Solar System Treks |
-| Mars | Viking MDIM 2.1 colour mosaic 232 m | `trek.nasa.gov/tiles/Mars/EQ/Mars_Viking_MDIM21_ClrMosaic_global_232m` | NASA/JPL/USGS via NASA Solar System Treks |
+| Mars | MRO CTX Global Mosaic beta01 (Caltech Murray Lab, 5 m source, served to level 12 ≈ 10 m/px), greyscale tinted with the bundled colour map | Trek layer `CTX_beta01_uncontrolled_5m_Caltech`, whose capabilities point at `astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer` | NASA/JPL/MSSS; Caltech Murray Lab mosaic (Dickson et al.); served via NASA Solar System Treks / Esri |
 | Venus | Magellan SAR mosaic (layer `MAGELLAN`) | `planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/venus/venus_simp_cyl.map` (WMS 1.1.1) | NASA/JPL Magellan; USGS Astrogeology Science Center |
 
 **Provenance.**
@@ -72,6 +72,11 @@ The browser streams these tiles at runtime; they are not stored in the repositor
   - WMTS capabilities and tile-matrix sets
   - the deepest level that returns HTTP 200
   - the `Access-Control-Allow-Origin` header
+- `docs/research/imagery-sources-probe-2.txt` is the second CI probe (2026-10-14, same origin) that selected the current sources. It records:
+  - the GIBS and EOX capabilities
+  - the EOX licence text per year (2016 is CC BY 4.0; 2018+ are CC BY-NC-SA, so they are not used)
+  - the deepest levels: EOX `s2cloudless` returns tiles to level 17 (data are 10 m at level 13), Kaguya TC to level 10, and CTX to level 12
+  - the CORS headers (EOX echoes the requesting origin; Trek and Esri send `*`)
 - `docs/research/landmark-coords.txt` is written by `scripts/fetch-landmark-coords.mjs`. It records the source coordinates for each landmark. Planetocentric east-positive longitudes from 0° to 360° are converted to −180° to 180°.
 
 ## 7. Galactic constants

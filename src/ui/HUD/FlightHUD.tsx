@@ -5,6 +5,7 @@ import { ScaleMode } from '../../rendering/RenderSpaceTransform';
 import { getPlanetNarrative, PLANET_NARRATIVES } from '../../data/PlanetNarratives';
 import { LENS_ORDER, LENS_PROFILES, LensProfileName } from '../../rendering/LensPipeline';
 import { ExplorerPanel } from './ExplorerPanel';
+import { SurfacePanel, SurfaceAction } from './SurfacePanel';
 import {
   Play,
   Pause,
@@ -34,6 +35,7 @@ interface FlightHUDProps {
   onCycleLens?: () => void;
   onFlyToLandmark?: (id: string) => void;
   onExplorerDaylight?: (on: boolean) => void;
+  onSurface?: (a: SurfaceAction) => void;
 }
 
 type CatalogueFilter = 'all' | 'planet' | 'moon' | 'minor';
@@ -70,6 +72,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   onCycleLens,
   onFlyToLandmark,
   onExplorerDaylight,
+  onSurface,
 }) => {
   const target = telemetry?.activeTarget;
   const isPaused = telemetry?.isPaused ?? false;
@@ -86,6 +89,9 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const lensProfile = telemetry?.lensProfile ?? 'cinematic';
   const observerDomain = telemetry?.observerDomain ?? 'inner_system';
   const travelSpeed = telemetry?.travelSpeed ?? 0;
+  // Close to a globe the view becomes a map: editorial overlays step aside
+  const onSurfaceView = !!telemetry?.surface?.active;
+  const exploring = onSurfaceView || (telemetry?.explorer?.altitudeRadii ?? Infinity) < 1.2;
 
   // Interface state
   const [isHudVisible, setIsHudVisible] = useState<boolean>(true);
@@ -137,6 +143,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         } else if (isCatalogueOpen || isDatePickerOpen) {
           setIsCatalogueOpen(false);
           setIsDatePickerOpen(false);
+        } else if (onSurfaceView) {
+          onSurface?.({ type: 'exit' });
         } else {
           onResetView();
         }
@@ -340,7 +348,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         </div>
 
         {/* Top-Center: Multiscale Cosmological Domain & Scale Navigator */}
-        <div className="hidden xl:flex items-center gap-1.5 bg-black/40 backdrop-blur-md border border-white/10 rounded-full p-1 shadow-lg pointer-events-auto">
+        <div className={`hidden ${exploring ? '' : 'xl:flex'} items-center gap-1.5 bg-black/40 backdrop-blur-md border border-white/10 rounded-full p-1 shadow-lg pointer-events-auto`}>
           <div className="flex items-center gap-1.5 px-3 py-1 bg-white/5 rounded-full border border-white/10 text-[10px] tracking-[0.2em] font-light">
             <span className={`w-1.5 h-1.5 rounded-full ${travelSpeed > 4 ? 'bg-cyan-400 animate-ping' : 'bg-amber-400'}`} />
             <span className="text-white/40 uppercase">SCALE:</span>
@@ -571,7 +579,11 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           ======================================================== */}
       <nav
         className={`absolute left-8 top-1/2 -translate-y-1/2 hidden md:flex flex-col gap-3 [@media(max-height:720px)]:gap-1 [@media(max-height:720px)]:top-[calc(50%+28px)] [@media(max-height:560px)]:hidden pointer-events-auto transition-all duration-1000 z-30 ${
-          introPhase >= 1 ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-8'
+          introPhase >= 1
+            ? onSurfaceView
+              ? 'opacity-0 -translate-x-8 pointer-events-none'
+              : exploring ? 'opacity-40 hover:opacity-100 translate-x-0' : 'opacity-100 translate-x-0'
+            : 'opacity-0 -translate-x-8'
         }`}
       >
         {REFERENCE_NAV_ORDER.map((planetName) => {
@@ -660,7 +672,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           4. CENTER EDITORIAL MONOGRAPH (OVER HORIZON)
              Vanishes after 5.5s with ethereal upward blur dissolve!
           ======================================================== */}
-      {monographVisible && (
+      {monographVisible && !exploring && (
         <section
           onMouseEnter={() => setIsHoveredMonograph(true)}
           onMouseLeave={() => setIsHoveredMonograph(false)}
@@ -716,7 +728,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
       )}
 
       {/* Floating Minimal Pill Trigger when vanished (click to re-open anytime) */}
-      {!monographVisible && (
+      {!monographVisible && !exploring && (
         <div className="absolute left-1/2 bottom-20 -translate-x-1/2 pointer-events-auto z-20 transition-all duration-700 opacity-60 hover:opacity-100">
           <button
             onClick={(e) => {
@@ -734,14 +746,20 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         </div>
       )}
 
-      {/* Planetary Explorer (surface imagery, landmarks) */}
+      {/* Planetary Explorer (surface imagery, landmarks) / surface sky view */}
+      {onSurfaceView && telemetry?.surface ? (
+        <SurfacePanel status={telemetry.surface} onAction={(a) => onSurface?.(a)} />
+      ) : (
       <ExplorerPanel
         status={telemetry?.explorer}
         onFlyToLandmark={(id) => onFlyToLandmark?.(id)}
         onDaylight={(on) => onExplorerDaylight?.(on)}
+        onStandHere={() => onSurface?.({ type: 'enter' })}
+        onSkyFrom={(body, facing) => onSurface?.({ type: 'skyFrom', body, facing })}
         onSelectBody={onSelectPlanet}
         onResetView={onResetView}
       />
+      )}
 
       {/* ========================================================
           5. BOTTOM TIMELINE CONTROLLER & DATE CONTROLS
