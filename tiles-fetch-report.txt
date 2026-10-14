@@ -1,1 +1,4 @@
-{"ok":296,"fail":0,"bytes":3048560,"byHost":{"planetarymaps.usgs.gov":{"ok":267,"fail":0},"trek.nasa.gov":{"ok":29,"fail":0}}}
+FAIL 500 https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/11/1083/3613
+FAIL 500 https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/11/1084/3613
+FAIL 500 https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/11/1085/3613
+{"ok":2070,"fail":3,"bytes":124715771,"byHost":{"tiles.maps.eox.at":{"ok":770,"fail":0},"trek.nasa.gov":{"ok":587,"fail":0},"astro.arcgis.com":{"ok":713,"fail":3}}}
