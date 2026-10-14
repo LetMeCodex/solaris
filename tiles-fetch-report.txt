@@ -1,1 +1,1 @@
-{"ok":1692,"fail":0,"bytes":67624277,"byHost":{"gibs.earthdata.nasa.gov":{"ok":254,"fail":0},"planetarymaps.usgs.gov":{"ok":315,"fail":0},"trek.nasa.gov":{"ok":1123,"fail":0}}}
+{"ok":296,"fail":0,"bytes":3048560,"byHost":{"planetarymaps.usgs.gov":{"ok":267,"fail":0},"trek.nasa.gov":{"ok":29,"fail":0}}}
