@@ -10,7 +10,8 @@ import { AttitudeScope, DecodeText, TargetLock, ViewStateGetter } from './Instru
 import { ArrivalStamp, fmtDuration, LOG_WORLDS, SystemPlot, useLogbook, useTransitState, VoyageConsole } from './Voyage';
 import type { FlightRoute } from '../../rendering/SolarSystemScene';
 import { Popover, ScaleDomain, ScaleLadder, Segmented, TimeDeck } from './Controls';
-import { Search, Eye, EyeOff, X, RotateCcw, SlidersHorizontal } from 'lucide-react';
+import { Search, Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle } from 'lucide-react';
+import { Tour, tourSeen } from './Tour';
 import { horizonFacts } from '../../rendering/HorizonView';
 import './hud.css';
 
@@ -35,6 +36,8 @@ interface FlightHUDProps {
   onExplorerDaylight?: (on: boolean) => void;
   onSurface?: (a: SurfaceAction) => void;
   onHorizon?: (on: boolean) => void;
+  /** True once the opening sequence has finished: starts the first-visit briefing. */
+  introDone?: boolean;
 }
 
 type CatalogueFilter = 'all' | 'planet' | 'moon' | 'minor';
@@ -84,6 +87,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   onExplorerDaylight,
   onSurface,
   onHorizon,
+  introDone = true,
 }) => {
   const target = telemetry?.activeTarget;
   const isPaused = telemetry?.isPaused ?? false;
@@ -119,6 +123,14 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const [monographVisible, setMonographVisible] = useState<boolean>(true);
   const [isVanishing, setIsVanishing] = useState<boolean>(false);
   const [isHoveredMonograph, setIsHoveredMonograph] = useState<boolean>(false);
+
+  // First-visit briefing
+  const [tourOpen, setTourOpen] = useState(false);
+  useEffect(() => {
+    if (!introDone || tourSeen()) return;
+    const t = setTimeout(() => setTourOpen(true), 1600);
+    return () => clearTimeout(t);
+  }, [introDone]);
 
   // Status toasts ("ORBITS · OFFLINE")
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null);
@@ -172,8 +184,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
       return;
     }
 
-    const t1 = setTimeout(() => setIntroPhase(1), 500);
-    const t2 = setTimeout(() => setIntroPhase(2), 1200);
+    const t1 = setTimeout(() => setIntroPhase(1), 120); // during the iris, not after it
+    const t2 = setTimeout(() => setIntroPhase(2), 500);
 
     return () => {
       clearTimeout(t1);
@@ -196,6 +208,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         e.preventDefault();
         setIsCatalogueOpen(true);
       } else if (e.key === 'Escape') {
+        if (tourOpen) return;
         if (isReadMoreOpen) {
           setIsReadMoreOpen(false);
         } else if (isCatalogueOpen || isOpticsOpen) {
@@ -234,7 +247,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
     onHorizon,
     isReadMoreOpen,
     isCatalogueOpen,
-    isOpticsOpen
+    isOpticsOpen,
+    tourOpen
   ]);
 
   // Announce state changes, whichever control (key, button, menu) made them
@@ -432,6 +446,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             </div>
             <div className="hud-rule w-full" style={{ ['--d' as string]: '600ms' }} />
             <div
+              data-tour="logbook"
               className="flex items-center gap-2 text-[9px] tracking-[0.22em] uppercase text-white/45 whitespace-nowrap"
               title={logbook.log.visited.length ? `Reached: ${logbook.log.visited.join(', ')}` : 'Fly to a world to log it'}
             >
@@ -455,6 +470,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
         {/* Scale ladder */}
         <div
+          data-tour="ladder"
           className={`hidden ${exploring ? '' : 'xl:flex'} flex-col items-center pointer-events-auto hud-boot`}
           style={{ ['--d' as string]: '260ms' }}
         >
@@ -473,10 +489,11 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
         {/* Systems */}
         <div className="relative flex items-center gap-1.5 md:gap-2 pointer-events-auto shrink-0 hud-boot" style={{ ['--d' as string]: '420ms' }}>
-          <div className="hidden lg:flex items-center">{layerSwitches}</div>
+          <div data-tour="layers" className="hidden lg:flex items-center">{layerSwitches}</div>
           <span className="hidden lg:block w-px h-4 bg-white/10 mx-1" />
           <button
             type="button"
+            data-tour="optics"
             data-popover-trigger
             onClick={(e) => {
               e.stopPropagation();
@@ -496,6 +513,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               setIsCatalogueOpen(true);
             }}
             className="hud-icon-btn"
+            data-tour="catalogue"
             title={`Catalogue · ${allBodies.length} bodies ( / )`}
             aria-label="Open catalogue"
           >
@@ -512,6 +530,18 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             aria-label="Reset to system overview"
           >
             <RotateCcw size={12} />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setTourOpen(true);
+            }}
+            className="hud-icon-btn"
+            title="Instrument briefing"
+            aria-label="Replay the instrument briefing"
+          >
+            <HelpCircle size={12} />
           </button>
           <button
             type="button"
@@ -586,6 +616,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           3. LEFT VERTICAL PLANETARY SELECTOR (MATCHING REFERENCE)
           ======================================================== */}
       <nav
+        data-tour="nav"
         className={`hud-dim absolute left-8 top-1/2 -translate-y-1/2 hidden md:flex flex-col gap-3 [@media(max-height:720px)]:gap-1 [@media(max-height:720px)]:top-[calc(50%+28px)] [@media(max-height:560px)]:hidden pointer-events-auto transition-all duration-1000 z-30 ${
           introPhase >= 1
             ? onSurfaceView || inHorizon
@@ -694,34 +725,57 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         </div>
       )}
       {inHorizon && (() => {
-        const f = horizonFacts();
-        const farPerHour = 60 / f.clockRate;
+        const h = telemetry?.horizon ?? { rRs: 20, onShore: true };
+        const f = horizonFacts(h.rRs, h.onShore);
+        const farPerHour = 60 / Math.max(1e-6, f.clockRate);
+        const farText = farPerHour < 600 ? `${Math.floor(farPerHour / 60)} h ${String(Math.round(farPerHour % 60)).padStart(2, '0')} m` : `${(farPerHour / 60).toFixed(0)} h`;
+        const depth = Math.max(0, Math.min(1, (20 - h.rRs) / 18.9));
         return (
-          <aside className="absolute left-6 bottom-6 z-20 hud-frame hud-slide-in px-4 py-3 w-[280px] pointer-events-auto">
-            <div className="hud-label !text-[color:var(--sol-amber)]">Shore readout · hypothetical world</div>
-            <div className="text-[13px] font-extralight tracking-[0.3em] uppercase text-white mt-1">Ocean world · {f.orbitRs} r<sub>s</sub></div>
+          <aside className="absolute left-6 bottom-6 z-20 hud-frame hud-slide-in px-4 py-3 w-[290px] pointer-events-auto">
+            <div className="hud-label !text-[color:var(--sol-amber)]">{h.onShore ? 'Shore readout · hypothetical world' : 'Free flight · hovering on thrust'}</div>
+            <div className="flex items-baseline justify-between mt-1">
+              <span className="text-[13px] font-extralight tracking-[0.3em] uppercase text-white">{h.onShore ? 'Ocean world' : 'Descent'}</span>
+              <span className="hud-num text-[18px] text-[color:var(--sol-amber)]">
+                {h.rRs.toFixed(h.rRs < 3 ? 3 : 2)} <span className="text-[10px] text-white/50">r<sub>s</sub></span>
+              </span>
+            </div>
+            {/* Depth gauge: from the shore (20 r_s) down to the horizon (1 r_s) */}
+            <div className="relative h-1.5 mt-2 bg-white/5 overflow-hidden">
+              <span className="absolute inset-y-0 left-0 transition-[width] duration-300" style={{ width: `${depth * 100}%`, background: 'linear-gradient(90deg, rgba(244,205,114,0.4), #ff7a66)' }} />
+              <span className="absolute inset-y-0 w-px bg-white/40" style={{ left: `${((20 - 1.5) / 18.9) * 100}%` }} title="Photon sphere, 1.5 r_s" />
+              <span className="absolute inset-y-0 w-px bg-white/40" style={{ left: `${((20 - 3) / 18.9) * 100}%` }} title="ISCO, 3 r_s" />
+            </div>
+            <div className="flex justify-between hud-num text-[7.5px] text-white/30 mt-0.5">
+              <span>SHORE 20</span><span>ISCO 3</span><span>PHOTON 1.5</span><span>HORIZON 1</span>
+            </div>
             <div className="hud-rule w-16 my-2" />
             <dl className="grid grid-cols-[1fr_auto] gap-y-1.5 text-[10.5px]">
               <dt className="text-white/45">1 hour here lasts</dt>
-              <dd className="hud-num text-[color:var(--sol-mint)] text-right">{Math.floor(farPerHour / 60)} h {String(Math.round(farPerHour % 60)).padStart(2, '0')} m far away</dd>
+              <dd className="hud-num text-[color:var(--sol-mint)] text-right">{farText} far away</dd>
               <dt className="text-white/45">Tidal stretch</dt>
               <dd className="hud-num text-white/85 text-right">{f.tidalGPerMetre.toExponential(1)} g / m</dd>
               <dt className="text-white/45">Shadow across the sky</dt>
               <dd className="hud-num text-white/85 text-right">{f.shadowDeg.toFixed(1)}°</dd>
-              <dt className="text-white/45">Distance to horizon</dt>
-              <dd className="hud-num text-white/85 text-right">{((f.orbitRs - 1) * 12.69).toFixed(0)} M km</dd>
+              <dt className="text-white/45">Above the horizon</dt>
+              <dd className="hud-num text-white/85 text-right">{((h.rRs - 1) * 12.69).toFixed(h.rRs < 2 ? 2 : 0)} M km</dd>
             </dl>
             <p className="text-[9.5px] text-white/40 leading-snug mt-2">
-              A planet could not survive much closer: below ~7 r<sub>s</sub> Sgr A*'s tides exceed its surface gravity. Watch rocks and light fall in; to you they slow, redden and fade at the edge, never seen to cross.
+              {h.rRs < 1.5
+                ? 'Inside the photon sphere: the shadow now fills more than half the sky, and no orbit is possible. Only thrust holds you here.'
+                : h.rRs < 3
+                  ? 'Below the ISCO: no stable orbit exists. Matter here plunges; you hover only on thrust.'
+                  : 'Rocks and light fall in; seen from here they slow, redden and fade at the edge, never seen to cross. (Rocks are enlarged; real meteoroids would be invisible at this scale.)'}
             </p>
-            <p className="text-[9px] text-white/30 mt-1.5">Drag to look around · Esc returns to orbit</p>
+            <p className="text-[9px] text-white/35 mt-1.5 leading-relaxed">
+              <kbd className="hud-num">W A S D</kbd> fly · <kbd className="hud-num">E</kbd>/<kbd className="hud-num">Q</kbd> up/down · <kbd className="hud-num">Shift</kbd> boost · drag to look · <kbd className="hud-num">R</kbd> shore · <kbd className="hud-num">Esc</kbd> orbit
+            </p>
           </aside>
         );
       })()}
 
       {/* Attitude scope — bottom left, under the planet list */}
       {!onSurfaceView && !inHorizon && (
-        <div className="hud-dim absolute left-6 bottom-5 hidden md:block z-20 hud-boot hud-parallax-near [@media(max-height:820px)]:hidden" style={{ ['--d' as string]: '700ms' }}>
+        <div data-tour="scope" className="hud-dim absolute left-6 bottom-5 hidden md:block z-20 hud-boot hud-parallax-near [@media(max-height:820px)]:hidden" style={{ ['--d' as string]: '700ms' }}>
           <AttitudeScope
             getView={getView}
             range={observerScale}
@@ -736,6 +790,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           ======================================================== */}
       {monographVisible && !exploring && (
         <section
+          data-tour="monograph"
           key={activeTargetName}
           onMouseEnter={() => setIsHoveredMonograph(true)}
           onMouseLeave={() => setIsHoveredMonograph(false)}
@@ -809,7 +864,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
       {/* System plot — bottom right */}
       {!onSurfaceView && (
-        <div className="hud-dim absolute right-6 bottom-5 hidden md:block z-20 hud-boot hud-parallax-near [@media(max-height:620px)]:hidden" style={{ ['--d' as string]: '820ms' }}>
+        <div data-tour="plot" className="hud-dim absolute right-6 bottom-5 hidden md:block z-20 hud-boot hud-parallax-near [@media(max-height:620px)]:hidden" style={{ ['--d' as string]: '820ms' }}>
           <SystemPlot
             getView={getView}
             target={activeTargetName}
@@ -842,7 +897,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
       {/* ========================================================
           TIME DECK
           ======================================================== */}
-      <footer className="absolute bottom-4 md:bottom-5 left-1/2 -translate-x-1/2 pointer-events-auto z-30 hud-boot max-w-[calc(100vw-16px)]" style={{ ['--d' as string]: '560ms' }}>
+      <footer data-tour="time" className="absolute bottom-4 md:bottom-5 left-1/2 -translate-x-1/2 pointer-events-auto z-30 hud-boot max-w-[calc(100vw-16px)]" style={{ ['--d' as string]: '560ms' }}>
         <TimeDeck
           isPaused={isPaused}
           multiplier={multiplier}
@@ -854,6 +909,17 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           onSeek={onSeekDate}
         />
       </footer>
+
+      <Tour
+        open={tourOpen}
+        onClose={() => setTourOpen(false)}
+        demos={{
+          toggleOrbits: () => onToggleOrbits?.(),
+          setTimeRate: (m) => onSetTimeMultiplier(m),
+          timeRate: multiplier,
+          openOptics: (o) => setIsOpticsOpen(o),
+        }}
+      />
 
       {/* ========================================================
           DOSSIER — "Read more" drawer

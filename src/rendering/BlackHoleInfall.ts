@@ -27,6 +27,51 @@ const C_UNITS_PER_SEC = 150;     // playback speed: how many render units light 
 const TIDAL_R = 8.9 * RS;        // Sun-like star around 4.3 × 10⁶ M☉
 const B_CRIT = (3 * Math.sqrt(3) / 2) * RS;
 const TRAIL = 18;
+const ROCK_VARIANTS = 4;
+const ROCKS_PER_VARIANT = 40;
+
+/** Lumpy, cratered asteroid shapes: an icosphere displaced by layered value noise. */
+function makeRockGeometry(seed: number): THREE.BufferGeometry {
+  const geo = new THREE.IcosahedronGeometry(1, 4);
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  const hash = (x: number, y: number, z: number) => {
+    const h = Math.sin(x * 127.1 + y * 311.7 + z * 74.7 + seed * 19.19) * 43758.5453;
+    return h - Math.floor(h);
+  };
+  const noise = (x: number, y: number, z: number) => {
+    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+    const fx = x - ix, fy = y - iy, fz = z - iz;
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy), sz = fz * fz * (3 - 2 * fz);
+    const l = (a: number, b: number, t: number) => a + (b - a) * t;
+    return l(
+      l(l(hash(ix, iy, iz), hash(ix + 1, iy, iz), sx), l(hash(ix, iy + 1, iz), hash(ix + 1, iy + 1, iz), sx), sy),
+      l(l(hash(ix, iy, iz + 1), hash(ix + 1, iy, iz + 1), sx), l(hash(ix, iy + 1, iz + 1), hash(ix + 1, iy + 1, iz + 1), sx), sy),
+      sz
+    );
+  };
+  // Elongated, irregular bodies (most small asteroids are 1.3–2:1)
+  const stretch = new THREE.Vector3(1 + seed * 0.18, 0.72 + (seed % 2) * 0.1, 0.8 - (seed % 3) * 0.06);
+  const craters = Array.from({ length: 7 }, (_, i) => ({
+    c: new THREE.Vector3(hash(i, 1, seed) - 0.5, hash(i, 2, seed) - 0.5, hash(i, 3, seed) - 0.5).normalize(),
+    r: 0.25 + hash(i, 4, seed) * 0.35,
+  }));
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).normalize();
+    let d = 1;
+    d += (noise(v.x * 1.6 + seed, v.y * 1.6, v.z * 1.6) - 0.5) * 0.55;
+    d += (noise(v.x * 4 + seed, v.y * 4, v.z * 4) - 0.5) * 0.18;
+    d += (noise(v.x * 11 + seed, v.y * 11, v.z * 11) - 0.5) * 0.06;
+    for (const cr of craters) {
+      const a = v.angleTo(cr.c) / cr.r;
+      if (a < 1.25) d += a < 1 ? -0.08 * (1 - a * a) : 0.05 * (1.25 - a) * 4 * (a - 1); // bowl and raised rim
+    }
+    v.multiplyScalar(d).multiply(stretch);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
 
 type Kind = 'rock' | 'star' | 'debris' | 'photon';
 
@@ -51,6 +96,12 @@ interface Body {
   brightness: number;
   g: number;
   starStream?: boolean;
+  /** Rocks: shape variant, size and tumble. */
+  variant: number;
+  size: number;
+  spinAxis: THREE.Vector3;
+  spinRate: number;
+  quat: THREE.Quaternion;
 }
 
 function rand(a: number, b: number): number {
@@ -97,6 +148,12 @@ export class BlackHoleInfall {
   private photonClock = 0;
   private tmpCol = new THREE.Color();
   private tmpV = new THREE.Vector3();
+  private rockMeshes: THREE.InstancedMesh[] = [];
+  private rockEmit: Float32Array[] = [];
+  private rockDim: Float32Array[] = [];
+  private tmpM = new THREE.Matrix4();
+  private tmpQ = new THREE.Quaternion();
+  private tmpS = new THREE.Vector3();
 
   constructor(private readonly capacity = 220) {
     const n = capacity;
@@ -136,7 +193,7 @@ export class BlackHoleInfall {
             vColor = color;
             vHide = occluded(position);
             vec4 mv = modelViewMatrix * vec4(position, 1.0);
-            gl_PointSize = clamp(size * (1500.0 / max(-mv.z, 1.0)), 1.5, 26.0);
+            gl_PointSize = clamp(size * (1500.0 / max(-mv.z, 1.0)), 1.2, 9.0);
             gl_Position = projectionMatrix * mv;
           }
         `,
@@ -198,6 +255,85 @@ export class BlackHoleInfall {
     this.trails.frustumCulled = false;
     this.trails.renderOrder = 51;
 
+    // Rocks: real 3D bodies, lit by the disk, heated on the side facing the hole
+    const rockMat = new THREE.ShaderMaterial({
+      uniforms: { uCam: this.camLocal, uOpacity: this.opacity, uRs: { value: RS } },
+      vertexShader: `
+        attribute vec3 aEmit;
+        attribute float aDim;
+        varying vec3 vLocal;
+        varying vec3 vNormal;
+        varying vec3 vObj;
+        varying vec3 vEmit;
+        varying float vDim;
+        void main() {
+          vec4 lp = instanceMatrix * vec4(position, 1.0);
+          vLocal = lp.xyz;
+          vNormal = normalize(mat3(instanceMatrix) * normal);
+          vObj = position;
+          vEmit = aEmit;
+          vDim = aDim;
+          gl_Position = projectionMatrix * modelViewMatrix * lp;
+        }
+      `,
+      fragmentShader: `
+        uniform float uOpacity;
+        uniform float uRs;
+        varying vec3 vLocal;
+        varying vec3 vNormal;
+        varying vec3 vObj;
+        varying vec3 vEmit;
+        varying float vDim;
+        ${occlusion}
+        float h3(vec3 p) { p = fract(p * 0.3183 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+        float n3(vec3 x) {
+          vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(mix(h3(i), h3(i + vec3(1,0,0)), f.x), mix(h3(i + vec3(0,1,0)), h3(i + vec3(1,1,0)), f.x), f.y),
+                     mix(mix(h3(i + vec3(0,0,1)), h3(i + vec3(1,0,1)), f.x), mix(h3(i + vec3(0,1,1)), h3(i + vec3(1,1,1)), f.x), f.y), f.z);
+        }
+        void main() {
+          if (occluded(vLocal) > 0.5) discard;
+          vec3 n = normalize(vNormal);
+          // Regolith: dark carbonaceous grey-brown, mottled, with brighter fresh scarps
+          float m = n3(vObj * 3.0) * 0.6 + n3(vObj * 9.0) * 0.3 + n3(vObj * 27.0) * 0.1;
+          vec3 albedo = mix(vec3(0.07, 0.06, 0.055), vec3(0.2, 0.17, 0.14), m);
+          // The accretion disk lights it: warm, from the hole, falling off as 1/r²
+          float r = length(vLocal);
+          vec3 L = normalize(-vLocal);
+          float lightI = clamp(pow(9.0 * uRs / r, 2.0), 0.05, 6.0);
+          float ndl = max(dot(n, L), 0.0);
+          vec3 diskLight = vec3(1.0, 0.72, 0.42) * lightI;
+          vec3 col = albedo * (diskLight * ndl + vec3(0.05, 0.04, 0.035));
+          // Lensed halo light from above and below the disk plane
+          col += albedo * vec3(0.9, 0.7, 0.5) * 0.25 * lightI * abs(n.y);
+          // Thermal glow on the hot face
+          col += vEmit * (0.25 + 0.75 * ndl);
+          // Seen from afar its light is redshifted and dimmed near the horizon
+          float g = vDim;
+          col *= mix(vec3(1.0, 0.3, 0.12), vec3(1.0), clamp(g * 1.4, 0.0, 1.0)) * pow(g, 2.0);
+          gl_FragColor = vec4(col, uOpacity);
+        }
+      `,
+      transparent: true,
+      depthWrite: true,
+    });
+    for (let v = 0; v < ROCK_VARIANTS; v++) {
+      const geo = makeRockGeometry(v + 1);
+      const emit = new Float32Array(ROCKS_PER_VARIANT * 3);
+      const dim = new Float32Array(ROCKS_PER_VARIANT);
+      geo.setAttribute('aEmit', new THREE.InstancedBufferAttribute(emit, 3).setUsage(THREE.DynamicDrawUsage));
+      geo.setAttribute('aDim', new THREE.InstancedBufferAttribute(dim, 1).setUsage(THREE.DynamicDrawUsage));
+      const mesh = new THREE.InstancedMesh(geo, rockMat, ROCKS_PER_VARIANT);
+      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      mesh.count = 0;
+      mesh.frustumCulled = false;
+      mesh.renderOrder = 53;
+      this.rockMeshes.push(mesh);
+      this.rockEmit.push(emit);
+      this.rockDim.push(dim);
+      this.group.add(mesh);
+    }
+
     this.group.add(this.trails, this.heads);
     this.group.name = 'sgr_a_infall';
     for (let i = 0; i < 18; i++) this.spawnRock(true);
@@ -211,6 +347,7 @@ export class BlackHoleInfall {
         kind, alive: false, r: 0, phi: 0, ur: 0, E: 1, L: 0,
         e1: new THREE.Vector3(), e2: new THREE.Vector3(), pos: new THREE.Vector3(), vel: new THREE.Vector3(),
         h2: 0, trail: Array.from({ length: TRAIL }, () => new THREE.Vector3()), trailTimer: 0, age: 0, temp0: 2000, brightness: 1, g: 1,
+        variant: 0, size: 1, spinAxis: new THREE.Vector3(0, 1, 0), spinRate: 0, quat: new THREE.Quaternion(),
       };
       this.bodies.push(b);
     }
@@ -234,6 +371,12 @@ export class BlackHoleInfall {
     b.ur = 0;
     b.temp0 = rand(1600, 2600);
     b.brightness = rand(1.6, 3.2);
+    b.variant = Math.floor(Math.random() * ROCK_VARIANTS);
+    // Enlarged for visibility: a real meteoroid is ~10⁻⁸ r_s across
+    b.size = rand(0.5, 2.0) * (Math.random() < 0.15 ? 2.2 : 1);
+    b.spinAxis.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).normalize();
+    b.spinRate = rand(0.3, 1.6);
+    b.quat.setFromAxisAngle(b.spinAxis, rand(0, Math.PI * 2));
     this.toCartesian(b);
     for (const p of b.trail) p.copy(b.pos);
     if (prewarm) for (let i = 0; i < 60; i++) this.stepTimelike(b, rand(0, 6) / 60);
@@ -372,6 +515,7 @@ export class BlackHoleInfall {
     const toCam = new THREE.Vector3();
     let hi = 0;
     let ti = 0;
+    const rockCount = new Array(ROCK_VARIANTS).fill(0);
     for (const b of this.bodies) {
       if (!b.alive) continue;
       b.age += dtSec;
@@ -411,11 +555,32 @@ export class BlackHoleInfall {
       const T = b.temp0 * heat * g;
       blackbody(T, this.tmpCol).multiplyScalar(b.brightness * Math.pow(g, 4) * Math.min(1, b.age * 1.5));
 
-      const s = b.kind === 'star' ? 9 : b.kind === 'photon' ? 2.2 : b.kind === 'debris' ? 2.6 : 3.2;
-      this.headPos.set([b.pos.x, b.pos.y, b.pos.z], hi * 3);
-      this.headCol.set([this.tmpCol.r, this.tmpCol.g, this.tmpCol.b], hi * 3);
-      this.headSize[hi] = s * (b.kind === 'rock' ? 0.6 + heat * 0.25 : 1);
-      hi++;
+      if (b.kind === 'rock') {
+        const v = b.variant;
+        const k = rockCount[v];
+        if (k < ROCKS_PER_VARIANT) {
+          this.tmpQ.setFromAxisAngle(b.spinAxis, b.spinRate * dtSec);
+          b.quat.premultiply(this.tmpQ);
+          this.tmpS.setScalar(b.size);
+          this.tmpM.compose(b.pos, b.quat, this.tmpS);
+          this.rockMeshes[v].setMatrixAt(k, this.tmpM);
+          // Thermal glow only once it is properly hot (blackbody colour × observed shift)
+          const hot = Math.max(0, Math.min(1, (b.temp0 * heat - 2400) / 3000));
+          blackbody(b.temp0 * heat * g, this.tmpCol).multiplyScalar(hot * 1.6);
+          this.rockEmit[v].set([this.tmpCol.r, this.tmpCol.g, this.tmpCol.b], k * 3);
+          this.rockDim[v][k] = Math.min(1, g) * Math.min(1, b.age * 1.5);
+          rockCount[v] = k + 1;
+        }
+        blackbody(T, this.tmpCol).multiplyScalar(0.35 * Math.pow(g, 4) * Math.min(1, b.age * 1.5));
+      }
+
+      const s = b.kind === 'star' ? 4.5 : b.kind === 'photon' ? 1.4 : b.kind === 'debris' ? 2.0 : 3.2;
+      if (b.kind !== 'rock') {
+        this.headPos.set([b.pos.x, b.pos.y, b.pos.z], hi * 3);
+        this.headCol.set([this.tmpCol.r, this.tmpCol.g, this.tmpCol.b], hi * 3);
+        this.headSize[hi] = s;
+        hi++;
+      }
 
       for (let k = 0; k < TRAIL - 1; k++) {
         const a = b.trail[k];
@@ -426,6 +591,14 @@ export class BlackHoleInfall {
         this.trailCol.set([...col, ...col], ti * 6);
         ti++;
       }
+    }
+
+    for (let v = 0; v < ROCK_VARIANTS; v++) {
+      const mesh = this.rockMeshes[v];
+      mesh.count = rockCount[v];
+      mesh.instanceMatrix.needsUpdate = true;
+      (mesh.geometry.attributes.aEmit as THREE.InstancedBufferAttribute).needsUpdate = true;
+      (mesh.geometry.attributes.aDim as THREE.InstancedBufferAttribute).needsUpdate = true;
     }
 
     const hg = this.heads.geometry;
@@ -448,5 +621,7 @@ export class BlackHoleInfall {
     (this.heads.material as THREE.Material).dispose();
     this.trails.geometry.dispose();
     (this.trails.material as THREE.Material).dispose();
+    for (const m of this.rockMeshes) m.geometry.dispose();
+    if (this.rockMeshes[0]) (this.rockMeshes[0].material as THREE.Material).dispose();
   }
 }

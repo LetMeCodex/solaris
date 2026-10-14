@@ -719,6 +719,21 @@ export class MilkyWayGalaxy {
   /**
    * Updates opacity of 3D galaxy and central Sagittarius A* based on camera distance.
    */
+  /**
+   * Request the disk artwork now instead of on the first frame the galaxy appears, so reaching
+   * the galactic scale never waits on a 2048² decode and upload.
+   */
+  public prepareAssets(): THREE.Texture {
+    if (!this.diskTextureRequested) {
+      this.diskTextureRequested = true;
+      const tex = TexturePipeline.getInstance().getMilkyWayDiskTexture();
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      this.diskTextureUniform.value = tex;
+    }
+    return this.diskTextureUniform.value as THREE.Texture;
+  }
+
   public setOpacity(opacity: number): void {
     const clamped = Math.max(0.0, Math.min(1.0, opacity));
     this.opacityUniform.value = clamped;

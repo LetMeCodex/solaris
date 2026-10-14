@@ -43,6 +43,8 @@ export interface TelemetryData {
   surface: SurfaceStatus | null;
   /** Standing on the hypothetical ocean world beside Sgr A*. */
   horizonView: boolean;
+  /** In the horizon view: distance from the hole (r_s) and whether still on the shore. */
+  horizon: { rRs: number; onShore: boolean } | null;
   /** One-way light time Earth → selected body, seconds (null for Earth itself). */
   lightFromEarthSec: number | null;
   route: FlightRoute | null;
@@ -148,6 +150,10 @@ export class SolarSystemScene {
     this.scene.background = new THREE.Color(0x020105);
 
     // 2. Renderer
+    // Loading progress for the preloader (all TextureLoader requests use the default manager)
+    THREE.DefaultLoadingManager.onProgress = (_url, loaded, total) => {
+      this.textureFraction = total > 0 ? loaded / total : 0;
+    };
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
       powerPreference: 'high-performance',
@@ -184,7 +190,7 @@ export class SolarSystemScene {
     this.scene.add(this.asteroidBelt.mesh);
 
     // 7. Build Celestial Bodies & Keplerian Orbit Trails
-    this.orbitLinesGroup.visible = false; // Restrained cinematic aesthetic by default
+    this.orbitLinesGroup.visible = true; // Every layer starts on; the user can switch them off
     this.scene.add(this.orbitLinesGroup);
     this.setupBodies();
     this.explorer = new PlanetaryExplorer(this.cameraRig, (name) => {
@@ -1014,6 +1020,83 @@ export class SolarSystemScene {
   private route: FlightRoute | null = null;
   private horizon: HorizonView | null = null;
 
+  /**
+   * Pay every first-use cost before the user can move: wait for the textures, then compile every
+   * shader (including the galaxy, the ray-traced black hole, its infall and the horizon world, which
+   * are normally invisible) and upload the big textures. Without this, the first flight out to
+   * Sgr A* froze for 2–3 s while the GPU driver compiled the 320-step geodesic shader.
+   */
+  public async warmUp(onProgress: (fraction: number, stage: string) => void): Promise<void> {
+    const bh = this.starfield.externalGalaxy.sagittariusAStar;
+    const diskTex = this.starfield.externalGalaxy.prepareAssets();
+    this.horizon ??= new HorizonView(bh);
+
+    // 1. Textures (0 → 70 %): follow the default loading manager until it drains (or 15 s)
+    onProgress(0.02, 'Reading JPL ephemerides');
+    await new Promise<void>((resolve) => {
+      const started = performance.now();
+      const tick = () => {
+        const t = Math.min(1, (performance.now() - started) / 15000);
+        if ((diskTex.image && this.textureFraction >= 0.999) || t >= 1) return resolve();
+        onProgress(0.05 + 0.6 * Math.max(t, this.textureFraction), 'Loading NASA surface maps');
+        setTimeout(tick, 120);
+      };
+      tick();
+    });
+
+    // 2. Shaders (70 → 95 %)
+    onProgress(0.72, 'Compiling the relativistic ray tracer');
+    const galaxy = this.starfield.externalGalaxy.group;
+    const hidden: THREE.Object3D[] = [];
+    const reveal = (o: THREE.Object3D | null | undefined) => {
+      o?.traverse((c) => {
+        if (!c.visible) {
+          c.visible = true;
+          hidden.push(c);
+        }
+      });
+    };
+    reveal(galaxy);
+    reveal(bh.group);
+    const camera = this.cameraRig.camera;
+    // Programs depend on the output target (colour space, float type): compile for the half-float
+    // target the lens pipeline renders the scene into, and for the screen (the clean lens)
+    const previous = this.renderer.getRenderTarget();
+    for (const target of [this.lens.sceneTarget(), null]) {
+      this.renderer.setRenderTarget(target);
+      try {
+        await this.renderer.compileAsync(this.scene, camera);
+      } catch {
+        this.renderer.compile(this.scene, camera);
+      }
+    }
+    this.renderer.setRenderTarget(previous);
+    for (const o of hidden) o.visible = false;
+
+    // 3. Upload the large textures now rather than on first sight
+    onProgress(0.96, 'Resolving the Milky Way');
+    this.scene.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+      const mats = Array.isArray(m) ? m : m ? [m] : [];
+      for (const mat of mats) {
+        const rec = mat as unknown as Record<string, unknown>;
+        for (const key of ['map', 'normalMap', 'emissiveMap']) {
+          const t = rec[key];
+          if (t instanceof THREE.Texture && t.image) this.renderer.initTexture(t);
+        }
+        const uniforms = (mat as THREE.ShaderMaterial).uniforms;
+        if (uniforms) {
+          for (const u of Object.values(uniforms)) {
+            if (u && u.value instanceof THREE.Texture && u.value.image) this.renderer.initTexture(u.value);
+          }
+        }
+      }
+    });
+    onProgress(1, 'Ready');
+  }
+
+  private textureFraction = 0;
+
   /** Stand on a world beside Sgr A* and watch it over the horizon (only from the black hole). */
   public enterHorizonView(): boolean {
     if (this.selectedBody.name !== 'Sagittarius A*' || this.cameraRig.getTransit()) return false;
@@ -1164,6 +1247,7 @@ export class SolarSystemScene {
       explorer: this.explorer.getStatus(),
       surface: this.surface.getStatus(),
       horizonView: !!this.horizon?.active,
+      horizon: this.horizon?.active ? this.horizon.getStatus() : null,
       lightFromEarthSec: (() => {
         if (this.selectedBody.name === 'Earth') return null;
         const a = this.bodyPositionKm('Earth');

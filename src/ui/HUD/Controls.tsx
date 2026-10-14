@@ -293,6 +293,7 @@ export const TimeDeck: React.FC<{
             setPickerOpen((o) => !o);
           }}
           aria-expanded={pickerOpen}
+          data-tour="date"
           aria-label={`Jump to date (current ${date})`}
           className="hud-btn !px-2 !tracking-[0.12em] !text-white/80"
         >

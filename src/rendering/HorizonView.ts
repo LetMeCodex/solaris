@@ -25,15 +25,21 @@ export interface HorizonFacts {
   shadowDeg: number;
 }
 
-export function horizonFacts(orbitRs: number = HORIZON_ORBIT_RS): HorizonFacts {
+/**
+ * Physics at r (in r_s). Orbiting: a circular orbit, dτ/dt = √(1 − 1.5 r_s/r). Otherwise a static
+ * observer hovering on rockets, dτ/dt = √(1 − r_s/r).
+ */
+export function horizonFacts(orbitRs: number = HORIZON_ORBIT_RS, orbiting: boolean = true): HorizonFacts {
   const GM = 6.6743e-11 * 4.297e6 * 1.98847e30;
   const rsM = (2 * GM) / (299792458 * 299792458);
   const r = orbitRs * rsM;
-  const clockRate = Math.sqrt(1 - 1.5 / orbitRs);
+  const clockRate = orbiting && orbitRs > 1.5 ? Math.sqrt(1 - 1.5 / orbitRs) : Math.sqrt(Math.max(0, 1 - 1 / orbitRs));
   const tidal = (2 * GM) / (r * r * r) / 9.80665;
-  // Shadow edge seen by a static observer at r: sin α = (b_c / r) √(1 − r_s/r)
-  const sinA = (((3 * Math.sqrt(3)) / 2) / orbitRs) * Math.sqrt(1 - 1 / orbitRs);
-  return { orbitRs, clockRate, tidalGPerMetre: tidal, shadowDeg: (2 * Math.asin(sinA) * 180) / Math.PI };
+  // Shadow edge seen by a static observer at r: sin α = (b_c / r) √(1 − r_s/r); inside the photon
+  // sphere the shadow covers more than half the sky
+  const sinA = Math.min(1, (((3 * Math.sqrt(3)) / 2) / orbitRs) * Math.sqrt(1 - 1 / orbitRs));
+  const alpha = orbitRs >= 1.5 ? Math.asin(sinA) : Math.PI - Math.asin(sinA);
+  return { orbitRs, clockRate, tidalGPerMetre: tidal, shadowDeg: (2 * alpha * 180) / Math.PI };
 }
 
 const R_PLANET = 420.0;   // render units; only the curvature of the horizon depends on it
@@ -104,14 +110,14 @@ export class HorizonView {
         vec3 sky(vec3 r) {
           vec3 toHole = normalize(-uCam);
           float th = acos(clamp(dot(r, toHole), -1.0, 1.0));
-          if (th < uShadow) return vec3(0.0);
+          float inside = smoothstep(uShadow * 0.92, uShadow * 1.02, th);
           float ring = exp(-pow((th - uShadow * 1.12) / (uShadow * 0.22), 2.0)) * 3.2
                      + exp(-pow((th - uShadow * 1.5) / (uShadow * 0.6), 2.0)) * 0.9;
           // Disk band hugging the horizon, brightest towards the hole
           float band = exp(-pow(r.y / 0.012, 2.0)) * exp(-pow(th / 0.9, 2.0)) * 2.4;
           vec3 gold = vec3(1.0, 0.62, 0.26);
           vec3 cream = vec3(1.0, 0.78, 0.5);
-          return cream * ring + gold * band;
+          return (cream * ring + gold * band) * inside;
         }
 
         void main() {
@@ -123,7 +129,7 @@ export class HorizonView {
           float e = 0.05;
           float w0 = waves(q);
           vec3 grad = vec3(waves(q + vec2(e, 0.0)) - w0, 0.0, waves(q + vec2(0.0, e)) - w0) / e;
-          float amp = 0.11 / (1.0 + dist * 0.05);
+          float amp = 0.06 / (1.0 + dist * 0.05);
           n = normalize(n - grad * amp);
 
           vec3 rDir = reflect(v, n);
@@ -154,62 +160,128 @@ export class HorizonView {
   public enter(camera: THREE.PerspectiveCamera, dom: HTMLElement): void {
     this.active = true;
     this.planet.visible = true;
-    this.yaw = this.targetYaw = 0;
-    this.pitch = this.targetPitch = THREE.MathUtils.degToRad(4);
+    this.returnToShore();
     camera.fov = 52;
     camera.updateProjectionMatrix();
     this.dom = dom;
     dom.addEventListener('pointerdown', this.onDown);
     window.addEventListener('pointermove', this.onMove);
     window.addEventListener('pointerup', this.onUp);
+    window.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('keyup', this.onKeyUp);
+    window.addEventListener('blur', this.onBlur);
   }
 
   public exit(): void {
     this.active = false;
     this.planet.visible = false;
+    this.keys.clear();
     this.dom?.removeEventListener('pointerdown', this.onDown);
     window.removeEventListener('pointermove', this.onMove);
     window.removeEventListener('pointerup', this.onUp);
+    window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('keyup', this.onKeyUp);
+    window.removeEventListener('blur', this.onBlur);
     this.dom = null;
   }
+
+  /** Back to the starting point on the shore, facing the hole. */
+  public returnToShore(): void {
+    this.pos.copy(this.eyeLocal);
+    this.vel.set(0, 0, 0);
+    this.yaw = this.targetYaw = 0;
+    this.pitch = this.targetPitch = THREE.MathUtils.degToRad(4);
+  }
+
+  /** Where the observer is, in units of r_s, and whether they are still standing on the sea. */
+  public getStatus(): { rRs: number; onShore: boolean } {
+    const rs = this.bh.config.schwarzschildRadius;
+    return { rRs: this.pos.length() / rs, onShore: this.pos.distanceTo(this.eyeLocal) < 0.5 };
+  }
+
+  private keys = new Set<string>();
+  private pos = new THREE.Vector3();
+  private vel = new THREE.Vector3();
+  private lastTime: number | null = null;
+
+  private static readonly FLIGHT_KEYS = ['w', 'a', 's', 'd', 'q', 'e', 'shift', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
+
+  private onKeyDown = (e: KeyboardEvent) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    const k = e.key.toLowerCase();
+    if (HorizonView.FLIGHT_KEYS.includes(k)) {
+      this.keys.add(k);
+      if (k.startsWith('arrow')) e.preventDefault();
+    }
+    if (k === 'r') this.returnToShore();
+  };
+  private onKeyUp = (e: KeyboardEvent) => {
+    this.keys.delete(e.key.toLowerCase());
+  };
+  private onBlur = () => this.keys.clear();
 
   private onDown = (e: PointerEvent) => {
     this.drag = { x: e.clientX, y: e.clientY };
   };
   private onMove = (e: PointerEvent) => {
     if (!this.drag) return;
-    this.targetYaw += (e.clientX - this.drag.x) * 0.0025;
-    this.targetPitch = THREE.MathUtils.clamp(this.targetPitch + (e.clientY - this.drag.y) * 0.0025, -0.25, 1.2);
+    this.targetYaw -= (e.clientX - this.drag.x) * 0.0025;
+    this.targetPitch = THREE.MathUtils.clamp(this.targetPitch - (e.clientY - this.drag.y) * 0.0025, -1.45, 1.45);
     this.drag = { x: e.clientX, y: e.clientY };
   };
   private onUp = () => {
     this.drag = null;
   };
 
-  /** Place the camera on the shore, looking towards the hole (with the user's head turn). */
+  /** Fly the observer (black-hole-local frame) and aim the camera. */
   public update(camera: THREE.PerspectiveCamera, timeSec: number): void {
     if (!this.active) return;
+    const dt = this.lastTime === null ? 0 : Math.min(0.25, Math.max(0, timeSec - this.lastTime)); // frame-rate independent
+    this.lastTime = timeSec;
     this.uniforms.uTime.value = timeSec;
-    this.yaw += (this.targetYaw - this.yaw) * 0.1;
-    this.pitch += (this.targetPitch - this.pitch) * 0.1;
+    this.yaw += (this.targetYaw - this.yaw) * 0.12;
+    this.pitch += (this.targetPitch - this.pitch) * 0.12;
+
+    const Y = new THREE.Vector3(0, 1, 0);
+    const fwd = this.baseForward.clone().applyAxisAngle(Y, this.yaw);
+    const right = new THREE.Vector3().crossVectors(fwd, Y).normalize();
+    fwd.applyAxisAngle(right, this.pitch);
+
+    // Thrust: speed proportional to the height above the horizon, so the last stretch is slow
+    const rs = this.bh.config.schwarzschildRadius;
+    const r = this.pos.length();
+    const speed = Math.max(0.6, (r - rs) * 0.35) * (this.keys.has('shift') ? 4 : 1);
+    const want = new THREE.Vector3();
+    if (this.keys.has('w') || this.keys.has('arrowup')) want.add(fwd);
+    if (this.keys.has('s') || this.keys.has('arrowdown')) want.sub(fwd);
+    if (this.keys.has('d') || this.keys.has('arrowright')) want.add(right);
+    if (this.keys.has('a') || this.keys.has('arrowleft')) want.sub(right);
+    if (this.keys.has('e')) want.add(Y);
+    if (this.keys.has('q')) want.sub(Y);
+    if (want.lengthSq() > 0) want.normalize().multiplyScalar(speed);
+    this.vel.lerp(want, 1 - Math.pow(0.02, dt)); // eased thrust and glide
+    this.pos.addScaledVector(this.vel, dt);
+
+    // Never below 1.1 r_s (past the horizon nothing comes back), never under the sea
+    const rMin = 1.1 * rs;
+    if (this.pos.length() < rMin) this.pos.setLength(rMin);
+    const center = this.uniforms.uCenter.value as THREE.Vector3;
+    const toC = this.tmp.subVectors(this.pos, center);
+    if (toC.length() < R_PLANET + EYE) this.pos.copy(center).addScaledVector(toC.normalize(), R_PLANET + EYE);
 
     const g = this.bh.group;
     g.updateWorldMatrix(true, false);
-    // Gentle swell: the eye rises and falls with the sea
-    const eye = this.tmp.copy(this.eyeLocal);
-    eye.y += Math.sin(timeSec * 0.6) * 0.015;
+    const eye = this.pos.clone();
+    if (this.getStatus().onShore) eye.y += Math.sin(timeSec * 0.6) * 0.015; // the swell, while standing
     this.uniforms.uCam.value.copy(eye);
     camera.position.copy(eye).applyMatrix4(g.matrixWorld);
 
-    const fwd = this.baseForward.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw);
-    const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
-    fwd.applyAxisAngle(right, this.pitch);
     const target = eye.clone().add(fwd).applyMatrix4(g.matrixWorld);
-    const up = new THREE.Vector3(0, 1, 0).transformDirection(g.matrixWorld);
+    const up = Y.clone().transformDirection(g.matrixWorld);
     camera.up.copy(up);
     this.tmpM.lookAt(camera.position, target, up);
     camera.quaternion.setFromRotationMatrix(this.tmpM);
-    camera.near = 0.01;
+    camera.near = Math.max(0.002, Math.min(0.05, (this.pos.length() - rs) * 0.01));
     camera.far = 400000;
     camera.updateProjectionMatrix();
   }

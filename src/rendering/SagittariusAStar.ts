@@ -248,7 +248,7 @@ export class SagittariusAStar {
           vec2 cell = floor(uv * 180.0);
           float h = fract(sin(dot(cell + floor(d.xy * 3.0), vec2(12.9898, 78.233))) * 43758.5453);
           vec2 f = fract(uv * 180.0) - 0.5;
-          float star = h > 0.9965 ? exp(-dot(f, f) * 60.0) * (h - 0.9965) * 260.0 : 0.0;
+          float star = h > 0.9995 ? exp(-dot(f, f) * 70.0) * (h - 0.9995) * 1200.0 : 0.0;
           return vec3(star) * vec3(1.0, 0.92, 0.82);
         }
 
@@ -341,13 +341,14 @@ export class SagittariusAStar {
    * Real astrophysical stars (S2/S0-2, S38, S55, S62) with relativistic orbital motions.
    */
   private createNuclearStarCluster(): THREE.Points {
-    const starCount = 380;
+    const starCount = 260;
     const positions = new Float32Array(starCount * 3);
     const colors = new Float32Array(starCount * 3);
     const sizes = new Float32Array(starCount);
 
-    const rMin = this.config.diskOuterRadius * 1.08; // Outside accretion disk
-    const rMax = this.config.boundingRadius * 0.96;
+    // Real S-star distances: S2's pericentre is 120 AU ≈ 1,400 r_s; the cluster extends to ~0.04 pc
+    const rMin = this.config.schwarzschildRadius * 1400;
+    const rMax = this.config.schwarzschildRadius * 5200;
 
     for (let i = 0; i < starCount; i++) {
       // Clustered density toward the black hole (Bahcall-Wolf cusp: n ~ r^-1.75)
@@ -402,7 +403,7 @@ export class SagittariusAStar {
           vColor = color;
           vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
           float dist = -mvPosition.z;
-          gl_PointSize = clamp(size * (1600.0 / max(dist, 10.0)), 1.2, 7.5);
+          gl_PointSize = clamp(size * (60000.0 / max(dist, 10.0)), 1.0, 4.5);
           gl_Position = projectionMatrix * mvPosition;
         }
       `,

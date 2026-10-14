@@ -323,6 +323,11 @@ export class LensPipeline {
     return [sx / aspect, sy];
   }
 
+  /** The off-screen target the scene itself is rendered into (for shader pre-compilation). */
+  public sceneTarget(): THREE.WebGLRenderTarget {
+    return this.composer.readBuffer;
+  }
+
   /** True if the output NDC point lies outside the fisheye image circle. */
   public isMasked(x: number, y: number, aspect: number): boolean {
     if (this.profile.fisheyeMask <= 0 || this.effectScale <= 0.5) return false;

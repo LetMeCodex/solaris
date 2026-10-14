@@ -4,12 +4,22 @@ import { SolarSystemScene, TelemetryData } from './rendering/SolarSystemScene';
 import { FlightHUD } from './ui/HUD/FlightHUD';
 import { ScaleMode } from './rendering/RenderSpaceTransform';
 import { LensProfileName } from './rendering/LensPipeline';
+import { Preloader } from './ui/Preloader';
 
 export const App: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<SolarSystemScene | null>(null);
 
   const [telemetry, setTelemetry] = useState<TelemetryData | null>(null);
+  // Opening sequence: progress of the asset warm-up, then the reveal
+  const [load, setLoad] = useState<{ progress: number; stage: string; done: boolean }>({ progress: 0, stage: 'Waking the observatory', done: false });
+  const [revealed, setRevealed] = useState(false);      // iris opening: HUD powers on with it
+  const [introFinished, setIntroFinished] = useState(false); // iris fully open
+  const handleReveal = useCallback(() => setRevealed(true), []);
+  const handleRevealed = useCallback(() => {
+    setRevealed(true);
+    setIntroFinished(true);
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -19,6 +29,12 @@ export const App: React.FC = () => {
       setTelemetry(data);
     });
     sceneRef.current = scene;
+    // Load every texture and compile every shader up front (no first-use stalls later)
+    scene
+      .warmUp((progress, stage) => setLoad({ progress, stage, done: false }))
+      .catch((err) => console.warn('[Solaris] warm-up incomplete:', err))
+      .finally(() => setLoad((l) => ({ ...l, progress: 1, stage: 'Ready', done: true })));
+
     // Debug / automation handle (used by visual checks)
     (window as unknown as { __solaris_scene?: SolarSystemScene }).__solaris_scene = scene;
 
@@ -125,8 +141,8 @@ export const App: React.FC = () => {
       {/* 3D WebGL Canvas Viewport */}
       <div ref={containerRef} className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
 
-      {/* Flight HUD Overlay */}
-      <FlightHUD
+      {/* Flight HUD Overlay (powers on once the opening sequence has revealed the scene) */}
+      {revealed && <FlightHUD
         telemetry={telemetry}
         getView={getView}
         onSelectPlanet={handleSelectPlanet}
@@ -147,7 +163,10 @@ export const App: React.FC = () => {
         onExplorerDaylight={handleExplorerDaylight}
         onSurface={handleSurface}
         onHorizon={handleHorizon}
-      />
+        introDone={introFinished}
+      />}
+
+      <Preloader progress={load.progress} stage={load.stage} done={load.done} onReveal={handleReveal} onFinished={handleRevealed} />
     </div>
   );
 };
