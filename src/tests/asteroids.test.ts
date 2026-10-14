@@ -44,3 +44,27 @@ describe('AsteroidBelt — Determinism & Seeded Reproducibility', () => {
     }
   });
 });
+
+describe('Asteroid belt placement', () => {
+  it('sits between the rendered orbits of Mars and Jupiter in exploration scale', async () => {
+    const { AsteroidBelt } = await import('../rendering/AsteroidBelt');
+    const { RenderSpaceTransform } = await import('../rendering/RenderSpaceTransform');
+    const { explorationDistanceFromAU } = await import('../rendering/ExplorationScale');
+    const THREE = await import('three');
+    const belt = new AsteroidBelt(new RenderSpaceTransform());
+    const m = new THREE.Matrix4();
+    const p = new THREE.Vector3();
+    let min = Infinity;
+    let max = 0;
+    for (let i = 0; i < belt.mesh.count; i++) {
+      belt.mesh.getMatrixAt(i, m);
+      p.setFromMatrixPosition(m);
+      min = Math.min(min, p.length());
+      max = Math.max(max, p.length());
+    }
+    // Mars aphelion 1.67 AU, Jupiter perihelion 4.95 AU
+    expect(min).toBeGreaterThan(explorationDistanceFromAU(1.67));
+    expect(max).toBeLessThan(explorationDistanceFromAU(4.95));
+    belt.dispose();
+  });
+});

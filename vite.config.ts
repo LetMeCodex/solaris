@@ -17,6 +17,17 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src')
     }
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split the large, rarely-changing libraries into their own long-cacheable chunks
+        manualChunks: {
+          three: ['three'],
+          react: ['react', 'react-dom'],
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     host: true

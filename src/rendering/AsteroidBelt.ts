@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { RenderSpaceTransform } from './RenderSpaceTransform';
+import { explorationDistanceFromAU } from './ExplorationScale';
+import { KeplerSolver } from '../astronomy/KeplerSolver';
 
 interface AsteroidOrbitalElement {
   semiMajorAxisAU: number;
@@ -107,8 +109,9 @@ export class AsteroidBelt {
       const periodDays = Math.pow(a, 1.5) * 365.25;
       const meanMotion = (Math.PI * 2) / periodDays;
 
-      // Visual scale variance (small pebbles to large kilometer boulders)
-      const scale = 0.45 + rng() * 0.9;
+      // Visual scale variance. Even exaggerated, belt rocks must stay far smaller than the
+      // planets (Earth's globe is 2.4 units); the base rock is 0.35 units across.
+      const scale = 0.12 + rng() * 0.22;
 
       this.elements.push({
         semiMajorAxisAU: a,
@@ -161,8 +164,12 @@ export class AsteroidBelt {
       // Mean anomaly at time t
       const M = (el.meanAnomalyEpochRad + el.meanMotionRadPerDay * elapsedDaysSinceJ2000) % (Math.PI * 2);
 
-      // Low-eccentricity approximation for True Anomaly: nu ≈ M + 2e*sin(M)
-      const nu = M + 2.0 * el.eccentricity * Math.sin(M);
+      // True anomaly via Kepler's equation (e reaches 0.22, where nu ≈ M + 2e·sin M errs by degrees)
+      const E = KeplerSolver.solveKepler(M, el.eccentricity, 1e-8, 12);
+      const nu = 2.0 * Math.atan2(
+        Math.sqrt(1.0 + el.eccentricity) * Math.sin(E / 2.0),
+        Math.sqrt(1.0 - el.eccentricity) * Math.cos(E / 2.0)
+      );
 
       // Orbital radius in AU
       const rAU = el.semiMajorAxisAU * (1.0 - el.eccentricity * el.eccentricity) / (1.0 + el.eccentricity * Math.cos(nu));
@@ -190,8 +197,8 @@ export class AsteroidBelt {
         yThree = zEcl * scale;
         zThree = -yEcl * scale;
       } else {
-        // Exploration compressed distance: 30 + sqrt(AU) * 65
-        const visualDist = 30.0 + Math.sqrt(rAU) * 65.0;
+        // Same compressed distance law as the planets, so the belt sits between Mars and Jupiter
+        const visualDist = explorationDistanceFromAU(rAU);
         const norm = Math.sqrt(xEcl * xEcl + yEcl * yEcl + zEcl * zEcl);
         xThree = (xEcl / norm) * visualDist;
         yThree = (zEcl / norm) * visualDist;
@@ -199,7 +206,7 @@ export class AsteroidBelt {
       }
 
       this.dummy.position.set(xThree, yThree, zThree);
-      const s = el.scale * (isScientific ? 0.15 : 1.0);
+      const s = el.scale * (isScientific ? 0.5 : 1.0);
       this.dummy.scale.set(s, s, s);
       // Small tumbling spin
       this.dummy.rotation.set(M * 2.0, M * 3.5, M * 1.5);

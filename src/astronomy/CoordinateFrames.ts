@@ -77,4 +77,53 @@ export class CoordinateFrames {
       threeCoord[1]
     ];
   }
+
+  /**
+   * ICRF (equatorial J2000) vector → Three.js render coordinates (via the J2000 ecliptic).
+   * Star catalogues, IAU poles and galactic directions are all given in ICRF.
+   */
+  public static icrfToThree(icrf: [number, number, number]): [number, number, number] {
+    return CoordinateFrames.eclipticToThree(CoordinateFrames.icrfToEcliptic(icrf));
+  }
+
+  /** ICRF unit vector from right ascension / declination (degrees). */
+  public static raDecToIcrf(raDeg: number, decDeg: number): [number, number, number] {
+    const ra = (raDeg * Math.PI) / 180.0;
+    const dec = (decDeg * Math.PI) / 180.0;
+    return [Math.cos(dec) * Math.cos(ra), Math.cos(dec) * Math.sin(ra), Math.sin(dec)];
+  }
+
+  // IAU 1958 galactic frame expressed in ICRS (J2000): north galactic pole and galactic centre
+  public static readonly NGP_RA_DEG = 192.85948;
+  public static readonly NGP_DEC_DEG = 27.12825;
+  public static readonly GC_RA_DEG = 266.40499;
+  public static readonly GC_DEC_DEG = -28.93617;
+
+  /**
+   * Galactic basis in Three.js render coordinates:
+   *  x → galactic centre (l = 0°, b = 0°), y → l = 90°, z → north galactic pole.
+   */
+  public static galacticBasisThree(): {
+    x: [number, number, number];
+    y: [number, number, number];
+    z: [number, number, number];
+  } {
+    const z = CoordinateFrames.icrfToThree(
+      CoordinateFrames.raDecToIcrf(CoordinateFrames.NGP_RA_DEG, CoordinateFrames.NGP_DEC_DEG)
+    );
+    const gc = CoordinateFrames.icrfToThree(
+      CoordinateFrames.raDecToIcrf(CoordinateFrames.GC_RA_DEG, CoordinateFrames.GC_DEC_DEG)
+    );
+    // Remove any residual component along z, then complete the right-handed triad
+    const d = gc[0] * z[0] + gc[1] * z[1] + gc[2] * z[2];
+    const xr: [number, number, number] = [gc[0] - d * z[0], gc[1] - d * z[1], gc[2] - d * z[2]];
+    const l = Math.hypot(...xr);
+    const x: [number, number, number] = [xr[0] / l, xr[1] / l, xr[2] / l];
+    const y: [number, number, number] = [
+      z[1] * x[2] - z[2] * x[1],
+      z[2] * x[0] - z[0] * x[2],
+      z[0] * x[1] - z[1] * x[0],
+    ];
+    return { x, y, z };
+  }
 }

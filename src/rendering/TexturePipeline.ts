@@ -350,6 +350,19 @@ export class TexturePipeline {
           map: this.loadTexture('/textures/2k_neptune.jpg', true, 'Neptune'),
         };
 
+      case 'Pluto':
+        // NASA/JHUAPL/SwRI New Horizons global colour mosaic (public domain); the south, in polar
+        // night during the 2015 flyby, is a muted fill (see ASSETS.md)
+        return {
+          map: this.loadTexture('/textures/2k_pluto.jpg', true, 'Pluto'),
+        };
+
+      case 'Charon':
+        // New Horizons Charon basemap relief (public domain) with Mordor Macula's tholin cap
+        return {
+          map: this.loadTexture('/textures/2k_charon.jpg', true, 'Charon'),
+        };
+
       default:
         // Moons, dwarf planets, asteroids: Use procedural texture generator
         return {
@@ -359,16 +372,17 @@ export class TexturePipeline {
   }
 
   /**
-   * Deep photographic ESA Gaia DR3 Milky Way panorama
+   * ESA/Gaia/DPAC all-sky map (Gaia EDR3), equirectangular in galactic coordinates
    */
   public getMilkyWayTexture(): THREE.Texture {
-    return this.loadTexture('/textures/gaia_sky.jpg', true);
+    return this.loadTexture('/textures/gaia_sky.webp', true);
   }
 
   /**
-   * High-definition NASA/ESO master face-on Milky Way galactic disk texture
+   * Face-on Milky Way disk artwork (NASA/JPL-Caltech/ESO/R. Hurt), with alpha.
+   * Only requested once the galaxy view is reached (see MilkyWayGalaxy).
    */
   public getMilkyWayDiskTexture(): THREE.Texture {
-    return this.loadTexture('/textures/milky_way_disk.png', true);
+    return this.loadTexture('/textures/milky_way_disk.webp', true);
   }
 }

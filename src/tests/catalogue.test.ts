@@ -68,7 +68,8 @@ describe('Phase 3 Celestial Catalogue & Hierarchy', () => {
     const triton = CatalogueManager.getBody('Triton');
     expect(triton).toBeDefined();
     expect(triton?.orbit.inclinationDeg).toBeGreaterThan(90.0);
-    expect(triton?.orbit.inclinationDeg).toBeCloseTo(156.885, 1);
+    // J2000-ecliptic inclination from JPL Horizons (156.9° is the value relative to Neptune's equator)
+    expect(triton?.orbit.inclinationDeg).toBeCloseTo(129.13, 1);
   });
 
   it('verifies parent-relative moon render placement in exploration and scientific modes', () => {

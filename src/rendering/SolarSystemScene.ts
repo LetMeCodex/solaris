@@ -9,6 +9,17 @@ import { RenderSpaceTransform, ScaleMode } from './RenderSpaceTransform';
 import { OrbitalTrails } from './OrbitalTrails';
 import { Starfield } from './Starfield';
 import { AsteroidBelt } from './AsteroidBelt';
+import { LensPipeline, LensProfileName } from './LensPipeline';
+import { HorizonView } from './HorizonView';
+import { PlanetaryExplorer, ExplorerStatus } from '../explorer/PlanetaryExplorer';
+import { SurfaceObserver, SurfaceStatus } from '../explorer/SurfaceObserver';
+import { ScreenLabels } from '../explorer/ScreenLabels';
+import { SkyBodySource } from '../explorer/SkyBodies';
+import { TimeOfDay } from '../explorer/SkyAstronomy';
+import { Landmark } from '../explorer/Landmarks';
+import { localToLatLon } from '../explorer/TileMath';
+import { CoordinateFrames } from '../astronomy/CoordinateFrames';
+import { BodyFrame, getBodyFrame, getSynchronousFrame } from '../astronomy/BodyOrientation';
 
 export interface TelemetryData {
   speedKmS: number;
@@ -27,7 +38,52 @@ export interface TelemetryData {
   observerDomain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic';
   travelSpeed: number;
   cameraDistance: number;
+  lensProfile: LensProfileName;
+  explorer: ExplorerStatus;
+  surface: SurfaceStatus | null;
+  /** Standing on the hypothetical ocean world beside Sgr A*. */
+  horizonView: boolean;
+  /** One-way light time Earth → selected body, seconds (null for Earth itself). */
+  lightFromEarthSec: number | null;
+  route: FlightRoute | null;
 }
+
+export interface HudViewState {
+  /** Camera orientation in the ecliptic render frame (+Y = ecliptic north). */
+  quaternion: THREE.Quaternion;
+  /** Camera velocity, render units per second. */
+  velocity: THREE.Vector3;
+  /** Vector from the camera to the Sun. */
+  toSun: THREE.Vector3;
+  /** Focused body on screen: centre (CSS px) and apparent radius (CSS px). */
+  target: { x: number; y: number; r: number; visible: boolean };
+  transit: { progress: number; target: string } | null;
+  /** The last flight that was ordered (kept after arrival). */
+  route: FlightRoute | null;
+  /** Where the observer is, heliocentric ecliptic km (follows the route during a flight). */
+  shipKm: [number, number, number];
+  /** Look direction projected onto the ecliptic plane (x, y), not normalised. */
+  heading: [number, number];
+  /** Planets and dwarf planets: heliocentric ecliptic km and orbit size in AU. */
+  bodies: Array<{ name: string; x: number; y: number; aAU: number; color: string }>;
+}
+
+export interface FlightRoute {
+  id: number;
+  from: string;
+  to: string;
+  distanceKm: number;
+  fromKm: [number, number, number];
+  toKm: [number, number, number];
+}
+
+/** Sgr A* in heliocentric ecliptic km: 8.277 kpc towards ecliptic longitude 266.8°, latitude −5.6°. */
+const SGR_A_ECLIPTIC_KM: [number, number, number] = (() => {
+  const d = 2.553e17;
+  const lon = (266.84 * Math.PI) / 180;
+  const lat = (-5.61 * Math.PI) / 180;
+  return [d * Math.cos(lat) * Math.cos(lon), d * Math.cos(lat) * Math.sin(lon), d * Math.sin(lat)];
+})();
 
 export class SolarSystemScene {
   private container: HTMLElement;
@@ -44,6 +100,15 @@ export class SolarSystemScene {
   private orbitLinesGroup: THREE.Group = new THREE.Group();
   private moonOrbitLines: Map<string, THREE.Line> = new Map();
   private latestPhysicalStates: Map<string, StateVector> = new Map();
+  /** A surface view requested for a body that is not focused yet (entered once the explorer has it). */
+  private pendingSkyView: { body: string; lat: number; lon: number; place: string } | null = null;
+  private orbitLinesEpochDays: number = 0;
+
+  // Scratch objects reused every frame
+  private tmpMatrix = new THREE.Matrix4();
+  private tmpX = new THREE.Vector3();
+  private tmpY = new THREE.Vector3();
+  private tmpZ = new THREE.Vector3();
 
   // GPU Background & Asteroid Belt
   public starfield: Starfield;
@@ -56,10 +121,20 @@ export class SolarSystemScene {
   private animationFrameId: number | null = null;
   private lastFrameTime: number = performance.now();
 
+  // Observation-camera optics (bloom, lens, grain, motion blur)
+  public lens: LensPipeline;
+
+  // Google Maps–style surface imagery streaming and landmark navigation
+  public explorer: PlanetaryExplorer;
+  public surface: SurfaceObserver;
+  private labels: ScreenLabels;
+  private surfaceSaved: Array<[THREE.Object3D, boolean]> = [];
+
   // Selection
   public selectedBody: CelestialBodyDefinition;
   private onTelemetryUpdate?: (telemetry: TelemetryData) => void;
-  private telemetryThrottleCounter: number = 0;
+  private lastTelemetryTime: number = 0;
+  private static readonly TELEMETRY_INTERVAL_MS = 100;
 
   constructor(container: HTMLElement, onTelemetryUpdate?: (telemetry: TelemetryData) => void) {
     this.container = container;
@@ -95,6 +170,7 @@ export class SolarSystemScene {
 
     // 3. Camera Rig
     this.cameraRig = new CameraRig(container);
+    this.lens = new LensPipeline(this.renderer, this.scene, this.cameraRig.camera);
 
     // 4. Lighting
     this.setupLighting();
@@ -111,10 +187,66 @@ export class SolarSystemScene {
     this.orbitLinesGroup.visible = false; // Restrained cinematic aesthetic by default
     this.scene.add(this.orbitLinesGroup);
     this.setupBodies();
+    this.explorer = new PlanetaryExplorer(this.cameraRig, (name) => {
+      const b = this.planetBundles.get(name);
+      if (!b) return null;
+      return {
+        name,
+        bodyGroup: b.bodyGroup,
+        surfaceMesh: b.surfaceMesh,
+        cloudMesh: b.cloudMesh,
+        baseMap: (() => {
+          const u = (b.surfaceMesh.material as THREE.ShaderMaterial).uniforms;
+          return (u?.map?.value ?? u?.dayMap?.value ?? null) as THREE.Texture | null;
+        })(),
+        visualRadius: b.visualRadius,
+        radiusKm: b.definition.physical.meanRadiusKm,
+      };
+    });
+    this.explorer.setMaxAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
+    this.labels = new ScreenLabels(container, (id) => {
+      if (id.startsWith('sky:')) this.surface.lookAt(id.slice(4));
+      else this.flyToLandmark(id);
+    });
+    this.surface = new SurfaceObserver({
+      camera: this.cameraRig.camera,
+      dom: container,
+      scene: this.scene,
+      getBody: (name) => {
+        const b = this.planetBundles.get(name);
+        if (!b) return null;
+        return {
+          name,
+          bodyGroup: b.bodyGroup,
+          surfaceMesh: b.surfaceMesh,
+          visualRadius: b.visualRadius,
+          radiusKm: b.definition.physical.meanRadiusKm,
+        };
+      },
+      getSources: () => this.skySources(),
+      getPositionKm: (name) => {
+        if (name === 'Sun') return [0, 0, 0];
+        const st = this.latestPhysicalStates.get(name);
+        return st ? (st.positionKm as [number, number, number]) : null;
+      },
+      getDays: () => this.clock.getJulianDateTDB() - SimulationClock.J2000_JD,
+      setDays: (d) => {
+        // TDB → UTC (TT − UTC = 69.184 s) → Unix ms
+        const jdUtc = d + SimulationClock.J2000_JD - 69.184 / 86400;
+        this.clock.setUtcMs((jdUtc - 2440587.5) * 86400000);
+      },
+      setSceneMode: (on, body, skyRadius) => this.setSurfaceSceneMode(on, body, skyRadius),
+      setGround: (light, haze) => {
+        this.explorer.groundLight = light;
+        this.explorer.groundHaze = haze;
+      },
+    });
+    this.orbitLinesEpochDays = this.clock.getJulianDateTDB() - SimulationClock.J2000_JD;
     this.rebuildOrbitLines();
 
-    // Initial propagation & matrix update so meshes are placed before initial focus
-    this.propagateAll(0);
+    // Initial propagation at the clock's current time so the opening camera vantage is computed
+    // against where the bodies actually are (not where they were at J2000)
+    this.propagateAll(this.clock.getJulianDateTDB() - SimulationClock.J2000_JD);
     this.scene.updateMatrixWorld(true);
     this.selectBody('Mercury', 1800);
 
@@ -163,7 +295,7 @@ export class SolarSystemScene {
     // 1. Heliocentric orbit lines (Planets, Dwarf Planets, Asteroids)
     for (const def of bodies) {
       if (def.category !== 'moon' && def.orderFromSun > 0) {
-        const line = OrbitalTrails.createOrbitLine(def, this.transform);
+        const line = OrbitalTrails.createOrbitLine(def, this.transform, this.orbitLinesEpochDays);
         if (line) {
           this.orbitLinesGroup.add(line);
         }
@@ -175,7 +307,7 @@ export class SolarSystemScene {
       if (def.category === 'moon' && def.parentId) {
         const parentDef = CatalogueManager.getParent(def);
         if (parentDef) {
-          const line = OrbitalTrails.createMoonOrbitLine(def, parentDef, this.transform);
+          const line = OrbitalTrails.createMoonOrbitLine(def, parentDef, this.transform, this.orbitLinesEpochDays);
           if (line) {
             this.orbitLinesGroup.add(line);
             this.moonOrbitLines.set(def.name, line);
@@ -188,6 +320,7 @@ export class SolarSystemScene {
   public setScaleMode(mode: ScaleMode): void {
     if (this.transform.mode === mode) return;
     this.transform.mode = mode;
+    this.cameraRig.distanceModel = mode;
 
     // Update planetary mesh visual radii according to scale mode
     this.planetBundles.forEach((bundle) => {
@@ -219,6 +352,200 @@ export class SolarSystemScene {
     });
 
     this.rebuildOrbitLines();
+  }
+
+  // --- Surface view ("stand here and look up") ---
+
+  private skySourceCache = new Map<string, SkyBodySource>();
+
+  /** Sun, planets and moons with their true heliocentric positions for the surface sky. */
+  private skySources(): SkyBodySource[] {
+    const out: SkyBodySource[] = [];
+    for (const def of CatalogueManager.getAllBodies()) {
+      const isSun = def.orderFromSun === 0 || def.category === 'star';
+      const st = this.latestPhysicalStates.get(def.name);
+      if (!isSun && !st) continue;
+      const bundle = this.planetBundles.get(def.name);
+      let src = this.skySourceCache.get(def.name);
+      if (!src) {
+        const u = bundle ? (bundle.surfaceMesh.material as THREE.ShaderMaterial).uniforms : undefined;
+        const ringU = bundle?.ringMesh ? (bundle.ringMesh.material as THREE.ShaderMaterial).uniforms : undefined;
+        src = {
+          name: def.name,
+          radiusKm: def.physical.meanRadiusKm,
+          positionKm: [0, 0, 0],
+          map: (u?.map?.value ?? u?.dayMap?.value ?? null) as THREE.Texture | null,
+          ringMap: (ringU?.ringMap?.value ?? null) as THREE.Texture | null,
+          orientation: new THREE.Quaternion(),
+          colorHex: def.physical.colorHex,
+        };
+        this.skySourceCache.set(def.name, src);
+      }
+      src.positionKm = isSun ? [0, 0, 0] : (st!.positionKm as [number, number, number]);
+      if (bundle && src.orientation) bundle.surfaceMesh.getWorldQuaternion(src.orientation);
+      out.push(src);
+    }
+    return out;
+  }
+
+  /** Hide everything that is not part of a surface sky (other globes are drawn by SkyBodies). */
+  private setSurfaceSceneMode(on: boolean, body: string, skyRadius: number): void {
+    if (on) {
+      this.surfaceSaved = [];
+      const hide = (o: THREE.Object3D | undefined) => {
+        if (!o) return;
+        this.surfaceSaved.push([o, o.visible]);
+        o.visible = false;
+      };
+      for (const [name, b] of this.planetBundles) {
+        if (name === body) {
+          hide(b.atmosphereMesh);
+          hide(b.cloudMesh);
+        } else {
+          hide(b.bodyGroup);
+        }
+      }
+      hide(this.orbitLinesGroup);
+      for (const l of this.moonOrbitLines.values()) hide(l);
+      hide(this.asteroidBelt.mesh);
+      this.starfield.setGroundMode(true, skyRadius);
+    } else {
+      for (const [o, v] of this.surfaceSaved) o.visible = v;
+      this.surfaceSaved = [];
+      this.starfield.setGroundMode(false);
+    }
+  }
+
+  /** Stand on the focused body (at the landmark if one is active, else below the camera). */
+  public enterSurface(lat?: number, lon?: number, place?: string): boolean {
+    const st = this.explorer.getStatus();
+    const body = st.body;
+    if (!body) return false;
+    const lm = st.landmark && st.landmark.body === body ? st.landmark : null;
+    const la = lat ?? lm?.lat ?? st.subCamera?.lat;
+    const lo = lon ?? lm?.lon ?? st.subCamera?.lon;
+    if (la === undefined || lo === undefined) return false;
+    this.cameraRig.suspended = true;
+    this.lens.setEffectScale(0.3);
+    // A daylit sky is near white in HDR terms; only the Sun itself should bloom
+    this.lens.setBloomThreshold(2.5);
+    return this.surface.enter(body, la, lo, place ?? lm?.name ?? null);
+  }
+
+  /**
+   * Stand on any solid body. With `facing`, the standing point is chosen so that body hangs about
+   * 40° above the horizon, on the side the Sun lights (e.g. Saturn from Enceladus, Earth from the
+   * Moon); it is computed from the real positions and the body's IAU orientation at this moment.
+   */
+  public enterSkyView(body: string, facing?: string): boolean {
+    const b = this.planetBundles.get(body);
+    if (!b || body === 'Sun') return false;
+    if (this.surface.isActive()) this.exitSurface(false);
+    const spot = this.standingPointFacing(body, facing) ?? { lat: 0, lon: 0 };
+    this.selectedBody = b.definition;
+    this.explorer.clearLandmark();
+    this.cameraRig.surfaceMinAltitude = null;
+    this.cameraRig.focusCinematic(b.bodyGroup, b.visualRadius, body, 150, undefined, b.definition.physical.meanRadiusKm);
+    this.pendingSkyView = { body, lat: spot.lat, lon: spot.lon, place: facing ? `${facing} in the sky` : body };
+    return true;
+  }
+
+  /** Body-fixed point from which `facing` stands ~40° above the horizon, towards the Sun's side. */
+  private standingPointFacing(body: string, facing?: string): { lat: number; lon: number } | null {
+    const b = this.planetBundles.get(body);
+    const me = this.latestPhysicalStates.get(body);
+    if (!b || !me) return null;
+    const toLocal = b.surfaceMesh.getWorldQuaternion(new THREE.Quaternion()).invert();
+    const dirTo = (km: number[]): THREE.Vector3 => {
+      const rel: [number, number, number] = [km[0] - me.positionKm[0], km[1] - me.positionKm[1], km[2] - me.positionKm[2]];
+      const t = CoordinateFrames.eclipticToThree(rel);
+      return new THREE.Vector3(t[0], t[1], t[2]).normalize().applyQuaternion(toLocal);
+    };
+    const sun = dirTo([0, 0, 0]);
+    const target = facing ? this.latestPhysicalStates.get(facing) : null;
+    // Without a target, stand where the Sun is ~40° up (morning light, long shadows, sky colour)
+    const t = target ? dirTo(target.positionKm as number[]) : sun.clone();
+    let u = target
+      ? sun.clone().sub(t.clone().multiplyScalar(sun.dot(t)))
+      : new THREE.Vector3(0, 1, 0).cross(t).negate();
+    if (u.lengthSq() < 1e-6) u = new THREE.Vector3(0, 1, 0).cross(t);
+    u.normalize();
+    const away = THREE.MathUtils.degToRad(50); // target at ~40° altitude
+    const p = t.multiplyScalar(Math.cos(away)).add(u.multiplyScalar(Math.sin(away)));
+    const ll = localToLatLon(p.x, p.y, p.z);
+    return { lat: ll.lat, lon: ll.lon };
+  }
+
+  /** Leave the surface and rise back above it. */
+  public exitSurface(fly: boolean = true): void {
+    if (!this.surface.isActive()) return;
+    const loc = this.surface.getLocation();
+    this.surface.exit();
+    this.lens.setBloomThreshold(null);
+    this.cameraRig.suspended = false;
+    this.cameraRig.syncFromCamera();
+    if (fly && loc) {
+      const b = this.planetBundles.get(loc.body);
+      if (b) {
+        const dir = this.explorer.surfaceDirection(
+          { name: loc.body, bodyGroup: b.bodyGroup, surfaceMesh: b.surfaceMesh, visualRadius: b.visualRadius, radiusKm: b.definition.physical.meanRadiusKm },
+          loc.lat,
+          loc.lon
+        );
+        this.cameraRig.focusSurfacePoint(b.bodyGroup, b.visualRadius, dir, b.visualRadius * 0.12, 1800);
+      }
+    }
+  }
+
+  public setSurfaceMagnification(m: number): void {
+    this.surface.setMagnification(m);
+  }
+
+  public setSurfaceAtmosphere(on: boolean): void {
+    this.surface.setAtmosphere(on);
+  }
+
+  public setSurfaceTimeOfDay(what: TimeOfDay): boolean {
+    return this.surface.setTimeOfDay(what);
+  }
+
+  public surfaceLookAt(name: string): void {
+    this.surface.lookAt(name);
+  }
+
+  public resetSurfaceZoom(): void {
+    this.surface.resetZoom();
+  }
+
+  /** Fly to a curated landmark (selects its body). */
+  public flyToLandmark(id: string): Landmark | null {
+    if (this.surface.isActive()) this.exitSurface(false);
+    const lm = this.explorer.flyToLandmark(id);
+    if (lm) {
+      const def = this.planetBundles.get(lm.body)?.definition;
+      if (def) this.selectedBody = def;
+    }
+    return lm;
+  }
+
+  public setExplorerDaylight(on: boolean): void {
+    this.explorer.setDaylight(on);
+  }
+
+  public getExplorerStatus(): ExplorerStatus {
+    return this.explorer.getStatus();
+  }
+
+  public setLensProfile(name: LensProfileName): void {
+    this.lens.setProfile(name);
+  }
+
+  public cycleLensProfile(): LensProfileName {
+    return this.lens.cycleProfile();
+  }
+
+  public resetLook(): void {
+    this.cameraRig.resetLook();
   }
 
   public toggleConstellations(): boolean {
@@ -277,6 +604,7 @@ export class SolarSystemScene {
   private onCanvasClick = (e: MouseEvent): void => {
     // Only handle clicks directly on the WebGL canvas
     if (e.target !== this.renderer.domElement) return;
+    if (this.surface.isActive() || this.horizon?.active) return;
 
     // Ignore drags
     const dist = Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y);
@@ -285,6 +613,12 @@ export class SolarSystemScene {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+    // Undo the lens warp so picking hits what is drawn under the cursor
+    const aspect = rect.width / Math.max(1, rect.height);
+    if (this.lens.isMasked(this.mouse.x, this.mouse.y, aspect)) return;
+    const [sx, sy] = this.lens.outputToSceneNdc(this.mouse.x, this.mouse.y, aspect);
+    this.mouse.set(sx, sy);
 
     // 1. Direct screen-space proximity click for Galactic Center / Sagittarius A*
     if (this.starfield?.externalGalaxy?.sagittariusAStar) {
@@ -342,6 +676,8 @@ export class SolarSystemScene {
 
       for (const bundle of this.planetBundles.values()) {
         if (bundle.surfaceMesh === hit) {
+          // Clicking the globe you are exploring must not yank the camera back to orbit
+          if (bundle.definition.name === this.selectedBody.name && this.cameraRig.altitudeInRadii() < 4) break;
           this.selectBody(bundle.definition.name);
           break;
         }
@@ -356,7 +692,36 @@ export class SolarSystemScene {
     window.addEventListener('resize', this.onResize);
   }
 
+  /** Heliocentric ecliptic position of a body by name, km. */
+  public bodyPositionKm(name: string): [number, number, number] {
+    if (name === 'Sagittarius A*') return SGR_A_ECLIPTIC_KM;
+    return this.latestPhysicalStates.get(name)?.positionKm ?? [0, 0, 0];
+  }
+
+  private recordRoute(to: string): void {
+    const from = this.selectedBody?.name ?? 'Sun';
+    if (from === to && this.route) return;
+    const fromKm = [...this.bodyPositionKm(from)] as [number, number, number];
+    const toKm = [...this.bodyPositionKm(to)] as [number, number, number];
+    this.route = {
+      id: (this.route?.id ?? 0) + 1,
+      from,
+      to,
+      fromKm,
+      toKm,
+      distanceKm: Math.hypot(toKm[0] - fromKm[0], toKm[1] - fromKm[1], toKm[2] - fromKm[2]),
+    };
+  }
+
   public selectBody(name: string, durationMs: number = 1800): void {
+    if (this.surface?.isActive()) this.exitSurface(false);
+    this.exitHorizonView(false);
+    this.recordRoute(name === 'Sgr A*' || name === 'sagittarius_a_star' ? 'Sagittarius A*' : name);
+    // The real distance sets the length of the journey: ~2.4 s to the Moon, ~5 s to Mars,
+    // ~7 s to Neptune, 9 s to the galactic centre
+    if (this.route && durationMs >= 1000) {
+      durationMs = Math.max(durationMs, Math.min(9000, 2200 + 1400 * Math.log10(1 + this.route.distanceKm / 1e6)));
+    }
     if (name === 'Sagittarius A*' || name === 'Sgr A*' || name === 'sagittarius_a_star') {
       const sgrDef = CatalogueManager.getSagittariusAStar();
       if (sgrDef) {
@@ -371,12 +736,27 @@ export class SolarSystemScene {
     if (!bundle) return;
 
     this.selectedBody = bundle.definition;
-    this.cameraRig.focusCinematic(bundle.bodyGroup, bundle.visualRadius, bundle.definition.name, durationMs);
+    this.explorer.clearLandmark();
+    // The previous body's zoom floor must not clamp the new approach; the explorer sets the new one
+    this.cameraRig.surfaceMinAltitude = null;
+    this.cameraRig.focusCinematic(
+      bundle.bodyGroup,
+      bundle.visualRadius,
+      bundle.definition.name,
+      durationMs,
+      undefined,
+      bundle.definition.physical.meanRadiusKm
+    );
   }
 
   public resetView(): void {
+    if (this.surface?.isActive()) this.exitSurface(false);
+    this.exitHorizonView(false);
+    this.recordRoute('Sun');
     this.selectedBody = CatalogueManager.getBody('Sun') || CatalogueManager.getAllBodies()[0];
+    this.explorer.clearLandmark();
     this.cameraRig.resetToOverview();
+    this.cameraRig.focusedPhysicalRadiusKm = this.selectedBody.physical.meanRadiusKm;
   }
 
   private onResize = (): void => {
@@ -385,11 +765,37 @@ export class SolarSystemScene {
     const h = this.container.clientHeight || window.innerHeight;
     this.renderer.setSize(w, h);
     this.cameraRig.handleResize(w, h);
+    this.lens.setSize(w, h);
   };
+
+  /** Orient a body group to a body-fixed frame and spin its surface layers by W. */
+  private applyBodyFrame(bundle: PlanetMeshBundle, frame: BodyFrame, cloudDriftRad: number = 0): void {
+    this.tmpMatrix.makeBasis(
+      this.tmpX.set(frame.xAxis[0], frame.xAxis[1], frame.xAxis[2]),
+      this.tmpY.set(frame.yAxis[0], frame.yAxis[1], frame.yAxis[2]),
+      this.tmpZ.set(frame.zAxis[0], frame.zAxis[1], frame.zAxis[2])
+    );
+    bundle.bodyGroup.quaternion.setFromRotationMatrix(this.tmpMatrix);
+    bundle.surfaceMesh.rotation.y = frame.spinRad;
+    if (bundle.nightMesh) bundle.nightMesh.rotation.y = frame.spinRad;
+    if (bundle.cloudMesh) bundle.cloudMesh.rotation.y = frame.spinRad + cloudDriftRad;
+  }
+
+  /**
+   * Fallback orientation for bodies without a published pole: tilt the spin axis away from
+   * ecliptic north by the catalogue obliquity and spin with the catalogue rotation period.
+   */
+  private applyFallbackSpin(bundle: PlanetMeshBundle, days: number): void {
+    const def = bundle.definition;
+    bundle.bodyGroup.rotation.set(0, 0, THREE.MathUtils.degToRad(def.physical.axialTiltDeg || 0));
+    const periodHours = def.physical.rotationPeriodHours || def.orbit.orbitalPeriodDays * 24.0 || 24.0;
+    bundle.surfaceMesh.rotation.y = ((days * 24.0) / periodHours) * Math.PI * 2;
+  }
 
   public propagateAll(elapsedDaysSinceJ2000: number): void {
     const bodies = CatalogueManager.getAllBodies();
     const parentPositionsRender: Map<string, [number, number, number]> = new Map();
+    const d = elapsedDaysSinceJ2000;
 
     // Heliocentric bodies (Sun, Planets, Dwarf Planets, Asteroids)
     for (const body of bodies) {
@@ -402,40 +808,33 @@ export class SolarSystemScene {
         // Sun sits at center (0, 0, 0)
         bundle.bodyGroup.position.set(0, 0, 0);
         parentPositionsRender.set(body.id, [0, 0, 0]);
-        const spinAngle = (elapsedDaysSinceJ2000 * 24.0 / 609.12) * Math.PI * 2;
-        bundle.surfaceMesh.rotation.y = spinAngle;
-        continue;
-      }
+      } else {
+        // Keplerian physical state propagation
+        const state = KeplerSolver.propagate(body.orbit, d);
+        this.latestPhysicalStates.set(body.name, state);
 
-      // High-precision Keplerian physical state propagation
-      const state = KeplerSolver.propagate(body.orbit, elapsedDaysSinceJ2000);
-      this.latestPhysicalStates.set(body.name, state);
+        // Transform physical position (km) to active render scale position
+        const renderPos = this.transform.toRenderPosition(state.positionKm, body);
+        bundle.bodyGroup.position.set(renderPos[0], renderPos[1], renderPos[2]);
+        parentPositionsRender.set(body.id, renderPos);
 
-      // Transform physical position (km) to active render scale position
-      const renderPos = this.transform.toRenderPosition(state.positionKm, body);
-      bundle.bodyGroup.position.set(renderPos[0], renderPos[1], renderPos[2]);
-      parentPositionsRender.set(body.id, renderPos);
-
-      // Diurnal sidereal rotation
-      const periodHours = body.physical.rotationPeriodHours || 24.0;
-      const spinAngle = (elapsedDaysSinceJ2000 * 24.0 / periodHours) * Math.PI * 2;
-      bundle.surfaceMesh.rotation.y = spinAngle;
-      if (bundle.nightMesh) {
-        bundle.nightMesh.rotation.y = spinAngle;
-      }
-
-      // Independent Earth cloud drift
-      if (bundle.cloudMesh) {
-        bundle.cloudMesh.rotation.y = spinAngle * 1.05;
-      }
-
-      // Update Saturn planetary shadow on rings
-      if (body.name === 'Saturn' && bundle.ringMesh) {
-        const ringMat = bundle.ringMesh.material as THREE.ShaderMaterial;
-        if (ringMat.uniforms && ringMat.uniforms.saturnCenter) {
-          ringMat.uniforms.saturnCenter.value.set(renderPos[0], renderPos[1], renderPos[2]);
-          ringMat.uniforms.saturnRadius.value = bundle.visualRadius;
+        // Update Saturn planetary shadow on rings
+        if (body.name === 'Saturn' && bundle.ringMesh) {
+          const ringMat = bundle.ringMesh.material as THREE.ShaderMaterial;
+          if (ringMat.uniforms && ringMat.uniforms.saturnCenter) {
+            ringMat.uniforms.saturnCenter.value.set(renderPos[0], renderPos[1], renderPos[2]);
+            ringMat.uniforms.saturnRadius.value = bundle.visualRadius;
+          }
         }
+      }
+
+      // IAU pole + prime meridian orientation (falls back to obliquity + period)
+      const frame = getBodyFrame(body.name, d);
+      if (frame) {
+        // Earth's clouds drift slowly relative to the surface (~1 revolution per 40 days)
+        this.applyBodyFrame(bundle, frame, body.name === 'Earth' ? (d / 40.0) * Math.PI * 2 : 0);
+      } else {
+        this.applyFallbackSpin(bundle, d);
       }
     }
 
@@ -458,7 +857,7 @@ export class SolarSystemScene {
         (moon.physical.massKg ? moon.physical.massKg * 6.6743e-20 : 0);
       const mu = (parentGm !== undefined) ? (parentGm + moonGm) : KeplerSolver.GM_SUN;
 
-      const moonRelState = KeplerSolver.propagate(moon.orbit, elapsedDaysSinceJ2000, mu);
+      const moonRelState = KeplerSolver.propagate(moon.orbit, d, mu);
 
       const parentPosKm = parentState?.positionKm || [0, 0, 0];
       const parentVelKmS = parentState?.velocityKmPerSec || [0, 0, 0];
@@ -497,13 +896,23 @@ export class SolarSystemScene {
         moonOrbitLine.position.set(parentRenderPos[0], parentRenderPos[1], parentRenderPos[2]);
       }
 
-      const periodHours = moon.physical.rotationPeriodHours || moon.orbit.orbitalPeriodDays * 24.0;
-      const spinAngle = (elapsedDaysSinceJ2000 * 24.0 / periodHours) * Math.PI * 2;
-      moonBundle.surfaceMesh.rotation.y = spinAngle;
+      // Tidally locked satellites keep longitude 0 facing the parent; Hyperion tumbles chaotically.
+      if (moon.name === 'Hyperion') {
+        this.applyFallbackSpin(moonBundle, d);
+      } else {
+        this.applyBodyFrame(moonBundle, getSynchronousFrame(moonRelState.positionKm, moonRelState.velocityKmPerSec));
+      }
     }
 
     // Instanced Asteroid Belt
-    this.asteroidBelt.updatePositions(elapsedDaysSinceJ2000);
+    this.asteroidBelt.updatePositions(d);
+
+    // Osculating orbits drift slowly (secular rates, precession): refresh the guide lines when the
+    // simulated date has moved far enough for the change to be visible.
+    if (Math.abs(d - this.orbitLinesEpochDays) > 365.0) {
+      this.orbitLinesEpochDays = d;
+      this.rebuildOrbitLines();
+    }
   }
 
   private animate = (): void => {
@@ -515,8 +924,8 @@ export class SolarSystemScene {
     this.lastFrameTime = now;
     this.clock.update(now);
 
-    const currentJd = this.clock.getJulianDate();
-    const elapsedDaysSinceJ2000 = currentJd - SimulationClock.J2000_JD;
+    // Ephemerides take TDB; the clock keeps UTC
+    const elapsedDaysSinceJ2000 = this.clock.getJulianDateTDB() - SimulationClock.J2000_JD;
 
     this.propagateAll(elapsedDaysSinceJ2000);
 
@@ -549,6 +958,30 @@ export class SolarSystemScene {
     }
 
     this.cameraRig.update();
+    this.surface.update();
+    if (this.horizon?.active) this.horizon.update(this.cameraRig.camera, now * 0.001);
+
+    const isBlackHole = this.selectedBody.name === 'Sagittarius A*';
+    const focusedName = this.cameraRig.focusedObject && !isBlackHole ? this.selectedBody.name : null;
+    this.explorer.update(focusedName, this.cameraRig.camera, this.renderer.domElement.height);
+    if (this.pendingSkyView && this.explorer.getStatus().body === this.pendingSkyView.body) {
+      const p = this.pendingSkyView;
+      this.pendingSkyView = null;
+      this.enterSurface(p.lat, p.lon, p.place);
+    }
+
+    // Over a map the lens character steps aside (clean, web-map look); it returns in space
+    if (!this.surface.isActive()) {
+      const alt = this.cameraRig.altitudeInRadii();
+      this.lens.setEffectScale(isFinite(alt) ? THREE.MathUtils.smoothstep(alt, 0.3, 1.5) : 1);
+    }
+    this.labels.update(
+      this.surface.isActive() ? this.surface.labelItems() : this.explorer.featureLabels(this.cameraRig.camera),
+      this.cameraRig.camera,
+      this.container.clientWidth,
+      this.container.clientHeight
+    );
+
     this.starfield.update(
       this.cameraRig.camera.position,
       deltaSec,
@@ -557,13 +990,109 @@ export class SolarSystemScene {
       this.cameraRig.camera
     );
 
-    this.renderer.render(this.scene, this.cameraRig.camera);
+    this.lens.render(now * 0.001);
 
-    this.telemetryThrottleCounter++;
-    if (this.telemetryThrottleCounter % 3 === 0 && this.onTelemetryUpdate) {
+    // React only needs ~10 updates/s for the HUD readouts; re-rendering the HUD every few frames
+    // at 120–144 Hz is wasted work
+    if (this.onTelemetryUpdate && now - this.lastTelemetryTime >= SolarSystemScene.TELEMETRY_INTERVAL_MS) {
+      this.lastTelemetryTime = now;
       this.dispatchTelemetry();
     }
   };
+
+  private viewState: HudViewState = {
+    quaternion: new THREE.Quaternion(),
+    velocity: new THREE.Vector3(),
+    toSun: new THREE.Vector3(),
+    target: { x: 0, y: 0, r: 0, visible: false },
+    transit: null,
+    route: null,
+    shipKm: [0, 0, 0],
+    heading: [1, 0],
+    bodies: [],
+  };
+  private route: FlightRoute | null = null;
+  private horizon: HorizonView | null = null;
+
+  /** Stand on a world beside Sgr A* and watch it over the horizon (only from the black hole). */
+  public enterHorizonView(): boolean {
+    if (this.selectedBody.name !== 'Sagittarius A*' || this.cameraRig.getTransit()) return false;
+    if (this.surface.isActive()) this.exitSurface(false);
+    const bh = this.starfield.externalGalaxy.sagittariusAStar;
+    this.horizon ??= new HorizonView(bh);
+    this.cameraRig.suspended = true;
+    this.horizon.enter(this.cameraRig.camera, this.renderer.domElement);
+    return true;
+  }
+
+  public exitHorizonView(fly: boolean = true): void {
+    if (!this.horizon?.active) return;
+    this.horizon.exit();
+    this.cameraRig.suspended = false;
+    this.cameraRig.syncFromCamera();
+    if (fly) this.cameraRig.focusCinematic(this.starfield.externalGalaxy.sagittariusAStar.group, 180.0, 'Sagittarius A*', 2600);
+  }
+  private tmpProject = new THREE.Vector3();
+  private tmpLook = new THREE.Vector3();
+
+  /**
+   * Per-frame camera state for HUD instruments that animate at display rate (attitude scope,
+   * target lock, transit bar). Returns the same object every call; read it, don't keep it.
+   */
+  public getViewState(): HudViewState {
+    const cam = this.cameraRig.camera;
+    const v = this.viewState;
+    v.quaternion.copy(cam.quaternion);
+    v.velocity.copy(this.cameraRig.getVelocity());
+    v.toSun.copy(cam.position).negate();
+    v.transit = this.cameraRig.getTransit();
+    v.route = this.route;
+
+    // Where the observer is in the real system: on the route during a flight, else at the subject
+    const here = this.bodyPositionKm(this.selectedBody.name);
+    if (v.transit && this.route && this.route.to === this.selectedBody.name) {
+      const p = v.transit.progress;
+      const e = p * p * p * (p * (p * 6 - 15) + 10);
+      for (let i = 0; i < 3; i++) v.shipKm[i] = this.route.fromKm[i] + (here[i] - this.route.fromKm[i]) * e;
+    } else {
+      v.shipKm[0] = here[0];
+      v.shipKm[1] = here[1];
+      v.shipKm[2] = here[2];
+    }
+    cam.getWorldDirection(this.tmpLook);
+    v.heading[0] = this.tmpLook.x;
+    v.heading[1] = -this.tmpLook.z;
+
+    if (v.bodies.length === 0) {
+      for (const b of CatalogueManager.getAllBodies()) {
+        if (b.category !== 'planet' && b.category !== 'dwarf_planet') continue;
+        v.bodies.push({ name: b.name, x: 0, y: 0, aAU: b.orbit.semiMajorAxisAU, color: b.physical.colorHex || '#ffffff' });
+      }
+    }
+    for (const b of v.bodies) {
+      const st = this.latestPhysicalStates.get(b.name);
+      if (st) {
+        b.x = st.positionKm[0];
+        b.y = st.positionKm[1];
+      }
+    }
+
+    // Screen footprint of the focused body, for the lock brackets
+    const anchor = this.cameraRig.subjectAnchor;
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    const dist = cam.position.distanceTo(anchor);
+    this.tmpProject.copy(anchor).project(cam);
+    const inFront = this.tmpProject.z < 1 && this.tmpProject.z > -1;
+    const radius = this.cameraRig.focusedRadius;
+    const angular = dist > radius ? Math.asin(Math.min(1, radius / dist)) : Math.PI / 2;
+    const pxPerRad = h / 2 / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
+    v.target.x = (this.tmpProject.x * 0.5 + 0.5) * w;
+    v.target.y = (-this.tmpProject.y * 0.5 + 0.5) * h;
+    v.target.r = Math.tan(angular) * pxPerRad;
+    v.target.visible = inFront && !this.surface.isActive() && this.cameraRig.focusedObject !== null;
+    return v;
+  }
 
   public jumpToScale(domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic' | 'sgr_a'): void {
     if (domain === 'sgr_a') {
@@ -622,15 +1151,32 @@ export class SolarSystemScene {
       constellationsVisible: this.starfield.areConstellationsVisible(),
       asteroidBeltVisible: this.asteroidBelt.isVisible(),
       orbitsVisible: this.orbitLinesGroup.visible,
-      observerScaleMetric: scaleMetric.formatted,
+      observerScaleMetric: this.surface.isActive()
+        ? (() => {
+            const km = this.surface.getStatus()?.eyeHeightKm ?? 0;
+            return `ON SURFACE · EYE ${km >= 1 ? `${km.toFixed(0)} KM` : `${(km * 1000).toFixed(0)} M`}`;
+          })()
+        : scaleMetric.formatted,
       observerDomain: scaleMetric.domain,
       travelSpeed: Math.round(travelSpeed),
       cameraDistance: Math.round(scaleMetric.distance),
+      lensProfile: this.lens.profile.name,
+      explorer: this.explorer.getStatus(),
+      surface: this.surface.getStatus(),
+      horizonView: !!this.horizon?.active,
+      lightFromEarthSec: (() => {
+        if (this.selectedBody.name === 'Earth') return null;
+        const a = this.bodyPositionKm('Earth');
+        const b = this.bodyPositionKm(this.selectedBody.name);
+        return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) / 299792.458;
+      })(),
+      route: this.route,
     });
   }
 
   public dispose(): void {
     this.isRunning = false;
+    this.horizon?.dispose();
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
     }
@@ -638,7 +1184,11 @@ export class SolarSystemScene {
     this.renderer.domElement.removeEventListener('mousedown', this.onPointerDown);
     this.renderer.domElement.removeEventListener('mousemove', this.onCanvasMouseMove);
     this.renderer.domElement.removeEventListener('click', this.onCanvasClick);
+    this.surface.dispose();
+    this.labels.dispose();
     this.cameraRig.dispose();
+    this.explorer.dispose();
+    this.lens.dispose();
     this.starfield.dispose();
     this.asteroidBelt.dispose();
 

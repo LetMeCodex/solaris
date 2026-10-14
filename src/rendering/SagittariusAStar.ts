@@ -1,18 +1,19 @@
 import * as THREE from 'three';
 import { SAGITTARIUS_A_STAR_DATA } from '../data/SagittariusAStarData';
+import { BlackHoleInfall } from './BlackHoleInfall';
 
 export interface SagittariusAStarConfig {
   schwarzschildRadius: number; // Render units (default 24.0)
   diskInnerRadius: number;     // Render units (default 72.0 = 3.0 * rs, ISCO)
-  diskOuterRadius: number;     // Render units (default 340.0 = 14.17 * rs)
-  boundingRadius: number;      // Bounding sphere radius (default 520.0)
+  diskOuterRadius: number;     // Render units (default 432.0 = 18 * rs)
+  boundingRadius: number;      // Bounding sphere radius (default 1000.0)
 }
 
 export const DEFAULT_SGR_A_CONFIG: SagittariusAStarConfig = {
   schwarzschildRadius: 24.0,
   diskInnerRadius: 72.0,
-  diskOuterRadius: 340.0,
-  boundingRadius: 520.0,
+  diskOuterRadius: 432.0,   // 18 r_s: the dusty outer disk stretches far across the frame
+  boundingRadius: 1000.0,
 };
 
 /**
@@ -25,12 +26,10 @@ export const DEFAULT_SGR_A_CONFIG: SagittariusAStarConfig = {
  * 4. NASA Black Hole Anatomy (Accretion disk, Event horizon shadow, Photon sphere, Relativistic Jet, ISCO).
  * 
  * Features:
- * - General Relativistic Ray-Marching Shader with numerical null-geodesic bending.
- * - Pitch-black Event Horizon Shadow (b <= b_crit = 3*sqrt(3)/2 * r_s).
- * - Multi-octave Keplerian fibrous streamlines & turbulent MRI reconnection flares.
- * - Volumetric accretion disk with flared scale height H(r) slicing across front of the shadow.
- * - Gravitationally lensed upper and lower arches framing the shadow.
- * - Asymmetric relativistic Doppler beaming (delta^4) and gravitational redshift.
+ * - Backward ray tracing along Schwarzschild null geodesics (see createRelativisticRayMarchMesh):
+ *   shadow, lensed far-side disk and photon rings all come out of the integration.
+ * - Page–Thorne disk temperatures, Doppler × gravitational frequency shift, blackbody colour,
+ *   g⁴ brightness, Keplerian shear.
  * - Collimated relativistic polar jets with white-hot particle core and helical synchrotron shock coils.
  * - Nuclear S-cluster (350+ B/O stars orbiting in the central parsec).
  */
@@ -40,6 +39,9 @@ export class SagittariusAStar {
   public sStarsPoints: THREE.Points;
   public jetPolesGroup: THREE.Group = new THREE.Group();
   public hitMesh: THREE.Mesh;
+  /** Rocks, stars and light falling in (geodesic simulation). */
+  public infall: BlackHoleInfall;
+  private lastUpdateSec: number | null = null;
 
   public readonly config: SagittariusAStarConfig;
   public readonly scientificData = SAGITTARIUS_A_STAR_DATA;
@@ -71,18 +73,42 @@ export class SagittariusAStar {
     this.createPolarOutflowJets();
     this.jetPolesGroup.visible = false; // Preserved for NASA anatomy mode, hidden for pure cinematic view
     this.group.add(this.jetPolesGroup);
+
+    // 5. Infalling matter and light
+    this.infall = new BlackHoleInfall();
+    this.group.add(this.infall.group);
   }
 
   /**
-   * 1. Relativistic Ray-Marching Null-Geodesic Bounding Mesh
+   * 1. Ray-traced Schwarzschild black hole.
+   *
+   * Each pixel's photon is traced BACKWARDS from the camera along a null geodesic of the
+   * Schwarzschild metric, using the exact orbit equation written in Cartesian form
+   *     d²x/dλ² = −(3/2) r_s h² x / r⁵        (h = |x × dx/dλ|, conserved)
+   * integrated with velocity-Verlet and a step proportional to r, so photons that skim the photon
+   * sphere (r = 1.5 r_s) are followed through whole loops. Everything iconic falls out of the
+   * integration rather than being painted on:
+   *   – the shadow (rays with b < 3√3/2 r_s fall through the horizon),
+   *   – the far side of the disk lensed over and under the hole,
+   *   – the thin photon rings (rays that cross the disk plane two, three, … times).
+   *
+   * Disk emission (thin disk in the local XZ plane, inner edge at the ISCO = 3 r_s):
+   *   – Page–Thorne / Novikov–Thorne flux F ∝ r⁻³ (1 − √(r_isco/r)) for the hot inner disk, plus a
+   *     flared-disk irradiation term (T ∝ r^−½, Chiang & Goldreich 1997) that keeps the outer disk
+   *     glowing dull orange-brown;
+   *   – frequency shift g = δ · √(1 − r_s/r): local Doppler factor of Keplerian gas
+   *     (β = √(r_s / 2(r − r_s)) measured by a static observer) times gravitational redshift;
+   *   – observed colour = blackbody(g·T), observed brightness ∝ g⁴ (bolometric Liouville
+   *     invariance), so the approaching side blazes white and the receding side sinks to red;
+   *   – texture sheared by Keplerian differential rotation Ω ∝ r^−3/2.
+   * The temperature scale is cinematic: Sgr A* itself accretes too slowly to glow like this.
    */
   private createRelativisticRayMarchMesh(): THREE.Mesh {
     const geo = new THREE.SphereGeometry(this.config.boundingRadius, 64, 48);
 
     const rs = this.config.schwarzschildRadius;
-    const rShadow = rs * (3.0 * Math.sqrt(3.0) / 2.0); // b_crit ~ 2.598 * rs (~62.35)
-    const rIn = this.config.diskInnerRadius; // ISCO ~ 72.0
-    const rOut = this.config.diskOuterRadius; // ~340.0
+    const rIn = this.config.diskInnerRadius;
+    const rOut = this.config.diskOuterRadius;
 
     const mat = new THREE.ShaderMaterial({
       uniforms: {
@@ -90,20 +116,17 @@ export class SagittariusAStar {
         uOpacity: this.opacityUniform,
         uCameraPosLocal: this.cameraPosUniform,
         uRs: { value: rs },
-        uRShadow: { value: rShadow },
         uRIn: { value: rIn },
         uROut: { value: rOut },
         uBoundingR: { value: this.config.boundingRadius },
+        uTPeak: { value: 6300.0 },   // K, peak disk temperature (warm cream-white)
+        uExposure: { value: 1.35 },
       },
       vertexShader: `
         varying vec3 vLocalPos;
-        varying vec3 vWorldPos;
-
         void main() {
           vLocalPos = position;
-          vec4 worldPos = modelMatrix * vec4(position, 1.0);
-          vWorldPos = worldPos.xyz;
-          gl_Position = projectionMatrix * viewMatrix * worldPos;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
       fragmentShader: `
@@ -111,299 +134,198 @@ export class SagittariusAStar {
         uniform float uOpacity;
         uniform vec3 uCameraPosLocal;
         uniform float uRs;
-        uniform float uRShadow;
         uniform float uRIn;
         uniform float uROut;
         uniform float uBoundingR;
-
+        uniform float uTPeak;
+        uniform float uExposure;
         varying vec3 vLocalPos;
 
         #define PI 3.14159265359
-        #define STEPS 68
+        #define MAX_STEPS 320
 
-        // Fast hash for procedural plasma grain
-        float hash(vec2 p) {
-          p = fract(p * vec2(123.34, 456.21));
-          p += dot(p, p + 45.32);
-          return fract(p.x * p.y);
+        // ---------- noise ----------
+        float hash3(vec3 p) {
+          p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));
+          p *= 17.0;
+          return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+        }
+        float vnoise(vec3 x) {
+          vec3 i = floor(x);
+          vec3 f = fract(x);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(mix(hash3(i), hash3(i + vec3(1,0,0)), f.x),
+                         mix(hash3(i + vec3(0,1,0)), hash3(i + vec3(1,1,0)), f.x), f.y),
+                     mix(mix(hash3(i + vec3(0,0,1)), hash3(i + vec3(1,0,1)), f.x),
+                         mix(hash3(i + vec3(0,1,1)), hash3(i + vec3(1,1,1)), f.x), f.y), f.z);
+        }
+        float fbm(vec3 p) {
+          float s = 0.0, a = 0.5;
+          for (int i = 0; i < 5; i++) { s += a * vnoise(p); p = p * 2.03 + vec3(1.7, 9.2, 3.1); a *= 0.5; }
+          return s;
         }
 
-        // Multi-frequency Keplerian sheared streamline generator
-        float computeStreamlineFibers(float r, float phi, float time, float rIn) {
-          float omega = 3.6 * pow(rIn / r, 1.5);
-          float phiOrbit = phi + omega * time * 0.32;
-          float logR = log(max(1.0, r / rIn));
-
-          // 6 octaves of Keplerian sheared logarithmic spiral rays
-          float s1 = phiOrbit * 3.0 - logR * 4.0;
-          float s2 = phiOrbit * 7.0 - logR * 9.5;
-          float s3 = phiOrbit * 18.0 - logR * 25.0;
-          float s4 = phiOrbit * 45.0 - logR * 62.0;
-          float s5 = phiOrbit * 110.0 - logR * 152.0;
-          float s6 = phiOrbit * 260.0 - logR * 360.0;
-
-          // Power-law sharpening creates crisp, silky light rays with distinct troughs
-          float r1 = pow(sin(s1) * 0.5 + 0.5, 1.4);
-          float r2 = pow(sin(s2) * 0.5 + 0.5, 1.6);
-          float r3 = pow(sin(s3) * 0.5 + 0.5, 1.8);
-          float r4 = pow(sin(s4) * 0.5 + 0.5, 2.0);
-          float r5 = pow(sin(s5) * 0.5 + 0.5, 2.2);
-          float r6 = pow(cos(s6) * 0.5 + 0.5, 2.4);
-
-          float rays = 0.35 + 0.28 * r1 + 0.22 * r2 + 0.16 * r3 + 0.12 * r4 + 0.08 * r5 + 0.05 * r6;
-
-          // Fine concentric Keplerian striations
-          float concentric = pow(sin(r * 3.2 + sin(r * 0.8) * 1.5) * 0.5 + 0.5, 1.6);
-          rays *= (0.75 + 0.35 * concentric);
-
-          return clamp(rays, 0.06, 1.45);
+        // ---------- blackbody colour (Kelvin -> linear RGB, unit max) ----------
+        vec3 blackbody(float T) {
+          float t = clamp(T, 1000.0, 40000.0) / 100.0;
+          float r = t <= 66.0 ? 1.0 : clamp(1.29293618606 * pow(t - 60.0, -0.1332047592), 0.0, 1.0);
+          float g = t <= 66.0 ? clamp(0.39008157876 * log(t) - 0.63184144378, 0.0, 1.0)
+                              : clamp(1.12989086089 * pow(t - 60.0, -0.0755148492), 0.0, 1.0);
+          float b = t >= 66.0 ? 1.0 : (t <= 19.0 ? 0.0 : clamp(0.54320678911 * log(t - 10.0) - 1.19625408914, 0.0, 1.0));
+          return pow(vec3(r, g, b), vec3(2.2));
         }
 
-        // Magnetorotational instability (MRI) reconnection flare clumps (turbulent plumes on inner rim)
-        float computePlasmaFlares(float r, float phi, float time, float rIn) {
-          float omega = 3.6 * pow(rIn / r, 1.5);
-          float phiOrbit = phi + omega * time * 0.32;
-          float logR = log(max(1.0, r / rIn));
-
-          float n1 = sin(phiOrbit * 3.5 + logR * 4.5 + time * 0.6) * cos(phiOrbit * 6.5 - logR * 7.5 - time * 0.9);
-          float n2 = sin(phiOrbit * 12.0 - logR * 16.0 + time * 1.4) * cos(phiOrbit * 20.0 + logR * 26.0 - time * 1.8);
-          float puff = clamp((n1 * 0.65 + n2 * 0.35) * 0.5 + 0.5, 0.0, 1.0);
-
-          float innerRamp = smoothstep(rIn * 2.4, rIn * 1.02, r);
-          return pow(puff, 2.8) * 2.4 * innerRamp;
+        // ---------- disk physics ----------
+        // Temperature in units of the peak temperature
+        float diskTemp(float r) {
+          float x = r / uRIn;
+          // Page–Thorne: F ∝ x⁻³ (1 − x^−½); peak at x = 49/36 where F = 0.0306 (normalised below)
+          float fPT = max(0.0, (1.0 - inversesqrt(x))) / (x * x * x) / 0.0306;
+          // Irradiated flared outer disk: F ∝ x⁻²
+          float fIrr = 0.055 / (x * x);
+          return pow(fPT + fIrr, 0.25);
         }
 
-        // Interstellar soot / carbon-silicate dust absorption lanes
-        float computeDustExtinction(float r, float phi, float time, float rIn, float rOut) {
-          float omega = 3.6 * pow(rIn / r, 1.5);
-          float phiOrbit = phi + omega * time * 0.32;
-          float logR = log(max(1.0, r / rIn));
-
-          float sDust = sin(phiOrbit * 6.5 - logR * 9.0) * cos(phiOrbit * 15.0 - logR * 21.0);
-          float dust = smoothstep(0.20, 0.70, sDust * 0.5 + 0.5);
-
-          float outerMask = smoothstep(rIn * 1.6, rIn * 3.4, r) * smoothstep(rOut, rOut * 0.78, r);
-          return dust * outerMask * 0.85;
+        // Keplerian shear with two cross-faded phases so streaks never wind up indefinitely
+        float diskTexture(float r, float phi, float density) {
+          float x = r / uRIn;
+          float omega = 0.9 * pow(x, -1.5);
+          float P = 40.0;
+          float f1 = fract(uTime / P);
+          float f2 = fract(uTime / P + 0.5);
+          float w = abs(2.0 * f1 - 1.0);
+          float lr = log(x);
+          vec3 q1 = vec3(cos(phi + omega * f1 * P) * 1.6, sin(phi + omega * f1 * P) * 1.6, lr * 22.0);
+          vec3 q2 = vec3(cos(phi + omega * f2 * P) * 1.6, sin(phi + omega * f2 * P) * 1.6, lr * 22.0 + 7.3);
+          float n = mix(fbm(q1 * density), fbm(q2 * density), w);
+          return n;
         }
 
-        // Spectral blackbody emission curve calibrated exactly to Reference Image 1:
-        // Deep espresso soot -> Warm caramel amber -> Glowing copper terracotta -> Luminous golden peach -> Incandescent warm white -> Blinding core
-        vec3 spectralPlasmaColor(float temp, float dust, float flare) {
-          vec3 colSoot    = vec3(0.04, 0.015, 0.008);
-          vec3 colCaramel = vec3(0.68, 0.28, 0.09);
-          vec3 colCopper  = vec3(1.28, 0.62, 0.22);
-          vec3 colPeach   = vec3(2.15, 1.35, 0.66);
-          vec3 colIncand  = vec3(3.60, 3.10, 2.40);
-          vec3 colCore    = vec3(5.20, 4.90, 4.40);
+        // Emission + opacity of the disk sheet where the ray crosses y = 0
+        vec4 diskSample(vec3 p, vec3 dir) {
+          float r = length(p.xz);
+          if (r < uRIn || r > uROut) return vec4(0.0);
+          float phi = atan(p.z, p.x);
 
-          vec3 plasma = mix(colCaramel, colCopper, smoothstep(0.02, 0.25, temp));
-          plasma = mix(plasma, colPeach, smoothstep(0.25, 0.65, temp));
-          plasma = mix(plasma, colIncand, smoothstep(0.65, 0.95, temp));
-          plasma = mix(plasma, colCore, smoothstep(0.95, 1.25, temp));
+          float tex = diskTexture(r, phi, 1.0);
+          float fine = diskTexture(r * 1.0, phi * 3.0, 2.3);
+          // Irregular annular banding: ring frequency itself wanders with the turbulence
+          float rings = 0.78 + 0.22 * sin(log(r / uRIn) * (55.0 + 30.0 * fine) + tex * 9.0);
+          float structure = clamp(0.25 + 1.25 * tex * (0.6 + 0.5 * fine) * rings, 0.0, 1.6);
 
-          // Delicate ethereal ice-white plumes ONLY on the inner turbulent plasma flares
-          // (matching the subtle blue puffs on the inner rim in Image 1)
-          vec3 colFlareWisp = vec3(3.40, 4.10, 5.00);
-          plasma = mix(plasma, colFlareWisp, smoothstep(0.35, 1.0, flare) * 0.42);
+          // Frequency shift: Doppler (static frame) × gravitational redshift
+          float beta = clamp(sqrt(uRs / (2.0 * max(r - uRs, 0.01))), 0.0, 0.95);
+          float gamma = inversesqrt(1.0 - beta * beta);
+          vec3 vhat = normalize(vec3(p.z, 0.0, -p.x));  // orbit sense: approaching limb on the left of the shot
+          float cosA = dot(vhat, -dir);
+          float delta = 1.0 / (gamma * (1.0 - beta * cosA));
+          float g = delta * sqrt(max(0.0, 1.0 - uRs / r));
 
-          // Interstellar dust extinction absorbs light
-          plasma = mix(plasma, colSoot, dust * 0.75);
-          return plasma;
+          float T = diskTemp(r);
+          float Tobs = T * uTPeak * g;
+          float bright = pow(g, 4.0) * pow(T, 4.0) * structure;
+
+          // Dust: the cool outer disk is sooty and absorbs (dark lanes, brown tint)
+          float x = r / uRIn;
+          float dustZone = smoothstep(2.2, 6.0, x);
+          float lanes = smoothstep(0.42, 0.68, diskTexture(r, phi + 1.3, 0.7));
+          vec3 col = blackbody(Tobs) * bright;
+          col = mix(col, col * vec3(0.95, 0.52, 0.24), dustZone * 0.85);
+          col *= 1.0 - lanes * dustZone * 0.8;
+
+          // Optically thick inner disk, translucent outer disk
+          float edgeIn = smoothstep(uRIn, uRIn * 1.06, r);
+          float edgeOut = smoothstep(uROut, uROut * 0.55, r);
+          float alpha = clamp((0.95 - 0.6 * smoothstep(1.5, 14.0, x)) * (0.55 + 0.45 * structure) + lanes * dustZone * 0.35, 0.0, 0.97);
+          alpha *= edgeIn * edgeOut;
+          return vec4(col * uExposure * edgeIn * edgeOut, alpha);
+        }
+
+        // Sparse procedural sky, seen through the lens (only blended near the hole)
+        vec3 lensedSky(vec3 d) {
+          vec3 a = abs(d);
+          vec2 uv = a.x > a.y && a.x > a.z ? d.yz / a.x : (a.y > a.z ? d.xz / a.y : d.xy / a.z);
+          vec2 cell = floor(uv * 180.0);
+          float h = fract(sin(dot(cell + floor(d.xy * 3.0), vec2(12.9898, 78.233))) * 43758.5453);
+          vec2 f = fract(uv * 180.0) - 0.5;
+          float star = h > 0.9965 ? exp(-dot(f, f) * 60.0) * (h - 0.9965) * 260.0 : 0.0;
+          return vec3(star) * vec3(1.0, 0.92, 0.82);
         }
 
         void main() {
-          vec3 rayOrigin = uCameraPosLocal;
-          vec3 rayDir = normalize(vLocalPos - rayOrigin);
+          vec3 ro = uCameraPosLocal;
+          vec3 rd = normalize(vLocalPos - ro);
 
-          // 1. Analytic Ray-Sphere Intersection with Bounding Volume
-          float b0 = dot(rayOrigin, rayDir);
-          float c0 = dot(rayOrigin, rayOrigin) - uBoundingR * uBoundingR;
+          // Enter the bounding sphere
+          float b0 = dot(ro, rd);
+          float c0 = dot(ro, ro) - uBoundingR * uBoundingR;
           float disc = b0 * b0 - c0;
-
           if (disc < 0.0) discard;
-
-          float sqrtDisc = sqrt(disc);
-          float tNear = -b0 - sqrtDisc;
-          float tFar  = -b0 + sqrtDisc;
-
+          float sq = sqrt(disc);
+          float tNear = -b0 - sq;
+          float tFar = -b0 + sq;
           if (tFar < 0.0) discard;
 
-          float tStart = max(0.0, tNear);
-          float totalDist = tFar - tStart;
-          if (totalDist <= 0.0) discard;
+          vec3 pos = ro + rd * max(0.0, tNear);
+          vec3 dir = rd;
+          vec3 L = cross(pos, dir);
+          float h2 = dot(L, L);
+          float impact = sqrt(h2);   // impact parameter (|dir| = 1)
 
-          // Asymptotic impact parameter for straight line
-          vec3 rCrossD = cross(rayOrigin, rayDir);
-          float b = length(rCrossD);
+          vec3 col = vec3(0.0);
+          float alpha = 0.0;
+          bool captured = false;
 
-          vec3 pos = rayOrigin + rayDir * tStart;
-          float stepSize = totalDist / float(STEPS);
-
-          vec3 accumColor = vec3(0.0);
-          float accumAlpha = 0.0;
-          bool hitShadow = false;
-
-          for (int i = 0; i < STEPS; i++) {
+          for (int i = 0; i < MAX_STEPS; i++) {
             float r = length(pos);
+            if (r < uRs * 1.002) { captured = true; break; }
+            if (r > uBoundingR * 1.001 && dot(pos, dir) > 0.0) break;
 
-            // A. Check for Capture into Event Horizon Shadow:
-            // Inside photon sphere and impact parameter within critical capture b < b_crit
-            if (r <= uRs * 1.04 || (b < uRShadow * 0.995 && r <= uRs * 1.54)) {
-              hitShadow = true;
-              break;
+            // Step: fine near the photon sphere, and never jumps far across the disk plane
+            float dt = clamp(0.07 * r, 0.025 * uRs, 60.0);
+            float rc = length(pos.xz);
+            if (rc < uROut * 1.05) dt = min(dt, max(abs(pos.y) * 0.9, 0.05 * uRs) + 0.02 * r);
+
+            vec3 acc = -1.5 * uRs * h2 * pos / pow(r, 5.0);
+            vec3 next = pos + dir * dt + 0.5 * acc * dt * dt;
+            float rn = length(next);
+            vec3 accN = -1.5 * uRs * h2 * next / pow(max(rn, uRs * 0.5), 5.0);
+            vec3 ndir = normalize(dir + 0.5 * (acc + accN) * dt);
+
+            // Disk-plane crossing → sample the sheet at the exact crossing point
+            if (pos.y * next.y < 0.0) {
+              float t = pos.y / (pos.y - next.y);
+              vec3 cp = mix(pos, next, t);
+              vec4 s = diskSample(cp, normalize(mix(dir, ndir, t)));
+              col += (1.0 - alpha) * s.rgb * s.a;
+              alpha += (1.0 - alpha) * s.a;
+              if (alpha > 0.985) break;
             }
 
-            // B. General Relativistic Light Bending (Null Geodesic Acceleration):
-            // d2r/dlambda2 = - (1.5 * rs * h^2 / r^5) * r
-            vec3 angMom = cross(pos, rayDir);
-            float h2 = dot(angMom, angMom);
-            vec3 bendingAccel = - (1.5 * uRs * h2 / max(pow(r, 5.0), 22.0)) * pos;
-
-            vec3 nextRayDir = normalize(rayDir + bendingAccel * stepSize);
-            vec3 nextPos = pos + nextRayDir * stepSize;
-
-            // C. 3D Volumetric Accretion Disk Sampling along Geodesic Path:
-            float rCyl = length(pos.xz);
-            // Flared disk scale height H(r) ~ H0 * sqrt(r / r_in)
-            float diskH = 3.8 * sqrt(max(0.6, rCyl / uRIn));
-
-            if (abs(pos.y) <= 3.2 * diskH && rCyl >= uRIn * 0.98 && rCyl <= uROut) {
-              // 1. Vertical Gaussian density profile
-              float vertProfile = exp(-0.5 * (pos.y * pos.y) / (diskH * diskH));
-
-              // 2. Novikov-Thorne Relativistic Radial Temperature Flux with extended outer radiance
-              float normR = rCyl / uRIn;
-              float flux = (0.42 * pow(normR, -0.92) + 0.58 * pow(normR, -1.85)) * max(0.0, 1.0 - sqrt(0.97 / normR));
-
-              // 3. Gravitational Redshift: g_grav = sqrt(1 - rs / r)
-              float gravRedshift = sqrt(max(0.04, 1.0 - uRs / rCyl));
-
-              // 4. Relativistic Keplerian Orbital Speed: beta = v/c = sqrt(rs / (2 * r))
-              float beta = clamp(sqrt(uRs / (2.0 * rCyl)), 0.0, 0.55);
-              float gamma = 1.0 / sqrt(max(0.05, 1.0 - beta * beta));
-
-              // Keplerian velocity vector (counter-clockwise in X-Z plane, approaching on left)
-              vec3 vel = normalize(vec3(pos.z, 0.0, -pos.x)) * beta;
-              float cosAlpha = dot(vel, -rayDir) / max(0.001, beta);
-              float delta = 1.0 / (gamma * (1.0 - beta * cosAlpha));
-
-              // Subtle physical Doppler Beaming boost: I_obs = I_emit * delta^2.6
-              float dopplerBoost = pow(clamp(delta, 0.40, 2.8), 2.6);
-
-              // 5. Multi-octave Procedural Fibers & MRI Flares
-              float phi = atan(pos.z, pos.x);
-              float fibers = computeStreamlineFibers(rCyl, phi, uTime, uRIn);
-              float flares = computePlasmaFlares(rCyl, phi, uTime, uRIn);
-              float dust   = computeDustExtinction(rCyl, phi, uTime, uRIn, uROut);
-
-              // Relativistic effective temperature: warm radial flux + flares
-              float effTemp = clamp((flux * 3.6 + flares * 0.40) * gravRedshift, 0.0, 1.40);
-              vec3 plasmaRgb = spectralPlasmaColor(effTemp, dust, flares);
-
-              // Boundaries: sharp ISCO inner cutoff, soft outer fade
-              float innerCut = smoothstep(uRIn, uRIn * 1.05, rCyl);
-              float outerCut = smoothstep(uROut, uROut * 0.76, rCyl);
-              float density = vertProfile * innerCut * outerCut * (fibers * 0.85 + 0.15) * (1.0 + flares * 0.5);
-
-              float stepAlpha = clamp(density * stepSize * 0.048, 0.0, 0.88);
-              vec3 stepEmission = plasmaRgb * dopplerBoost * (fibers * 0.90 + 0.20) * (1.0 + flares * 0.7);
-
-              accumColor += (1.0 - accumAlpha) * stepEmission * stepAlpha;
-              accumAlpha += (1.0 - accumAlpha) * stepAlpha;
-
-              if (accumAlpha >= 0.985) break;
-            }
-
-            // D. Razor-Sharp Equatorial Midplane Crossing Enhancement (Y = 0)
-            if (pos.y * nextPos.y <= 0.0) {
-              float tCross = abs(pos.y) / max(0.0001, abs(pos.y) + abs(nextPos.y));
-              vec3 crossPos = mix(pos, nextPos, tCross);
-              float rCross = length(crossPos.xz);
-
-              if (rCross >= uRIn && rCross <= uROut) {
-                float normR = rCross / uRIn;
-                float flux = (0.42 * pow(normR, -0.92) + 0.58 * pow(normR, -1.85)) * max(0.0, 1.0 - sqrt(0.97 / normR));
-                float gravRedshift = sqrt(max(0.04, 1.0 - uRs / rCross));
-
-                float beta = clamp(sqrt(uRs / (2.0 * rCross)), 0.0, 0.55);
-                float gamma = 1.0 / sqrt(max(0.05, 1.0 - beta * beta));
-                vec3 vel = normalize(vec3(crossPos.z, 0.0, -crossPos.x)) * beta;
-                float cosAlpha = dot(vel, -rayDir) / max(0.001, beta);
-                float delta = 1.0 / (gamma * (1.0 - beta * cosAlpha));
-                float dopplerBoost = pow(clamp(delta, 0.40, 2.8), 2.6);
-
-                float phi = atan(crossPos.z, crossPos.x);
-                float fibers = computeStreamlineFibers(rCross, phi, uTime, uRIn);
-                float flares = computePlasmaFlares(rCross, phi, uTime, uRIn);
-                float dust   = computeDustExtinction(rCross, phi, uTime, uRIn, uROut);
-
-                float effTemp = clamp((flux * 3.6 + flares * 0.40) * gravRedshift, 0.0, 1.40);
-                vec3 plasmaRgb = spectralPlasmaColor(effTemp, dust, flares);
-
-                float innerCut = smoothstep(uRIn, uRIn * 1.04, rCross);
-                float outerCut = smoothstep(uROut, uROut * 0.78, rCross);
-                float midOpacity = clamp(innerCut * outerCut * (fibers * 0.85 + 0.15) * 0.48 * (1.0 + flares * 0.4), 0.0, 0.96);
-                vec3 midEmission = plasmaRgb * dopplerBoost * (fibers * 0.92 + 0.18) * (1.0 + flares * 0.7);
-
-                accumColor += (1.0 - accumAlpha) * midEmission * midOpacity;
-                accumAlpha += (1.0 - accumAlpha) * midOpacity;
-
-                if (accumAlpha >= 0.985) break;
-              }
-            }
-
-            rayDir = nextRayDir;
-            pos = nextPos;
-
-            if (length(pos) > uBoundingR * 1.02) break;
+            pos = next;
+            dir = ndir;
           }
 
-          // E. Event Horizon Shadow Plunge:
-          // Any accumulated emission in FRONT of the black hole is visible;
-          // everything directly behind is profound pitch black (alpha = 1.0)!
-          if (hitShadow) {
-            // Apply subtle Reinhard HDR tone mapping
-            vec3 finalHdr = accumColor / (vec3(1.0) + accumColor * 0.16);
-            gl_FragColor = vec4(finalHdr, 1.0 * uOpacity);
-            return;
+          // Near the hole the real sky is replaced by a lensed one; further out it fades away
+          float near = 1.0 - smoothstep(4.0 * uRs, 12.0 * uRs, impact);
+          if (captured) {
+            col = col;            // nothing escapes: the shadow is truly black
+            alpha = 1.0;
+          } else if (near > 0.0) {
+            // Lensed stars are added over the real sky (which is not re-projected): they show the
+            // Einstein-ring distortion without hiding the galaxy behind the hole
+            col += (1.0 - alpha) * lensedSky(dir) * near;
+            alpha = max(alpha, min(1.0, length(col) * 0.6));
           }
 
-          // F. Ultra-Sharp Relativistic Photon Ring:
-          // Ring of looping photons at the critical shadow boundary (b ~ b_crit)
-          float shadowDist = abs(b - uRShadow);
-          float photonRing = exp(-pow(shadowDist / (uRs * 0.038), 2.0));
-          if (photonRing > 0.005) {
-            vec3 ringColor = vec3(4.8, 4.4, 3.8) * photonRing * 4.2;
-            accumColor += (1.0 - accumAlpha) * ringColor;
-            accumAlpha += (1.0 - accumAlpha) * photonRing * 0.98;
-          }
-
-          // Secondary lensed sub-ring (higher-order relativistic image)
-          float subRingDist = abs(b - (uRShadow + uRs * 0.22));
-          float subRing = exp(-pow(subRingDist / (uRs * 0.024), 2.0));
-          if (subRing > 0.008) {
-            vec3 subRingColor = vec3(3.2, 2.4, 1.6) * subRing * 1.8;
-            accumColor += (1.0 - accumAlpha) * subRingColor;
-            accumAlpha += (1.0 - accumAlpha) * subRing * 0.65;
-          }
-
-          // G. Einstein Gravitational Deflection Glow of Background Cosmos:
-          if (accumAlpha < 0.95) {
-            float deflectionGlow = exp(-pow(shadowDist / (uRs * 0.42), 2.0)) * 0.24;
-            vec3 cosmicGlow = vec3(0.12, 0.08, 0.18) * deflectionGlow;
-            accumColor += (1.0 - accumAlpha) * cosmicGlow;
-            accumAlpha += (1.0 - accumAlpha) * deflectionGlow;
-          }
-
-          if (accumAlpha < 0.005) discard;
-
-          // H. High Dynamic Range (HDR) Tone-Mapping
-          vec3 finalToneMapped = accumColor / (vec3(1.0) + accumColor * 0.16);
-          gl_FragColor = vec4(finalToneMapped, clamp(accumAlpha, 0.0, 1.0) * uOpacity);
+          if (alpha < 0.004) discard;
+          // Soft filmic shoulder; bloom in the lens pipeline does the rest
+          vec3 mapped = col / (1.0 + col * 0.18);
+          gl_FragColor = vec4(mapped, clamp(alpha, 0.0, 1.0) * uOpacity);
         }
       `,
       transparent: true,
-      side: THREE.DoubleSide,
+      side: THREE.BackSide,
       depthWrite: false,
       blending: THREE.NormalBlending,
     });
@@ -617,6 +539,16 @@ export class SagittariusAStar {
     this.group.worldToLocal(camLocal);
     this.cameraPosUniform.value.copy(camLocal);
 
+    // Infall runs only while the hole is on screen at a useful size
+    const dt = this.lastUpdateSec === null ? 0 : timeSec - this.lastUpdateSec;
+    this.lastUpdateSec = timeSec;
+    if (this.group.visible && camLocal.length() < this.config.boundingRadius * 4) {
+      this.infall.group.visible = true;
+      this.infall.update(camera, dt, (v) => this.group.worldToLocal(v));
+    } else {
+      this.infall.group.visible = false;
+    }
+
     // Slowly rotate S-stars nuclear cluster
     if (this.sStarsPoints) {
       this.sStarsPoints.rotation.y = timeSec * 0.015;
@@ -626,6 +558,7 @@ export class SagittariusAStar {
   public setOpacity(opacity: number): void {
     const clamped = Math.max(0.0, Math.min(1.0, opacity));
     this.opacityUniform.value = clamped;
+    this.infall?.setOpacity(clamped);
     this.group.visible = clamped > 0.005;
   }
 
@@ -633,6 +566,7 @@ export class SagittariusAStar {
     this.boundingMesh.geometry.dispose();
     (this.boundingMesh.material as THREE.Material).dispose();
 
+    this.infall.dispose();
     this.sStarsPoints.geometry.dispose();
     (this.sStarsPoints.material as THREE.Material).dispose();
 

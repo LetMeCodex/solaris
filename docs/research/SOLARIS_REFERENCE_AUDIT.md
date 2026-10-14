@@ -1,5 +1,11 @@
 # SOLARIS: Infinite Scale Engine & Reference Audit
 
+> **Status (2026-10-14):** this is the original design note for the multiscale engine. Several numbers below were superseded:
+> - Ephemerides now use JPL secular-rate planet elements, JPL Horizons moon elements and SBDB small-body elements (see README → *What is modelled* and `src/tests/ephemerisAccuracy.test.ts`).
+> - Anchor handoff and tier thresholds still apply. Local stars are drawn at 700 + 38 units/pc, and the galaxy at 1,320 units/kpc with R₀ = 8.277 kpc (not "26,000 ly scaled to 56% of the radius").
+> - Distances in the HUD convert with the scale actually rendered in each tier (see `CameraRig.getObserverScaleMetric`).
+> - The "velocity-aware" streaks use camera motion relative to the tracked body, so they only appear while flying.
+
 ## 1. Executive Summary & Objective
 
 This document establishes the empirical research, scientific verification, and engineering architecture for the **SOLARIS Infinite Scale Engine & Multiscale Universe Navigation System**. 

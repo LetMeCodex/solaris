@@ -26,7 +26,7 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#E8927C',
     eyebrowColor: '#fabfad',
     distanceAU: '0.39 AU',
-    textureThumb: 'textures/2k_mercury.jpg',
+    textureThumb: 'textures/thumbs/mercury.webp',
     monographText:
       'THE CLOSEST PLANET TO THE SUN. IT CIRCLES THE SUN FASTER THAN ALL THE OTHER PLANETS, WHICH IS WHY ROMANS NAMED IT AFTER THEIR SWIFT-FOOTED MESSENGER GOD.',
     extendedLore:
@@ -44,7 +44,7 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#b45d15',
     eyebrowColor: '#e58e45',
     distanceAU: '0.723 AU',
-    textureThumb: 'textures/2k_venus_atmosphere.jpg',
+    textureThumb: 'textures/thumbs/venus_atmosphere.webp',
     monographText:
       'NAMED FOR THE ROMAN GODDESS OF LOVE AND BEAUTY. ENSHROUDED IN DENSE OPAQUE CLOUDS OF SULFURIC ACID, IT SUFFERS A RUNAWAY GREENHOUSE EFFECT WITH SURFACE TEMPERATURES REACHING 465°C.',
     extendedLore:
@@ -62,9 +62,9 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#26daaa',
     eyebrowColor: '#7bf0d0',
     distanceAU: '1.000 AU',
-    textureThumb: 'textures/2k_earth_daymap.jpg',
+    textureThumb: 'textures/thumbs/earth_daymap.webp',
     monographText:
-      'OUR HOME AND THE ONLY KNOWN SANCTUARY OF LIFE IN THE COSMOS. A VIBRANT BLUE MARBLE ENVELOPED BY A NITROGEN-OXYGEN ATMOSPHERE, WITH LIQUID OCEANS COVERING SEVENTY PERCENT OF ITS CRUST.',
+      'OUR HOME AND THE ONLY KNOWN SANCTUARY OF LIFE IN THE COSMOS. A VIBRANT BLUE MARBLE ENVELOPED BY A NITROGEN-OXYGEN ATMOSPHERE, WITH LIQUID OCEANS COVERING SEVENTY PERCENT OF ITS SURFACE.',
     extendedLore:
       'Earth resides at the temperate sweet spot of the circumstellar habitable zone. Dynamic plate tectonics continuously recycle carbon, while a vigorous geodynamo generates a protective magnetosphere shielding the biosphere from solar wind stripping and high-energy galactic cosmic rays.',
     missions: [
@@ -80,7 +80,7 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#e55f45',
     eyebrowColor: '#fca595',
     distanceAU: '1.524 AU',
-    textureThumb: 'textures/2k_mars.jpg',
+    textureThumb: 'textures/thumbs/mars.webp',
     monographText:
       'THE RED PLANET, COLORED BY IRON OXIDE SPREAD ACROSS ITS WINDSWEPT DESERTS. HOME TO OLYMPUS MONS, THE TALLEST VOLCANO IN THE SOLAR SYSTEM, AND VAST DRY RIVER VALLEYS.',
     extendedLore:
@@ -98,9 +98,9 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#f59e0b',
     eyebrowColor: '#fcd34d',
     distanceAU: '5.203 AU',
-    textureThumb: 'textures/2k_jupiter.jpg',
+    textureThumb: 'textures/thumbs/jupiter.webp',
     monographText:
-      'THE TITAN OF OUR SOLAR SYSTEM, WITH MORE MASS THAN ALL OTHER WORLDS COMBINED. A SWIRLING GAS GIANT DOMINATED BY THE CENTURIES-OLD GREAT RED SPOT AND 95 KNOWN SATELLITES.',
+      'THE TITAN OF OUR SOLAR SYSTEM, MORE THAN TWICE AS MASSIVE AS ALL THE OTHER PLANETS COMBINED. A SWIRLING GAS GIANT DOMINATED BY THE CENTURIES-OLD GREAT RED SPOT AND NEARLY A HUNDRED KNOWN MOONS.',
     extendedLore:
       'Jupiter acted as the primary gravitational architect of the early Solar System, shaping asteroid orbits and scattering comets. Below its dynamic ammonia cloud belts, hydrogen transitions into liquid and eventually into an exotic state of liquid metallic hydrogen that conducts immense electrical currents, powering the most powerful planetary magnetic field in the system.',
     missions: [
@@ -116,11 +116,11 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#b29d81',
     eyebrowColor: '#d4c5b0',
     distanceAU: '9.539 AU',
-    textureThumb: 'textures/2k_saturn.jpg',
+    textureThumb: 'textures/thumbs/saturn.webp',
     monographText:
-      'A MAJESTIC WORLD ADORNED BY AN EXTRAORDINARY SYSTEM OF ICY RINGS EXTENDING THOUSANDS OF KILOMETERS INTO THE VOID, ACCOMPANIED BY THE HAZE-CLOAKED MOON TITAN.',
+      'A MAJESTIC WORLD ADORNED BY AN EXTRAORDINARY SYSTEM OF ICY RINGS EXTENDING HUNDREDS OF THOUSANDS OF KILOMETERS INTO THE VOID, ACCOMPANIED BY THE HAZE-CLOAKED MOON TITAN.',
     extendedLore:
-      'Saturn\'s ring system spans up to 282,000 km in width yet is astonishingly paper-thin—averaging barely 10 to 30 meters in vertical thickness. Composed of 99% pure water ice particles ranging from dust grains to boulder sizes, the rings are sustained and sculpted by subtle gravitational resonances with shepherd moons.',
+      'Saturn\'s main rings span about 282,000 km in diameter yet are astonishingly paper-thin—averaging barely 10 to 30 meters in vertical thickness. Made almost entirely of water-ice particles ranging from dust grains to house-sized boulders, the rings are sustained and sculpted by subtle gravitational resonances with shepherd moons.',
     missions: [
       { name: 'Pioneer 11', year: '1979', agency: 'NASA', role: 'First close encounter with Saturn and discovery of the F Ring' },
       { name: 'Cassini-Huygens', year: '2004–2017', agency: 'NASA / ESA / ASI', role: 'Thirteen-year orbital odyssey; landed probe on Titan, found Enceladus plumes' },
@@ -134,9 +134,9 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#8dcdd8',
     eyebrowColor: '#b3e8f0',
     distanceAU: '19.18 AU',
-    textureThumb: 'textures/2k_uranus.jpg',
+    textureThumb: 'textures/thumbs/uranus.webp',
     monographText:
-      'AN ICE GIANT TILTED SO DRAMATICALLY ON ITS SIDE THAT ITS ROTATION AXIS POINTS ALMOST DIRECTLY AT THE SUN, DRIVING EXTREME DECADES-LONG SEASONS IN COMPLETE FREEZE.',
+      'AN ICE GIANT TILTED SO DRAMATICALLY ON ITS SIDE THAT AT ITS SOLSTICES ONE POLE POINTS ALMOST DIRECTLY AT THE SUN, DRIVING EXTREME DECADES-LONG SEASONS.',
     extendedLore:
       'With an axial tilt of 97.77°, Uranus literally rolls along its orbital path like a ball. Scientists theorize a sequence of Earth-sized protoplanetary impacts knocked the giant onto its side early in solar history. Its pale aquamarine coloration originates from methane gas in its upper atmosphere absorbing red light wavelengths.',
     missions: [
@@ -151,7 +151,7 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#4f83e2',
     eyebrowColor: '#7ca8ff',
     distanceAU: '30.06 AU',
-    textureThumb: 'textures/2k_neptune.jpg',
+    textureThumb: 'textures/thumbs/neptune.webp',
     monographText:
       'THE MOST DISTANT MAJOR PLANET, SHROUDED IN AN INTENSE DEEP-AZURE METHANE ATMOSPHERE WHERE SUPERSONIC WINDS SURPASS TWO THOUSAND KILOMETERS PER HOUR.',
     extendedLore:
@@ -167,7 +167,7 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#FF8732',
     eyebrowColor: '#ffa463',
     distanceAU: '39.48 AU',
-    textureThumb: 'textures/2k_moon.jpg',
+    textureThumb: 'textures/thumbs/pluto.webp',
     monographText:
       'SENTINEL OF THE KUIPER BELT, BEARING THE GLOWING NITROGEN ICE PLAINS OF TOMBAUGH REGIO AND SHARING A SYNCHRONOUS GRAVITATIONAL DANCE WITH ITS COMPANION CHARON.',
     extendedLore:
@@ -183,7 +183,7 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#d1d5db',
     eyebrowColor: '#e5e7eb',
     distanceAU: '1.000 AU',
-    textureThumb: 'textures/2k_moon.jpg',
+    textureThumb: 'textures/thumbs/moon.webp',
     monographText:
       'EARTH\'S CONSTANT CELESTIAL COMPANION, TIDALLY LOCKED IN AN ANCIENT GRAVITATIONAL EMBRACE. ITS HIGHLANDS AND BASALTIC MARIA PRESERVE FOUR BILLION YEARS OF COSMIC HISTORY.',
     extendedLore:
@@ -201,11 +201,11 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#7dd3fc',
     eyebrowColor: '#bae6fd',
     distanceAU: '5.203 AU',
-    textureThumb: 'textures/2k_moon.jpg',
+    textureThumb: 'textures/thumbs/moon.webp',
     monographText:
       'A SMOOTH CRUST OF WATER ICE FRACTURED BY REDDISH LINEAE, CONCEALING A VAST GLOBAL SALTWATER OCEAN CONTAINING TWICE THE WATER OF ALL EARTH\'S OCEANS COMBINED.',
     extendedLore:
-      'Tidally flexed by orbital resonance with Io and Ganymede, Europa\'s rocky mantle produces geothermal heating that keeps its deep subsurface ocean in a liquid state. Cryovolcanic plumes venting water into space make it one of humankind\'s top destinations in the search for extraterrestrial habitability.',
+      'Tidally flexed by orbital resonance with Io and Ganymede, Europa\'s rocky mantle produces geothermal heating that keeps its deep subsurface ocean in a liquid state. Possible water plumes detected by Hubble make it one of humankind\'s top destinations in the search for extraterrestrial habitability.',
     missions: [
       { name: 'Galileo', year: '1995–2003', agency: 'NASA', role: 'Discovered induced magnetic field evidence for a subsurface saline ocean' },
       { name: 'Europa Clipper', year: '2024–Present', agency: 'NASA', role: 'Dedicated mission equipped with ice-penetrating radar to confirm habitability' }
@@ -218,7 +218,7 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#facc15',
     eyebrowColor: '#fef08a',
     distanceAU: '5.203 AU',
-    textureThumb: 'textures/2k_moon.jpg',
+    textureThumb: 'textures/thumbs/moon.webp',
     monographText:
       'THE MOST VOLCANICALLY ACTIVE BODY IN THE SOLAR SYSTEM, SCARRED BY HUNDREDS OF ACTIVE VOLCANOES DRIVEN BY INTENSE GRAVITATIONAL TIDAL FRICTION.',
     extendedLore:
@@ -235,7 +235,7 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#cbd5e1',
     eyebrowColor: '#e2e8f0',
     distanceAU: '5.203 AU',
-    textureThumb: 'textures/2k_moon.jpg',
+    textureThumb: 'textures/thumbs/moon.webp',
     monographText:
       'THE LARGEST MOON IN THE SOLAR SYSTEM, EVEN EXCEEDING MERCURY IN DIAMETER, AND THE ONLY SATELLITE BEARING AN INTERNALLY GENERATED MAGNETIC FIELD.',
     extendedLore:
@@ -252,11 +252,11 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#f59e0b',
     eyebrowColor: '#fde68a',
     distanceAU: '9.539 AU',
-    textureThumb: 'textures/2k_moon.jpg',
+    textureThumb: 'textures/thumbs/moon.webp',
     monographText:
       'THE ONLY MOON WITH A DENSE ATMOSPHERE AND STABLE SURFACE SEAS, WHERE METHANE AND ETHANE FORM A COMPLETE METEOROLOGICAL HYDROLOGIC CYCLE.',
     extendedLore:
-      'Exceeding Mercury in size, Titan possesses an orange smoggy atmosphere 1.5 times denser than Earth\'s sea-level pressure. Cryogenic rivers carve canyon networks feeding liquid hydrocarbon seas like Kraken Mare.',
+      'Exceeding Mercury in size, Titan possesses an orange smoggy atmosphere whose surface pressure is about 1.5 times Earth\'s at sea level. Cryogenic rivers carve canyon networks feeding liquid hydrocarbon seas like Kraken Mare.',
     missions: [
       { name: 'Cassini-Huygens', year: '2004–2017', agency: 'NASA / ESA', role: 'Huygens landed directly on Titan\'s surface in 2005' },
       { name: 'Dragonfly', year: 'Planned 2028', agency: 'NASA', role: 'Rotorcraft lander to explore prebiotic organic chemistry' }
@@ -269,11 +269,11 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#e0f2fe',
     eyebrowColor: '#f0f9ff',
     distanceAU: '9.539 AU',
-    textureThumb: 'textures/2k_moon.jpg',
+    textureThumb: 'textures/thumbs/moon.webp',
     monographText:
       'AN IMMACULATE WORLD OF PURE REFLECTIVE ICE, ERUPTING GIANT HYDROTHERMAL GEYSERS FROM TIGER STRIPES OVER ITS SOUTH POLAR TERRAIN.',
     extendedLore:
-      'Enceladus possesses a global liquid saltwater ocean in direct physical contact with an active hydrothermal rocky seafloor. Cassini detected complex macromolecules and molecular hydrogen in its plumes, confirming active serpentinization.',
+      'Enceladus possesses a global liquid saltwater ocean in direct physical contact with an active hydrothermal rocky seafloor. Cassini detected complex organic molecules and molecular hydrogen in its plumes, pointing to ongoing hydrothermal chemistry on the seafloor.',
     missions: [
       { name: 'Cassini', year: '2005–2017', agency: 'NASA / ESA', role: 'Flew directly through erupting plumes, sampling water vapor, salts, and organics' }
     ]
@@ -285,7 +285,7 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#a1a1aa',
     eyebrowColor: '#d4d4d8',
     distanceAU: '2.767 AU',
-    textureThumb: 'textures/2k_moon.jpg',
+    textureThumb: 'textures/thumbs/moon.webp',
     monographText:
       'EMPRESS OF THE ASTEROID BELT, HOLDING A THIRD OF ITS ENTIRE MASS. AN ICE-RICH RELICT WORLD FEATURING RADIANT SODIUM CARBONATE SALT DOMES.',
     extendedLore:
@@ -301,7 +301,7 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     accentColor: '#ffaa33',
     eyebrowColor: '#ffe4a0',
     distanceAU: '0.000 AU',
-    textureThumb: 'textures/2k_sun.jpg',
+    textureThumb: 'textures/thumbs/sun.webp',
     monographText:
       'THE GLOWING HEART OF OUR SYSTEM, CONTAINING OVER NINETY-NINE POINT EIGHT PERCENT OF ALL MASS. A THERMONUCLEAR ENGINE POWERING ALL LIGHT, LIFE, AND GRAVITATIONAL HARMONY.',
     extendedLore:
@@ -318,8 +318,8 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     eyebrow: 'SUPERMASSIVE BLACK HOLE',
     accentColor: '#f59e0b',
     eyebrowColor: '#fde68a',
-    distanceAU: '1.65 × 10⁹ AU (26,990 LY)',
-    textureThumb: 'textures/milky_way_disk.png',
+    distanceAU: '1.71 × 10⁹ AU (26,990 LY)',
+    textureThumb: 'textures/thumbs/milky_way.webp',
     monographText:
       'THE 4.3 MILLION SOLAR MASS SUPERMASSIVE BLACK HOLE AT THE DYNAMICAL HEART OF THE MILKY WAY. ITS EVENT HORIZON TRAPS ALL LIGHT, BENDING SPACETIME INTO A RELATIVISTIC PHOTON RING.',
     extendedLore:
@@ -346,9 +346,9 @@ export function getPlanetNarrative(name: string): PlanetNarrative {
     accentColor: '#93c5fd',
     eyebrowColor: '#bfdbfe',
     distanceAU: '—',
-    textureThumb: 'textures/2k_moon.jpg',
+    textureThumb: 'textures/thumbs/moon.webp',
     monographText: `${name.toUpperCase()} IS A DOCUMENTED COMPONENT OF THE SOLAR SYSTEM CATALOGUE.`,
-    extendedLore: `${name} is catalogued under the NASA JPL DE440 ephemeris model.`,
+    extendedLore: `${name}'s orbit is computed from NASA JPL orbital elements (Horizons / Small-Body Database).`,
     missions: []
   };
 }

@@ -22,9 +22,13 @@ describe('Phase 1 — Parent-Relative Moon Orbital Mechanics & GM Validation', (
     expect(periodDays).toBeCloseTo(27.32, 1);
     expect(periodDays).toBeCloseTo(moon.orbit.orbitalPeriodDays, 1);
 
-    // Propagate over exactly 1 orbital period: mean anomaly must advance by ~360 deg
+    // Propagate over exactly 1 anomalistic period (mean anomaly advances 360°): the radius must repeat.
+    // The catalogue drives the Moon with its JPL mean motion plus apsidal/nodal precession, so the
+    // anomalistic period (~27.55 d) is used rather than the two-body period.
+    const anomalisticDays = 360.0 / moon.orbit.meanMotionDegPerDay!;
+    expect(anomalisticDays).toBeCloseTo(27.55, 1);
     const state0 = KeplerSolver.propagate(moon.orbit, 0, mu);
-    const state1 = KeplerSolver.propagate(moon.orbit, periodDays, mu);
+    const state1 = KeplerSolver.propagate(moon.orbit, anomalisticDays, mu);
 
     // True anomaly and position must complete a full cycle
     const distDiff = Math.abs(state1.distanceKm - state0.distanceKm);

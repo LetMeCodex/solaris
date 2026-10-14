@@ -1,7 +1,9 @@
+import { SurfaceAction } from './ui/HUD/SurfacePanel';
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { SolarSystemScene, TelemetryData } from './rendering/SolarSystemScene';
 import { FlightHUD } from './ui/HUD/FlightHUD';
 import { ScaleMode } from './rendering/RenderSpaceTransform';
+import { LensProfileName } from './rendering/LensPipeline';
 
 export const App: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -17,10 +19,11 @@ export const App: React.FC = () => {
       setTelemetry(data);
     });
     sceneRef.current = scene;
-    (window as any).__solaris_scene = scene;
+    // Debug / automation handle (used by visual checks)
+    (window as unknown as { __solaris_scene?: SolarSystemScene }).__solaris_scene = scene;
 
     return () => {
-      delete (window as any).__solaris_scene;
+      delete (window as unknown as { __solaris_scene?: SolarSystemScene }).__solaris_scene;
       scene.dispose();
       sceneRef.current = null;
     };
@@ -29,6 +32,9 @@ export const App: React.FC = () => {
   const handleSelectPlanet = useCallback((name: string) => {
     sceneRef.current?.selectBody(name);
   }, []);
+
+  // Display-rate camera state for the HUD instruments (read on requestAnimationFrame)
+  const getView = useCallback(() => sceneRef.current?.getViewState(), []);
 
   const handleResetView = useCallback(() => {
     sceneRef.current?.resetView();
@@ -74,6 +80,42 @@ export const App: React.FC = () => {
     sceneRef.current?.toggleOrbits();
   }, []);
 
+  const handleSetLens = useCallback((name: LensProfileName) => {
+    sceneRef.current?.setLensProfile(name);
+  }, []);
+
+  const handleFlyToLandmark = useCallback((id: string) => {
+    sceneRef.current?.flyToLandmark(id);
+  }, []);
+
+  const handleExplorerDaylight = useCallback((on: boolean) => {
+    sceneRef.current?.setExplorerDaylight(on);
+  }, []);
+
+  const handleSurface = useCallback((a: SurfaceAction) => {
+    const sc = sceneRef.current;
+    if (!sc) return;
+    switch (a.type) {
+      case 'enter': sc.enterSurface(); break;
+      case 'exit': sc.exitSurface(); break;
+      case 'magnification': sc.setSurfaceMagnification(a.value); break;
+      case 'atmosphere': sc.setSurfaceAtmosphere(a.on); break;
+      case 'time': sc.setSurfaceTimeOfDay(a.what); break;
+      case 'lookAt': sc.surfaceLookAt(a.name); break;
+      case 'resetZoom': sc.resetSurfaceZoom(); break;
+      case 'skyFrom': sc.enterSkyView(a.body, a.facing); break;
+    }
+  }, []);
+
+  const handleHorizon = useCallback((on: boolean) => {
+    if (on) sceneRef.current?.enterHorizonView();
+    else sceneRef.current?.exitHorizonView();
+  }, []);
+
+  const handleCycleLens = useCallback(() => {
+    sceneRef.current?.cycleLensProfile();
+  }, []);
+
   const handleJumpToScale = useCallback((domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic' | 'sgr_a') => {
     sceneRef.current?.jumpToScale(domain);
   }, []);
@@ -86,6 +128,7 @@ export const App: React.FC = () => {
       {/* Flight HUD Overlay */}
       <FlightHUD
         telemetry={telemetry}
+        getView={getView}
         onSelectPlanet={handleSelectPlanet}
         onResetView={handleResetView}
         onTogglePlay={handleTogglePlay}
@@ -98,6 +141,12 @@ export const App: React.FC = () => {
         onToggleAsteroidBelt={handleToggleAsteroidBelt}
         onToggleOrbits={handleToggleOrbits}
         onJumpToScale={handleJumpToScale}
+        onSetLens={handleSetLens}
+        onCycleLens={handleCycleLens}
+        onFlyToLandmark={handleFlyToLandmark}
+        onExplorerDaylight={handleExplorerDaylight}
+        onSurface={handleSurface}
+        onHorizon={handleHorizon}
       />
     </div>
   );
