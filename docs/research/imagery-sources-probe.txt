@@ -1,0 +1,57 @@
+== NASA Solar System Treks (WMTS, equirectangular) ==
+Moon/LRO_WAC_Mosaic_Global_303ppd_v02 caps                                                         200   application/xml              7241  ACAO=*
+   format=image/jpeg levels=0,1,2,3,4,5,6,7,8 template=https://trek.nasa.gov/tiles/Moon/EQ/LRO_WAC_Mosaic_Global_303ppd_v02/1.0.0//{Style}/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.jpg
+   tile 0/0/0 (sep '/')                                                                            200   image/jpeg                  49475  ACAO=*
+   tile 0/0/0 (sep '//')                                                                           200   image/jpeg                  49475  ACAO=*
+   tile z=8 centre                                                                                 200   image/jpeg                  31908  ACAO=*
+   tile z=9 centre                                                                                 404   text/html; charset=iso-8859-1      196  ACAO=null
+Mars/Mars_Viking_MDIM21_ClrMosaic_global_232m caps                                                 200   application/xml              7016  ACAO=*
+   format=image/jpeg levels=0,1,2,3,4,5,6,7 template=https://trek.nasa.gov/tiles/Mars/EQ/Mars_Viking_MDIM21_ClrMosaic_global_232m/1.0.0//{Style}/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.jpg
+   tile 0/0/0 (sep '/')                                                                            200   image/jpeg                  52978  ACAO=*
+   tile 0/0/0 (sep '//')                                                                           200   image/jpeg                  52978  ACAO=*
+   tile z=7 centre                                                                                 200   image/jpeg                  41331  ACAO=*
+   tile z=8 centre                                                                                 404   text/html; charset=iso-8859-1      196  ACAO=null
+Mars/Mars_MO_THEMIS-IR-Day_mosaic_global_100m_v12_clon0_ly caps                                    200   application/xml              7434  ACAO=*
+   format=image/png levels=0,1,2,3,4,5,6,7,8 template=https://trek.nasa.gov/tiles/Mars/EQ/Mars_MO_THEMIS-IR-Day_mosaic_global_100m_v12_clon0_ly/1.0.0//{Style}/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.png
+   tile 0/0/0 (sep '/')                                                                            200   image/png                   60768  ACAO=*
+   tile 0/0/0 (sep '//')                                                                           200   image/png                   60768  ACAO=*
+   tile z=8 centre                                                                                 200   image/png                   46430  ACAO=*
+   tile z=9 centre                                                                                 404   text/html; charset=iso-8859-1      196  ACAO=null
+Mercury/Mercury_MESSENGER_MDIS_Basemap_EnhancedColor_Mosaic_Global_665m caps                       200   application/xml              7193  ACAO=*
+   format=image/jpeg levels=0,1,2,3,4,5,6,7 template=https://trek.nasa.gov/tiles/Mercury/EQ/Mercury_MESSENGER_MDIS_Basemap_EnhancedColor_Mosaic_Global_665m/1.0.0//{Style}/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.jpg
+   tile 0/0/0 (sep '/')                                                                            200   image/jpeg                  70201  ACAO=*
+   tile 0/0/0 (sep '//')                                                                           200   image/jpeg                  70201  ACAO=*
+   tile z=7 centre                                                                                 200   image/jpeg                  36053  ACAO=*
+   tile z=8 centre                                                                                 404   text/html; charset=iso-8859-1      196  ACAO=null
+Mercury/Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_166m caps                                 200   application/xml              7123  ACAO=*
+   format=image/jpeg levels=0,1,2,3,4,5,6,7 template=https://trek.nasa.gov/tiles/Mercury/EQ/Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_166m/1.0.0//{Style}/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.jpg
+   tile 0/0/0 (sep '/')                                                                            200   image/jpeg                  41994  ACAO=*
+   tile 0/0/0 (sep '//')                                                                           200   image/jpeg                  41994  ACAO=*
+   tile z=7 centre                                                                                 200   image/jpeg                  46571  ACAO=*
+   tile z=8 centre                                                                                 404   text/html; charset=iso-8859-1      196  ACAO=null
+Venus/Venus_Magellan_C3-MDIR_Colorized_Global_Mosaic_6600m caps                                    404   text/html; charset=iso-8859-1      196  ACAO=null
+Venus/Venus_Magellan_Global_C3-MDIR_Mosaic_2025m caps                                              404   text/html; charset=iso-8859-1      196  ACAO=null
+Ceres/Ceres_Dawn_FC_HAMO_ClrShade_DLR_Global_60ppd_Oct2016 caps                                    200   application/xml              6549  ACAO=*
+   format=image/jpeg levels=0,1,2,3,4,5 template=https://trek.nasa.gov/tiles/Ceres/EQ/Ceres_Dawn_FC_HAMO_ClrShade_DLR_Global_60ppd_Oct2016/1.0.0//{Style}/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.jpg
+   tile 0/0/0 (sep '/')                                                                            200   image/jpeg                  69270  ACAO=*
+   tile 0/0/0 (sep '//')                                                                           200   image/jpeg                  69270  ACAO=*
+   tile z=5 centre                                                                                 200   image/jpeg                  35938  ACAO=*
+   tile z=6 centre                                                                                 404   text/html; charset=iso-8859-1      196  ACAO=null
+Vesta/Vesta_Dawn_HAMO_DTM_DLR_Global_48ppd caps                                                    200   application/xml              6461  ACAO=*
+   format=image/png levels=0,1,2,3,4,5 template=https://trek.nasa.gov/tiles/Vesta/EQ/Vesta_Dawn_HAMO_DTM_DLR_Global_48ppd/1.0.0//{Style}/{TileMatrixSet}/{TileMatrix}/{TileRow}/{TileCol}.png
+   tile 0/0/0 (sep '/')                                                                            404   text/html; charset=iso-8859-1      196  ACAO=null
+   tile 0/0/0 (sep '//')                                                                           404   text/html; charset=iso-8859-1      196  ACAO=null
+   tile z=5 centre                                                                                 404   text/html; charset=iso-8859-1      196  ACAO=null
+   tile z=6 centre                                                                                 404   text/html; charset=iso-8859-1      196  ACAO=null
+
+== NASA GIBS (WMTS, EPSG:4326) ==
+BlueMarble_NextGeneration/default/500m/0/0/0.jpeg                                                  200   image/jpeg                  29474  ACAO=*
+BlueMarble_NextGeneration/default/default/500m/0/0/0.jpeg                                          200   image/jpeg                  29474  ACAO=*
+BlueMarble_NextGeneration/default/2004-08-01/500m/0/0/0.jpeg                                       200   image/jpeg                  29474  ACAO=*
+   z=7                                                                                             200   image/jpeg                   4724  ACAO=*
+   z=8                                                                                             400   text/xml                      427  ACAO=*
+BlueMarble_ShadedRelief_Bathymetry/default/500m/0/0/0.jpeg                                         200   image/jpeg                  38143  ACAO=*
+BlueMarble_ShadedRelief_Bathymetry/default/default/500m/0/0/0.jpeg                                 200   image/jpeg                  38143  ACAO=*
+BlueMarble_ShadedRelief_Bathymetry/default/2004-08-01/500m/0/0/0.jpeg                              200   image/jpeg                  38143  ACAO=*
+   z=7                                                                                             200   image/jpeg                   5560  ACAO=*
+   z=8                                                                                             400   text/xml                      427  ACAO=*
