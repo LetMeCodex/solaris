@@ -4,7 +4,7 @@
 [![React](https://img.shields.io/badge/React-18-blue?style=flat&logo=react)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?style=flat&logo=typescript)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-5-646CFF?style=flat&logo=vite)](https://vitejs.dev/)
-[![Tests](https://img.shields.io/badge/Tests-104%20passing-success?style=flat&logo=vitest)](https://vitest.dev/)
+[![Tests](https://img.shields.io/badge/Tests-110%20passing-success?style=flat&logo=vitest)](https://vitest.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 
 **Live:** https://letmecodex.github.io/solaris/
@@ -55,6 +55,21 @@ Each zoom tier is drawn at its own scale, and the HUD distance readout converts 
 
 The galaxy is an artist's face-on disk (NASA/JPL-Caltech/ESO, R. Hurt) plus 14,000 procedurally placed stars, oriented to the real galactic frame. The LMC, SMC and Sagittarius dwarf are placed at their measured galactocentric positions. Sagittarius A* uses GRAVITY/EHT physical parameters for its readouts; the shader is an artistic ray-marched rendering with approximate light bending, not a general-relativistic ray tracer.
 
+### Observation camera & lens
+
+Selecting a body flies an *observation camera* to it, modelled on a real spacecraft camera:
+
+- **Distance from real radii.** The camera holds an altitude that reproduces the reference shot over Earth (13,500 km ≈ 2.12 R⊕) and scales with √R, so NASA radii keep their ordering on screen. Jupiter overfills the frame (≈ 38° angular radius), Earth spans about two-thirds of it (≈ 19°), and the Moon is clearly smaller (≈ 11°). The HUD reports the altitude above the surface.
+- **Wide 55° lens, off-centre composition.** The vertical FOV is ≈ 87° horizontally on 16:9. The planet sits in the left third, so true rectilinear perspective stretches its limb towards the frame edge. That is where the spherical, "seen through a lens" curvature comes from — the geometry itself, not a fake warp.
+- **Milky Way-aware vantage.** Among sunlit three-quarter viewpoints (≈ 55° phase), the camera chooses the one whose open side of the frame looks along the real galactic plane, so the band crosses behind the planet. Saturn's view is lifted 30° out of the ring plane on the sunlit side.
+- **Free look.** Right-drag or the arrow keys turn the camera in place, like steering an observer's head. Double-click returns to the composed shot.
+- **Lens profiles** (`L` cycles):
+  - *Cinematic*: bloom from sources brighter than white, mild barrel distortion, off-axis softness, lateral chromatic aberration, natural vignetting, film grain, and rotational motion blur when the camera turns.
+  - *Fisheye*: a strong barrel lens with a circular image circle.
+  - *Clean*: no post-processing, for scientific inspection.
+  - Motion blur re-projects each pixel's view ray with the previous frame's orientation. It is exact for the sky, and a tracked planet that moves with the camera is not smeared. It is disabled under `prefers-reduced-motion`.
+- **Resolved Milky Way.** 26,000 pinpoint stars are importance-sampled from the Gaia map (weight ∝ brightness² × cos b), so star density follows the real band, bulge and dust lanes. The panorama's off-plane count noise is filtered to a clean black sky.
+
 ### Scale modes
 
 - **Exploration** (default): compressed distances; planet sizes keep true ratios to Earth (Sun shrunk to 48 units).
@@ -77,6 +92,10 @@ The galaxy is an artist's face-on disk (NASA/JPL-Caltech/ESO, R. Hurt) plus 14,0
 | `O` | Orbit lines |
 | `C` | Constellation figures |
 | `B` | Asteroid belt |
+| `L` | Cycle lens: Cinematic / Fisheye / Clean |
+| Arrow keys / right-drag | Free look (turn the camera in place) |
+| Double-click | Return free look to the composed shot |
+| Left-drag / Shift-drag or middle-drag / wheel | Orbit / pan / zoom |
 | `Esc` | Close drawers / reset to overview |
 
 ---
@@ -92,7 +111,7 @@ npm run dev          # http://localhost:5173/solaris/
 
 | Script | What it does |
 | :--- | :--- |
-| `npm test` | 104 Vitest tests in 16 files: Kepler solver, ephemeris accuracy against JPL/VSOP87 references, IAU orientation, sky frames, scale model, catalogue integrity, texture cache, camera rig |
+| `npm test` | 110 Vitest tests in 17 files: Kepler solver, ephemeris accuracy against JPL/VSOP87 references, IAU orientation, sky frames, scale model, catalogue integrity, texture cache, camera rig, observation framing and lens warp |
 | `npm run lint` | ESLint (TypeScript + React hooks rules) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run build` | type-check, then a Vite production build into `dist/` |

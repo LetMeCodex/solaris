@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { SolarSystemScene, TelemetryData } from './rendering/SolarSystemScene';
 import { FlightHUD } from './ui/HUD/FlightHUD';
 import { ScaleMode } from './rendering/RenderSpaceTransform';
+import { LensProfileName } from './rendering/LensPipeline';
 
 export const App: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -75,6 +76,14 @@ export const App: React.FC = () => {
     sceneRef.current?.toggleOrbits();
   }, []);
 
+  const handleSetLens = useCallback((name: LensProfileName) => {
+    sceneRef.current?.setLensProfile(name);
+  }, []);
+
+  const handleCycleLens = useCallback(() => {
+    sceneRef.current?.cycleLensProfile();
+  }, []);
+
   const handleJumpToScale = useCallback((domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic' | 'sgr_a') => {
     sceneRef.current?.jumpToScale(domain);
   }, []);
@@ -99,6 +108,8 @@ export const App: React.FC = () => {
         onToggleAsteroidBelt={handleToggleAsteroidBelt}
         onToggleOrbits={handleToggleOrbits}
         onJumpToScale={handleJumpToScale}
+        onSetLens={handleSetLens}
+        onCycleLens={handleCycleLens}
       />
     </div>
   );

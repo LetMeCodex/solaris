@@ -145,6 +145,33 @@ export const DEFAULT_MOON_FRAMING: FramingProfile = {
   preferredElevation: Math.PI * 0.38,
 };
 
+/**
+ * Observation lens (vertical FOV, degrees). Three.js FOV is vertical, so on a 16:9 screen this is
+ * ≈ 87° horizontally: wide enough that an off-centre globe shows real rectilinear perspective
+ * stretch towards the frame edge — the "camera lens" look of the reference footage.
+ */
+export const OBSERVATION_FOV_DEG = 55.0;
+
+/**
+ * The reference shot holds 13,517 km above Earth's surface, i.e. 2.12 Earth radii of altitude.
+ * Altitude scales with √R so that bodies keep the ordering of their real NASA radii on screen:
+ * bigger worlds subtend bigger angles (Jupiter ≈ 38°, Earth ≈ 19°, the Moon ≈ 11° angular radius)
+ * while small moons remain inspectable.
+ */
+export const REFERENCE_ALTITUDE_EARTH_RADII = 2.12;
+const EARTH_RADIUS_KM = 6371.0;
+
+/** Ratio (camera-to-centre distance) / (body radius) for an observation shot of a body. */
+export function observationDistanceRatio(physicalRadiusKm: number, minRatio: number = 1.25): number {
+  const k = 1.0 + REFERENCE_ALTITUDE_EARTH_RADII * Math.sqrt(EARTH_RADIUS_KM / Math.max(1e-3, physicalRadiusKm));
+  return Math.max(minRatio, k);
+}
+
+/** Angular radius (degrees) of a sphere seen from distance ratio k = d / R. */
+export function angularRadiusDeg(distanceRatio: number): number {
+  return (Math.asin(Math.min(1, 1 / distanceRatio)) * 180) / Math.PI;
+}
+
 export class CameraRig {
   public camera: THREE.PerspectiveCamera;
 
@@ -214,6 +241,18 @@ export class CameraRig {
 
   // Damping factor for silky inertial responsiveness
   private readonly damping: number = 0.12;
+
+  // Free-look ("steer") offset applied on top of the composed shot: the observer turns their head
+  // in place, like the reference footage, instead of orbiting the target
+  private lookYaw: number = 0;
+  private lookPitch: number = 0;
+  private targetLookYaw: number = 0;
+  private targetLookPitch: number = 0;
+  private isLooking: boolean = false;
+  private heldLookKeys: Set<string> = new Set();
+  private lastLookUpdate: number = performance.now();
+  private static readonly LOOK_KEY_RATE = 0.9; // rad/s at the observation lens
+  private static readonly MAX_LOOK_PITCH = THREE.MathUtils.degToRad(80);
 
   private domElement: HTMLElement;
 
@@ -372,6 +411,7 @@ export class CameraRig {
         this.camera.aspect
       );
       this.camera.lookAt(this.aimPoint);
+      this.applyLookOffset();
 
       // Dynamic depth buffer calibration: razor-sharp closeups without z-fighting or skybox clipping
       const clearance = Math.max(0.05, curRadius - this.focusedRadius);
@@ -460,6 +500,7 @@ export class CameraRig {
       this.camera.aspect
     );
     this.camera.lookAt(this.aimPoint);
+    this.applyLookOffset();
 
     // Dynamic depth buffer calibration across 9 orders of magnitude
     const distToCenter = this.spherical.radius;
@@ -495,7 +536,45 @@ export class CameraRig {
   }
 
   public update(): void {
+    this.updateLook();
     this.updateCameraPosition();
+  }
+
+  /** Integrate held arrow keys and damp the free-look angles. */
+  private updateLook(): void {
+    const now = performance.now();
+    const dt = Math.min(0.1, Math.max(0, (now - this.lastLookUpdate) * 0.001));
+    this.lastLookUpdate = now;
+
+    if (this.heldLookKeys.size > 0) {
+      const rate = CameraRig.LOOK_KEY_RATE * (this.camera.fov / OBSERVATION_FOV_DEG) * dt;
+      if (this.heldLookKeys.has('ArrowLeft')) this.targetLookYaw += rate;
+      if (this.heldLookKeys.has('ArrowRight')) this.targetLookYaw -= rate;
+      if (this.heldLookKeys.has('ArrowUp')) this.targetLookPitch += rate;
+      if (this.heldLookKeys.has('ArrowDown')) this.targetLookPitch -= rate;
+      this.lastInteractionTime = now;
+    }
+    this.targetLookPitch = THREE.MathUtils.clamp(this.targetLookPitch, -CameraRig.MAX_LOOK_PITCH, CameraRig.MAX_LOOK_PITCH);
+
+    this.lookYaw += (this.targetLookYaw - this.lookYaw) * this.damping;
+    this.lookPitch += (this.targetLookPitch - this.lookPitch) * this.damping;
+  }
+
+  /** Turn the camera in place by the free-look angles (yaw about its up axis, then pitch). */
+  private applyLookOffset(): void {
+    if (Math.abs(this.lookYaw) < 1e-6 && Math.abs(this.lookPitch) < 1e-6) return;
+    this.camera.rotateY(this.lookYaw);
+    this.camera.rotateX(this.lookPitch);
+  }
+
+  /** Smoothly return the free-look to the composed shot. */
+  public resetLook(): void {
+    this.targetLookYaw = 0;
+    this.targetLookPitch = 0;
+  }
+
+  public getLookAngles(): { yaw: number; pitch: number } {
+    return { yaw: this.lookYaw, pitch: this.lookPitch };
   }
 
   /**
@@ -515,11 +594,16 @@ export class CameraRig {
     radius: number,
     bodyName: string = '',
     durationMs: number = 1800,
-    onComplete?: () => void
+    onComplete?: () => void,
+    physicalRadiusKm?: number
   ): void {
     this.focusedObject = object;
     this.focusedRadius = radius;
     this.shotMode = 'cinematic_observation';
+    if (physicalRadiusKm !== undefined) this.focusedPhysicalRadiusKm = physicalRadiusKm;
+    // A new shot starts looking straight at its composition
+    this.targetLookYaw = 0;
+    this.targetLookPitch = 0;
 
     if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       durationMs = 150;
@@ -533,8 +617,20 @@ export class CameraRig {
     const profile = BODY_FRAMING_PROFILES[bodyName] || (radius < 1.0 ? DEFAULT_MOON_FRAMING : DEFAULT_PLANET_FRAMING);
     this.targetNdcOffset.set(profile.ndcOffsetX, profile.ndcOffsetY);
 
-    // Calculate viewing distance based on visual radius, FOV, and target screen coverage
-    const viewingDistance = CameraRig.calculateViewingDistance(radius, profile, profile.fov);
+    const isBlackHoleShot = bodyName === 'Sagittarius A*' || bodyName === 'Sgr A*' || bodyName === 'sagittarius_a_star';
+
+    // Observation shots: distance from the body's real radius (see observationDistanceRatio) seen
+    // through the wide observation lens. Other shots keep the coverage-based framing profile.
+    let shotFov = profile.fov;
+    let viewingDistance: number;
+    if (physicalRadiusKm !== undefined && !isBlackHoleShot) {
+      // Ring systems need room; stars are kept a little further off so the corona has space
+      const minRatio = profile.effectiveRadiusMultiplier ? 2.9 : (bodyName === 'Sun' ? 1.6 : 1.25);
+      viewingDistance = radius * observationDistanceRatio(physicalRadiusKm, minRatio);
+      shotFov = OBSERVATION_FOV_DEG;
+    } else {
+      viewingDistance = CameraRig.calculateViewingDistance(radius, profile, profile.fov);
+    }
     this.focusDistance = viewingDistance;
 
     // Direction to Sun (Sun sits at 0, 0, 0)
@@ -546,20 +642,20 @@ export class CameraRig {
       toSun.normalize();
     }
 
-    // Natural 3/4 sunlit initial vantage point
-    // Orbital tangent vector in X-Z plane
-    const side = new THREE.Vector3(-toSun.z, 0, toSun.x).normalize();
-    const up = new THREE.Vector3(0, 1, 0);
-
     let cameraOffset: THREE.Vector3;
     if (isSun) {
       cameraOffset = new THREE.Vector3(0, 0.40, 1.0).normalize().multiplyScalar(viewingDistance);
     } else if (bodyName === 'Saturn') {
-      // 32° oblique elevation to show Saturn's ring system and shadow
-      cameraOffset = new THREE.Vector3()
-        .copy(toSun).multiplyScalar(-0.35)
-        .addScaledVector(side, 0.65)
-        .addScaledVector(up, 0.58)
+      // Sunlit vantage lifted ~30° out of the ring plane, on the side of the rings the Sun lights,
+      // so the globe, the open ring system and its shadow on the rings are all visible
+      const q = new THREE.Quaternion();
+      object.getWorldQuaternion(q);
+      const pole = new THREE.Vector3(0, 1, 0).applyQuaternion(q);
+      if (pole.dot(toSun) < 0) pole.negate();
+      const base = CameraRig.chooseObservationVantage(toSun, profile.ndcOffsetX);
+      base.addScaledVector(pole, -base.dot(pole)).normalize();
+      cameraOffset = base.multiplyScalar(Math.cos(THREE.MathUtils.degToRad(30)))
+        .addScaledVector(pole, Math.sin(THREE.MathUtils.degToRad(30)))
         .normalize()
         .multiplyScalar(viewingDistance);
     } else if (bodyName === 'Sagittarius A*' || bodyName === 'Sgr A*' || bodyName === 'sagittarius_a_star') {
@@ -571,14 +667,9 @@ export class CameraRig {
       const worldDir = localDir.applyQuaternion(objQuat);
       cameraOffset = worldDir.multiplyScalar(viewingDistance);
     } else {
-      // 3/4 sunlit vantage point: illuminated surface + terminator + limb
-      // Looking past the planet towards the deep cosmos and Milky Way
-      cameraOffset = new THREE.Vector3()
-        .copy(toSun).multiplyScalar(0.48)
-        .addScaledVector(side, 0.72)
-        .addScaledVector(up, 0.36)
-        .normalize()
-        .multiplyScalar(viewingDistance);
+      // Sunlit three-quarter vantage, rotated about the Sun line so that the real Milky Way band
+      // fills the open sky beside the planet (see chooseObservationVantage)
+      cameraOffset = CameraRig.chooseObservationVantage(toSun, profile.ndcOffsetX).multiplyScalar(viewingDistance);
     }
 
     const targetSph = new THREE.Spherical().setFromVector3(cameraOffset);
@@ -602,7 +693,7 @@ export class CameraRig {
       targetRadius: radius,
       targetBodyName: bodyName,
       targetShotMode: 'cinematic_observation',
-      targetFov: profile.fov,
+      targetFov: shotFov,
       targetNdcOffsetX: profile.ndcOffsetX,
       targetNdcOffsetY: profile.ndcOffsetY,
       targetDistance: viewingDistance,
@@ -614,11 +705,67 @@ export class CameraRig {
       onComplete: () => {
         this.spherical.copy(targetSph);
         this.targetSpherical.copy(targetSph);
-        this.camera.fov = profile.fov;
+        this.camera.fov = shotFov;
         this.currentNdcOffset.set(profile.ndcOffsetX, profile.ndcOffsetY);
         if (onComplete) onComplete();
       }
     };
+  }
+
+  /**
+   * Pick the observer's direction (unit vector from the planet towards the camera) for a sunlit
+   * observation shot. Candidates keep a fixed ~55° phase angle (lit hemisphere, terminator and limb
+   * all visible) and are rotated around the Sun–planet line. Each is scored by how close the open
+   * part of the frame — the side opposite the off-centre planet — lies to the galactic plane, with
+   * a bonus towards the bright galactic centre and a mild preference for looking slightly down.
+   */
+  public static chooseObservationVantage(toSun: THREE.Vector3, ndcOffsetX: number = -0.34): THREE.Vector3 {
+    const s = toSun.clone().normalize();
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    const a = new THREE.Vector3().crossVectors(worldUp, s);
+    if (a.lengthSq() < 1e-8) a.set(1, 0, 0);
+    a.normalize();
+    const b = new THREE.Vector3().crossVectors(s, a).normalize();
+
+    const gal = CoordinateFrames.galacticBasisThree();
+    const ngp = new THREE.Vector3(...gal.z);
+    const gc = new THREE.Vector3(...gal.x);
+
+    const phase = THREE.MathUtils.degToRad(55.0);
+    // The open sky sits on the opposite side of the frame from the planet
+    const openSide = ndcOffsetX <= 0 ? 1 : -1;
+
+    let best = new THREE.Vector3().copy(s).multiplyScalar(Math.cos(phase)).addScaledVector(a, Math.sin(phase));
+    let bestScore = -Infinity;
+    const dir = new THREE.Vector3();
+    const forward = new THREE.Vector3();
+    const right = new THREE.Vector3();
+    const camUp = new THREE.Vector3();
+    const openSky = new THREE.Vector3();
+
+    for (let i = 0; i < 24; i++) {
+      const alpha = (i / 24) * Math.PI * 2;
+      dir.copy(s).multiplyScalar(Math.cos(phase))
+        .addScaledVector(a, Math.sin(phase) * Math.cos(alpha))
+        .addScaledVector(b, Math.sin(phase) * Math.sin(alpha))
+        .normalize();
+      if (Math.abs(dir.y) > 0.75) continue; // avoid near-polar views of the ecliptic
+
+      forward.copy(dir).negate();
+      right.crossVectors(forward, worldUp).normalize();
+      camUp.crossVectors(right, forward).normalize();
+      openSky.copy(forward).addScaledVector(right, 0.85 * openSide).normalize();
+
+      const bandScore = 1.0 - Math.abs(openSky.dot(ngp));
+      const coreScore = Math.max(0, openSky.dot(gc)) * 0.35;
+      const elevationPenalty = Math.abs(dir.y - 0.25) * 0.4;
+      const score = bandScore + coreScore - elevationPenalty;
+      if (score > bestScore) {
+        bestScore = score;
+        best = dir.clone();
+      }
+    }
+    return best.normalize();
   }
 
   public focusOn(object: THREE.Object3D, radius: number, durationMs: number = 1800): void {
@@ -626,6 +773,7 @@ export class CameraRig {
   }
 
   public resetToOverview(durationMs: number = 1600): void {
+    this.resetLook();
     this.focusedObject = null;
     this.focusedRadius = 48.0;
     this.shotMode = 'deep_space_overview';
@@ -834,6 +982,10 @@ export class CameraRig {
         : (this.focusedPhysicalRadiusKm && this.focusedRadius > 0
           ? this.focusedPhysicalRadiusKm / this.focusedRadius
           : 6371.0 / 2.4); // Earth-based fallback
+      // Around a body, report altitude above its surface (as an observation camera would)
+      if (this.focusedObject && this.focusedRadius > 0 && d > this.focusedRadius) {
+        return { distance: d, formatted: `ALT ${fmtKm((d - this.focusedRadius) * kmPerUnit)}`, domain: 'planetary' };
+      }
       return { distance: d, formatted: fmtKm(d * kmPerUnit), domain: 'planetary' };
     }
     if (d < 3500.0) {
@@ -895,8 +1047,11 @@ export class CameraRig {
       } else {
         this.isOrbiting = true;
       }
-    } else if (e.button === 2) {
+    } else if (e.button === 1) {
       this.isPanning = true;
+    } else if (e.button === 2) {
+      // Right-drag steers the observer's view in place
+      this.isLooking = true;
     }
 
     this.previousMousePosition = { x: e.clientX, y: e.clientY };
@@ -905,16 +1060,25 @@ export class CameraRig {
   private onMouseUp = (): void => {
     this.isOrbiting = false;
     this.isPanning = false;
+    this.isLooking = false;
     this.lastInteractionTime = performance.now();
   };
 
   private onMouseMove = (e: MouseEvent): void => {
     this.lastInteractionTime = performance.now();
-    if (!this.isOrbiting && !this.isPanning) return;
+    if (!this.isOrbiting && !this.isPanning && !this.isLooking) return;
 
     const deltaX = e.clientX - this.previousMousePosition.x;
     const deltaY = e.clientY - this.previousMousePosition.y;
     this.previousMousePosition = { x: e.clientX, y: e.clientY };
+
+    if (this.isLooking) {
+      // Angular speed proportional to the lens so a drag moves the sky with the cursor
+      const radPerPx = THREE.MathUtils.degToRad(this.camera.fov) / Math.max(1, this.domElement.clientHeight || 800);
+      this.targetLookYaw += deltaX * radPerPx;
+      this.targetLookPitch += deltaY * radPerPx;
+      return;
+    }
 
     if (this.isOrbiting) {
       const rotateSpeed = 0.005;
@@ -1017,6 +1181,29 @@ export class CameraRig {
     }
   };
 
+  private static readonly LOOK_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
+
+  private onKeyDown = (e: KeyboardEvent): void => {
+    if (!CameraRig.LOOK_KEYS.has(e.key)) return;
+    const t = e.target as HTMLElement | null;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    e.preventDefault();
+    this.heldLookKeys.add(e.key);
+  };
+
+  private onKeyUp = (e: KeyboardEvent): void => {
+    this.heldLookKeys.delete(e.key);
+  };
+
+  private onWindowBlur = (): void => {
+    this.heldLookKeys.clear();
+    this.isLooking = false;
+  };
+
+  private onDoubleClick = (): void => {
+    this.resetLook();
+  };
+
   private setupEventListeners(element: HTMLElement): void {
     this.domElement = element;
     if (element && element.addEventListener) {
@@ -1024,6 +1211,13 @@ export class CameraRig {
       element.addEventListener('wheel', this.onWheel, { passive: false });
       element.addEventListener('contextmenu', this.onContextMenu);
       element.addEventListener('touchstart', this.onTouchStart, { passive: true });
+      element.addEventListener('dblclick', this.onDoubleClick);
+    }
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('keydown', this.onKeyDown);
+      window.addEventListener('keyup', this.onKeyUp);
+      window.addEventListener('blur', this.onWindowBlur);
     }
 
     if (typeof window !== 'undefined') {
@@ -1045,8 +1239,12 @@ export class CameraRig {
       this.domElement.removeEventListener('wheel', this.onWheel);
       this.domElement.removeEventListener('contextmenu', this.onContextMenu);
       this.domElement.removeEventListener('touchstart', this.onTouchStart);
+      this.domElement.removeEventListener('dblclick', this.onDoubleClick);
     }
     if (typeof window !== 'undefined') {
+      window.removeEventListener('keydown', this.onKeyDown);
+      window.removeEventListener('keyup', this.onKeyUp);
+      window.removeEventListener('blur', this.onWindowBlur);
       window.removeEventListener('mouseup', this.onMouseUp);
       window.removeEventListener('mousemove', this.onMouseMove);
       window.removeEventListener('touchmove', this.onTouchMove);

@@ -3,6 +3,7 @@ import { TelemetryData } from '../../rendering/SolarSystemScene';
 import { CatalogueManager } from '../../data/CatalogueManager';
 import { ScaleMode } from '../../rendering/RenderSpaceTransform';
 import { getPlanetNarrative, PLANET_NARRATIVES } from '../../data/PlanetNarratives';
+import { LENS_ORDER, LENS_PROFILES, LensProfileName } from '../../rendering/LensPipeline';
 import {
   Play,
   Pause,
@@ -28,6 +29,8 @@ interface FlightHUDProps {
   onToggleAsteroidBelt?: () => void;
   onToggleOrbits?: () => void;
   onJumpToScale?: (domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic' | 'sgr_a') => void;
+  onSetLens?: (name: LensProfileName) => void;
+  onCycleLens?: () => void;
 }
 
 type CatalogueFilter = 'all' | 'planet' | 'moon' | 'minor';
@@ -60,6 +63,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   onToggleAsteroidBelt,
   onToggleOrbits,
   onJumpToScale,
+  onSetLens,
+  onCycleLens,
 }) => {
   const target = telemetry?.activeTarget;
   const isPaused = telemetry?.isPaused ?? false;
@@ -73,6 +78,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const orbitsOn = telemetry?.orbitsVisible ?? true;
 
   const observerScale = telemetry?.observerScaleMetric ?? '1.00 AU';
+  const lensProfile = telemetry?.lensProfile ?? 'cinematic';
   const observerDomain = telemetry?.observerDomain ?? 'inner_system';
   const travelSpeed = telemetry?.travelSpeed ?? 0;
 
@@ -135,6 +141,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         onToggleConstellations?.();
       } else if (e.key === 'b' || e.key === 'B') {
         onToggleAsteroidBelt?.();
+      } else if (e.key === 'l' || e.key === 'L') {
+        onCycleLens?.();
       }
     };
 
@@ -145,6 +153,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
     onToggleOrbits,
     onToggleConstellations,
     onToggleAsteroidBelt,
+    onCycleLens,
     onResetView,
     isReadMoreOpen,
     isCatalogueOpen,
@@ -484,6 +493,32 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             >
               True Distances
             </button>
+          </div>
+
+          {/* Lens / optics profile */}
+          <div
+            className="flex items-center bg-black/40 backdrop-blur-md border border-white/10 rounded-full p-0.5 text-[10px] uppercase tracking-[0.2em] font-light shadow-lg"
+            role="group"
+            aria-label="Camera lens (L)"
+          >
+            {LENS_ORDER.map((name) => (
+              <button
+                key={name}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSetLens?.(name);
+                }}
+                aria-pressed={lensProfile === name}
+                title={`${LENS_PROFILES[name].label} lens (L cycles)`}
+                className={`px-3 py-1 rounded-full transition-all duration-200 ${
+                  lensProfile === name
+                    ? 'bg-white/15 text-white shadow-sm border border-white/20'
+                    : 'text-white/40 hover:text-white/80'
+                }`}
+              >
+                {LENS_PROFILES[name].label}
+              </button>
+            ))}
           </div>
 
           {/* Catalogue Index Drawer Trigger */}

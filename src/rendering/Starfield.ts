@@ -97,6 +97,7 @@ export class Starfield {
   private constellationLines?: THREE.LineSegments;
   private milkyWayMesh?: THREE.Mesh;
   private milkyWayOpacityUniform: { value: number } = { value: 1.0 };
+  private resolvedMilkyWay?: THREE.Points;
   private stardustMesh?: THREE.Points;
   public externalGalaxy: MilkyWayGalaxy;
   public travelParticles: TravelParticles;
@@ -117,6 +118,7 @@ export class Starfield {
     this.celestialGroup.name = 'celestial_infinite_sphere';
 
     this.buildMilkyWayBackground();
+    this.buildResolvedMilkyWayStars();
     this.build3DCosmicStardust();
 
     // External 3D Milky Way Galaxy model
@@ -154,13 +156,22 @@ export class Starfield {
 
         void main() {
           // Mirror u: the panorama is drawn as seen from inside the celestial sphere
-          vec4 tex = texture2D(milkyWayMap, vec2(1.0 - vUv.x, vUv.y));
-          vec3 rgb = tex.rgb;
+          vec2 uv = vec2(1.0 - vUv.x, vUv.y);
+          // The Gaia map is a star-count image: off the plane it is shot noise. A small texel-scale
+          // average removes the speckle (resolved stars are drawn separately as points).
+          vec2 t = vec2(1.0 / 4000.0, 1.0 / 2000.0);
+          vec3 rgb = texture2D(milkyWayMap, uv).rgb * 0.36;
+          rgb += texture2D(milkyWayMap, uv + vec2( t.x, 0.0)).rgb * 0.16;
+          rgb += texture2D(milkyWayMap, uv + vec2(-t.x, 0.0)).rgb * 0.16;
+          rgb += texture2D(milkyWayMap, uv + vec2(0.0,  t.y)).rgb * 0.16;
+          rgb += texture2D(milkyWayMap, uv + vec2(0.0, -t.y)).rgb * 0.16;
 
-          // Pure, natural photographic contrast matching the ESA Gaia DR3 reference (test_gaia.jpg):
-          // Deep clean space vacuum without washed-out toe or artificial fog,
-          // preserving the authentic golden galactic core and dark absorption dust lanes.
-          rgb = smoothstep(vec3(0.016), vec3(1.0), rgb);
+          // Black point above the high-latitude count noise, gentle toe so the band edges fade
+          // naturally into a deep, clean sky; keep the warm bulge and dark dust lanes.
+          rgb = max(rgb - 0.075, 0.0) / 0.925;
+          rgb = pow(rgb, vec3(1.12));
+          float l = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+          rgb = mix(vec3(l), rgb, 1.15);
 
           gl_FragColor = vec4(rgb, uOpacity);
         }
@@ -184,6 +195,131 @@ export class Starfield {
     );
     this.milkyWayMesh.quaternion.setFromRotationMatrix(basis);
     this.celestialGroup.add(this.milkyWayMesh);
+  }
+
+  /**
+   * Resolve the Milky Way into individual pinpoint stars. The Gaia panorama is importance-sampled
+   * (weight ∝ (brightness − floor)^2.2 × cos b, the solid angle of an equirectangular pixel) so that the
+   * star density follows the real galactic band, its bulge and dust lanes. Sampling is seeded and
+   * deterministic; the texture is the same file the skybox uses, so it comes from the HTTP cache.
+   */
+  private buildResolvedMilkyWayStars(count: number = 26000): void {
+    if (typeof document === 'undefined') return;
+    const baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
+    new THREE.ImageLoader().load(`${baseUrl}textures/gaia_sky.webp`, (image) => {
+      const W = 1024;
+      const H = 512;
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+      ctx.drawImage(image, 0, 0, W, H);
+      const px = ctx.getImageData(0, 0, W, H).data;
+
+      // Cumulative distribution over pixels
+      const cdf = new Float64Array(W * H);
+      let total = 0;
+      for (let y = 0; y < H; y++) {
+        const cosB = Math.cos(((0.5 - (y + 0.5) / H) * Math.PI));
+        for (let x = 0; x < W; x++) {
+          const i = (y * W + x) * 4;
+          const lum = (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2]) / 255;
+          total += Math.pow(Math.max(0, lum - 0.07), 2.2) * cosB;
+          cdf[y * W + x] = total;
+        }
+      }
+      if (total <= 0) return;
+
+      const gal = CoordinateFrames.galacticBasisThree();
+      const positions = new Float32Array(count * 3);
+      const colors = new Float32Array(count * 3);
+      const sizes = new Float32Array(count);
+      let seed = 0x5eed1234;
+      const rand = () => {
+        seed = (seed + 0x6d2b79f5) >>> 0;
+        let t = seed;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      const R = Starfield.SPHERE_RADIUS * 0.996;
+
+      for (let n = 0; n < count; n++) {
+        // Binary search the CDF
+        const target = rand() * total;
+        let lo = 0;
+        let hi = cdf.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (cdf[mid] < target) lo = mid + 1; else hi = mid;
+        }
+        const x = lo % W;
+        const y = (lo / W) | 0;
+        const u = (x + rand()) / W;
+        const v = (y + rand()) / H;
+        // Panorama convention: l = 0 at the centre, increasing to the left; b = +90° at the top
+        const l = (0.5 - u) * 2 * Math.PI;
+        const b = (0.5 - v) * Math.PI;
+        const cx = Math.cos(b) * Math.cos(l);
+        const cy = Math.cos(b) * Math.sin(l);
+        const cz = Math.sin(b);
+        positions[n * 3] = (gal.x[0] * cx + gal.y[0] * cy + gal.z[0] * cz) * R;
+        positions[n * 3 + 1] = (gal.x[1] * cx + gal.y[1] * cy + gal.z[1] * cz) * R;
+        positions[n * 3 + 2] = (gal.x[2] * cx + gal.y[2] * cy + gal.z[2] * cz) * R;
+
+        // Tint from the local band colour, pushed towards white (resolved stars are less red
+        // than the integrated, dust-reddened glow)
+        const i = lo * 4;
+        const mx = Math.max(px[i], px[i + 1], px[i + 2], 1);
+        const w = 0.55;
+        colors[n * 3] = (px[i] / mx) * (1 - w) + w;
+        colors[n * 3 + 1] = (px[i + 1] / mx) * (1 - w) + w;
+        colors[n * 3 + 2] = (px[i + 2] / mx) * (1 - w) + w;
+
+        // Steep luminosity function: most stars are barely resolved, a few are brighter
+        sizes[n] = 0.55 + Math.pow(rand(), 6.0) * 1.6;
+      }
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      geo.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+      const mat = new THREE.ShaderMaterial({
+        uniforms: { uOpacity: this.milkyWayOpacityUniform },
+        vertexShader: `
+          attribute float size;
+          varying vec3 vColor;
+          varying float vSize;
+          void main() {
+            vColor = color;
+            vSize = size;
+            gl_PointSize = size;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          uniform float uOpacity;
+          varying vec3 vColor;
+          varying float vSize;
+          void main() {
+            vec2 c = gl_PointCoord - 0.5;
+            float d = dot(c, c);
+            if (d > 0.25) discard;
+            float a = exp(-d * 14.0) * clamp(vSize * 0.26, 0.08, 0.5) * uOpacity;
+            gl_FragColor = vec4(vColor, a);
+          }
+        `,
+        vertexColors: true,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      this.resolvedMilkyWay = new THREE.Points(geo, mat);
+      this.resolvedMilkyWay.name = 'resolved_milky_way_stars';
+      this.resolvedMilkyWay.renderOrder = -9;
+      this.celestialGroup.add(this.resolvedMilkyWay);
+    });
   }
 
   private build3DCosmicStardust(): void {
@@ -645,6 +781,10 @@ export class Starfield {
     if (this.stardustMesh) {
       this.stardustMesh.geometry.dispose();
       (this.stardustMesh.material as THREE.Material).dispose();
+    }
+    if (this.resolvedMilkyWay) {
+      this.resolvedMilkyWay.geometry.dispose();
+      (this.resolvedMilkyWay.material as THREE.Material).dispose();
     }
   }
 }

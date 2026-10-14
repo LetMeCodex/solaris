@@ -9,6 +9,7 @@ import { RenderSpaceTransform, ScaleMode } from './RenderSpaceTransform';
 import { OrbitalTrails } from './OrbitalTrails';
 import { Starfield } from './Starfield';
 import { AsteroidBelt } from './AsteroidBelt';
+import { LensPipeline, LensProfileName } from './LensPipeline';
 import { BodyFrame, getBodyFrame, getSynchronousFrame } from '../astronomy/BodyOrientation';
 
 export interface TelemetryData {
@@ -28,6 +29,7 @@ export interface TelemetryData {
   observerDomain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic';
   travelSpeed: number;
   cameraDistance: number;
+  lensProfile: LensProfileName;
 }
 
 export class SolarSystemScene {
@@ -63,6 +65,9 @@ export class SolarSystemScene {
   private isRunning: boolean = true;
   private animationFrameId: number | null = null;
   private lastFrameTime: number = performance.now();
+
+  // Observation-camera optics (bloom, lens, grain, motion blur)
+  public lens: LensPipeline;
 
   // Selection
   public selectedBody: CelestialBodyDefinition;
@@ -104,6 +109,7 @@ export class SolarSystemScene {
 
     // 3. Camera Rig
     this.cameraRig = new CameraRig(container);
+    this.lens = new LensPipeline(this.renderer, this.scene, this.cameraRig.camera);
 
     // 4. Lighting
     this.setupLighting();
@@ -233,6 +239,18 @@ export class SolarSystemScene {
     this.rebuildOrbitLines();
   }
 
+  public setLensProfile(name: LensProfileName): void {
+    this.lens.setProfile(name);
+  }
+
+  public cycleLensProfile(): LensProfileName {
+    return this.lens.cycleProfile();
+  }
+
+  public resetLook(): void {
+    this.cameraRig.resetLook();
+  }
+
   public toggleConstellations(): boolean {
     return this.starfield.toggleConstellations();
   }
@@ -297,6 +315,12 @@ export class SolarSystemScene {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+    // Undo the lens warp so picking hits what is drawn under the cursor
+    const aspect = rect.width / Math.max(1, rect.height);
+    if (this.lens.isMasked(this.mouse.x, this.mouse.y, aspect)) return;
+    const [sx, sy] = this.lens.outputToSceneNdc(this.mouse.x, this.mouse.y, aspect);
+    this.mouse.set(sx, sy);
 
     // 1. Direct screen-space proximity click for Galactic Center / Sagittarius A*
     if (this.starfield?.externalGalaxy?.sagittariusAStar) {
@@ -383,8 +407,14 @@ export class SolarSystemScene {
     if (!bundle) return;
 
     this.selectedBody = bundle.definition;
-    this.cameraRig.focusCinematic(bundle.bodyGroup, bundle.visualRadius, bundle.definition.name, durationMs);
-    this.cameraRig.focusedPhysicalRadiusKm = bundle.definition.physical.meanRadiusKm;
+    this.cameraRig.focusCinematic(
+      bundle.bodyGroup,
+      bundle.visualRadius,
+      bundle.definition.name,
+      durationMs,
+      undefined,
+      bundle.definition.physical.meanRadiusKm
+    );
   }
 
   public resetView(): void {
@@ -399,6 +429,7 @@ export class SolarSystemScene {
     const h = this.container.clientHeight || window.innerHeight;
     this.renderer.setSize(w, h);
     this.cameraRig.handleResize(w, h);
+    this.lens.setSize(w, h);
   };
 
   /** Orient a body group to a body-fixed frame and spin its surface layers by W. */
@@ -599,7 +630,7 @@ export class SolarSystemScene {
       this.cameraRig.camera
     );
 
-    this.renderer.render(this.scene, this.cameraRig.camera);
+    this.lens.render(now * 0.001);
 
     // React only needs ~10 updates/s for the HUD readouts; re-rendering the HUD every few frames
     // at 120–144 Hz is wasted work
@@ -670,6 +701,7 @@ export class SolarSystemScene {
       observerDomain: scaleMetric.domain,
       travelSpeed: Math.round(travelSpeed),
       cameraDistance: Math.round(scaleMetric.distance),
+      lensProfile: this.lens.profile.name,
     });
   }
 
@@ -683,6 +715,7 @@ export class SolarSystemScene {
     this.renderer.domElement.removeEventListener('mousemove', this.onCanvasMouseMove);
     this.renderer.domElement.removeEventListener('click', this.onCanvasClick);
     this.cameraRig.dispose();
+    this.lens.dispose();
     this.starfield.dispose();
     this.asteroidBelt.dispose();
 
