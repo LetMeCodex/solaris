@@ -1,7 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { TelemetryData } from '../../rendering/SolarSystemScene';
 import { CatalogueManager } from '../../data/CatalogueManager';
-import { ScaleMode } from '../../rendering/RenderSpaceTransform';
 import { getPlanetNarrative, PLANET_NARRATIVES } from '../../data/PlanetNarratives';
 import { LENS_ORDER, LENS_PROFILES, LensProfileName } from '../../rendering/LensPipeline';
 import { ExplorerPanel } from './ExplorerPanel';
@@ -24,7 +23,6 @@ interface FlightHUDProps {
   onResetView: () => void;
   onTogglePlay: () => void;
   onSetTimeMultiplier: (multiplier: number) => void;
-  onSetScaleMode: (mode: ScaleMode) => void;
   onSeekDate: (utcMs: number) => void;
   onResetToJ2000: () => void;
   onResetToNow: () => void;
@@ -76,7 +74,6 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   onResetView,
   onTogglePlay,
   onSetTimeMultiplier,
-  onSetScaleMode,
   onSeekDate,
   onResetToJ2000,
   onResetToNow,
@@ -96,7 +93,6 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const target = telemetry?.activeTarget;
   const isPaused = telemetry?.isPaused ?? false;
   const multiplier = telemetry?.timeScale ?? 1.0;
-  const scaleMode = telemetry?.scaleMode ?? 'exploration';
   const julianDate = telemetry?.julianDate ?? 2451545.0;
   const utcIso = telemetry?.utcIso ?? new Date().toISOString();
 
@@ -263,7 +259,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const prevFlags = useRef<string | null>(null);
   useEffect(() => {
     if (!telemetry) return;
-    const flags = { orbitsOn, constellationsOn, asteroidBeltOn, lensProfile, scaleMode, isPaused };
+    const flags = { orbitsOn, constellationsOn, asteroidBeltOn, lensProfile, isPaused };
     const key = JSON.stringify(flags);
     if (prevFlags.current !== null && prevFlags.current !== key) {
       const prev = JSON.parse(prevFlags.current) as typeof flags;
@@ -271,11 +267,10 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
       else if (prev.constellationsOn !== constellationsOn) showToast(`Constellations · ${constellationsOn ? 'online' : 'offline'}`);
       else if (prev.asteroidBeltOn !== asteroidBeltOn) showToast(`Asteroid belt · ${asteroidBeltOn ? 'online' : 'offline'}`);
       else if (prev.lensProfile !== lensProfile) showToast(`Lens · ${LENS_PROFILES[lensProfile].label}`);
-      else if (prev.scaleMode !== scaleMode) showToast(scaleMode === 'scientific' ? 'True distances' : 'Exploration scale');
       else if (prev.isPaused !== isPaused) showToast(isPaused ? 'Time held' : 'Time flowing');
     }
     prevFlags.current = key;
-  }, [telemetry, orbitsOn, constellationsOn, asteroidBeltOn, lensProfile, scaleMode, isPaused, showToast]);
+  }, [telemetry, orbitsOn, constellationsOn, asteroidBeltOn, lensProfile, isPaused, showToast]);
 
   const activeTargetName = target?.name || 'Mercury';
   const narrative = useMemo(() => getPlanetNarrative(activeTargetName), [activeTargetName]);
@@ -590,18 +585,6 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 aria-label="Bloom strength"
                 className="hud-range"
                 style={{ ['--fill' as string]: `${(bloomGain / 3) * 100}%` }}
-              />
-            </div>
-            <div className="flex flex-col gap-2">
-              <span className="hud-label">Distances</span>
-              <Segmented
-                ariaLabel="Distance scale"
-                items={[
-                  { value: 'exploration' as ScaleMode, label: 'Exploration', title: 'Compressed distances and enlarged bodies for exploring' },
-                  { value: 'scientific' as ScaleMode, label: 'True', title: 'Orbital distances to true scale; globes enlarged 4× so they stay visible' },
-                ]}
-                value={scaleMode}
-                onChange={(m) => onSetScaleMode(m)}
               />
             </div>
             <div className="flex flex-col gap-1">
@@ -951,7 +934,6 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         worldsLogged={logbook.worlds}
         timeRate={isPaused ? 0 : multiplier}
         lens={lensProfile}
-        scaleMode={scaleMode}
         onTalkingChange={setVelaTalking}
         actions={{
           fly: (b) => {
@@ -963,7 +945,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           landmark: (id) => onFlyToLandmark?.(id),
           horizon: (on) => onHorizon?.(on),
           lens: (n) => onSetLens?.(n),
-          scale: (m) => onSetScaleMode(m),
+          zoom: (d) => onJumpToScale?.(d),
           time: (rate) => onSetTimeMultiplier(rate),
           tour: () => setTourOpen(true),
         }}
@@ -1217,7 +1199,11 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                     </div>
                     <div className="text-right hud-num text-[9.5px] text-white/40">
                       <div>{b.physical.meanRadiusKm.toLocaleString()} km</div>
-                      <div>{b.orbit.semiMajorAxisAU.toFixed(2)} AU</div>
+                      <div>
+                        {b.category === 'moon'
+                          ? `${b.orbit.semiMajorAxisKm >= 1e6 ? `${(b.orbit.semiMajorAxisKm / 1e6).toFixed(1)}M` : `${Math.round(b.orbit.semiMajorAxisKm / 1000)}k`} km`
+                          : `${b.orbit.semiMajorAxisAU.toFixed(2)} AU`}
+                      </div>
                     </div>
                   </button>
                 );

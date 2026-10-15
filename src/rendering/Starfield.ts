@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { COSMIC_SCALE } from './Scale';
 import { MilkyWayGalaxy } from './MilkyWayGalaxy';
 import { MilkyWayVolume } from './MilkyWayVolume';
 import { TravelParticles } from './TravelParticles';
@@ -93,6 +94,11 @@ const CONSTELLATION_EDGES: Array<[number, number]> = [
 export class Starfield {
   public group: THREE.Group = new THREE.Group();
   private celestialGroup: THREE.Group = new THREE.Group();
+  /**
+   * Everything beyond the Solar System, drawn on stylised scales laid out for a system ~700 units
+   * across, enlarged by COSMIC_SCALE so the true-scale planets fit inside (see Scale.ts).
+   */
+  public cosmos: THREE.Group = new THREE.Group();
   private pointsMesh?: THREE.Points;
   public catalogueStars?: CatalogueStars;
   private localInterstellarStars?: THREE.Points;
@@ -103,8 +109,11 @@ export class Starfield {
   public travelParticles: TravelParticles;
   public isLoaded: boolean = false;
 
-  // Sphere radius for stars in Three.js coordinates
+  // Sphere radius for stars (× COSMIC_SCALE in space, see celestialGroup)
   public static readonly SPHERE_RADIUS = 8500.0;
+  /** Side of the box of dust motes tiled around the camera (render units). */
+  private static readonly DUST_BOX = 640.0;
+  private dustWrap = { value: new THREE.Vector3() };
 
   // 3D local-neighbourhood stars (< 120 pc): radial offset and parsec scale (render units)
   public static readonly LOCAL_STAR_OFFSET = 700.0;
@@ -116,18 +125,26 @@ export class Starfield {
     this.group.name = 'starfield_hipparcos';
     this.group.add(this.celestialGroup);
     this.celestialGroup.name = 'celestial_infinite_sphere';
+    this.celestialGroup.scale.setScalar(COSMIC_SCALE);
+    this.cosmos.name = 'cosmos_beyond_the_solar_system';
+    this.cosmos.scale.setScalar(COSMIC_SCALE);
+    this.group.add(this.cosmos);
 
     this.build3DCosmicStardust();
 
     // The Milky Way itself: a 3D volume of stars, glow and dust around the Solar System
     // (real galactic orientation, Sun at the origin) that the camera can fly out of
     this.milkyWay = new MilkyWayVolume();
-    this.group.add(this.milkyWay.group);
+    this.milkyWay.unitScale = COSMIC_SCALE;
+    this.cosmos.add(this.milkyWay.group);
 
     // External 3D Milky Way Galaxy model
     // (oriented to the real galactic frame and offset so its Sun locator sits at the scene origin)
     this.externalGalaxy = new MilkyWayGalaxy();
-    this.group.add(this.externalGalaxy.group);
+    this.cosmos.add(this.externalGalaxy.group);
+    // The black hole keeps its own (r_s-based) size in world units: every close-up, the horizon
+    // world and the infall were built for it. Only its position moves out with the galaxy.
+    this.externalGalaxy.sagittariusAStar.group.scale.setScalar(1 / COSMIC_SCALE);
 
     // Velocity-aware travel streak particles
     this.travelParticles = new TravelParticles();
@@ -143,14 +160,11 @@ export class Starfield {
     const scales = new Float32Array(count);
     const phases = new Float32Array(count);
 
+    const B = Starfield.DUST_BOX;
     for (let i = 0; i < count; i++) {
-      const r = 30.0 + Math.pow(Math.random(), 0.7) * 750.0;
-      const theta = Math.random() * Math.PI * 2;
-      const y = (Math.random() - 0.5) * (90.0 + r * 0.1);
-
-      positions[i * 3] = Math.cos(theta) * r;
-      positions[i * 3 + 1] = y;
-      positions[i * 3 + 2] = Math.sin(theta) * r;
+      positions[i * 3] = (Math.random() - 0.5) * B;
+      positions[i * 3 + 1] = (Math.random() - 0.5) * B;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * B;
 
       const colorType = Math.random();
       if (colorType < 0.50) {
@@ -183,11 +197,15 @@ export class Starfield {
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         time: { value: 0 },
+        uWrap: this.dustWrap,
+        uBox: { value: Starfield.DUST_BOX },
       },
       vertexShader: `
         attribute float aScale;
         attribute float aPhase;
         uniform float time;
+        uniform vec3 uWrap;
+        uniform float uBox;
         varying vec3 vColor;
         varying float vTwinkle;
 
@@ -195,7 +213,10 @@ export class Starfield {
           vColor = color;
           // No scintillation in vacuum: twinkling is an atmospheric effect
           vTwinkle = 0.8;
-          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          // The mesh rides with the camera; wrapping by the camera's position keeps each mote fixed
+          // in space, so the field is endless and slides past with true parallax
+          vec3 p = mod(position - uWrap + 0.5 * uBox, uBox) - 0.5 * uBox;
+          vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
           float dist = -mvPosition.z;
           // Distance falloff: motes naturally vanish beyond 300 units so overview stays clean
           float fade = clamp(1.0 - (dist - 100.0) / 220.0, 0.0, 1.0);
@@ -225,6 +246,7 @@ export class Starfield {
     });
 
     this.stardustMesh = new THREE.Points(geo, mat);
+    this.stardustMesh.frustumCulled = false;
     this.stardustMesh.name = 'cosmic_stardust_motes';
     this.stardustMesh.renderOrder = -2;
     this.group.add(this.stardustMesh);
@@ -340,7 +362,7 @@ export class Starfield {
       this.localInterstellarStars.visible = false;
       this.localInterstellarStars.name = 'local_interstellar_3d_stars';
       this.localInterstellarStars.renderOrder = 1;
-      this.group.add(this.localInterstellarStars);
+      this.cosmos.add(this.localInterstellarStars);
     }
   }
 
@@ -445,7 +467,11 @@ export class Starfield {
 
   public setGroundMode(on: boolean, skyRadius: number = 3): void {
     this.groundMode = on;
-    this.celestialGroup.scale.setScalar(on ? skyRadius / (Starfield.SPHERE_RADIUS * 1.06) : 1);
+    this.celestialGroup.scale.setScalar(on ? skyRadius / (Starfield.SPHERE_RADIUS * 1.06) : COSMIC_SCALE);
+    // The galaxy is hidden on the ground, but the Milky Way sky is drawn from the Sun's vantage on a
+    // shell around the camera at unit scale
+    this.cosmos.scale.setScalar(on ? 1 : COSMIC_SCALE);
+    this.milkyWay.unitScale = on ? 1 : COSMIC_SCALE;
     if (this.stardustMesh) this.stardustMesh.visible = !on;
     this.travelParticles.mesh.visible = !on;
     this.externalGalaxy.group.visible = !on;
@@ -462,6 +488,12 @@ export class Starfield {
   ): void {
     // Keep infinite celestial sphere and real Hipparcos distant stars centered on camera
     this.celestialGroup.position.copy(cameraPosition);
+    if (this.stardustMesh) {
+      this.stardustMesh.position.copy(cameraPosition);
+      const B = Starfield.DUST_BOX;
+      const m = (v: number) => v - Math.floor(v / B) * B;
+      this.dustWrap.value.set(m(cameraPosition.x), m(cameraPosition.y), m(cameraPosition.z));
+    }
 
     // Distance from camera to Solar System barycenter (0, 0, 0)
     const distToSun = cameraPosition.length();
@@ -477,23 +509,24 @@ export class Starfield {
     // The face-on disk artwork, bulge and satellites of the galaxy model only fade in once the
     // camera is well outside the local disk (a flat plane seen from inside would look wrong), and
     // always when inspecting the Galactic Centre / Sagittarius A*
-    const tSun = THREE.MathUtils.clamp((distToSun - 20000.0) / 30000.0, 0.0, 1.0);
-    const tGal = distToGalCenter < 8000.0 ? THREE.MathUtils.clamp((8000.0 - distToGalCenter) / 4000.0, 0.0, 1.0) : 0.0;
+    const K = COSMIC_SCALE;
+    const tSun = THREE.MathUtils.clamp((distToSun - 20000.0 * K) / (30000.0 * K), 0.0, 1.0);
+    const tGal = distToGalCenter < 8000.0 * K ? THREE.MathUtils.clamp((8000.0 * K - distToGalCenter) / (4000.0 * K), 0.0, 1.0) : 0.0;
     const t = Math.max(tSun, tGal);
     const smoothT = t * t * (3.0 - 2.0 * t);
     this.externalGalaxy.setOpacity(smoothT);
 
     // Constellation figures only make sense from the Sun's vantage point
     if (this.constellationLines) {
-      const leaving = Math.max(THREE.MathUtils.smoothstep(distToSun, 3500.0, 22000.0), smoothT);
+      const leaving = Math.max(THREE.MathUtils.smoothstep(distToSun, 3500.0 * K, 22000.0 * K), smoothT);
       (this.constellationLines.material as THREE.LineBasicMaterial).opacity = Starfield.CONSTELLATION_OPACITY * (1.0 - leaving);
     }
 
     // 3D neighbourhood stars only appear once the whole Solar System is in view, and hand over
     // to the galaxy model as it fades in (the two use different stylised scales).
     if (this.localInterstellarStars) {
-      const fadeIn = THREE.MathUtils.smoothstep(distToSun, 700.0, 1600.0);
-      const fadeOut = 1.0 - THREE.MathUtils.smoothstep(distToSun, 9000.0, 20000.0);
+      const fadeIn = THREE.MathUtils.smoothstep(distToSun, 700.0 * K, 1600.0 * K);
+      const fadeOut = 1.0 - THREE.MathUtils.smoothstep(distToSun, 9000.0 * K, 20000.0 * K);
       const o = fadeIn * fadeOut;
       this.localStarsOpacity.value = o;
       this.localInterstellarStars.visible = o > 0.005;

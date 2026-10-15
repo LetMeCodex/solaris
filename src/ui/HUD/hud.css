@@ -779,3 +779,36 @@
 
 /* On a surface the right side belongs to the sky panel: Vela waits bottom-left */
 .vela-orb.on-surface { right: auto; left: 26px; bottom: 120px; }
+
+/* World markers: rings and names for planets and moons smaller than a pixel (true scale) */
+.sol-markers { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 14; }
+.sol-marker {
+  --c: #cfd8d4;
+  position: absolute; left: 0; top: 0; display: flex; align-items: center; gap: 7px;
+  padding: 0; background: none; border: 0; cursor: pointer; pointer-events: auto;
+  font-family: 'Montserrat', ui-sans-serif, system-ui, sans-serif; font-size: 9.5px; font-weight: 400;
+  letter-spacing: 0.22em; text-transform: uppercase; color: rgba(236, 242, 239, 0.72);
+  transition: opacity 0.35s ease, color 0.25s ease; white-space: nowrap; will-change: transform;
+}
+.sol-marker i {
+  position: relative; display: block; width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%;
+  border: 1px solid var(--c); box-shadow: 0 0 6px color-mix(in srgb, var(--c) 55%, transparent);
+  transform: translateY(0); transition: transform 0.3s ease;
+}
+.sol-marker i::after {
+  content: ''; position: absolute; width: 2px; height: 2px; margin: 2.5px; border-radius: 50%; background: var(--c);
+}
+.sol-marker span { text-shadow: 0 0 6px rgba(0, 0, 0, 0.9); }
+.sol-marker.is-moon { font-size: 8.5px; letter-spacing: 0.18em; color: rgba(236, 242, 239, 0.5); }
+.sol-marker.is-moon i { width: 6px; height: 6px; margin-left: -3px; }
+.sol-marker.is-moon i::after { margin: 1px; }
+.sol-marker.is-minor { font-size: 8px; color: rgba(236, 242, 239, 0.38); }
+.sol-marker.is-minor i { width: 4px; height: 4px; margin-left: -2px; border-width: 0; background: var(--c); box-shadow: none; }
+.sol-marker.is-minor i::after { display: none; }
+.sol-marker.is-focus { color: var(--sol-amber, #f4cd72); }
+.sol-marker.is-focus i { border-color: var(--sol-amber, #f4cd72); }
+.sol-marker:hover { color: #fff; }
+.sol-marker:hover i { transform: scale(1.5); }
+.sol-marker > * { pointer-events: none; }
+.sol-marker { margin-top: -5px; }
+@media (max-width: 640px) { .sol-marker.is-minor span { display: none; } }

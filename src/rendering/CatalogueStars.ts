@@ -187,13 +187,14 @@ export class CatalogueStars {
   }
 
   /**
-   * Per frame. `speed` is the camera's speed (render units / s) along `velocity`; the visual warp β
+   * Per frame. `velocity` is the camera's perceived velocity (scaled to the view, see
+   * SolarSystemScene); the visual warp β
    * rises smoothly with it and relaxes when the flight ends.
    */
   public update(timeSec: number, velocity: THREE.Vector3, enabled: boolean): void {
     this.uniforms.uTime.value = timeSec;
     const speed = velocity.length();
-    const target = enabled ? 0.62 * THREE.MathUtils.smoothstep(speed, 40, 3000) : 0;
+    const target = enabled ? 0.62 * THREE.MathUtils.smoothstep(speed, 25, 600) : 0;
     this.smoothedBeta += (target - this.smoothedBeta) * 0.05;
     if (speed > 1e-3) this.velDir.lerp(velocity.clone().normalize(), 0.1).normalize();
     this.uniforms.uBeta.value = this.smoothedBeta;

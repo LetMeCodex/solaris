@@ -129,6 +129,8 @@ export class MilkyWayVolume {
 
   private groundMode = false;
   private tmpCam = new THREE.Vector3();
+  /** World units per local unit (the parent's scale, see Starfield.cosmos). */
+  public unitScale = 1;
 
   private static readonly DISK_SAMPLE = 512;
   private static readonly SKY_W = 1024;
@@ -625,7 +627,7 @@ export class MilkyWayVolume {
   }
 
   public update(camera: THREE.Camera, viewportHeightPx: number): void {
-    if (this.groundMode) this.group.position.copy(camera.position);
+    if (this.groundMode) this.group.position.copy(camera.position).divideScalar(this.unitScale);
     this.group.updateMatrixWorld();
     this.tmpCam.copy(camera.position);
     this.camLocalUniform.value.copy(this.group.worldToLocal(this.tmpCam));
@@ -633,7 +635,7 @@ export class MilkyWayVolume {
     this.pixelScaleUniform.value = viewportHeightPx / (2 * Math.tan(THREE.MathUtils.degToRad(fov) * 0.5));
 
     // Inside the Solar System the Gaia sky is the environment; flying out, the galaxy disk takes over
-    const distToSun = this.groundMode ? 0 : camera.position.length();
+    const distToSun = this.groundMode ? 0 : camera.position.length() / this.unitScale;
     const [s0, s1] = MilkyWayVolume.SKY_FADE;
     const [d0, d1] = MilkyWayVolume.DISK_FADE;
     this.skyOpacity.value = 1.0 - THREE.MathUtils.smoothstep(distToSun, s0, s1);

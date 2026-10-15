@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SUN_WORLD } from './RenderOrigin';
 
 /**
  * Tailored Planetary Shaders for Terrestrial Worlds, Gas Giants, and Icy Moons
@@ -32,6 +33,7 @@ export class PlanetMaterial {
 
     return new THREE.ShaderMaterial({
       uniforms: {
+        uSunWorld: SUN_WORLD,
         map: { value: map },
         normalMap: { value: normalMap || null },
         hasNormalMap: { value: normalMap ? 1.0 : 0.0 },
@@ -47,6 +49,7 @@ export class PlanetMaterial {
         varying vec3 vWorldNormal;
         varying vec3 vWorldPosition;
         varying vec3 vLocalPosition;
+        uniform vec3 uSunWorld;
         varying vec3 vLocalSunDir;
 
         void main() {
@@ -57,7 +60,7 @@ export class PlanetMaterial {
           vWorldPosition = worldPos.xyz;
 
           // Local direction toward Sun (Sun sits at 0,0,0 in world space)
-          vec3 worldSun = normalize(-worldPos.xyz);
+          vec3 worldSun = normalize(uSunWorld - worldPos.xyz);
           mat3 normalMat = mat3(modelMatrix);
           vLocalSunDir = vec3(
             dot(worldSun, normalMat[0]),
@@ -83,11 +86,12 @@ export class PlanetMaterial {
         varying vec3 vWorldNormal;
         varying vec3 vWorldPosition;
         varying vec3 vLocalPosition;
+        uniform vec3 uSunWorld;
         varying vec3 vLocalSunDir;
 
         void main() {
           vec3 geomNormal = normalize(vWorldNormal);
-          vec3 sunDir = normalize(-vWorldPosition); // Sun is at (0, 0, 0)
+          vec3 sunDir = normalize(uSunWorld - vWorldPosition);
           vec3 viewDir = normalize(cameraPosition - vWorldPosition);
 
           vec3 normal = geomNormal;

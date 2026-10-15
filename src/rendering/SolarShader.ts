@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SUN_WORLD } from './RenderOrigin';
 
 /**
  * High-Fidelity Solar Plasma and Corona Shaders
@@ -164,7 +165,7 @@ export class SolarShader {
   public static createCoronaMaterial(sunRadius: number = 14.0): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
       uniforms: {
-        sunCenter: { value: new THREE.Vector3(0, 0, 0) },
+        sunCenter: SUN_WORLD,
         sunRadius: { value: sunRadius },
         time: { value: 0.0 },
       },

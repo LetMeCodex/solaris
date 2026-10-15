@@ -2,6 +2,8 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { ExplorerStatus } from '../../explorer/PlanetaryExplorer';
 import { landmarksFor, searchLandmarks } from '../../explorer/Landmarks';
 import { SkyDestinations } from './SkyDestinations';
+import { CatalogueManager } from '../../data/CatalogueManager';
+import { CelestialBodyDefinition } from '../../types/catalogue';
 
 interface ExplorerPanelProps {
   status: ExplorerStatus | undefined;
@@ -42,19 +44,54 @@ function altFraction(km: number): number {
   return Math.min(1, Math.max(0, (Math.log10(Math.max(10, km)) - 1) / 6));
 }
 
-type SlateTab = 'survey' | 'waypoints' | 'skies';
+type SlateTab = 'survey' | 'waypoints' | 'moons' | 'skies';
+
+/** The moons of the system the focused body belongs to, major ones first, then by family. */
+function systemMoons(body: string): { system: string; groups: Array<[string, CelestialBodyDefinition[]]>; count: number } {
+  const def = CatalogueManager.getBody(body);
+  const system = def?.category === 'moon' && def.parentName ? def.parentName : body;
+  const moons = CatalogueManager.getMoonsOf(system).filter((m) => m.category === 'moon');
+  const groups = new Map<string, CelestialBodyDefinition[]>();
+  const label = (m: CelestialBodyDefinition) => {
+    if (!m.minor) return 'Major moons';
+    const g = m.group ?? '';
+    if (!g || /^inner$/i.test(g) || m.orbit.semiMajorAxisKm < 1.5e6) return 'Inner moons';
+    return g.replace(/ group/i, '').replace(/^\w/, (c) => c.toUpperCase()) + ' family';
+  };
+  for (const m of [...moons].sort((a, b) => a.orbit.semiMajorAxisKm - b.orbit.semiMajorAxisKm)) {
+    const k = label(m);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k)!.push(m);
+  }
+  const order = (k: string) => (k === 'Major moons' ? 0 : k === 'Inner moons' ? 1 : 2);
+  return {
+    system,
+    count: moons.length,
+    groups: [...groups.entries()].sort((a, b) => order(a[0]) - order(b[0]) || a[1][0].orbit.semiMajorAxisKm - b[1][0].orbit.semiMajorAxisKm),
+  };
+}
+
+function fmtSize(radiusKm: number): string {
+  const d = radiusKm * 2;
+  return d >= 100 ? `${Math.round(d).toLocaleString('en-US')} km` : d >= 10 ? `${d.toFixed(0)} km` : `${d.toFixed(1)} km`;
+}
+
+function fmtOrbit(km: number): string {
+  return km >= 1e6 ? `${(km / 1e6).toFixed(1)}M km` : `${Math.round(km / 1000).toLocaleString('en-US')}k km`;
+}
 
 /** Tab bar whose underline glides to the chosen tab. */
-const SlateTabs: React.FC<{ tab: SlateTab; onTab: (t: SlateTab) => void; counts: { waypoints: number } }> = ({ tab, onTab, counts }) => {
+const SlateTabs: React.FC<{ tab: SlateTab; onTab: (t: SlateTab) => void; counts: { waypoints: number; moons: number } }> = ({ tab, onTab, counts }) => {
   const wrap = useRef<HTMLDivElement>(null);
   const [ink, setInk] = useState<{ left: number; width: number }>({ left: 0, width: 0 });
   useLayoutEffect(() => {
     const el = wrap.current?.querySelector<HTMLButtonElement>('button[aria-selected="true"]');
     if (el) setInk({ left: el.offsetLeft + 14, width: el.offsetWidth - 28 });
-  }, [tab]);
+  }, [tab, counts.moons]);
   const tabs: Array<[SlateTab, string]> = [
     ['survey', 'Survey'],
-    ['waypoints', `Waypoints${counts.waypoints ? ` ${counts.waypoints}` : ''}`],
+    ['waypoints', `Places${counts.waypoints ? ` ${counts.waypoints}` : ''}`],
+    ...(counts.moons ? ([['moons', `Moons ${counts.moons}`]] as Array<[SlateTab, string]>) : []),
     ['skies', 'Skies'],
   ];
   return (
@@ -85,6 +122,8 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
   const body = status?.body ?? null;
 
   const bodyLandmarks = useMemo(() => (body ? landmarksFor(body) : []), [body]);
+  const moons = useMemo(() => (body ? systemMoons(body) : null), [body]);
+  const [moonQuery, setMoonQuery] = useState('');
   const results = useMemo(() => searchLandmarks(query).slice(0, 8), [query]);
   // A new world starts from the automatic behaviour again
   useEffect(() => setUserOpen(null), [body]);
@@ -143,7 +182,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
 
       {open && (
         <div className="flex flex-col text-[11px]">
-          <SlateTabs tab={tab} onTab={setTab} counts={{ waypoints: bodyLandmarks.length }} />
+          <SlateTabs tab={tab} onTab={setTab} counts={{ waypoints: bodyLandmarks.length, moons: moons?.count ?? 0 }} />
 
           {tab === 'survey' && (
             <div key="survey" className="px-4 py-3 flex flex-col gap-3 hud-rise">
@@ -264,6 +303,61 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
                   </ul>
                 )}
               </div>
+            </div>
+          )}
+
+          {tab === 'moons' && moons && moons.count > 0 && (
+            <div key="moons" className="px-3 py-3 flex flex-col gap-2 hud-rise">
+              <p className="text-[10px] text-white/45 px-1 leading-snug">
+                Every known moon of {moons.system}, at its real distance and size (JPL). Fly to one, or stand on it and look up.
+              </p>
+              {moons.count > 12 && (
+                <input
+                  type="search"
+                  value={moonQuery}
+                  onChange={(e) => setMoonQuery(e.target.value)}
+                  placeholder={`Search ${moons.count} moons`}
+                  aria-label={`Search the moons of ${moons.system}`}
+                  className="hud-input"
+                />
+              )}
+              {moons.groups.map(([label, list]) => {
+                const q = moonQuery.trim().toLowerCase();
+                const shown = q ? list.filter((m) => m.name.toLowerCase().includes(q)) : list;
+                if (shown.length === 0) return null;
+                return (
+                  <div key={label} className="flex flex-col gap-0.5">
+                    <span className="hud-label px-1 pt-1">
+                      {label} · {list.length}
+                    </span>
+                    <ol className="flex flex-col gap-0.5">
+                      {shown.map((m) => (
+                        <li key={m.name} className="flex items-center gap-1">
+                          <button
+                            onClick={() => onSelectBody(m.name)}
+                            title={m.description}
+                            aria-current={body === m.name ? 'true' : undefined}
+                            className="hud-row flex-1 min-w-0 flex items-center gap-2 px-2 py-1 text-left"
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: m.physical.colorHex || '#999' }} />
+                            <span className="flex-1 text-white/85 truncate">{m.name}</span>
+                            <span className="hud-num text-[8.5px] text-white/35 shrink-0">{fmtSize(m.physical.meanRadiusKm)}</span>
+                            <span className="hud-num text-[8.5px] text-white/25 shrink-0 w-14 text-right">{fmtOrbit(m.orbit.semiMajorAxisKm)}</span>
+                          </button>
+                          <button
+                            onClick={() => onSkyFrom(m.name, moons.system)}
+                            title={`Stand on ${m.name} and look up at ${moons.system}`}
+                            aria-label={`Stand on ${m.name} and look up`}
+                            className="hud-icon-btn !w-6 !h-6 shrink-0 text-[11px]"
+                          >
+                            ↑
+                          </button>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                );
+              })}
             </div>
           )}
 

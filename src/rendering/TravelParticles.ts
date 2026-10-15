@@ -66,7 +66,9 @@ export class TravelParticles {
     const effectiveTravelSpeed = velSpeed + Math.abs(zoomRate) * 45.0;
     
     // Smooth speed damping
-    this.currentSpeed += (effectiveTravelSpeed - this.currentSpeed) * Math.min(1.0, deltaSec * 8.0);
+    // True-scale flights cross the system at ~10^5 units/s: the motes only need to read as "fast",
+    // and moving them further than their box per frame would scramble them
+    this.currentSpeed += (Math.min(420.0, effectiveTravelSpeed) - this.currentSpeed) * Math.min(1.0, deltaSec * 8.0);
 
     const isMoving = this.currentSpeed > 0.8;
     const streakLength = Math.min(28.0, this.currentSpeed * 0.16 + Math.abs(zoomRate) * 14.0);

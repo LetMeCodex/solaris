@@ -31,3 +31,7 @@ Thumbs.db
 *.mp4
 scratch/
 tiles-cache/
+
+# Data-builder download caches
+scripts/.moon-cache/
+scripts/.sb-cache/

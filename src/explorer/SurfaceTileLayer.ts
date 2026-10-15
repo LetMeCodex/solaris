@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SUN_WORLD } from '../rendering/RenderOrigin';
 import { TileProvider } from './ImageryRegistry';
 import {
   TileKey,
@@ -86,6 +87,7 @@ const fragmentShader = /* glsl */ `
   uniform float uAmbient;
   uniform float uDaylight;    // 0: lit by the real Sun · 1: evenly lit, like a web map
   uniform vec3 uSunTint;      // sunlight colour after the atmosphere (surface view)
+  uniform vec3 uSunWorld;     // the Sun in the frame being drawn (floating origin)
   uniform vec3 uHazeColor;
   uniform float uHazeDensity; // per view-space unit; aerial perspective near the ground
   varying vec2 vUv;
@@ -104,7 +106,7 @@ const fragmentShader = /* glsl */ `
       vec3 base = texture2D(uBaseMap, vec2((lon + 180.0) / 360.0, (lat + 90.0) / 180.0)).rgb;
       col = clamp(base * (luma(tex.rgb) / max(luma(base), 0.03)), 0.0, 1.0);
     }
-    vec3 sunDir = normalize(-vWorldPosition);
+    vec3 sunDir = normalize(uSunWorld - vWorldPosition);
     float ndl = dot(normalize(vWorldNormal), sunDir);
     vec3 sunlit = uSunTint * (smoothstep(-0.08, 0.35, ndl) * 1.1) + vec3(uAmbient);
     vec3 light = mix(sunlit, vec3(1.0), uDaylight);
@@ -428,6 +430,7 @@ export class SurfaceTileLayer {
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         ...this.shared,
+        uSunWorld: SUN_WORLD,
         map: { value: entry.texture },
         uBounds: { value: new THREE.Vector4(b.west, b.south, b.east, b.north) },
       },

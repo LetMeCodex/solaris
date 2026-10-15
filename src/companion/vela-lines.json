@@ -10,7 +10,7 @@
   "tour.1": "These are your destinations. Pick a world and we fly there for real. Far away means a longer trip. Physics, sorry.",
   "tour.2": "The scale ladder. From a planet's skyline all the way out to the whole galaxy. Mind the jump.",
   "tour.3": "Layers. Orbits, constellations, the asteroid belt. Watch... off. And on again. Magic. Well, a switch.",
-  "tour.4": "Optics. Lenses, bloom, and true distances, if you ever want to feel very, very small.",
+  "tour.4": "Optics. Lenses, bloom and layers. And everything out there is at its true size and true distance, so those little rings mark worlds too small to see.",
   "tour.5": "The catalogue. Every world, every moon. Press slash and it opens from anywhere.",
   "tour.6": "And this is time. Push it, and a day passes every second. Look at them go. Okay, back to normal.",
   "tour.7": "Travel in time. Jump to the year two thousand, or back to now. No paradoxes, I checked.",
@@ -73,7 +73,7 @@
   "secret.horizon": "There's a place here not many people find. The shore of an ocean world, with the black hole rising over the water. Want to see it?",
   "secret.blackhole": "We're at the edge of the Solar System. Want to go further? A lot further? There's a black hole at the centre of the galaxy.",
   "secret.fisheye": "Try the fisheye lens. Everything curves, like you're looking through a helmet.",
-  "secret.true-scale": "Want to feel tiny? Switch to true distances. Space is mostly... space.",
+  "secret.true-scale": "Want to feel tiny? Let's pull back until the whole Solar System fits on screen. Everything here is at its real distance. Space is mostly... space.",
   "secret.time": "Push time to a year per second, and watch the whole Solar System turn like clockwork.",
   "accept.1": "Hold on.",
   "accept.2": "Okay. Here we go.",
@@ -101,7 +101,6 @@
   "react.orbits-off": "Clean sky. I like it.",
   "react.year": "Whoa. A year every second. Hold on to something.",
   "react.fisheye": "Fisheye. Everything's round now. Very helmet chic.",
-  "react.true-scale": "True distances. See? Mostly nothing. Beautiful, enormous nothing.",
   "surface.1": "We're down. Now... look up.",
   "surface.2": "Standing on another world. Take a second. Look up.",
   "hush": "Okay. I'll be quiet for a while. Tap me if you miss me. You will.",
@@ -178,5 +177,9 @@
   "bh.rock": "See that rock falling in? We'll never see it cross the edge. It just slows down, turns red, and fades. Forever. Strange, isn't it?",
   "menu.something": "Okay, here's one.",
   "menu.joke": "Alright. Brace yourself.",
-  "menu.talk": "Oh, I'd like that."
+  "menu.talk": "Oh, I'd like that.",
+  "minor.1": "Most moons look like this one. A few kilometres of rock, caught by a giant a long time ago.",
+  "minor.2": "This little one probably used to be an asteroid. Then it wandered too close and never left.",
+  "minor.3": "Tiny, isn't it? You could walk around it in an afternoon. Don't jump, though. You'd leave.",
+  "minor.4": "Hundreds of moons like this one, and most were only found in the last few years. The sky is still full of surprises."
 }

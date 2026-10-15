@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SUN_WORLD } from './RenderOrigin';
 
 /**
  * Physically Motivated Atmospheric Scattering Shaders
@@ -68,6 +69,7 @@ export class AtmosphereShader {
 
     return new THREE.ShaderMaterial({
       uniforms: {
+        uSunWorld: SUN_WORLD,
         rayleighColor: { value: config.rayleighColor },
         twilightColor: { value: config.twilightColor },
         density: { value: config.density },
@@ -86,6 +88,7 @@ export class AtmosphereShader {
         }
       `,
       fragmentShader: `
+        uniform vec3 uSunWorld;
         uniform vec3 rayleighColor;
         uniform vec3 twilightColor;
         uniform float density;
@@ -98,7 +101,7 @@ export class AtmosphereShader {
         void main() {
           vec3 worldNormal = normalize(vWorldNormal);
           // Sun is located at world origin (0, 0, 0)
-          vec3 sunDir = normalize(-vWorldPosition);
+          vec3 sunDir = normalize(uSunWorld - vWorldPosition);
           vec3 viewDir = normalize(cameraPosition - vWorldPosition);
 
           // 1. Fresnel limb optical path: peaks steeply at the grazing horizon silhouette

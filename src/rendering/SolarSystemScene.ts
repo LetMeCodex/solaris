@@ -5,10 +5,13 @@ import { CameraRig } from '../navigation/CameraRig';
 import { CelestialBodyDefinition, SelectedTargetInfo } from '../types/catalogue';
 import { SimulationClock } from '../simulation/SimulationClock';
 import { KeplerSolver, StateVector } from '../astronomy/KeplerSolver';
-import { RenderSpaceTransform, ScaleMode } from './RenderSpaceTransform';
+import { RenderSpaceTransform } from './RenderSpaceTransform';
+import { SUN_WORLD } from './RenderOrigin';
+import { COSMIC_SCALE, UNITS_PER_AU } from './Scale';
 import { OrbitalTrails } from './OrbitalTrails';
 import { Starfield } from './Starfield';
-import { AsteroidBelt } from './AsteroidBelt';
+import { SmallBodies } from './SmallBodies';
+import { BodyMarkers, MarkerBody } from './BodyMarkers';
 import { LensPipeline, LensProfileName } from './LensPipeline';
 import { HorizonView } from './HorizonView';
 import { PlanetaryExplorer, ExplorerStatus } from '../explorer/PlanetaryExplorer';
@@ -29,7 +32,6 @@ export interface TelemetryData {
   timeScale: number;
   julianDate: number;
   utcIso: string;
-  scaleMode: ScaleMode;
   isPaused: boolean;
   constellationsVisible: boolean;
   asteroidBeltVisible: boolean;
@@ -115,7 +117,7 @@ export class SolarSystemScene {
 
   // GPU Background & Asteroid Belt
   public starfield: Starfield;
-  public asteroidBelt: AsteroidBelt;
+  public asteroidBelt: SmallBodies;
 
   private raycaster: THREE.Raycaster = new THREE.Raycaster();
   private mouse: THREE.Vector2 = new THREE.Vector2();
@@ -131,6 +133,50 @@ export class SolarSystemScene {
   public explorer: PlanetaryExplorer;
   public surface: SurfaceObserver;
   private labels: ScreenLabels;
+  /** Rings and names for worlds too small to see at true scale. */
+  private markers: BodyMarkers;
+  private markerBodies: MarkerBody[] = [];
+  private tmpMarker = new THREE.Vector3();
+  private perceivedVelocity = new THREE.Vector3();
+  /**
+   * The Sun as a point of light. From the outer system its true disk is under a pixel wide, but
+   * it is still by far the brightest thing in the sky: a glint takes over as the disk shrinks.
+   */
+  private sunGlint = (() => {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0], 3));
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { uSize: { value: 20 }, uAlpha: { value: 0 } },
+      vertexShader: `
+        uniform float uSize;
+        void main() {
+          gl_PointSize = uSize;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uAlpha;
+        void main() {
+          vec2 c = gl_PointCoord - 0.5;
+          float r = length(c);
+          float core = exp(-r * r * 160.0) * 3.0;
+          float halo = exp(-r * r * 18.0) * 0.5;
+          float spikes = (exp(-abs(c.x) * 70.0) + exp(-abs(c.y) * 70.0)) * smoothstep(0.5, 0.0, r) * 0.35;
+          vec3 col = vec3(1.0, 0.93, 0.8) * (core + halo + spikes);
+          gl_FragColor = vec4(col * uAlpha, 1.0);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const pts = new THREE.Points(geo, mat);
+    pts.name = 'sun_glint';
+    pts.frustumCulled = false;
+    pts.renderOrder = 5;
+    return pts;
+  })();
   private surfaceSaved: Array<[THREE.Object3D, boolean]> = [];
 
   // Selection
@@ -186,8 +232,8 @@ export class SolarSystemScene {
     this.starfield = new Starfield();
     this.scene.add(this.starfield.group);
 
-    // 6. Instanced Asteroid Belt (3,200 asteroids with Kirkwood gaps)
-    this.asteroidBelt = new AsteroidBelt(this.transform);
+    // 6. Real small bodies: asteroids, Trojans, Kuiper belt, comets and meteoroid streams
+    this.asteroidBelt = new SmallBodies();
     this.scene.add(this.asteroidBelt.mesh);
 
     // 7. Build Celestial Bodies & Keplerian Orbit Trails
@@ -211,6 +257,11 @@ export class SolarSystemScene {
       };
     });
     this.explorer.setMaxAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
+    this.planetBundles.get('Sun')?.bodyGroup.add(this.sunGlint);
+    this.markers = new BodyMarkers(container, (name) => this.selectBody(name));
+    for (const b of this.planetBundles.values()) {
+      this.markerBodies.push({ definition: b.definition, object: b.bodyGroup, radius: b.visualRadius });
+    }
     this.labels = new ScreenLabels(container, (id) => {
       if (id.startsWith('sky:')) this.surface.lookAt(id.slice(4));
       else this.flyToLandmark(id);
@@ -262,6 +313,8 @@ export class SolarSystemScene {
 
     // 9. Start loop
     this.animate();
+    // Development handle for inspecting the scene from the console
+    if (import.meta.env.DEV) (window as unknown as { __solaris?: SolarSystemScene }).__solaris = this;
   }
 
   private setupLighting(): void {
@@ -314,7 +367,7 @@ export class SolarSystemScene {
       if (def.category === 'moon' && def.parentId) {
         const parentDef = CatalogueManager.getParent(def);
         if (parentDef) {
-          const line = OrbitalTrails.createMoonOrbitLine(def, parentDef, this.transform, this.orbitLinesEpochDays);
+          const line = OrbitalTrails.createMoonOrbitLine(def, this.transform, this.orbitLinesEpochDays, def.minor ? 160 : 256, def.minor ? 0.12 : 0.22);
           if (line) {
             this.orbitLinesGroup.add(line);
             this.moonOrbitLines.set(def.name, line);
@@ -322,43 +375,6 @@ export class SolarSystemScene {
         }
       }
     }
-  }
-
-  public setScaleMode(mode: ScaleMode): void {
-    if (this.transform.mode === mode) return;
-    this.transform.mode = mode;
-    this.cameraRig.distanceModel = mode;
-
-    // Update planetary mesh visual radii according to scale mode
-    this.planetBundles.forEach((bundle) => {
-      const r = this.transform.getVisualRadius(bundle.definition);
-      bundle.visualRadius = r;
-      // Rescale body mesh directly from unit sphere
-      const flattening = bundle.definition.physical.flattening || 0;
-      const polarScale = 1.0 - flattening;
-      bundle.surfaceMesh.scale.set(r, r * polarScale, r);
-      if (bundle.nightMesh) {
-        bundle.nightMesh.scale.set(r, r * polarScale, r);
-      }
-      if (bundle.cloudMesh) {
-        bundle.cloudMesh.scale.set(r, r, r);
-      }
-      if (bundle.atmosphereMesh) {
-        bundle.atmosphereMesh.scale.set(r, r, r);
-      }
-      if (bundle.ringMesh) {
-        bundle.ringMesh.scale.set(r, r, r);
-        const ringMat = bundle.ringMesh.material as THREE.ShaderMaterial;
-        if (ringMat.uniforms && ringMat.uniforms.saturnRadius) {
-          ringMat.uniforms.saturnRadius.value = r;
-        }
-      }
-      if (bundle.glowMeshes) {
-        bundle.glowMeshes.forEach((g) => g.scale.set(r, r, r));
-      }
-    });
-
-    this.rebuildOrbitLines();
   }
 
   // --- Surface view ("stand here and look up") ---
@@ -601,7 +617,7 @@ export class SolarSystemScene {
         const distNdc = Math.hypot(dx, dy);
 
         const camDistToGc = this.cameraRig.camera.position.distanceTo(gcWorldPos);
-        const hoverThreshold = camDistToGc > 12000.0 ? 0.18 : 0.25;
+        const hoverThreshold = camDistToGc > 12000.0 * COSMIC_SCALE ? 0.18 : 0.25;
 
         if (distNdc < hoverThreshold) {
           this.renderer.domElement.style.cursor = 'pointer';
@@ -648,7 +664,7 @@ export class SolarSystemScene {
 
         // At galactic or interstellar scales, clicking the central black hole or core navigates to it!
         const camDistToGc = this.cameraRig.camera.position.distanceTo(gcWorldPos);
-        const clickThreshold = camDistToGc > 12000.0 ? 0.18 : 0.25;
+        const clickThreshold = camDistToGc > 12000.0 * COSMIC_SCALE ? 0.18 : 0.25;
 
         if (distNdc < clickThreshold) {
           this.selectBody('Sagittarius A*', 2200);
@@ -828,18 +844,10 @@ export class SolarSystemScene {
         this.latestPhysicalStates.set(body.name, state);
 
         // Transform physical position (km) to active render scale position
-        const renderPos = this.transform.toRenderPosition(state.positionKm, body);
+        const renderPos = this.transform.toRenderPosition(state.positionKm);
         bundle.bodyGroup.position.set(renderPos[0], renderPos[1], renderPos[2]);
         parentPositionsRender.set(body.id, renderPos);
 
-        // Update Saturn planetary shadow on rings
-        if (body.name === 'Saturn' && bundle.ringMesh) {
-          const ringMat = bundle.ringMesh.material as THREE.ShaderMaterial;
-          if (ringMat.uniforms && ringMat.uniforms.saturnCenter) {
-            ringMat.uniforms.saturnCenter.value.set(renderPos[0], renderPos[1], renderPos[2]);
-            ringMat.uniforms.saturnRadius.value = bundle.visualRadius;
-          }
-        }
       }
 
       // IAU pole + prime meridian orientation (falls back to obliquity + period)
@@ -897,12 +905,7 @@ export class SolarSystemScene {
         eccentricAnomalyDeg: moonRelState.eccentricAnomalyDeg,
       });
 
-      const renderPos = this.transform.toMoonRenderPosition(
-        moonRelState.positionKm,
-        moon,
-        parentRenderPos,
-        parentDef
-      );
+      const renderPos = this.transform.toMoonRenderPosition(moonRelState.positionKm, parentRenderPos);
       moonBundle.bodyGroup.position.set(renderPos[0], renderPos[1], renderPos[2]);
 
       const moonOrbitLine = this.moonOrbitLines.get(moon.name);
@@ -996,6 +999,36 @@ export class SolarSystemScene {
       this.container.clientHeight
     );
 
+    // The Sun's glint: fades in as its disk drops below ~8 px across
+    {
+      const cam = this.cameraRig.camera;
+      const d = cam.position.length();
+      const pxPerRad = this.container.clientHeight / 2 / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
+      const diskPx = (262.2 / Math.max(1, d)) * pxPerRad;
+      const u = (this.sunGlint.material as THREE.ShaderMaterial).uniforms;
+      u.uAlpha.value = (1 - THREE.MathUtils.smoothstep(diskPx, 2.5, 9)) * (this.surface.isActive() ? 0 : 1);
+      u.uSize.value = THREE.MathUtils.clamp(40 / Math.pow(Math.max(1, d / UNITS_PER_AU), 0.3), 12, 40) * this.renderer.getPixelRatio();
+    }
+
+    // Markers for worlds too small to see (hidden on surfaces, at the black hole and in the galaxy)
+    const markersOn = !this.surface.isActive() && !this.horizon?.active && !isBlackHole &&
+      this.cameraRig.camera.position.length() < 3500.0 * COSMIC_SCALE;
+    this.markers.setVisible(markersOn);
+    if (markersOn) {
+      const w = this.container.clientWidth;
+      const h = this.container.clientHeight;
+      const cam = this.cameraRig.camera;
+      cam.updateMatrixWorld();
+      const aspect = w / Math.max(1, h);
+      this.markers.update(this.markerBodies, cam, this.cameraRig.focusedObject ? this.selectedBody.name : null, h, (world) => {
+        const p = this.tmpMarker.copy(world).project(cam);
+        if (p.z > 1 || p.z < -1) return null;
+        const [ox, oy] = this.lens.sceneToOutputNdc(p.x, p.y, aspect);
+        if (Math.abs(ox) > 1.02 || Math.abs(oy) > 1.02) return null;
+        return { x: (ox * 0.5 + 0.5) * w, y: (-oy * 0.5 + 0.5) * h };
+      });
+    }
+
     // Exposure: a sunlit world filling the frame washes the faint stars out, as on a real camera
     if (this.starfield.catalogueStars) {
       const rig = this.cameraRig;
@@ -1008,16 +1041,20 @@ export class SolarSystemScene {
       const bh = this.selectedBody.name === 'Sagittarius A*';
       this.starfield.catalogueStars.setExposure(bh ? 1 : 1 - 0.7 * THREE.MathUtils.smoothstep(fill, 0.25, 1.1));
     }
+    // Speed as the eye judges it: relative to the scale of the view. A slow drift around the whole
+    // system covers 20,000 units a second; crossing it in a flight close to a planet reads as fast
+    const viewR = Math.max(40, this.cameraRig.camera.position.distanceTo(this.cameraRig.orbitPivot));
+    this.perceivedVelocity.copy(this.cameraRig.getVelocity()).multiplyScalar(40 / viewR);
     this.starfield.update(
       this.cameraRig.camera.position,
       deltaSec,
-      this.cameraRig.getVelocity(),
+      this.perceivedVelocity,
       this.cameraRig.getZoomVelocity(),
       this.cameraRig.camera,
       this.renderer.domElement.height
     );
 
-    this.lens.render(now * 0.001);
+    this.renderFrame(now * 0.001);
 
     // React only needs ~10 updates/s for the HUD readouts; re-rendering the HUD every few frames
     // at 120–144 Hz is wasted work
@@ -1026,6 +1063,31 @@ export class SolarSystemScene {
       this.dispatchTelemetry();
     }
   };
+
+  private renderOrigin = new THREE.Vector3();
+
+  /**
+   * Draw with a floating origin (see RenderOrigin.ts): the camera is moved to (0, 0, 0) and the
+   * scene shifted the other way for the duration of the draw, then everything is put back.
+   */
+  private renderFrame(timeSec: number): void {
+    const cam = this.cameraRig.camera;
+    const o = this.renderOrigin.copy(cam.position);
+    this.scene.position.copy(o).negate();
+    SUN_WORLD.value.copy(this.scene.position);
+    cam.position.set(0, 0, 0);
+    cam.updateMatrixWorld();
+    try {
+      this.lens.render(timeSec);
+    } finally {
+      this.scene.position.set(0, 0, 0);
+      SUN_WORLD.value.set(0, 0, 0);
+      cam.position.copy(o);
+      cam.updateMatrixWorld();
+      // Picking and HUD projections between frames read world matrices: restore them unshifted
+      this.scene.updateMatrixWorld();
+    }
+  }
 
   private viewState: HudViewState = {
     quaternion: new THREE.Quaternion(),
@@ -1251,7 +1313,6 @@ export class SolarSystemScene {
       timeScale: this.clock.timeMultiplier,
       julianDate: this.clock.getJulianDate(),
       utcIso: this.clock.getIsoString(),
-      scaleMode: this.transform.mode,
       isPaused: this.clock.isPaused,
       constellationsVisible: this.starfield.areConstellationsVisible(),
       asteroidBeltVisible: this.asteroidBelt.isVisible(),
@@ -1293,6 +1354,7 @@ export class SolarSystemScene {
     this.renderer.domElement.removeEventListener('click', this.onCanvasClick);
     this.surface.dispose();
     this.labels.dispose();
+    this.markers.dispose();
     this.cameraRig.dispose();
     this.explorer.dispose();
     this.lens.dispose();

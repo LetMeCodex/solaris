@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SUN_WORLD } from './RenderOrigin';
 
 /**
  * Photorealistic Earth Surface Shader Material
@@ -18,6 +19,7 @@ export class EarthMaterial {
   ): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
       uniforms: {
+        uSunWorld: SUN_WORLD,
         dayMap: { value: dayMap },
         normalMap: { value: normalMap || null },
         nightMap: { value: nightMap || null },
@@ -40,6 +42,7 @@ export class EarthMaterial {
         }
       `,
       fragmentShader: `
+        uniform vec3 uSunWorld;
         uniform sampler2D dayMap;
         uniform sampler2D normalMap;
         uniform sampler2D nightMap;
@@ -54,7 +57,7 @@ export class EarthMaterial {
 
         void main() {
           vec3 geomNormal = normalize(vWorldNormal);
-          vec3 sunDir = normalize(-vWorldPosition); // Sun at (0, 0, 0)
+          vec3 sunDir = normalize(uSunWorld - vWorldPosition);
           vec3 viewDir = normalize(cameraPosition - vWorldPosition);
 
           // Normal mapping perturbation
@@ -141,6 +144,7 @@ export class EarthMaterial {
   public static createCloudMaterial(cloudsMap: THREE.Texture): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
       uniforms: {
+        uSunWorld: SUN_WORLD,
         cloudsMap: { value: cloudsMap },
         uFade: { value: 1.0 },
       },
@@ -158,6 +162,7 @@ export class EarthMaterial {
         }
       `,
       fragmentShader: `
+        uniform vec3 uSunWorld;
         uniform sampler2D cloudsMap;
         uniform float uFade;
         varying vec2 vUv;
@@ -170,7 +175,7 @@ export class EarthMaterial {
           if (cloudDensity < 0.025) discard;
 
           vec3 normal = normalize(vWorldNormal);
-          vec3 sunDir = normalize(-vWorldPosition);
+          vec3 sunDir = normalize(uSunWorld - vWorldPosition);
 
           // Sunlight on clouds
           float NdotL = dot(normal, sunDir);

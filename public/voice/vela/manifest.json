@@ -56,8 +56,8 @@
  },
  "tour.4": {
   "file": "tour.4.mp3",
-  "key": "25b1ab068d9c",
-  "seconds": 6.33
+  "key": "1d5a4bfab864",
+  "seconds": 10.48
  },
  "tour.5": {
   "file": "tour.5.mp3",
@@ -371,8 +371,8 @@
  },
  "secret.true-scale": {
   "file": "secret.true-scale.mp3",
-  "key": "5c3ed6a47a2d",
-  "seconds": 5.41
+  "key": "be22eb92d8ad",
+  "seconds": 10.61
  },
  "secret.time": {
   "file": "secret.time.mp3",
@@ -898,5 +898,25 @@
   "file": "menu.talk.mp3",
   "key": "7a736fec0d9f",
   "seconds": 2.01
+ },
+ "minor.1": {
+  "file": "minor.1.mp3",
+  "key": "b6e3fcc86b7a",
+  "seconds": 6.68
+ },
+ "minor.2": {
+  "file": "minor.2.mp3",
+  "key": "f74c60cfa94a",
+  "seconds": 6.33
+ },
+ "minor.3": {
+  "file": "minor.3.mp3",
+  "key": "a967445f451b",
+  "seconds": 5.63
+ },
+ "minor.4": {
+  "file": "minor.4.mp3",
+  "key": "7a37693e0688",
+  "seconds": 7.86
  }
 }

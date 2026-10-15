@@ -53,7 +53,7 @@ const STEPS: Step[] = [
   {
     target: 'optics',
     title: 'Optics',
-    body: 'Choose the camera lens (cinematic, fisheye, clean) and switch between compressed exploration distances and true orbital distances. Keyboard shortcuts live here too.',
+    body: 'Choose the camera lens (cinematic, fisheye, clean), bloom and the layers. Everything is drawn at true size and true distance; tiny worlds carry a marker so you can find them. Keyboard shortcuts live here too.',
     demo: (d) => {
       const a = setTimeout(() => d.openOptics?.(true), 700);
       return () => {

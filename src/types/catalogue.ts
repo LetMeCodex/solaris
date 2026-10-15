@@ -10,6 +10,8 @@ export type BodyCategory =
 
 export interface PhysicalParameters {
   meanRadiusKm: number;
+  /** Measured triaxial semi-axes (km), longest first, for irregular bodies. */
+  shapeAxesKm?: [number, number, number];
   equatorialRadiusKm?: number;
   polarRadiusKm?: number;
   flattening?: number;          // Oblateness: f = (a - b) / a
@@ -73,6 +75,16 @@ export interface CelestialBodyDefinition {
   physical: PhysicalParameters;
   orbit: KeplerianElements;
   description: string;
+  /** Satellite family (e.g. "Carme group", "Norse group (Phoebe)"), for minor moons. */
+  group?: string;
+  /** Year of discovery. */
+  discoveryYear?: number;
+  /** Minor moons come from the generated catalogue (src/data/moons.json) rather than hand-written entries. */
+  minor?: boolean;
+  /** Surface type for the procedural texture of bodies without a real map. */
+  surfaceKind?: 'dark' | 'grey' | 'icy' | 'red';
+  /** Equatorial ridge of accreted ring material (Pan, Atlas, Daphnis). */
+  ridge?: boolean;
 }
 
 export interface SelectedTargetInfo {

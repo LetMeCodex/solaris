@@ -3,43 +3,27 @@ import { CatalogueManager } from '../data/CatalogueManager';
 import { RenderSpaceTransform } from '../rendering/RenderSpaceTransform';
 
 describe('Phase 3 Celestial Catalogue & Hierarchy', () => {
-  it('contains the complete authoritative 42 bodies dataset', () => {
-    const bodies = CatalogueManager.getAllBodies();
-    expect(bodies.length).toBe(42);
-
+  it('contains the hand-written core bodies plus every known moon', () => {
     const stats = CatalogueManager.getStats();
     expect(stats.stars).toBe(1);
     expect(stats.planets).toBe(8);
-    expect(stats.moons).toBe(22);
+    expect(stats.moons).toBeGreaterThan(450);
     expect(stats.dwarfPlanets).toBe(2);
     expect(stats.asteroids).toBe(9);
+    // The 22 large moons keep their hand-written entries (not replaced by generated ones)
+    expect(CatalogueManager.getMoons().filter((m) => !m.minor).length).toBe(22);
   });
 
   it('correctly maps natural satellites to their parent celestial bodies', () => {
-    const earthMoons = CatalogueManager.getMoonsOf('Earth');
-    expect(earthMoons.map((m) => m.name)).toEqual(['Moon']);
-
-    const marsMoons = CatalogueManager.getMoonsOf('Mars');
-    expect(marsMoons.map((m) => m.name)).toEqual(['Phobos', 'Deimos']);
-
-    const jupiterMoons = CatalogueManager.getMoonsOf('Jupiter');
-    expect(jupiterMoons.map((m) => m.name)).toEqual(['Io', 'Europa', 'Ganymede', 'Callisto']);
-
-    const saturnMoons = CatalogueManager.getMoonsOf('Saturn');
-    expect(saturnMoons.map((m) => m.name)).toEqual([
-      'Mimas', 'Enceladus', 'Tethys', 'Dione', 'Rhea', 'Titan', 'Hyperion', 'Iapetus'
-    ]);
-
-    const uranusMoons = CatalogueManager.getMoonsOf('Uranus');
-    expect(uranusMoons.map((m) => m.name)).toEqual([
-      'Miranda', 'Ariel', 'Umbriel', 'Titania', 'Oberon'
-    ]);
-
-    const neptuneMoons = CatalogueManager.getMoonsOf('Neptune');
-    expect(neptuneMoons.map((m) => m.name)).toEqual(['Triton']);
-
-    const plutoMoons = CatalogueManager.getMoonsOf('Pluto');
-    expect(plutoMoons.map((m) => m.name)).toEqual(['Charon']);
+    const names = (p: string) => CatalogueManager.getMoonsOf(p).map((m) => m.name);
+    expect(names('Earth')).toEqual(['Moon']);
+    expect(names('Mars')).toEqual(['Phobos', 'Deimos']);
+    for (const m of ['Io', 'Europa', 'Ganymede', 'Callisto', 'Amalthea', 'Himalia', 'Metis']) expect(names('Jupiter')).toContain(m);
+    for (const m of ['Mimas', 'Titan', 'Iapetus', 'Pan', 'Daphnis', 'Phoebe', 'Janus']) expect(names('Saturn')).toContain(m);
+    for (const m of ['Miranda', 'Oberon', 'Puck', 'Sycorax']) expect(names('Uranus')).toContain(m);
+    for (const m of ['Triton', 'Proteus', 'Nereid', 'Neso']) expect(names('Neptune')).toContain(m);
+    expect(names('Pluto').sort()).toEqual(['Charon', 'Hydra', 'Kerberos', 'Nix', 'Styx']);
+    for (const m of CatalogueManager.getMoons()) expect(CatalogueManager.getParent(m)?.name).toBe(m.parentName);
   });
 
   it('preserves valid Keplerian orbital elements for all moons and minor bodies', () => {
@@ -72,34 +56,14 @@ describe('Phase 3 Celestial Catalogue & Hierarchy', () => {
     expect(triton?.orbit.inclinationDeg).toBeCloseTo(129.13, 1);
   });
 
-  it('verifies parent-relative moon render placement in exploration and scientific modes', () => {
+  it('places moons at their true distance from the parent', () => {
     const transform = new RenderSpaceTransform();
-    const earth = CatalogueManager.getBody('Earth')!;
-    const moon = CatalogueManager.getBody('Moon')!;
-
     const parentPos: [number, number, number] = [100, 0, 50];
-    const relPhysicalKm: [number, number, number] = [384400, 0, 0];
-
-    // Exploration Mode: Moon must be placed cleanly outside Earth globe
-    transform.mode = 'exploration';
-    const explorationPos = transform.toMoonRenderPosition(relPhysicalKm, moon, parentPos, earth);
-    const explDist = Math.hypot(
-      explorationPos[0] - parentPos[0],
-      explorationPos[1] - parentPos[1],
-      explorationPos[2] - parentPos[2]
-    );
-    const earthVisualRadius = transform.getVisualRadius(earth);
-    expect(explDist).toBeGreaterThan(earthVisualRadius); // Must be strictly outside Earth
-
-    // Scientific Mode: 1 unit = 1,000,000 km, Moon is 0.3844 units from Earth
-    transform.mode = 'scientific';
-    const sciPos = transform.toMoonRenderPosition(relPhysicalKm, moon, parentPos, earth);
-    const sciDist = Math.hypot(
-      sciPos[0] - parentPos[0],
-      sciPos[1] - parentPos[1],
-      sciPos[2] - parentPos[2]
-    );
-    expect(sciDist).toBeCloseTo(0.3844, 3);
+    const pos = transform.toMoonRenderPosition([384400, 0, 0], parentPos);
+    const dist = Math.hypot(pos[0] - parentPos[0], pos[1] - parentPos[1], pos[2] - parentPos[2]);
+    // 384,400 km at 2,654.6 km per unit: ~144.8 units, 60 Earth radii
+    expect(dist).toBeCloseTo(384400 / (6371 / 2.4), 3);
+    expect(dist / transform.getVisualRadius(CatalogueManager.getBody('Earth')!)).toBeCloseTo(60.3, 1);
   });
 
   it('filters and searches the catalogue accurately', () => {

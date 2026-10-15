@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { CatalogueManager } from '../../data/CatalogueManager';
 import { beautifulPlaces, CompanionAction, factIds, idsWith, lineText, pick, Secret, secretsAt } from '../../companion/knowledge';
 import { voice } from '../../companion/voice';
 import type { FlightRoute } from '../../rendering/SolarSystemScene';
@@ -16,7 +17,7 @@ export interface CompanionActions {
   landmark: (id: string) => void;
   horizon: (on: boolean) => void;
   lens: (name: 'cinematic' | 'fisheye' | 'clean') => void;
-  scale: (mode: 'exploration' | 'scientific') => void;
+  zoom: (domain: 'inner_system' | 'outer_system' | 'galactic') => void;
   time: (rate: number) => void;
   tour: () => void;
 }
@@ -50,10 +51,9 @@ export const Companion: React.FC<{
   worldsLogged: number;
   timeRate: number;
   lens: string;
-  scaleMode: string;
   actions: CompanionActions;
   onTalkingChange?: (talking: boolean) => void;
-}> = ({ ready, current, inTransit, route, arrival, tourStep, tourOpen, horizon, surfaceActive, orbitsOn, constellationsOn, worldsLogged, timeRate, lens, scaleMode, actions, onTalkingChange }) => {
+}> = ({ ready, current, inTransit, route, arrival, tourStep, tourOpen, horizon, surfaceActive, orbitsOn, constellationsOn, worldsLogged, timeRate, lens, actions, onTalkingChange }) => {
   const [beat, setBeat] = useState<Beat | null>(null);
   const [shown, setShown] = useState(0);
   const [quiet, setQuiet] = useState(false);
@@ -206,7 +206,7 @@ export const Companion: React.FC<{
           }
           break;
         case 'lens': act.lens(a.name); break;
-        case 'scale': act.scale(a.mode); break;
+        case 'zoom': act.zoom(a.domain); break;
         case 'time': act.time(a.rate); break;
         case 'tour': act.tour(); break;
       }
@@ -397,15 +397,21 @@ export const Companion: React.FC<{
     const secret = first ? secretsAt(a.name)[0] : undefined;
     const beats: Beat[] = [];
     if (fact && (first || Math.random() < 0.5)) beats.push({ id: fact });
+    // The hundreds of small moons have no facts of their own: a word about what they are
+    else if (!fact && first && CatalogueManager.getBody(a.name)?.minor && !said.current.has('minor-recent')) {
+      said.current.add('minor-recent');
+      window.setTimeout(() => said.current.delete('minor-recent'), 120000);
+      beats.push({ id: pick(idsWith('minor.')) });
+    }
     if (secret) beats.push(offerSecret(secret));
     if (beats.length) window.setTimeout(() => say(beats, true), 1100);
   }, [arrival, tourOpen, quiet, surfaceActive, factFor, offerSecret, say]);
 
   // Little reactions to what you change (not during the tour's own demos)
-  const prev = useRef({ orbitsOn, constellationsOn, timeRate, lens, scaleMode, surface: surfaceActive });
+  const prev = useRef({ orbitsOn, constellationsOn, timeRate, lens, surface: surfaceActive });
   useEffect(() => {
     const was = prev.current;
-    prev.current = { orbitsOn, constellationsOn, timeRate, lens, scaleMode, surface: surfaceActive };
+    prev.current = { orbitsOn, constellationsOn, timeRate, lens, surface: surfaceActive };
     if (!ready || tourOpen || quiet) return;
     const r = (id: string) => say({ id }, true);
     if (was.orbitsOn && !orbitsOn) r('react.orbits-off');
@@ -418,12 +424,11 @@ export const Companion: React.FC<{
     else if (was.timeRate > 1 && timeRate === 1) r('react.realtime');
     else if (was.lens !== lens && lens === 'fisheye') r('react.fisheye');
     else if (was.lens !== lens && lens === 'clean') r('react.clean');
-    else if (was.scaleMode !== scaleMode && scaleMode === 'scientific') r('react.true-scale');
     else if (!was.surface && surfaceActive) {
       const air = ['Earth', 'Mars', 'Venus', 'Titan'].includes(current);
       window.setTimeout(() => say({ id: air ? 'surface.air' : pick(idsWith('surface.').filter((x) => x !== 'surface.air')) }, true), 1500);
     }
-  }, [orbitsOn, constellationsOn, timeRate, lens, scaleMode, surfaceActive, current, ready, tourOpen, quiet, say]);
+  }, [orbitsOn, constellationsOn, timeRate, lens, surfaceActive, current, ready, tourOpen, quiet, say]);
 
   // Logbook milestones
   const lastLogged = useRef(worldsLogged);

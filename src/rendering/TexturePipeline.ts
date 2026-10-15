@@ -293,7 +293,9 @@ export class TexturePipeline {
   /**
    * Retrieves photographic texture sets for any body in the solar system.
    */
-  public getPlanetTextures(bodyName: string): PlanetTextureSet {
+  public getPlanetTextures(bodyName: string, minorKind?: 'dark' | 'grey' | 'icy' | 'red'): PlanetTextureSet {
+    // The hundreds of small moons without maps share a few procedural regoliths
+    if (minorKind) return { map: TextureGenerator.getTexture(`minor:${minorKind}`) };
     switch (bodyName) {
       case 'Sun':
         return {

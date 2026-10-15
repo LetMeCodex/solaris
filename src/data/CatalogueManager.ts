@@ -1,5 +1,9 @@
 import { CelestialBodyDefinition, BodyCategory } from '../types/catalogue';
-import { ALL_CELESTIAL_BODIES, SAGITTARIUS_A_STAR_DEF } from './CatalogueData';
+import { ALL_CELESTIAL_BODIES as CORE_BODIES, SAGITTARIUS_A_STAR_DEF } from './CatalogueData';
+import { buildMinorMoons } from './MinorMoons';
+
+/** The hand-written catalogue plus every other known moon (see MinorMoons.ts). */
+const ALL_CELESTIAL_BODIES = [...CORE_BODIES, ...buildMinorMoons(CORE_BODIES)];
 
 export class CatalogueManager {
   private static bodies: CelestialBodyDefinition[] = ALL_CELESTIAL_BODIES;

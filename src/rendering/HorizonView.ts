@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { COSMIC_SCALE } from './Scale';
 import type { SagittariusAStar } from './SagittariusAStar';
 
 /**
@@ -282,7 +283,7 @@ export class HorizonView {
     this.tmpM.lookAt(camera.position, target, up);
     camera.quaternion.setFromRotationMatrix(this.tmpM);
     camera.near = Math.max(0.002, Math.min(0.05, (this.pos.length() - rs) * 0.01));
-    camera.far = 400000;
+    camera.far = 30000 * COSMIC_SCALE; // past the star sphere and the Milky Way shells
     camera.updateProjectionMatrix();
   }
 

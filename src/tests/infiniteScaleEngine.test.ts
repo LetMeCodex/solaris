@@ -1,3 +1,4 @@
+import { UNITS_PER_AU, COSMIC_SCALE } from '../rendering/Scale';
 import { describe, it, expect, beforeEach } from 'vitest';
 import * as THREE from 'three';
 import { CameraRig } from '../navigation/CameraRig';
@@ -41,29 +42,29 @@ describe('Infinite Scale Engine Architecture & Multiscale Verification Suite', (
       expect(metricPlanetary.domain).toBe('planetary');
       expect(metricPlanetary.formatted).toContain('KM');
 
-      // 2. Inner solar system (30 - 380)
-      rig.transitionToDistance(120.0, 45.0, 'scientific_overview', 0);
+      // 2. Inner solar system (true scale: within ~6 AU)
+      rig.transitionToDistance(2 * UNITS_PER_AU, 45.0, 'scientific_overview', 0);
       rig.update();
       const metricInner = rig.getObserverScaleMetric();
       expect(metricInner.domain).toBe('inner_system');
       expect(metricInner.formatted).toContain('AU');
 
-      // 3. Outer solar system (380 - 3500)
-      rig.transitionToDistance(1200.0, 45.0, 'deep_space_overview', 0);
+      // 3. Outer solar system
+      rig.transitionToDistance(40 * UNITS_PER_AU, 45.0, 'deep_space_overview', 0);
       rig.update();
       const metricOuter = rig.getObserverScaleMetric();
       expect(metricOuter.domain).toBe('outer_system');
       expect(metricOuter.formatted).toContain('AU');
 
-      // 4. Local Interstellar (3500 - 25000)
-      rig.transitionToDistance(8500.0, 48.0, 'deep_space_overview', 0);
+      // 4. Local interstellar (stylised star layer, x COSMIC_SCALE)
+      rig.transitionToDistance(8500.0 * COSMIC_SCALE, 48.0, 'deep_space_overview', 0);
       rig.update();
       const metricInterstellar = rig.getObserverScaleMetric();
       expect(metricInterstellar.domain).toBe('interstellar');
       expect(metricInterstellar.formatted).toContain('LY');
 
-      // 5. External Milky Way Galaxy (>= 25000)
-      rig.transitionToDistance(45000.0, 50.0, 'deep_space_overview', 0);
+      // 5. External Milky Way galaxy
+      rig.transitionToDistance(45000.0 * COSMIC_SCALE, 50.0, 'deep_space_overview', 0);
       rig.update();
       const metricGalactic = rig.getObserverScaleMetric();
       expect(metricGalactic.domain).toBe('galactic');

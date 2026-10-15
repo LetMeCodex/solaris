@@ -2,7 +2,6 @@ import { SurfaceAction } from './ui/HUD/SurfacePanel';
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { SolarSystemScene, TelemetryData } from './rendering/SolarSystemScene';
 import { FlightHUD } from './ui/HUD/FlightHUD';
-import { ScaleMode } from './rendering/RenderSpaceTransform';
 import { LensProfileName } from './rendering/LensPipeline';
 import { Preloader } from './ui/Preloader';
 import { voice, chime } from './companion/voice';
@@ -72,10 +71,6 @@ export const App: React.FC = () => {
     if (!sceneRef.current) return;
     sceneRef.current.clock.timeMultiplier = multiplier;
     sceneRef.current.clock.isPaused = false;
-  }, []);
-
-  const handleSetScaleMode = useCallback((mode: ScaleMode) => {
-    sceneRef.current?.setScaleMode(mode);
   }, []);
 
   const handleSeekDate = useCallback((utcMs: number) => {
@@ -159,7 +154,6 @@ export const App: React.FC = () => {
         onResetView={handleResetView}
         onTogglePlay={handleTogglePlay}
         onSetTimeMultiplier={handleSetTimeMultiplier}
-        onSetScaleMode={handleSetScaleMode}
         onSeekDate={handleSeekDate}
         onResetToJ2000={handleResetToJ2000}
         onResetToNow={handleResetToNow}

@@ -164,14 +164,18 @@ const LensShader = {
       vec2 prevUv = (prevClip.w > 0.0) ? (prevClip.xy / prevClip.w) * 0.5 + 0.5 : uv;
       vec2 velocity = (uv - prevUv) * uShutter;
       float vLen = length(velocity);
-      if (vLen > 0.08) velocity *= 0.08 / vLen;
+      // Long true-scale flights swing the view fast: keep the smear short, or the taps separate
+      // into visible copies (the dark Milky Way lanes turned into stepped blocks)
+      if (vLen > 0.035) velocity *= 0.035 / vLen;
 
       vec3 color;
       if (length(velocity * uResolution) > 0.75) {
         color = vec3(0.0);
-        const int STEPS = 10;
+        const int STEPS = 14;
+        // Per-pixel dither of the tap positions turns residual banding into fine grain
+        float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
         for (int i = 0; i < STEPS; i++) {
-          float t = float(i) / float(STEPS - 1) - 0.5;
+          float t = (float(i) + 0.5 + jitter) / float(STEPS) - 0.5;
           color += sampleChromatic(uv + velocity * t, radial, ca);
         }
         color /= float(STEPS);
@@ -335,6 +339,20 @@ export class LensPipeline {
   public outputToSceneNdc(x: number, y: number, aspect: number): [number, number] {
     const [sx, sy] = lensSourcePoint(x * aspect, y, aspect, this.profile.distortion * this.effectScale);
     return [sx / aspect, sy];
+  }
+
+  /** Where a point rendered at scene NDC appears on screen after the lens warp (for HUD markers). */
+  public sceneToOutputNdc(x: number, y: number, aspect: number): [number, number] {
+    const k = this.profile.distortion * this.effectScale;
+    if (k === 0) return [x, y];
+    // Invert the radial warp by fixed-point iteration (it is smooth and close to identity)
+    let ox = x * aspect, oy = y;
+    for (let i = 0; i < 6; i++) {
+      const [sx, sy] = lensSourcePoint(ox, oy, aspect, k);
+      ox += x * aspect - sx;
+      oy += y - sy;
+    }
+    return [ox / aspect, oy];
   }
 
   /** The off-screen target the scene itself is rendered into (for shader pre-compilation). */

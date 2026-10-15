@@ -12,7 +12,7 @@ export type CompanionAction =
   | { kind: 'landmark'; id: string; body: string }
   | { kind: 'horizon' }
   | { kind: 'lens'; name: 'cinematic' | 'fisheye' | 'clean' }
-  | { kind: 'scale'; mode: 'exploration' | 'scientific' }
+  | { kind: 'zoom'; domain: 'inner_system' | 'outer_system' | 'galactic' }
   | { kind: 'time'; rate: number }
   | { kind: 'tour' };
 
@@ -65,7 +65,7 @@ export const SECRETS: Secret[] = [
   { id: 'horizon', at: ['Sagittarius A*'], label: 'Take me to the shore', action: { kind: 'horizon' } },
   { id: 'blackhole', at: ['Neptune', 'Pluto'], label: 'To the black hole', action: { kind: 'fly', body: 'Sagittarius A*' } },
   { id: 'fisheye', at: [], label: 'Fisheye lens', action: { kind: 'lens', name: 'fisheye' } },
-  { id: 'true-scale', at: [], label: 'True distances', action: { kind: 'scale', mode: 'scientific' } },
+  { id: 'true-scale', at: [], label: 'Show me everything', action: { kind: 'zoom', domain: 'outer_system' } },
   { id: 'time', at: [], label: 'A year per second', action: { kind: 'time', rate: 31536000 } },
 ];
 
