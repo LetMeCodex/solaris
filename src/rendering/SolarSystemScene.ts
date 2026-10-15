@@ -415,10 +415,13 @@ export class SolarSystemScene {
       hide(this.orbitLinesGroup);
       for (const l of this.moonOrbitLines.values()) hide(l);
       hide(this.asteroidBelt.mesh);
+      // Stars twinkle only where there is air above you
+      this.starfield.catalogueStars?.setScintillation(['Earth', 'Mars', 'Venus', 'Titan'].includes(body ?? '') ? 0.5 : 0.06);
       this.starfield.setGroundMode(true, skyRadius);
     } else {
       for (const [o, v] of this.surfaceSaved) o.visible = v;
       this.surfaceSaved = [];
+      this.starfield.catalogueStars?.setScintillation(0.06);
       this.starfield.setGroundMode(false);
     }
   }
@@ -993,6 +996,18 @@ export class SolarSystemScene {
       this.container.clientHeight
     );
 
+    // Exposure: a sunlit world filling the frame washes the faint stars out, as on a real camera
+    if (this.starfield.catalogueStars) {
+      const rig = this.cameraRig;
+      let fill = 0;
+      if (rig.focusedObject && !this.surface.isActive()) {
+        const d = rig.camera.position.distanceTo(rig.subjectAnchor);
+        const ang = d > rig.focusedRadius ? Math.asin(rig.focusedRadius / d) : Math.PI / 2;
+        fill = ang / THREE.MathUtils.degToRad(rig.camera.fov / 2);
+      }
+      const bh = this.selectedBody.name === 'Sagittarius A*';
+      this.starfield.catalogueStars.setExposure(bh ? 1 : 1 - 0.7 * THREE.MathUtils.smoothstep(fill, 0.25, 1.1));
+    }
     this.starfield.update(
       this.cameraRig.camera.position,
       deltaSec,

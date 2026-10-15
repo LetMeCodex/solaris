@@ -528,5 +528,375 @@
   "file": "hush.mp3",
   "key": "b129cc9bf564",
   "seconds": 4.41
+ },
+ "greet.morning": {
+  "file": "greet.morning.mp3",
+  "key": "06db876f7988",
+  "seconds": 6.08
+ },
+ "greet.afternoon": {
+  "file": "greet.afternoon.mp3",
+  "key": "8424d8a035de",
+  "seconds": 4.76
+ },
+ "greet.evening": {
+  "file": "greet.evening.mp3",
+  "key": "7907e2a3cb45",
+  "seconds": 6.31
+ },
+ "greet.night": {
+  "file": "greet.night.mp3",
+  "key": "1d3c5c44246b",
+  "seconds": 6.01
+ },
+ "arrive.Sun.3": {
+  "file": "arrive.Sun.3.mp3",
+  "key": "2edd71726c19",
+  "seconds": 9.09
+ },
+ "arrive.Mercury.3": {
+  "file": "arrive.Mercury.3.mp3",
+  "key": "bba80ed028c7",
+  "seconds": 8.06
+ },
+ "arrive.Venus.3": {
+  "file": "arrive.Venus.3.mp3",
+  "key": "54cf0c969ab1",
+  "seconds": 8.26
+ },
+ "arrive.Earth.3": {
+  "file": "arrive.Earth.3.mp3",
+  "key": "0a469a2967cb",
+  "seconds": 5.96
+ },
+ "arrive.Moon.3": {
+  "file": "arrive.Moon.3.mp3",
+  "key": "51d312470bb7",
+  "seconds": 8.48
+ },
+ "arrive.Mars.3": {
+  "file": "arrive.Mars.3.mp3",
+  "key": "bbf7d2ef3417",
+  "seconds": 9.29
+ },
+ "arrive.Jupiter.3": {
+  "file": "arrive.Jupiter.3.mp3",
+  "key": "2a5e5f126eb2",
+  "seconds": 7.18
+ },
+ "arrive.Saturn.3": {
+  "file": "arrive.Saturn.3.mp3",
+  "key": "8fc4941580a7",
+  "seconds": 9.56
+ },
+ "arrive.Uranus.3": {
+  "file": "arrive.Uranus.3.mp3",
+  "key": "23a7790563ed",
+  "seconds": 9.04
+ },
+ "arrive.Neptune.3": {
+  "file": "arrive.Neptune.3.mp3",
+  "key": "14dbe160bb02",
+  "seconds": 8.59
+ },
+ "arrive.Pluto.3": {
+  "file": "arrive.Pluto.3.mp3",
+  "key": "3e4aa7f32c6f",
+  "seconds": 8.69
+ },
+ "arrive.Sagittarius A*.3": {
+  "file": "arrive.Sagittarius_A_.3.mp3",
+  "key": "9ff0477c5ed9",
+  "seconds": 9.84
+ },
+ "joke.1": {
+  "file": "joke.1.mp3",
+  "key": "1ab4f1e2961a",
+  "seconds": 5.11
+ },
+ "joke.2": {
+  "file": "joke.2.mp3",
+  "key": "23769a591d1a",
+  "seconds": 6.41
+ },
+ "joke.3": {
+  "file": "joke.3.mp3",
+  "key": "b9f2119a70dc",
+  "seconds": 5.24
+ },
+ "joke.4": {
+  "file": "joke.4.mp3",
+  "key": "d50a716c3767",
+  "seconds": 3.61
+ },
+ "joke.5": {
+  "file": "joke.5.mp3",
+  "key": "5438a21407db",
+  "seconds": 6.88
+ },
+ "joke.6": {
+  "file": "joke.6.mp3",
+  "key": "cda08003af7d",
+  "seconds": 7.61
+ },
+ "joke.7": {
+  "file": "joke.7.mp3",
+  "key": "09b5a90c3466",
+  "seconds": 7.21
+ },
+ "joke.8": {
+  "file": "joke.8.mp3",
+  "key": "a1dca80fba2b",
+  "seconds": 4.46
+ },
+ "joke.9": {
+  "file": "joke.9.mp3",
+  "key": "869e3d97b9d1",
+  "seconds": 5.49
+ },
+ "joke.10": {
+  "file": "joke.10.mp3",
+  "key": "7e2e95c2b577",
+  "seconds": 6.36
+ },
+ "joke.laugh.1": {
+  "file": "joke.laugh.1.mp3",
+  "key": "c42162acd072",
+  "seconds": 3.36
+ },
+ "joke.groan.1": {
+  "file": "joke.groan.1.mp3",
+  "key": "0d1c291689d6",
+  "seconds": 3.56
+ },
+ "feel.1": {
+  "file": "feel.1.mp3",
+  "key": "a2e13bf345fb",
+  "seconds": 6.36
+ },
+ "feel.2": {
+  "file": "feel.2.mp3",
+  "key": "5ba42d1d17ed",
+  "seconds": 6.54
+ },
+ "feel.3": {
+  "file": "feel.3.mp3",
+  "key": "640f5f2f0846",
+  "seconds": 5.04
+ },
+ "feel.4": {
+  "file": "feel.4.mp3",
+  "key": "e563963f219d",
+  "seconds": 6.86
+ },
+ "feel.5": {
+  "file": "feel.5.mp3",
+  "key": "4bd3bf9c14a1",
+  "seconds": 8.48
+ },
+ "feel.6": {
+  "file": "feel.6.mp3",
+  "key": "0e239a3332db",
+  "seconds": 7.54
+ },
+ "convo.alone.q": {
+  "file": "convo.alone.q.mp3",
+  "key": "82bbe3017d93",
+  "seconds": 5.16
+ },
+ "convo.alone.yes": {
+  "file": "convo.alone.yes.mp3",
+  "key": "2de7cabd4cbb",
+  "seconds": 5.88
+ },
+ "convo.alone.no": {
+  "file": "convo.alone.no.mp3",
+  "key": "fa63b5bc6b2d",
+  "seconds": 5.91
+ },
+ "convo.fav.q": {
+  "file": "convo.fav.q.mp3",
+  "key": "fdca42090820",
+  "seconds": 4.26
+ },
+ "convo.fav.saturn": {
+  "file": "convo.fav.saturn.mp3",
+  "key": "a435b4d5af8e",
+  "seconds": 4.38
+ },
+ "convo.fav.earth": {
+  "file": "convo.fav.earth.mp3",
+  "key": "be1871fbee79",
+  "seconds": 4.21
+ },
+ "convo.fav.weird": {
+  "file": "convo.fav.weird.mp3",
+  "key": "9ffbe0403f10",
+  "seconds": 6.74
+ },
+ "convo.scale.q": {
+  "file": "convo.scale.q.mp3",
+  "key": "1f669165276f",
+  "seconds": 4.63
+ },
+ "convo.scale.a": {
+  "file": "convo.scale.a.mp3",
+  "key": "ed9d24b6be14",
+  "seconds": 12.54
+ },
+ "convo.why.q": {
+  "file": "convo.why.q.mp3",
+  "key": "2782feb7e1b2",
+  "seconds": 2.36
+ },
+ "convo.why.curious": {
+  "file": "convo.why.curious.mp3",
+  "key": "adfbc10f0558",
+  "seconds": 6.56
+ },
+ "convo.why.lost": {
+  "file": "convo.why.lost.mp3",
+  "key": "be2922fb64ce",
+  "seconds": 6.11
+ },
+ "convo.home.q": {
+  "file": "convo.home.q.mp3",
+  "key": "3a44a07db2e9",
+  "seconds": 4.74
+ },
+ "convo.home.go": {
+  "file": "convo.home.go.mp3",
+  "key": "7cc51a3cb9c2",
+  "seconds": 4.54
+ },
+ "convo.home.no": {
+  "file": "convo.home.no.mp3",
+  "key": "475132866c46",
+  "seconds": 4.08
+ },
+ "react.orbits-on": {
+  "file": "react.orbits-on.mp3",
+  "key": "0fe36350261c",
+  "seconds": 3.81
+ },
+ "react.pause": {
+  "file": "react.pause.mp3",
+  "key": "5086fc019bf3",
+  "seconds": 2.96
+ },
+ "react.play": {
+  "file": "react.play.mp3",
+  "key": "a3aa8ea6f57f",
+  "seconds": 2.38
+ },
+ "react.realtime": {
+  "file": "react.realtime.mp3",
+  "key": "9fed98a9a9dd",
+  "seconds": 3.71
+ },
+ "react.clean": {
+  "file": "react.clean.mp3",
+  "key": "4f2572578266",
+  "seconds": 3.54
+ },
+ "react.constellations-off": {
+  "file": "react.constellations-off.mp3",
+  "key": "6a4c466b77d7",
+  "seconds": 3.23
+ },
+ "react.constellations-on": {
+  "file": "react.constellations-on.mp3",
+  "key": "fa7bdfd60b2b",
+  "seconds": 4.29
+ },
+ "overview.1": {
+  "file": "overview.1.mp3",
+  "key": "49c66fa4ed7e",
+  "seconds": 5.51
+ },
+ "overview.2": {
+  "file": "overview.2.mp3",
+  "key": "c0b3f0cb5bfc",
+  "seconds": 6.11
+ },
+ "home.1": {
+  "file": "home.1.mp3",
+  "key": "86e236ad2f58",
+  "seconds": 4.83
+ },
+ "home.2": {
+  "file": "home.2.mp3",
+  "key": "e5d56d726bbf",
+  "seconds": 5.56
+ },
+ "revisit.1": {
+  "file": "revisit.1.mp3",
+  "key": "95bbfcd47d76",
+  "seconds": 3.41
+ },
+ "revisit.2": {
+  "file": "revisit.2.mp3",
+  "key": "a98ad5eae2e9",
+  "seconds": 3.16
+ },
+ "hop.1": {
+  "file": "hop.1.mp3",
+  "key": "dfb5169fe635",
+  "seconds": 5.43
+ },
+ "hop.2": {
+  "file": "hop.2.mp3",
+  "key": "186a6d5787ec",
+  "seconds": 4.11
+ },
+ "log.3": {
+  "file": "log.3.mp3",
+  "key": "803d9f73fdcf",
+  "seconds": 4.49
+ },
+ "log.5": {
+  "file": "log.5.mp3",
+  "key": "8b373db7ca86",
+  "seconds": 4.74
+ },
+ "log.10": {
+  "file": "log.10.mp3",
+  "key": "2ae05b6656cc",
+  "seconds": 6.26
+ },
+ "session.long": {
+  "file": "session.long.mp3",
+  "key": "5abaca2f177e",
+  "seconds": 5.51
+ },
+ "surface.air": {
+  "file": "surface.air.mp3",
+  "key": "f4b1b1737ec8",
+  "seconds": 4.31
+ },
+ "bh.approach": {
+  "file": "bh.approach.mp3",
+  "key": "55271b7f0547",
+  "seconds": 5.31
+ },
+ "bh.rock": {
+  "file": "bh.rock.mp3",
+  "key": "9e8ce3692c1f",
+  "seconds": 8.86
+ },
+ "menu.something": {
+  "file": "menu.something.mp3",
+  "key": "f0d2465cc5cf",
+  "seconds": 2.08
+ },
+ "menu.joke": {
+  "file": "menu.joke.mp3",
+  "key": "f71fd99f4fbc",
+  "seconds": 2.21
+ },
+ "menu.talk": {
+  "file": "menu.talk.mp3",
+  "key": "7a736fec0d9f",
+  "seconds": 2.01
  }
 }

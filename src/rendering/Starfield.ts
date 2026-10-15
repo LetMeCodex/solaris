@@ -3,6 +3,7 @@ import { MilkyWayGalaxy } from './MilkyWayGalaxy';
 import { MilkyWayVolume } from './MilkyWayVolume';
 import { TravelParticles } from './TravelParticles';
 import { CoordinateFrames } from '../astronomy/CoordinateFrames';
+import { CatalogueStars } from './CatalogueStars';
 
 interface RawStarHeader {
   count: number;
@@ -93,6 +94,7 @@ export class Starfield {
   public group: THREE.Group = new THREE.Group();
   private celestialGroup: THREE.Group = new THREE.Group();
   private pointsMesh?: THREE.Points;
+  public catalogueStars?: CatalogueStars;
   private localInterstellarStars?: THREE.Points;
   private constellationLines?: THREE.LineSegments;
   private stardustMesh?: THREE.Points;
@@ -246,60 +248,12 @@ export class Starfield {
   }
 
   private buildStarfieldMesh(data: RawStarHeader): void {
-    // Render only the prominent navigational and constellation-anchor stars (Vmag <= 4.6, ~850 stars).
-    // The faint background population is the 3D Milky Way volume (MilkyWayVolume).
-    const stars = data.stars.filter((s) => s[4] <= 4.6);
-    const count = stars.length;
+    // Every catalogue star, drawn from its measured magnitude and colour (see CatalogueStars)
+    this.catalogueStars = new CatalogueStars(data.stars, Starfield.SPHERE_RADIUS);
+    this.pointsMesh = this.catalogueStars.points;
+    this.celestialGroup.add(this.pointsMesh);
 
-    const positions = new Float32Array(count * 3);
-    const colors = new Float32Array(count * 3);
-    const sizes = new Float32Array(count);
-
-    const R = Starfield.SPHERE_RADIUS;
-
-    for (let i = 0; i < count; i++) {
-      const star = stars[i];
-      const x = star[1];
-      const y = star[2];
-      const z = star[3];
-      const vmag = star[4];
-      const bv = star[5];
-
-      // Catalogue vectors are ICRF (equatorial); rotate into the ecliptic render frame
-      const p = CoordinateFrames.icrfToThree([x, y, z]);
-      positions[i * 3] = p[0] * R;
-      positions[i * 3 + 1] = p[1] * R;
-      positions[i * 3 + 2] = p[2] * R;
-
-      const color = this.bvToRGB(bv, star[8]);
-      colors[i * 3] = color.r;
-      colors[i * 3 + 1] = color.g;
-      colors[i * 3 + 2] = color.b;
-
-      // Delicate telescopic pinpoint scaling: prominent stars gleam softly
-      const sizePx = Math.max(0.6, 2.8 - 0.42 * vmag);
-      sizes[i] = sizePx;
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
-
-    const vertexShader = `
-      attribute float size;
-      varying vec3 vColor;
-      varying float vBrightness;
-
-      void main() {
-        vColor = color;
-        vBrightness = size;
-        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = clamp(size, 0.6, 6.0);
-        gl_Position = projectionMatrix * mvPosition;
-      }
-    `;
-
+    // Point sprite for the 3D neighbourhood stars (soft core, faint spikes on the brightest)
     const fragmentShader = `
       varying vec3 vColor;
       varying float vBrightness;
@@ -323,19 +277,6 @@ export class Starfield {
         gl_FragColor = vec4(vColor, alpha);
       }
     `;
-
-    const material = new THREE.ShaderMaterial({
-      vertexShader,
-      fragmentShader,
-      vertexColors: true,
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-
-    this.pointsMesh = new THREE.Points(geometry, material);
-    this.pointsMesh.renderOrder = 0;
-    this.celestialGroup.add(this.pointsMesh);
 
     // 3D Local Interstellar Neighborhood: real stars with measured Hipparcos distance (distancePc < 120 pc)
     const localStars = data.stars.filter((s) => s[6] !== null && s[6]! > 0 && s[6]! < 120);
@@ -559,6 +500,8 @@ export class Starfield {
     }
 
     this.externalGalaxy.update(performance.now() * 0.001, camera);
+
+    this.catalogueStars?.update(performance.now() * 0.001, cameraVelocity || new THREE.Vector3(), !this.groundMode);
 
     if (this.groundMode) return;
     // Update velocity-aware travel streak particles

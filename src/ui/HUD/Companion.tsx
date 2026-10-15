@@ -46,15 +46,19 @@ export const Companion: React.FC<{
   horizon: { rRs: number; onShore: boolean } | null;
   surfaceActive: boolean;
   orbitsOn: boolean;
+  constellationsOn: boolean;
+  worldsLogged: number;
   timeRate: number;
   lens: string;
   scaleMode: string;
   actions: CompanionActions;
   onTalkingChange?: (talking: boolean) => void;
-}> = ({ ready, current, inTransit, route, arrival, tourStep, tourOpen, horizon, surfaceActive, orbitsOn, timeRate, lens, scaleMode, actions, onTalkingChange }) => {
+}> = ({ ready, current, inTransit, route, arrival, tourStep, tourOpen, horizon, surfaceActive, orbitsOn, constellationsOn, worldsLogged, timeRate, lens, scaleMode, actions, onTalkingChange }) => {
   const [beat, setBeat] = useState<Beat | null>(null);
   const [shown, setShown] = useState(0);
   const [quiet, setQuiet] = useState(false);
+  const quietRef = useRef(false);
+  quietRef.current = quiet;
   const [speaking, setSpeaking] = useState(false);
   useEffect(() => {
     const l = (s: boolean) => setSpeaking(s);
@@ -73,6 +77,8 @@ export const Companion: React.FC<{
   const said = useRef(new Set<string>());
   const pendingHorizon = useRef(false);
   const lastActivity = useRef(performance.now());
+  const arrivals = useRef<number[]>([]);
+  const sessionStart = useRef(performance.now());
   const beatRef = useRef<Beat | null>(null);
   beatRef.current = beat;
 
@@ -161,6 +167,8 @@ export const Companion: React.FC<{
       lastActivity.current = performance.now();
       voice.stop();
       queue.current = [];
+      // Clear the ref too, so a say() inside run() starts at once instead of waiting behind a stale beat
+      beatRef.current = null;
       setBeat(null);
       c.run();
     },
@@ -227,17 +235,69 @@ export const Companion: React.FC<{
   }, []);
 
   /** Her menu when you tap the orb. */
+  /** A joke, and she reacts to how you take it. */
+  const joke = useCallback((): Beat => {
+    const fresh = idsWith('joke.').filter((id) => /^joke\.\d+$/.test(id) && !said.current.has(id));
+    const id = pick(fresh.length ? fresh : idsWith('joke.').filter((x) => /^joke\.\d+$/.test(x)));
+    said.current.add(id);
+    return {
+      id,
+      choices: [
+        { label: 'Haha', run: () => say({ id: 'joke.laugh.1' }) },
+        { label: 'Groan', run: () => say({ id: 'joke.groan.1' }) },
+      ],
+    };
+  }, [say]);
+
+  /** Small talk: one of her musings, or a little two-way conversation. */
+  const talk = useCallback((): Beat => {
+    const convos: Beat[] = [
+      { id: 'convo.alone.q', choices: [
+        { label: 'I think so', run: () => say({ id: 'convo.alone.yes' }) },
+        { label: 'Probably not', run: () => say({ id: 'convo.alone.no' }) },
+      ] },
+      { id: 'convo.fav.q', choices: [
+        { label: 'Saturn', run: () => say({ id: 'convo.fav.saturn' }) },
+        { label: 'Earth', run: () => say({ id: 'convo.fav.earth' }) },
+        { label: 'Something weird', run: () => say({ id: 'convo.fav.weird' }) },
+      ] },
+      { id: 'convo.scale.q', choices: [
+        { label: 'Tell me', run: () => say({ id: 'convo.scale.a' }) },
+        { label: 'Not now', run: () => say({ id: pick(idsWith('decline.')) }) },
+      ] },
+      { id: 'convo.why.q', choices: [
+        { label: 'Curiosity', run: () => say({ id: 'convo.why.curious' }) },
+        { label: "We're a bit lost", run: () => say({ id: 'convo.why.lost' }) },
+      ] },
+      { id: 'convo.home.q', choices: [
+        { label: 'Show me Earth', run: () => { say({ id: 'convo.home.go' }); window.setTimeout(() => run({ kind: 'fly', body: 'Earth' }), 600); } },
+        { label: 'Not really', run: () => say({ id: 'convo.home.no' }) },
+      ] },
+    ];
+    const fresh = convos.filter((c) => !said.current.has(c.id));
+    if (fresh.length && Math.random() < 0.7) {
+      const c = pick(fresh);
+      said.current.add(c.id);
+      return c;
+    }
+    const feels = idsWith('feel.').filter((id) => !said.current.has(id));
+    const f = pick(feels.length ? feels : idsWith('feel.'));
+    said.current.add(f);
+    return { id: f };
+  }, [run, say]);
+
   const menu = useCallback((): Choice[] => {
     const here = secretsAt(current);
     return [
-      { label: 'Tell me something', run: () => { const f = factFor(current) ?? factFor(pick(['Saturn', 'Mars', 'Jupiter', 'Venus'])); if (f) say({ id: f }); } },
+      { label: 'Tell me something', run: () => { const f = factFor(current) ?? factFor(pick(['Saturn', 'Mars', 'Jupiter', 'Venus'])); if (f) say([{ id: 'menu.something' }, { id: f }]); } },
+      { label: 'A joke', run: () => say([{ id: 'menu.joke' }, joke()]) },
+      { label: "Let's talk", run: () => say([{ id: 'menu.talk' }, talk()]) },
       { label: 'Show me a secret', run: () => say(offerSecret(here.length ? pick(here) : pick(beautifulPlaces()))) },
-      { label: 'Somewhere beautiful', run: () => { const s = pick(beautifulPlaces()); say({ id: pick(idsWith('accept.')) }); setTimeout(() => run(s.action), 400); } },
       quiet
         ? { label: 'Talk to me again', run: () => { setQuiet(false); say({ id: pick(idsWith('poke.')) }); } }
         : { label: 'Hush for a while', run: () => { say({ id: 'hush', after: () => setQuiet(true) }); } },
     ];
-  }, [current, quiet, factFor, offerSecret, run, say]);
+  }, [current, quiet, factFor, offerSecret, say, joke, talk]);
 
   const poke = () => {
     lastActivity.current = performance.now();
@@ -264,7 +324,9 @@ export const Companion: React.FC<{
       if (!tourSeen()) {
         say([{ id: 'greet.first.1' }, { id: 'greet.first.2' }, { id: 'greet.first.3', after: () => actionsRef.current.tour() }]);
       } else {
-        say({ id: met ? pick(idsWith('greet.back.')) : 'greet.first.2', choices: menu() });
+        const h = new Date().getHours();
+        const tod = h < 5 || h >= 22 ? 'greet.night' : h < 12 ? 'greet.morning' : h < 18 ? 'greet.afternoon' : 'greet.evening';
+        say({ id: met ? (Math.random() < 0.5 ? tod : pick(idsWith('greet.back.'))) : 'greet.first.2', choices: menu() });
       }
     }, 900);
     return () => window.clearTimeout(t);
@@ -309,8 +371,28 @@ export const Companion: React.FC<{
     }
     // Standing on a surface, the sky is the point: she says "look up" instead (see reactions)
     if (quiet || surfaceActive) return;
+    const now = performance.now();
+    arrivals.current = [...arrivals.current.filter((t) => now - t < 45000), now];
+    if (arrivals.current.length >= 4 && !said.current.has('hop-recent')) {
+      said.current.add('hop-recent');
+      window.setTimeout(() => said.current.delete('hop-recent'), 300000);
+      window.setTimeout(() => say({ id: pick(idsWith('hop.')) }, true), 900);
+      return;
+    }
     const first = !visited.current.has(a.name);
     visited.current.add(a.name);
+    if (a.name === 'Sun') {
+      window.setTimeout(() => say({ id: pick(idsWith('overview.')) }, true), 1100);
+      return;
+    }
+    if (!first && a.name === 'Earth' && Math.random() < 0.6) {
+      window.setTimeout(() => say({ id: pick(idsWith('home.')) }, true), 1100);
+      return;
+    }
+    if (!first && Math.random() < 0.3) {
+      window.setTimeout(() => say({ id: pick(idsWith('revisit.')) }, true), 1100);
+      return;
+    }
     const fact = factFor(a.name);
     const secret = first ? secretsAt(a.name)[0] : undefined;
     const beats: Beat[] = [];
@@ -320,17 +402,42 @@ export const Companion: React.FC<{
   }, [arrival, tourOpen, quiet, surfaceActive, factFor, offerSecret, say]);
 
   // Little reactions to what you change (not during the tour's own demos)
-  const prev = useRef({ orbitsOn: orbitsOn, timeRate: timeRate, lens: lens, scaleMode: scaleMode, surface: surfaceActive });
+  const prev = useRef({ orbitsOn, constellationsOn, timeRate, lens, scaleMode, surface: surfaceActive });
   useEffect(() => {
     const was = prev.current;
-    prev.current = { orbitsOn: orbitsOn, timeRate: timeRate, lens: lens, scaleMode: scaleMode, surface: surfaceActive };
+    prev.current = { orbitsOn, constellationsOn, timeRate, lens, scaleMode, surface: surfaceActive };
     if (!ready || tourOpen || quiet) return;
-    if (was.orbitsOn && !orbitsOn) say({ id: 'react.orbits-off' }, true);
-    else if (was.timeRate !== timeRate && timeRate >= 31536000) say({ id: 'react.year' }, true);
-    else if (was.lens !== lens && lens === 'fisheye') say({ id: 'react.fisheye' }, true);
-    else if (was.scaleMode !== scaleMode && scaleMode === 'scientific') say({ id: 'react.true-scale' }, true);
-    else if (!was.surface && surfaceActive) window.setTimeout(() => say({ id: pick(idsWith('surface.')) }, true), 1500);
-  }, [orbitsOn, timeRate, lens, scaleMode, surfaceActive, ready, tourOpen, quiet, say]);
+    const r = (id: string) => say({ id }, true);
+    if (was.orbitsOn && !orbitsOn) r('react.orbits-off');
+    else if (!was.orbitsOn && orbitsOn) r('react.orbits-on');
+    else if (was.constellationsOn && !constellationsOn) r('react.constellations-off');
+    else if (!was.constellationsOn && constellationsOn) r('react.constellations-on');
+    else if (was.timeRate !== 0 && timeRate === 0) r('react.pause');
+    else if (was.timeRate === 0 && timeRate !== 0) r('react.play');
+    else if (was.timeRate !== timeRate && timeRate >= 31536000) r('react.year');
+    else if (was.timeRate > 1 && timeRate === 1) r('react.realtime');
+    else if (was.lens !== lens && lens === 'fisheye') r('react.fisheye');
+    else if (was.lens !== lens && lens === 'clean') r('react.clean');
+    else if (was.scaleMode !== scaleMode && scaleMode === 'scientific') r('react.true-scale');
+    else if (!was.surface && surfaceActive) {
+      const air = ['Earth', 'Mars', 'Venus', 'Titan'].includes(current);
+      window.setTimeout(() => say({ id: air ? 'surface.air' : pick(idsWith('surface.').filter((x) => x !== 'surface.air')) }, true), 1500);
+    }
+  }, [orbitsOn, constellationsOn, timeRate, lens, scaleMode, surfaceActive, current, ready, tourOpen, quiet, say]);
+
+  // Logbook milestones
+  const lastLogged = useRef(worldsLogged);
+  useEffect(() => {
+    const before = lastLogged.current;
+    lastLogged.current = worldsLogged;
+    if (!ready || worldsLogged <= before) return;
+    for (const m of [10, 5, 3]) {
+      if (before < m && worldsLogged >= m) {
+        window.setTimeout(() => say({ id: `log.${m}` }), 4200);
+        break;
+      }
+    }
+  }, [worldsLogged, ready, say]);
 
   // The black hole, up close
   useEffect(() => {
@@ -341,9 +448,12 @@ export const Companion: React.FC<{
       said.current.add(id);
       window.setTimeout(() => say({ id }, true), 600);
     };
-    if (h.onShore) once('bh.horizon');
-    else if (h.rRs < 1.5) once('bh.photon');
+    if (h.onShore) {
+      once('bh.horizon');
+      if (!said.current.has('bh.rock')) window.setTimeout(() => !quietRef.current && once('bh.rock'), 30000);
+    } else if (h.rRs < 1.5) once('bh.photon');
     else if (h.rRs < 3) once('bh.deep');
+    else if (h.rRs < 9) once('bh.approach');
   }, [horizon, quiet, say]);
 
   // Idle: once per world, after a quiet stretch, she says something
@@ -355,16 +465,24 @@ export const Companion: React.FC<{
     const hinted = new Set<string>();
     const id = window.setInterval(() => {
       if (quiet || tourOpen || inTransit || beatRef.current || hinted.has(current)) return;
+      if (!said.current.has('session.long') && performance.now() - sessionStart.current > 600000) {
+        said.current.add('session.long');
+        say({ id: 'session.long' });
+        return;
+      }
       if (performance.now() - lastActivity.current < 75000) return;
       hinted.add(current);
-      say({ id: pick(idsWith('idle.')), choices: menu() });
+      const roll = Math.random();
+      if (roll < 0.4) say({ id: pick(idsWith('idle.')), choices: menu() });
+      else if (roll < 0.7) say(talk());
+      else say(joke());
     }, 5000);
     return () => {
       window.removeEventListener('pointerdown', onAct);
       window.removeEventListener('keydown', onAct);
       window.clearInterval(id);
     };
-  }, [ready, tourOpen, inTransit, current, quiet, menu, say]);
+  }, [ready, tourOpen, inTransit, current, quiet, menu, say, talk, joke]);
 
   if (!ready) return null;
   const showBox = beat !== null && !tourOpen;
@@ -382,13 +500,21 @@ export const Companion: React.FC<{
           onClick={() => (typing ? setShown(text.length) : !beat.choices && next())}
         >
           <span className="vela-tag">
-            <i aria-hidden /> Vela
+            <span className="vela-wave" aria-hidden>
+              <i />
+              <i />
+              <i />
+              <i />
+              <i />
+            </span>
+            Vela
           </span>
           <p className="vela-line">
             <span aria-hidden>“</span>
             {text.slice(0, shown)}
             {typing ? <span className="vela-cursor" aria-hidden /> : <span aria-hidden>”</span>}
           </p>
+          <span className="vela-progress" aria-hidden style={{ transform: `scaleX(${text.length ? shown / text.length : 0})` }} />
           {beat.choices && !typing && (
             <ol className="vela-choices">
               {beat.choices.map((c, i) => (

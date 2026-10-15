@@ -430,8 +430,10 @@ export class MilkyWayVolume {
 
       // Steep luminosity function: most stars faint, a few bright
       const bright = Math.pow(rand(), 4.0);
-      data.sizes[k] = 14 + bright * 70;
-      data.alphas[k] = 0.2 + bright * 1.1;
+      // A fine unresolved texture under the real catalogue stars (CatalogueStars), not a second
+      // sky of bright points: kept small and faint so the measured stars lead
+      data.sizes[k] = 10 + bright * 38;
+      data.alphas[k] = 0.06 + bright * 0.42;
     }
     this.addLayer('milky_way_sky_stars', data, 'stars', 'sky', S);
   }
