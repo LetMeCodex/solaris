@@ -133,11 +133,15 @@ export const Preloader: React.FC<{
           }
           if (p < 1) {
             raf = requestAnimationFrame(step);
-          } else {
+          } else if (!finished) {
+            finished = true;
             setPhase('gone');
             finishedRef.current();
           }
         };
+        // Safety net: if animation frames are throttled (background tab, hidden view), finish anyway
+        let finished = false;
+        timers.push(window.setTimeout(() => step(start + dur), dur + 1200));
         // First frame: hole of radius 0 — fully covered, no flash
         if (el) {
           const m0 = 'radial-gradient(circle at 50% 50%, transparent 0px, #000 0px)';
