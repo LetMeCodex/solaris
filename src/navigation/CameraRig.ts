@@ -152,19 +152,20 @@ export const DEFAULT_MOON_FRAMING: FramingProfile = {
 export const OBSERVATION_FOV_DEG = 55.0;
 
 /**
- * The reference shot holds 13,517 km above Earth's surface, i.e. 2.12 Earth radii of altitude.
- * Altitude scales with R^0.65 so the real size differences read on screen: giants overfill the
- * frame (Jupiter ≈ 44° angular radius, Uranus/Neptune ≈ 32°), Earth ≈ 19°, Mars ≈ 14°, the Moon
- * ≈ 10°, while small moons are held at ≥ 4.5° so they stay inspectable.
+ * Arrival shots are close, so every world is a landmark: the globe spans about the full height of
+ * the frame with its limb still against space, the way the Moon looms when a probe swings in low.
+ * The altitude is one Earth radius over Earth (globe ~30° in angular radius) and scales gently with
+ * size (R^0.094), so the true size ordering still reads on screen: Jupiter ≈ 34°, the Moon ≈ 28°,
+ * Phobos and the kilometre-sized moonlets ≈ 22°.
  */
-export const REFERENCE_ALTITUDE_EARTH_RADII = 2.12;
+export const REFERENCE_ALTITUDE_EARTH_RADII = 1.0;
 const EARTH_RADIUS_KM = 6371.0;
-/** Smallest apparent size for tiny moons and asteroids: 4.5° angular radius. */
-const MAX_OBSERVATION_RATIO = 1 / Math.sin((4.5 * Math.PI) / 180);
+/** Smallest apparent size for the tiniest moonlets: 22° angular radius. */
+const MAX_OBSERVATION_RATIO = 1 / Math.sin((22 * Math.PI) / 180);
 
 /** Ratio (camera-to-centre distance) / (body radius) for an observation shot of a body. */
 export function observationDistanceRatio(physicalRadiusKm: number, minRatio: number = 1.25): number {
-  const k = 1.0 + REFERENCE_ALTITUDE_EARTH_RADII * Math.pow(EARTH_RADIUS_KM / Math.max(1e-3, physicalRadiusKm), 0.65);
+  const k = 1.0 + REFERENCE_ALTITUDE_EARTH_RADII * Math.pow(EARTH_RADIUS_KM / Math.max(1e-3, physicalRadiusKm), 0.094);
   return Math.max(minRatio, Math.min(MAX_OBSERVATION_RATIO, k));
 }
 

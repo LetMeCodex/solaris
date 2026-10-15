@@ -10,12 +10,14 @@ import {
 import { lensSourcePoint, LENS_PROFILES } from '../rendering/LensPipeline';
 
 describe('Observation camera framing', () => {
-  it('reproduces the reference altitude over Earth (13,517 km ≈ 2.12 R⊕)', () => {
+  it('arrives close: the globe spans about the frame height, limb still against space', () => {
     const k = observationDistanceRatio(6371);
     expect(k).toBeCloseTo(1 + REFERENCE_ALTITUDE_EARTH_RADII, 6);
-    expect((k - 1) * 6371).toBeCloseTo(13506, -2);
-    // Earth then spans ~37° of a 55° vertical lens — about two-thirds of the frame height
-    expect(2 * angularRadiusDeg(k) / OBSERVATION_FOV_DEG).toBeGreaterThan(0.6);
+    expect((k - 1) * 6371).toBeCloseTo(6371, -1);
+    expect(2 * angularRadiusDeg(k) / OBSERVATION_FOV_DEG).toBeGreaterThan(1.0);
+    expect(2 * angularRadiusDeg(k) / OBSERVATION_FOV_DEG).toBeLessThan(1.25);
+    // The Moon looms ~2,000 km below
+    expect((observationDistanceRatio(1737.4) - 1) * 1737.4).toBeLessThan(2200);
   });
 
   it('keeps the NASA size ordering on screen: bigger bodies subtend bigger angles', () => {

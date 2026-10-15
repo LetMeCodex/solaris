@@ -49,8 +49,8 @@ const CO_ROTATE_BELOW_ALTITUDE = 1.5;
 const FADE_IN_FROM = 2.4;
 const FADE_IN_TO = 1.6;
 /** 'auto' lighting evens the imagery out between these altitudes (body radii), like a web map. */
-const EVEN_LIGHT_FROM = 1.4;
-const EVEN_LIGHT_TO = 0.35;
+const EVEN_LIGHT_FROM = 0.15; // arrival shots sit at ~0.5 radii and keep real sunlight
+const EVEN_LIGHT_TO = 0.03;
 /** Earth's cloud deck fades out between these altitudes so the ground stays visible. */
 const CLOUDS_FADE_FROM = 1.0;
 const CLOUDS_FADE_TO = 0.3;

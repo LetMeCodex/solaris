@@ -47,6 +47,7 @@ export interface Secret {
 }
 
 export const SECRETS: Secret[] = [
+  { id: 'pan', at: ['Pan'], label: 'Stand on Pan', action: { kind: 'sky', body: 'Pan', facing: 'Saturn' } },
   { id: 'mimas', at: ['Saturn', 'Mimas'], label: 'Stand on Mimas', action: { kind: 'sky', body: 'Mimas', facing: 'Saturn' } },
   { id: 'iapetus', at: ['Saturn', 'Iapetus'], label: 'Go to Iapetus', action: { kind: 'sky', body: 'Iapetus', facing: 'Saturn' } },
   { id: 'enceladus', at: ['Saturn', 'Enceladus'], label: 'Stand on Enceladus', action: { kind: 'sky', body: 'Enceladus', facing: 'Saturn' } },

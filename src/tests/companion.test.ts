@@ -15,6 +15,15 @@ describe('Vela', () => {
     }
   });
 
+  it('never has two line ids that differ only in case (their files would collide on Windows/macOS)', () => {
+    const seen = new Map<string, string>();
+    for (const id of Object.keys(VELA_LINES)) {
+      const k = id.toLowerCase();
+      expect(seen.get(k), `${id} vs ${seen.get(k)}`).toBeUndefined();
+      seen.set(k, id);
+    }
+  });
+
   it('has a spoken pitch for every secret, pointing only at places that exist', () => {
     for (const s of SECRETS) {
       expect(VELA_LINES[`secret.${s.id}`], s.id).toBeTruthy();

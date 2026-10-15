@@ -35,6 +35,48 @@ interface Beat {
 }
 
 const SEEN_KEY = 'solaris.vela.met';
+const MEMORY_KEY = 'solaris.vela.memory';
+
+/** What Vela remembers between visits (kept in this browser only). */
+interface VelaMemory {
+  sessions: number;
+  lastBody: string | null;
+  lastAt: number;
+  /** The last thing you did was stand on a world and look up. */
+  lastStood: boolean;
+  moons: string[];
+}
+
+function loadMemory(): VelaMemory {
+  try {
+    const m = JSON.parse(localStorage.getItem(MEMORY_KEY) || 'null') as Partial<VelaMemory> | null;
+    return { sessions: m?.sessions ?? 0, lastBody: m?.lastBody ?? null, lastAt: m?.lastAt ?? 0, lastStood: !!m?.lastStood, moons: m?.moons ?? [] };
+  } catch {
+    return { sessions: 0, lastBody: null, lastAt: 0, lastStood: false, moons: [] };
+  }
+}
+
+function saveMemory(m: VelaMemory): void {
+  try {
+    localStorage.setItem(MEMORY_KEY, JSON.stringify({ ...m, lastAt: Date.now() }));
+  } catch {
+    /* private mode: she simply forgets */
+  }
+}
+
+const AU_KM = 149597870.7;
+
+/** Smallest and largest heliocentric distance (AU) along a straight route. */
+function routeSpan(r: FlightRoute): [number, number] {
+  let lo = Infinity, hi = 0;
+  for (let i = 0; i <= 40; i++) {
+    const t = i / 40;
+    const d = Math.hypot(...[0, 1, 2].map((k) => r.fromKm[k] + (r.toKm[k] - r.fromKm[k]) * t)) / AU_KM;
+    lo = Math.min(lo, d);
+    hi = Math.max(hi, d);
+  }
+  return [lo, hi];
+}
 
 export const Companion: React.FC<{
   ready: boolean;
@@ -73,6 +115,8 @@ export const Companion: React.FC<{
   const actionsRef = useRef(actions);
   actionsRef.current = actions;
   const visited = useRef(new Set<string>());
+  const memory = useRef<VelaMemory | null>(null);
+  if (memory.current === null) memory.current = loadMemory();
   const usedFacts = useRef(new Set<string>());
   const said = useRef(new Set<string>());
   const pendingHorizon = useRef(false);
@@ -289,7 +333,19 @@ export const Companion: React.FC<{
   const menu = useCallback((): Choice[] => {
     const here = secretsAt(current);
     return [
-      { label: 'Tell me something', run: () => { const f = factFor(current) ?? factFor(pick(['Saturn', 'Mars', 'Jupiter', 'Venus'])); if (f) say([{ id: 'menu.something' }, { id: f }]); } },
+      { label: 'Tell me something', run: () => {
+        // Sometimes about the system itself (comets, meteor streams, Trojans, scale), else about here
+        const wide = [...idsWith('space.'), ...(current === 'Jupiter' ? ['cross.trojans'] : [])].filter((id) => !said.current.has(id));
+        const here = factFor(current);
+        if (wide.length && (!here || Math.random() < 0.35)) {
+          const id = pick(wide);
+          said.current.add(id);
+          say([{ id: 'menu.something' }, { id }]);
+          return;
+        }
+        const f = here ?? factFor(pick(['Saturn', 'Mars', 'Jupiter', 'Venus']));
+        if (f) say([{ id: 'menu.something' }, { id: f }]);
+      } },
       { label: 'A joke', run: () => say([{ id: 'menu.joke' }, joke()]) },
       { label: "Let's talk", run: () => say([{ id: 'menu.talk' }, talk()]) },
       { label: 'Show me a secret', run: () => say(offerSecret(here.length ? pick(here) : pick(beautifulPlaces()))) },
@@ -307,6 +363,29 @@ export const Companion: React.FC<{
     }
     say({ id: pick(idsWith('poke.')), choices: menu() }, true);
   };
+
+  /** Something she remembers from your last visits, or null. */
+  const recallLine = (): string | null => {
+    const m = memory.current!;
+    const days = m.lastAt ? (Date.now() - m.lastAt) / 86400000 : 0;
+    if (days > 4) return 'memory.away';
+    if (m.lastStood && Math.random() < 0.6) return 'memory.stood';
+    if (m.moons.length >= 8 && Math.random() < 0.3) return 'memory.moons';
+    if (m.sessions >= 6 && Math.random() < 0.25) return 'memory.many';
+    if (m.lastBody && Math.random() < 0.75) {
+      if (lineText(`memory.last.${m.lastBody}`)) return `memory.last.${m.lastBody}`;
+      if (CatalogueManager.getBody(m.lastBody)?.category === 'moon') return 'memory.last.anymoon'; // not '.moon': it would clash with '.Moon' on case-insensitive disks
+    }
+    return null;
+  };
+
+  // Count this visit once
+  useEffect(() => {
+    if (!ready) return;
+    const m = memory.current!;
+    m.sessions += 1;
+    saveMemory(m);
+  }, [ready]);
 
   /* ------------------------------------------------------------------ she reacts */
   // First words
@@ -326,7 +405,8 @@ export const Companion: React.FC<{
       } else {
         const h = new Date().getHours();
         const tod = h < 5 || h >= 22 ? 'greet.night' : h < 12 ? 'greet.morning' : h < 18 ? 'greet.afternoon' : 'greet.evening';
-        say({ id: met ? (Math.random() < 0.5 ? tod : pick(idsWith('greet.back.'))) : 'greet.first.2', choices: menu() });
+        const recall = met ? recallLine() : null;
+        say({ id: recall ?? (met ? (Math.random() < 0.5 ? tod : pick(idsWith('greet.back.'))) : 'greet.first.2'), choices: menu() });
       }
     }, 900);
     return () => window.clearTimeout(t);
@@ -352,17 +432,43 @@ export const Companion: React.FC<{
   useEffect(() => {
     if (!route || route.id === lastRoute.current || tourOpen || quiet) return;
     lastRoute.current = route.id;
-    const id = `journey.${route.to}`;
+    const beats: Beat[] = [];
+    const to = CatalogueManager.getBody(route.to);
+    const from = CatalogueManager.getBody(route.from);
+    const sameSystem = to?.category === 'moon' && (to.parentName === route.from || to.parentName === from?.parentName);
+    const id = sameSystem ? 'journey.hop' : `journey.${route.to}`;
     if (lineText(id) && !said.current.has(id)) {
       said.current.add(id);
-      say({ id }, true);
+      beats.push({ id });
     }
+    // Real distances: a long flight really crosses the belts
+    const [lo, hi] = routeSpan(route);
+    if (lo < 2.2 && hi > 3.2 && !said.current.has('cross.belt')) {
+      said.current.add('cross.belt');
+      beats.push({ id: 'cross.belt' });
+    } else if (hi > 38 && lo < 34 && !said.current.has('cross.kuiper')) {
+      said.current.add('cross.kuiper');
+      beats.push({ id: 'cross.kuiper' });
+    }
+    if (beats.length) say(beats, true);
   }, [route, tourOpen, quiet, say]);
 
   // Arrivals
+  const rememberedArrival = useRef(-1);
   useEffect(() => {
     const a = arrival;
-    if (!a || tourOpen) return;
+    if (!a) return;
+    // Remember where you went, even while she is quiet or the tour is running (once per arrival:
+    // this effect also re-runs when the tour, hush or surface state changes)
+    if (rememberedArrival.current !== a.nonce) {
+      rememberedArrival.current = a.nonce;
+      const m = memory.current!;
+      m.lastBody = a.name;
+      m.lastStood = false;
+      if (CatalogueManager.getBody(a.name)?.category === 'moon' && !m.moons.includes(a.name)) m.moons.push(a.name);
+      saveMemory(m);
+    }
+    if (tourOpen) return;
     lastActivity.current = performance.now();
     if (pendingHorizon.current && a.name === 'Sagittarius A*') {
       pendingHorizon.current = false;
@@ -382,7 +488,13 @@ export const Companion: React.FC<{
     const first = !visited.current.has(a.name);
     visited.current.add(a.name);
     if (a.name === 'Sun') {
-      window.setTimeout(() => say({ id: pick(idsWith('overview.')) }, true), 1100);
+      const beats: Beat[] = [{ id: pick(idsWith('overview.')) }];
+      // The first whole-system view: what the little rings are
+      if (!said.current.has('space.markers')) {
+        said.current.add('space.markers');
+        beats.push({ id: 'space.markers' });
+      }
+      window.setTimeout(() => say(beats, true), 1100);
       return;
     }
     if (!first && a.name === 'Earth' && Math.random() < 0.6) {
@@ -426,7 +538,14 @@ export const Companion: React.FC<{
     else if (was.lens !== lens && lens === 'clean') r('react.clean');
     else if (!was.surface && surfaceActive) {
       const air = ['Earth', 'Mars', 'Venus', 'Titan'].includes(current);
-      window.setTimeout(() => say({ id: air ? 'surface.air' : pick(idsWith('surface.').filter((x) => x !== 'surface.air')) }, true), 1500);
+      const def = CatalogueManager.getBody(current);
+      const tiny = !!def && def.physical.meanRadiusKm < 60;
+      const line = air ? 'surface.air' : tiny ? 'surface.tiny' : pick(['surface.1', 'surface.2']);
+      window.setTimeout(() => say({ id: line }, true), 1500);
+      const m = memory.current!;
+      m.lastBody = current;
+      m.lastStood = true;
+      saveMemory(m);
     }
   }, [orbitsOn, constellationsOn, timeRate, lens, surfaceActive, current, ready, tourOpen, quiet, say]);
 

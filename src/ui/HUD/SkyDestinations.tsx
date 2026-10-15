@@ -6,6 +6,7 @@ export const SKY_DESTINATIONS: Array<{ body: string; facing?: string; label: str
   { body: 'Enceladus', facing: 'Saturn', label: 'Saturn from Enceladus' },
   { body: 'Mimas', facing: 'Saturn', label: 'Saturn from Mimas' },
   { body: 'Iapetus', facing: 'Saturn', label: 'Open rings from Iapetus' },
+  { body: 'Pan', facing: 'Saturn', label: 'Inside the rings, from Pan' },
   { body: 'Europa', facing: 'Jupiter', label: 'Jupiter from Europa' },
   { body: 'Io', facing: 'Jupiter', label: 'Jupiter from Io' },
   { body: 'Phobos', facing: 'Mars', label: 'Mars from Phobos' },
