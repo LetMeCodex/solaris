@@ -64,8 +64,8 @@ const STEPS: Step[] = [
   },
   {
     target: 'catalogue',
-    title: 'Catalogue',
-    body: 'Search every body in the simulation, planets, moons and minor bodies, with live distances. Press / to open it from anywhere.',
+    title: 'Atlas',
+    body: 'Every planet, moon and small world, with a live cinematic view of each system behind it and how much of the Solar System you have explored. Press / to open it from anywhere.',
   },
   {
     target: 'time',

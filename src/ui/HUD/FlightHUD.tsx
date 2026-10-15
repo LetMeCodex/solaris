@@ -10,7 +10,9 @@ import { ArrivalStamp, fmtDuration, LOG_WORLDS, SystemPlot, useLogbook, useTrans
 import type { FlightRoute } from '../../rendering/SolarSystemScene';
 import { Popover, ScaleDomain, ScaleLadder, Segmented, TimeDeck } from './Controls';
 import { CatalogueScreen, ShowcaseControls } from './CatalogueScreen';
-import { Search, Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle } from 'lucide-react';
+import { AtlasLauncher } from './Atlas';
+import { exploredStats } from './explored';
+import { Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle } from 'lucide-react';
 import { Tour } from './Tour';
 import { Companion } from './Companion';
 import { voice } from '../../companion/voice';
@@ -141,6 +143,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
   // Voyages: logbook, flight state and the arrival stamp
   const logbook = useLogbook();
+  const explored = useMemo(() => exploredStats(logbook.log.visited), [logbook.log.visited]);
   const [stamp, setStamp] = useState<{ name: string; isNew: boolean; nonce: number } | null>(null);
   const handleArrive = useCallback(
     (r: FlightRoute) => {
@@ -274,12 +277,6 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
   const activeTargetName = target?.name || 'Mercury';
   const narrative = useMemo(() => getPlanetNarrative(activeTargetName), [activeTargetName]);
-  const allBodies = useMemo(() => {
-    const list = [...CatalogueManager.getAllBodies()];
-    const sgr = CatalogueManager.getSagittariusAStar();
-    if (sgr) list.unshift(sgr);
-    return list;
-  }, []);
   const fullTargetDef = useMemo(() => {
     if (activeTargetName === 'Sagittarius A*' || activeTargetName === 'Sgr A*' || activeTargetName === 'sagittarius_a_star') {
       return CatalogueManager.getSagittariusAStar();
@@ -491,19 +488,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             <SlidersHorizontal size={11} />
             <span className="hidden sm:inline">Optics</span>
           </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setIsCatalogueOpen(true);
-            }}
-            className="hud-icon-btn"
-            data-tour="catalogue"
-            title={`Catalogue · ${allBodies.length} bodies ( / )`}
-            aria-label="Open catalogue"
-          >
-            <Search size={12} />
-          </button>
+          <AtlasLauncher stats={explored} onOpen={() => setIsCatalogueOpen(true)} />
           <button
             type="button"
             onClick={(e) => {
@@ -1112,12 +1097,6 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           current={activeTargetName}
           showcase={showcase}
           onClose={() => setIsCatalogueOpen(false)}
-          onFly={(name) => {
-            if (name === 'Sagittarius A*') onJumpToScale?.('sgr_a');
-            onSelectPlanet(name);
-            handleRevealMonograph();
-          }}
-          onSkyFrom={(body, facing) => onSurface?.({ type: 'skyFrom', body, facing })}
         />
       )}
     </div>
