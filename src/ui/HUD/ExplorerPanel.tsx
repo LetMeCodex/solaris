@@ -109,7 +109,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
   return (
     <section
       aria-label="Planetary explorer"
-      className={`hud-frame hud-slide-in absolute right-3 md:right-7 top-[76px] md:top-[92px] ${open ? 'w-[300px]' : 'w-auto'} max-w-[calc(100vw-24px)] max-h-[calc(100vh-200px)] md:max-h-[calc(100vh-400px)] [@media(max-height:620px)]:max-h-[calc(100vh-200px)] overflow-y-auto overflow-x-hidden hud-scroll pointer-events-auto z-30 text-white/80 font-light`}
+      className={`hud-frame hud-slide-in absolute right-3 md:right-7 top-[76px] md:top-[92px] ${open ? 'w-[300px]' : 'w-auto'} max-w-[calc(100vw-24px)] max-h-[calc(100vh-200px)] md:max-h-[calc(100vh-480px)] [@media(max-height:620px)]:max-h-[calc(100vh-200px)] overflow-y-auto overflow-x-hidden hud-scroll pointer-events-auto z-30 text-white/80 font-light`}
     >
       {/* Breadcrumb */}
       <div className={`flex items-center justify-between gap-3 px-4 ${open ? 'pt-3 pb-2' : 'py-2'} text-[10px] uppercase tracking-[0.18em]`}>

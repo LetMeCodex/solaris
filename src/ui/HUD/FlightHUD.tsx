@@ -11,7 +11,10 @@ import { ArrivalStamp, fmtDuration, LOG_WORLDS, SystemPlot, useLogbook, useTrans
 import type { FlightRoute } from '../../rendering/SolarSystemScene';
 import { Popover, ScaleDomain, ScaleLadder, Segmented, TimeDeck } from './Controls';
 import { Search, Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle } from 'lucide-react';
-import { Tour, tourSeen } from './Tour';
+import { Tour } from './Tour';
+import { Companion } from './Companion';
+import type { BodyInfo } from '../../companion/knowledge';
+import { voice } from '../../companion/voice';
 import { horizonFacts } from '../../rendering/HorizonView';
 import './hud.css';
 
@@ -126,15 +129,26 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
   // First-visit briefing
   const [tourOpen, setTourOpen] = useState(false);
-  useEffect(() => {
-    if (!introDone || tourSeen()) return;
-    const t = setTimeout(() => setTourOpen(true), 1600);
-    return () => clearTimeout(t);
-  }, [introDone]);
+  // (Vela greets the user first and starts the briefing when she has finished speaking)
 
   // Status toasts ("ORBITS · OFFLINE")
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null);
   const showToast = useCallback((text: string) => setToast({ id: performance.now(), text }), []);
+
+  // Vela: arrivals and tour narration
+  const [arrival, setArrival] = useState<{ name: string; nonce: number } | null>(null);
+  const [narration, setNarration] = useState<{ id: number; text: string } | null>(null);
+  const bodyInfo = useCallback((name: string): BodyInfo | null => {
+    const d = name === 'Sagittarius A*' ? CatalogueManager.getSagittariusAStar() : CatalogueManager.getBody(name);
+    if (!d) return null;
+    return {
+      radiusKm: d.physical.meanRadiusKm,
+      aAU: d.parentName && d.category === 'moon' ? (CatalogueManager.getBody(d.parentName)?.orbit.semiMajorAxisAU ?? d.orbit.semiMajorAxisAU) : d.orbit.semiMajorAxisAU,
+      periodDays: d.orbit.orbitalPeriodDays,
+      dayHours: d.physical.rotationPeriodHours,
+      parent: d.parentName,
+    };
+  }, []);
 
   // Voyages: logbook, flight state and the arrival stamp
   const logbook = useLogbook();
@@ -143,6 +157,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
     (r: FlightRoute) => {
       const isNew = logbook.record(r);
       setStamp({ name: r.to, isNew, nonce: performance.now() });
+      setArrival({ name: r.to, nonce: performance.now() });
       // The dossier opens on arrival, not when the flight was ordered
       setMonographVisible(true);
       setIsVanishing(false);
@@ -910,9 +925,44 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         />
       </footer>
 
+      <Companion
+        ready={introDone}
+        current={activeTargetName}
+        lightFromEarthSec={telemetry?.lightFromEarthSec ?? null}
+        inTransit={!!route}
+        route={route}
+        arrival={arrival}
+        narration={narration}
+        tourOpen={tourOpen}
+        inHorizon={inHorizon}
+        info={bodyInfo}
+        actions={{
+          fly: (b) => {
+            if (b === 'Sagittarius A*') onJumpToScale?.('sgr_a');
+            onSelectPlanet(b);
+            handleRevealMonograph();
+          },
+          sky: (b, facing) => onSurface?.({ type: 'skyFrom', body: b, facing }),
+          landmark: (id) => onFlyToLandmark?.(id),
+          horizon: (on) => onHorizon?.(on),
+          lens: (n) => onSetLens?.(n),
+          scale: (m) => onSetScaleMode(m),
+          time: (rate) => onSetTimeMultiplier(rate),
+          toggleOrbits: () => onToggleOrbits?.(),
+          tour: () => setTourOpen(true),
+          overview: () => onResetView(),
+        }}
+      />
+
       <Tour
         open={tourOpen}
-        onClose={() => setTourOpen(false)}
+        onStep={(title, body) => {
+          if (voice.enabled) setNarration({ id: performance.now(), text: `${title}. ${body}` });
+        }}
+        onClose={() => {
+          setTourOpen(false);
+          voice.stop();
+        }}
         demos={{
           toggleOrbits: () => onToggleOrbits?.(),
           setTimeRate: (m) => onSetTimeMultiplier(m),

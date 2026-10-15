@@ -5,6 +5,7 @@ import { FlightHUD } from './ui/HUD/FlightHUD';
 import { ScaleMode } from './rendering/RenderSpaceTransform';
 import { LensProfileName } from './rendering/LensPipeline';
 import { Preloader } from './ui/Preloader';
+import { voice, chime } from './companion/voice';
 
 export const App: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -16,6 +17,11 @@ export const App: React.FC = () => {
   const [revealed, setRevealed] = useState(false);      // iris opening: HUD powers on with it
   const [introFinished, setIntroFinished] = useState(false); // iris fully open
   const handleReveal = useCallback(() => setRevealed(true), []);
+  const handleBegin = useCallback((withVoice: boolean) => {
+    voice.enabled = withVoice;
+    voice.init();
+    chime('open');
+  }, []);
   const handleRevealed = useCallback(() => {
     setRevealed(true);
     setIntroFinished(true);
@@ -166,7 +172,7 @@ export const App: React.FC = () => {
         introDone={introFinished}
       />}
 
-      <Preloader progress={load.progress} stage={load.stage} done={load.done} onReveal={handleReveal} onFinished={handleRevealed} />
+      <Preloader progress={load.progress} stage={load.stage} done={load.done} onReveal={handleReveal} onBegin={handleBegin} onFinished={handleRevealed} />
     </div>
   );
 };

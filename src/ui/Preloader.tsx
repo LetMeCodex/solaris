@@ -30,14 +30,34 @@ export const Preloader: React.FC<{
   done: boolean;
   /** The iris is starting to open: mount the HUD now so it powers on with the reveal. */
   onReveal?: () => void;
+  /** The user chose how to begin (this click also unlocks audio for Vela's voice). */
+  onBegin?: (withVoice: boolean) => void;
   onFinished: () => void;
 }> = ({
   progress,
   stage,
   done,
   onReveal,
+  onBegin,
   onFinished,
 }) => {
+  const [begun, setBegun] = useState(false);
+  const preferVoice = (() => {
+    try {
+      return localStorage.getItem('solaris.voice') !== 'off';
+    } catch {
+      return true;
+    }
+  })();
+  const begin = (withVoice: boolean) => {
+    try {
+      localStorage.setItem('solaris.voice', withVoice ? 'on' : 'off');
+    } catch {
+      /* ignore */
+    }
+    onBegin?.(withVoice);
+    setBegun(true);
+  };
   const [phase, setPhase] = useState<'loading' | 'collapse' | 'iris' | 'gone'>('loading');
   const shown = useRef(0);
   const [display, setDisplay] = useState(0);
@@ -88,9 +108,9 @@ export const Preloader: React.FC<{
   revealRef.current = onReveal;
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!done) return;
+    if (!done || !begun) return;
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const wait = Math.max(0, 2400 - (performance.now() - mountedAt.current));
+    const wait = 0;
     let raf = 0;
     const timers: number[] = [];
     timers.push(window.setTimeout(() => setPhase('collapse'), wait + 350));
@@ -131,7 +151,7 @@ export const Preloader: React.FC<{
       timers.forEach(clearTimeout);
       cancelAnimationFrame(raf);
     };
-  }, [done]);
+  }, [done, begun]);
 
   if (phase === 'gone') return null;
   const pct = Math.round(Math.min(1, display) * 100);
@@ -166,10 +186,24 @@ export const Preloader: React.FC<{
         <div className="sol-pre-text">
           <h1 className="text-xl md:text-2xl uppercase tracking-[0.52em] font-extralight animate-solaris-shimmer pl-[0.52em]">SOLARIS</h1>
           <div className="hud-rule w-40 mx-auto my-3" style={{ transform: `scaleX(${Math.max(0.02, display)})`, animation: 'none' }} />
-          <div className="flex items-center justify-center gap-3">
-            <RollingText text={String(pct).padStart(3, '0')} className="hud-num text-[13px] text-[color:var(--sol-amber)]" />
-            <span className="hud-label">{stage}</span>
-          </div>
+          {done && !begun ? (
+            <div className="flex flex-col items-center gap-3 hud-rise">
+              <div className="flex flex-wrap justify-center gap-2">
+                <button autoFocus={preferVoice} onClick={() => begin(true)} className="sol-begin primary">
+                  <span className="sol-begin-orb" aria-hidden /> Begin with Vela&apos;s voice
+                </button>
+                <button autoFocus={!preferVoice} onClick={() => begin(false)} className="sol-begin">
+                  Begin in silence
+                </button>
+              </div>
+              <span className="hud-label !text-[8px]">Vela is your companion: she speaks, and answers when you ask</span>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center gap-3">
+              <RollingText text={String(pct).padStart(3, '0')} className="hud-num text-[13px] text-[color:var(--sol-amber)]" />
+              <span className="hud-label">{stage}</span>
+            </div>
+          )}
           <p className="sol-pre-caption">Planets shown at today&apos;s positions · real NASA / JPL data</p>
         </div>
       </div>

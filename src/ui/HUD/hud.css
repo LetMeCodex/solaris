@@ -664,3 +664,65 @@
   .sol-tour-spot, .sol-tour-card { transition-duration: 1ms; }
   .sol-tour-spot i, .sol-tour-line line { animation: none; }
 }
+
+/* ==========================================================================
+   VELA — companion
+   ========================================================================== */
+.vela-root { position: absolute; right: 24px; bottom: 300px; z-index: 35; display: flex; align-items: flex-end; gap: 12px; flex-direction: row-reverse; }
+@media (max-height: 620px), (max-width: 767px) { .vela-root { bottom: 84px; right: 12px; } }
+.vela-orb { position: relative; width: 58px; height: 58px; border-radius: 50%; display: grid; place-items: center; transition: transform 0.35s var(--sol-snap); flex-shrink: 0; }
+.vela-orb:hover { transform: scale(1.08); }
+.vela-orb:active { transform: scale(0.94); }
+.vela-orb:focus-visible { outline: 1px solid var(--sol-amber); outline-offset: 4px; }
+.vela-orb svg { width: 100%; height: 100%; overflow: visible; }
+.vela-orb .ring { fill: none; stroke-width: 0.8; transform-origin: 32px 32px; }
+.vela-orb .r1 { stroke: rgba(109, 252, 192, 0.35); stroke-dasharray: 2 4; animation: hud-spin 18s linear infinite; }
+.vela-orb .r2 { stroke: rgba(244, 205, 114, 0.4); stroke-dasharray: 30 8 4 8; animation: hud-spin 11s linear infinite reverse; }
+.vela-orb .sat { fill: var(--sol-mint); transform-origin: 32px 32px; animation: hud-spin 6s linear infinite; filter: drop-shadow(0 0 3px var(--sol-mint)); }
+.vela-orb .core-glow { fill: rgba(109, 252, 192, 0.14); transform-origin: 32px 32px; animation: vela-breathe 4.5s ease-in-out infinite; }
+.vela-orb .core { fill: #c9fff0; transform-origin: 32px 32px; filter: drop-shadow(0 0 6px var(--sol-mint)) drop-shadow(0 0 14px rgba(109, 252, 192, 0.6)); transition: transform 0.12s ease; }
+@keyframes vela-breathe { 50% { transform: scale(1.25); opacity: 0.6; } }
+.vela-orb.speaking .core-glow { animation-duration: 1.4s; fill: rgba(109, 252, 192, 0.24); }
+.vela-orb.speaking .r1 { animation-duration: 6s; }
+.vela-orb.word .core { animation: vela-word 0.28s ease-out; }
+@keyframes vela-word { 0% { transform: scale(1); } 35% { transform: scale(1.5); } 100% { transform: scale(1); } }
+.vela-orb.listening .core { fill: #ffd9a0; filter: drop-shadow(0 0 8px var(--sol-amber)); }
+.vela-orb.listening .core-glow { fill: rgba(244, 205, 114, 0.25); animation-duration: 0.9s; }
+.vela-name { position: absolute; bottom: -14px; font-size: 8px; letter-spacing: 0.4em; text-transform: uppercase; color: var(--sol-dim); padding-left: 0.4em; }
+
+.vela-bubble { width: min(320px, calc(100vw - 110px)); padding: 12px 14px; background: rgba(6, 5, 11, 0.88); animation: vela-in 0.5s var(--sol-ease) both; margin-bottom: 10px; }
+@keyframes vela-in { from { opacity: 0; transform: translateX(14px) scale(0.97); filter: blur(4px); } to { opacity: 1; transform: none; filter: none; } }
+.vela-x { position: absolute; top: 8px; right: 8px; color: var(--sol-faint); transition: color 0.2s; }
+.vela-x:hover { color: #fff; }
+.vela-caret { display: inline-block; width: 6px; height: 11px; margin-left: 2px; vertical-align: -1px; background: var(--sol-mint); animation: hud-led-pulse 0.8s steps(1) infinite; }
+.vela-chip {
+  padding: 4px 10px; font-size: 10px; letter-spacing: 0.06em; color: var(--sol-mint);
+  border: 1px solid rgba(109, 252, 192, 0.35); background: rgba(109, 252, 192, 0.05);
+  transition: background 0.25s, color 0.25s, transform 0.25s var(--sol-snap), border-color 0.25s;
+}
+.vela-chip:hover { background: rgba(109, 252, 192, 0.14); color: #fff; border-color: var(--sol-mint); transform: translateY(-1px); }
+.vela-chip:focus-visible { outline: 1px solid var(--sol-amber); outline-offset: 1px; }
+
+.vela-panel { width: min(360px, calc(100vw - 100px)); height: min(460px, calc(100vh - 220px)); display: flex; flex-direction: column; background: rgba(6, 5, 11, 0.94); margin-bottom: 10px; transform-origin: bottom right; }
+.vela-log { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.vela-msg { max-width: 88%; animation: hud-rise 0.45s var(--sol-ease) both; }
+.vela-msg p { font-size: 11.5px; line-height: 1.6; }
+.vela-msg.vela { align-self: flex-start; }
+.vela-msg.vela p { color: rgba(238, 233, 222, 0.85); border-left: 1px solid rgba(109, 252, 192, 0.45); padding-left: 10px; }
+.vela-msg.you { align-self: flex-end; }
+.vela-msg.you p { color: var(--sol-amber); text-align: right; padding: 5px 10px; background: rgba(244, 205, 114, 0.06); border: 1px solid var(--sol-line); }
+.vela-listening { border-color: var(--sol-amber) !important; color: var(--sol-amber) !important; animation: hud-led-pulse 1s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .vela-orb .r1, .vela-orb .r2, .vela-orb .sat, .vela-orb .core-glow { animation: none; }
+}
+
+/* Begin choice at the end of the preloader */
+.sol-begin {
+  display: inline-flex; align-items: center; gap: 9px; padding: 9px 16px; font-size: 10px; letter-spacing: 0.26em; text-transform: uppercase;
+  color: var(--sol-dim); border: 1px solid var(--sol-line-soft); transition: color 0.25s, border-color 0.3s, background 0.3s, transform 0.25s var(--sol-snap);
+}
+.sol-begin:hover { color: #fff; border-color: var(--sol-line); transform: translateY(-1px); }
+.sol-begin:focus-visible { outline: 1px solid var(--sol-amber); outline-offset: 3px; }
+.sol-begin.primary { color: #fff; border-color: rgba(109, 252, 192, 0.5); background: rgba(109, 252, 192, 0.06); box-shadow: 0 0 24px rgba(109, 252, 192, 0.12); }
+.sol-begin.primary:hover { background: rgba(109, 252, 192, 0.14); }
+.sol-begin-orb { width: 8px; height: 8px; border-radius: 50%; background: #c9fff0; box-shadow: 0 0 8px var(--sol-mint), 0 0 16px rgba(109, 252, 192, 0.6); animation: vela-breathe 2.4s ease-in-out infinite; }
