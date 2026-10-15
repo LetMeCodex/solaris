@@ -1,164 +1,168 @@
 /**
- * Vela's voice: the browser's own speech synthesis (no server, no keys), tuned for a warm,
- * unhurried delivery, plus a soft synthesized chime and optional speech recognition.
- *
- * The best available voice is chosen by name: the neural "Natural" voices (Edge on Windows) and
- * Google's voices (Chrome) sound far better than the old system voices.
+ * Vela's voice: pre-recorded lines generated with the Kokoro-82M neural voice
+ * (scripts/generate_vela_voice.py → public/voice/vela/*.mp3), played through Web Audio so the
+ * orb can follow the real loudness of her speech. No robotic browser speech synthesis.
  */
 
-type Listener = (speaking: boolean) => void;
+interface ManifestEntry {
+  file: string;
+  seconds: number;
+}
 
-const PREFERRED = [
-  /Natural/i, // Microsoft neural voices (Edge): Aria, Jenny, Sonia, Libby…
-  /Google UK English Female/i,
-  /Google US English/i,
-  /Samantha|Karen|Moira|Tessa|Serena/i, // macOS / iOS
-  /Aria|Jenny|Sonia|Libby|Zira/i,
-];
+const BASE = `${import.meta.env.BASE_URL || '/'}voice/vela/`;
+let manifest: Record<string, ManifestEntry> | null = null;
+let manifestLoading: Promise<void> | null = null;
 
-let chosen: SpeechSynthesisVoice | null = null;
+function loadManifest(): Promise<void> {
+  manifestLoading ??= fetch(`${BASE}manifest.json`)
+    .then((r) => (r.ok ? r.json() : {}))
+    .then((m) => {
+      manifest = m as Record<string, ManifestEntry>;
+    })
+    .catch(() => {
+      manifest = {};
+    });
+  return manifestLoading;
+}
 
-function pickVoice(): SpeechSynthesisVoice | null {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return null;
-  const voices = window.speechSynthesis.getVoices().filter((v) => v.lang.toLowerCase().startsWith('en'));
-  if (!voices.length) return null;
-  for (const re of PREFERRED) {
-    // Prefer female-sounding names inside each tier where we can tell
-    const tier = voices.filter((v) => re.test(v.name));
-    const fem = tier.find((v) => /female|aria|jenny|sonia|libby|samantha|karen|serena|moira|tessa|zira/i.test(v.name));
-    if (fem || tier[0]) return fem ?? tier[0];
+let ctx: AudioContext | null = null;
+let analyser: AnalyserNode | null = null;
+let level = new Uint8Array(256);
+let current: HTMLAudioElement | null = null;
+const cache = new Map<string, HTMLAudioElement>();
+
+function audioCtx(): AudioContext | null {
+  try {
+    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!ctx) {
+      ctx = new Ctx();
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      level = new Uint8Array(analyser.fftSize);
+      analyser.connect(ctx.destination);
+    }
+    if (ctx.state === 'suspended') void ctx.resume();
+    return ctx;
+  } catch {
+    return null;
   }
-  return voices[0];
+}
+
+function element(id: string): HTMLAudioElement | null {
+  const entry = manifest?.[id];
+  if (!entry) return null;
+  let el = cache.get(id);
+  if (!el) {
+    el = new Audio(`${BASE}${entry.file}`);
+    el.preload = 'auto';
+    el.crossOrigin = 'anonymous';
+    const c = audioCtx();
+    if (c && analyser) {
+      try {
+        c.createMediaElementSource(el).connect(analyser);
+      } catch {
+        /* already connected */
+      }
+    }
+    cache.set(id, el);
+  }
+  return el;
 }
 
 export const voice = {
   enabled: false,
   speaking: false,
-  listeners: new Set<Listener>(),
-  wordListeners: new Set<() => void>(),
-  generation: 0,
-
-  get supported(): boolean {
-    return typeof window !== 'undefined' && 'speechSynthesis' in window;
-  },
-
-  get voiceName(): string {
-    return chosen?.name ?? 'system voice';
-  },
-
-  init(): void {
-    if (!this.supported) return;
-    chosen = pickVoice();
-    window.speechSynthesis.onvoiceschanged = () => {
-      chosen = pickVoice();
-    };
-  },
+  listeners: new Set<(speaking: boolean) => void>(),
 
   setSpeaking(s: boolean): void {
     this.speaking = s;
     this.listeners.forEach((l) => l(s));
   },
 
+  /** Call from a click so the browser allows audio, and start fetching the manifest. */
+  unlock(): void {
+    audioCtx();
+    void loadManifest();
+  },
+
+  /** How long a line lasts (seconds), for pacing subtitles; null if there is no recording. */
+  seconds(id: string): number | null {
+    return manifest?.[id]?.seconds ?? null;
+  },
+
+  /** Warm the cache for lines that are likely next. */
+  preload(ids: string[]): void {
+    if (!this.enabled) return;
+    void loadManifest().then(() => ids.forEach((id) => element(id)));
+  },
+
   stop(): void {
-    this.generation++;
-    if (this.supported) window.speechSynthesis.cancel();
+    if (current) {
+      current.pause();
+      current.currentTime = 0;
+    }
+    current = null;
     this.setSpeaking(false);
   },
 
-  /** Speak text sentence by sentence (short breaths between); resolves when finished or stopped. */
-  async say(text: string): Promise<void> {
-    if (!this.enabled || !this.supported || !text) return;
+  /** Play a recorded line; resolves when it ends (or immediately if muted / missing). */
+  async play(id: string): Promise<void> {
+    if (!this.enabled) return;
+    await loadManifest();
+    const el = element(id);
+    if (!el) return;
     this.stop();
-    const gen = ++this.generation;
-    if (!chosen) chosen = pickVoice();
-    const sentences = text.match(/[^.!?…]+[.!?…]*\s*/g) ?? [text];
+    current = el;
+    el.currentTime = 0;
     this.setSpeaking(true);
-    for (const s of sentences) {
-      if (gen !== this.generation) return;
-      await new Promise<void>((resolve) => {
-        const u = new SpeechSynthesisUtterance(s.trim());
-        if (chosen) u.voice = chosen;
-        u.rate = 0.93;
-        u.pitch = 1.02;
-        u.volume = 0.95;
-        u.onboundary = () => this.wordListeners.forEach((l) => l());
-        u.onend = () => resolve();
-        u.onerror = () => resolve();
-        window.speechSynthesis.speak(u);
-      });
-      if (gen !== this.generation) return;
-      await new Promise((r) => setTimeout(r, 220));
+    await new Promise<void>((resolve) => {
+      const done = () => {
+        el.removeEventListener('ended', done);
+        el.removeEventListener('pause', done);
+        el.removeEventListener('error', done);
+        resolve();
+      };
+      el.addEventListener('ended', done);
+      el.addEventListener('pause', done);
+      el.addEventListener('error', done);
+      el.play().catch(done);
+    });
+    if (current === el) {
+      current = null;
+      this.setSpeaking(false);
     }
-    if (gen === this.generation) this.setSpeaking(false);
+  },
+
+  /** Current loudness 0..1 of her voice, for the orb. */
+  amplitude(): number {
+    if (!analyser || !this.speaking) return 0;
+    analyser.getByteTimeDomainData(level);
+    let sum = 0;
+    for (let i = 0; i < level.length; i++) {
+      const v = (level[i] - 128) / 128;
+      sum += v * v;
+    }
+    return Math.min(1, Math.sqrt(sum / level.length) * 4);
   },
 };
 
-/* ----------------------------------------------------------------------------------------------
-   A soft two-partial chime (Web Audio), so Vela's lines arrive with a sound of their own
-   ---------------------------------------------------------------------------------------------- */
-let audio: AudioContext | null = null;
-
+/* A soft two-partial chime (Web Audio) for moments that deserve one */
 export function chime(kind: 'arrive' | 'open' = 'arrive'): void {
   if (!voice.enabled) return;
-  try {
-    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-    audio ??= new Ctx();
-    const now = audio.currentTime;
-    const base = kind === 'arrive' ? 659.25 : 523.25; // E5 / C5
-    for (const [mult, gain, delay] of [[1, 0.06, 0], [1.5, 0.035, 0.09], [2.01, 0.02, 0.18]] as const) {
-      const o = audio.createOscillator();
-      const g = audio.createGain();
-      o.type = 'sine';
-      o.frequency.value = base * mult;
-      g.gain.setValueAtTime(0, now + delay);
-      g.gain.linearRampToValueAtTime(gain, now + delay + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + delay + 1.6);
-      o.connect(g).connect(audio.destination);
-      o.start(now + delay);
-      o.stop(now + delay + 1.7);
-    }
-  } catch {
-    /* audio unavailable */
+  const c = audioCtx();
+  if (!c) return;
+  const now = c.currentTime;
+  const base = kind === 'arrive' ? 659.25 : 523.25;
+  for (const [mult, gain, delay] of [[1, 0.05, 0], [1.5, 0.03, 0.09], [2.01, 0.018, 0.18]] as const) {
+    const o = c.createOscillator();
+    const g = c.createGain();
+    o.type = 'sine';
+    o.frequency.value = base * mult;
+    g.gain.setValueAtTime(0, now + delay);
+    g.gain.linearRampToValueAtTime(gain, now + delay + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, now + delay + 1.6);
+    o.connect(g).connect(c.destination);
+    o.start(now + delay);
+    o.stop(now + delay + 1.7);
   }
-}
-
-/* ----------------------------------------------------------------------------------------------
-   Listening (Chrome / Edge / Safari)
-   ---------------------------------------------------------------------------------------------- */
-interface RecognitionLike {
-  lang: string;
-  interimResults: boolean;
-  maxAlternatives: number;
-  start: () => void;
-  stop: () => void;
-  onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
-  onend: (() => void) | null;
-  onerror: (() => void) | null;
-}
-
-export function recognitionSupported(): boolean {
-  const w = window as unknown as Record<string, unknown>;
-  return !!(w.SpeechRecognition || w.webkitSpeechRecognition);
-}
-
-export function listen(onText: (t: string) => void, onDone: () => void): () => void {
-  const w = window as unknown as Record<string, new () => RecognitionLike>;
-  const Ctor = w.SpeechRecognition || w.webkitSpeechRecognition;
-  if (!Ctor) {
-    onDone();
-    return () => {};
-  }
-  const rec = new Ctor();
-  rec.lang = 'en-US';
-  rec.interimResults = false;
-  rec.maxAlternatives = 1;
-  rec.onresult = (e) => {
-    const t = e.results[0]?.[0]?.transcript;
-    if (t) onText(t);
-  };
-  rec.onend = onDone;
-  rec.onerror = onDone;
-  voice.stop();
-  rec.start();
-  return () => rec.stop();
 }

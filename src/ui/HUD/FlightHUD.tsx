@@ -13,7 +13,6 @@ import { Popover, ScaleDomain, ScaleLadder, Segmented, TimeDeck } from './Contro
 import { Search, Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle } from 'lucide-react';
 import { Tour } from './Tour';
 import { Companion } from './Companion';
-import type { BodyInfo } from '../../companion/knowledge';
 import { voice } from '../../companion/voice';
 import { horizonFacts } from '../../rendering/HorizonView';
 import './hud.css';
@@ -139,20 +138,10 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null);
   const showToast = useCallback((text: string) => setToast({ id: performance.now(), text }), []);
 
-  // Vela: arrivals and tour narration
+  // Vela: arrivals, tour steps, and whether she is talking (the dossier steps aside)
   const [arrival, setArrival] = useState<{ name: string; nonce: number } | null>(null);
-  const [narration, setNarration] = useState<{ id: number; text: string } | null>(null);
-  const bodyInfo = useCallback((name: string): BodyInfo | null => {
-    const d = name === 'Sagittarius A*' ? CatalogueManager.getSagittariusAStar() : CatalogueManager.getBody(name);
-    if (!d) return null;
-    return {
-      radiusKm: d.physical.meanRadiusKm,
-      aAU: d.parentName && d.category === 'moon' ? (CatalogueManager.getBody(d.parentName)?.orbit.semiMajorAxisAU ?? d.orbit.semiMajorAxisAU) : d.orbit.semiMajorAxisAU,
-      periodDays: d.orbit.orbitalPeriodDays,
-      dayHours: d.physical.rotationPeriodHours,
-      parent: d.parentName,
-    };
-  }, []);
+  const [tourStep, setTourStep] = useState<{ index: number; nonce: number } | null>(null);
+  const [velaTalking, setVelaTalking] = useState(false);
 
   // Voyages: logbook, flight state and the arrival stamp
   const logbook = useLogbook();
@@ -825,7 +814,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
       {/* ========================================================
           MONOGRAPH — the subject, introduced
           ======================================================== */}
-      {monographVisible && !exploring && (
+      {monographVisible && !exploring && !velaTalking && (
         <section
           data-tour="monograph"
           key={activeTargetName}
@@ -883,7 +872,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
       )}
 
       {/* Re-open the monograph once it has stepped aside */}
-      {!monographVisible && !exploring && (
+      {!monographVisible && !exploring && !velaTalking && (
         <div className="hud-dim absolute left-1/2 bottom-[86px] md:bottom-[96px] -translate-x-1/2 pointer-events-auto z-20 hud-rise">
           <button
             onClick={(e) => {
@@ -950,14 +939,18 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
       <Companion
         ready={introDone}
         current={activeTargetName}
-        lightFromEarthSec={telemetry?.lightFromEarthSec ?? null}
         inTransit={!!route}
         route={route}
         arrival={arrival}
-        narration={narration}
+        tourStep={tourStep}
         tourOpen={tourOpen}
-        inHorizon={inHorizon}
-        info={bodyInfo}
+        horizon={telemetry?.horizon ?? null}
+        surfaceActive={onSurfaceView}
+        orbitsOn={orbitsOn}
+        timeRate={isPaused ? 0 : multiplier}
+        lens={lensProfile}
+        scaleMode={scaleMode}
+        onTalkingChange={setVelaTalking}
         actions={{
           fly: (b) => {
             if (b === 'Sagittarius A*') onJumpToScale?.('sgr_a');
@@ -970,17 +963,13 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           lens: (n) => onSetLens?.(n),
           scale: (m) => onSetScaleMode(m),
           time: (rate) => onSetTimeMultiplier(rate),
-          toggleOrbits: () => onToggleOrbits?.(),
           tour: () => setTourOpen(true),
-          overview: () => onResetView(),
         }}
       />
 
       <Tour
         open={tourOpen}
-        onStep={(title, body) => {
-          if (voice.enabled) setNarration({ id: performance.now(), text: `${title}. ${body}` });
-        }}
+        onStep={(index) => setTourStep({ index, nonce: performance.now() })}
         onClose={() => {
           setTourOpen(false);
           voice.stop();

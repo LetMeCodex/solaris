@@ -113,11 +113,17 @@ export const Preloader: React.FC<{
     const wait = 0;
     let raf = 0;
     const timers: number[] = [];
-    timers.push(window.setTimeout(() => setPhase('collapse'), wait + 350));
+    timers.push(
+      window.setTimeout(() => {
+        setPhase('collapse');
+        // Mount the HUD now, under the still-opaque overlay: its power-on animations finish before
+        // the iris opens, so the reveal shows a complete scene instead of a bare planet first
+        revealRef.current?.();
+      }, wait + 350)
+    );
     timers.push(
       window.setTimeout(() => {
         setPhase('iris');
-        revealRef.current?.();
         const el = rootRef.current;
         const start = performance.now();
         const dur = reduce ? 350 : 1500;
@@ -149,7 +155,7 @@ export const Preloader: React.FC<{
           el.style.maskImage = m0;
         }
         raf = requestAnimationFrame(step);
-      }, wait + (reduce ? 400 : 1250))
+      }, wait + (reduce ? 400 : 2100))
     );
     return () => {
       timers.forEach(clearTimeout);
@@ -161,7 +167,7 @@ export const Preloader: React.FC<{
   const pct = Math.round(Math.min(1, display) * 100);
 
   return (
-    <div ref={rootRef} className={`sol-preloader ${phase}`} role="status" aria-live="polite" aria-label={`Loading Solaris, ${pct} percent`}>
+    <div ref={rootRef} className={`sol-preloader is-${phase}`} role="status" aria-live="polite" aria-label={`Loading Solaris, ${pct} percent`}>
       <div className="sol-pre-stars" />
       <div className="sol-pre-stage">
         <svg viewBox="0 0 400 400" className="sol-orrery" aria-hidden>

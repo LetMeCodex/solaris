@@ -134,7 +134,7 @@ function markSeen() {
 
 type Rect = { x: number; y: number; w: number; h: number };
 
-export const Tour: React.FC<{ open: boolean; onClose: () => void; demos: TourDemos; onStep?: (title: string, body: string) => void }> = ({ open, onClose, demos, onStep }) => {
+export const Tour: React.FC<{ open: boolean; onClose: () => void; demos: TourDemos; onStep?: (index: number) => void }> = ({ open, onClose, demos, onStep }) => {
   const [i, setI] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
   const [card, setCard] = useState<{ x: number; y: number; side: 'left' | 'right' | 'top' | 'bottom' | 'center' }>({ x: 0, y: 0, side: 'center' });
@@ -228,7 +228,7 @@ export const Tour: React.FC<{ open: boolean; onClose: () => void; demos: TourDem
   const onStepRef = useRef(onStep);
   onStepRef.current = onStep;
   useEffect(() => {
-    if (open) onStepRef.current?.(STEPS[i].title, STEPS[i].body);
+    if (open) onStepRef.current?.(i);
   }, [open, i]);
 
   // Live demonstrations

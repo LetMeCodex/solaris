@@ -1,14 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Mic, Send, Volume2, VolumeX, X } from 'lucide-react';
-import { answer, arrivalLine, BodyInfo, Chip, CompanionAction, HELP_CHIPS, Reply } from '../../companion/knowledge';
-import { chime, listen, recognitionSupported, voice } from '../../companion/voice';
+import { beautifulPlaces, CompanionAction, factIds, idsWith, lineText, pick, Secret, secretsAt } from '../../companion/knowledge';
+import { voice } from '../../companion/voice';
 import type { FlightRoute } from '../../rendering/SolarSystemScene';
 import { tourSeen } from './Tour';
 
 /**
- * VELA — a companion who travels with the user. She speaks (browser speech synthesis), types her
- * lines beside a living orb, offers one-tap actions, answers questions typed or spoken, reacts to
- * arrivals, long journeys and idling, and narrates the guided tour.
+ * VELA — a companion, not a chatbot. She starts conversations, teases, reacts to what you do and
+ * offers to show you things. Every line is a real recording (Kokoro neural voice) shown as a
+ * minimal dialogue box; you answer by picking one of her choices (click or keys 1–4).
  */
 
 export interface CompanionActions {
@@ -19,16 +18,19 @@ export interface CompanionActions {
   lens: (name: 'cinematic' | 'fisheye' | 'clean') => void;
   scale: (mode: 'exploration' | 'scientific') => void;
   time: (rate: number) => void;
-  toggleOrbits: () => void;
   tour: () => void;
-  overview: () => void;
 }
 
-interface Msg {
-  id: number;
-  from: 'vela' | 'you';
-  text: string;
-  chips?: Chip[];
+interface Choice {
+  label: string;
+  run: () => void;
+}
+
+interface Beat {
+  id: string;
+  choices?: Choice[];
+  /** Called when this beat finishes without a choice. */
+  after?: () => void;
 }
 
 const SEEN_KEY = 'solaris.vela.met';
@@ -36,100 +38,158 @@ const SEEN_KEY = 'solaris.vela.met';
 export const Companion: React.FC<{
   ready: boolean;
   current: string;
-  lightFromEarthSec: number | null;
   inTransit: boolean;
   route: FlightRoute | null;
   arrival: { name: string; nonce: number } | null;
-  narration: { id: number; text: string } | null;
+  tourStep: { index: number; nonce: number } | null;
   tourOpen: boolean;
-  inHorizon: boolean;
-  info: (name: string) => BodyInfo | null;
+  horizon: { rRs: number; onShore: boolean } | null;
+  surfaceActive: boolean;
+  orbitsOn: boolean;
+  timeRate: number;
+  lens: string;
+  scaleMode: string;
   actions: CompanionActions;
-}> = ({ ready, current, lightFromEarthSec, inTransit, route, arrival, narration, tourOpen, inHorizon, info, actions }) => {
-  const [msgs, setMsgs] = useState<Msg[]>([]);
-  const [bubble, setBubble] = useState<Msg | null>(null);
-  const [typed, setTyped] = useState('');
-  const [panelOpen, setPanelOpen] = useState(false);
-  const [input, setInput] = useState('');
-  const [listening, setListening] = useState(false);
+  onTalkingChange?: (talking: boolean) => void;
+}> = ({ ready, current, inTransit, route, arrival, tourStep, tourOpen, horizon, surfaceActive, orbitsOn, timeRate, lens, scaleMode, actions, onTalkingChange }) => {
+  const [beat, setBeat] = useState<Beat | null>(null);
+  const [shown, setShown] = useState(0);
+  const [quiet, setQuiet] = useState(false);
   const [speaking, setSpeaking] = useState(false);
-  const [voiceOn, setVoiceOn] = useState(voice.enabled);
+  useEffect(() => {
+    const l = (s: boolean) => setSpeaking(s);
+    voice.listeners.add(l);
+    return () => {
+      voice.listeners.delete(l);
+    };
+  }, []);
+  const queue = useRef<Beat[]>([]);
   const orbRef = useRef<HTMLButtonElement>(null);
-  const stopListening = useRef<(() => void) | null>(null);
-  const nextId = useRef(1);
-  const visited = useRef(new Set<string>());
-  const pendingHorizon = useRef(false);
-  const lastActivity = useRef(performance.now());
-  const idleHinted = useRef(new Set<string>());
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef(actions);
   actionsRef.current = actions;
+  const visited = useRef(new Set<string>());
+  const usedFacts = useRef(new Set<string>());
+  const said = useRef(new Set<string>());
+  const pendingHorizon = useRef(false);
+  const lastActivity = useRef(performance.now());
+  const beatRef = useRef<Beat | null>(null);
+  beatRef.current = beat;
 
-  // Voice → orb
+  const text = beat ? lineText(beat.id) : '';
+  const typing = beat !== null && shown < text.length;
+
+  useEffect(() => onTalkingChange?.(beat !== null && !tourOpen), [beat, tourOpen, onTalkingChange]);
+
+  /* ------------------------------------------------------------------ the voice → the orb */
   useEffect(() => {
-    voice.init();
-    const onSpeak = (s: boolean) => setSpeaking(s);
-    const onWord = () => {
-      const el = orbRef.current;
-      if (!el) return;
-      el.classList.remove('word');
-      void el.offsetWidth;
-      el.classList.add('word');
+    let raf = 0;
+    const loop = () => {
+      const a = voice.amplitude();
+      orbRef.current?.style.setProperty('--amp', a.toFixed(3));
+      boxRef.current?.style.setProperty('--amp', a.toFixed(3));
+      raf = requestAnimationFrame(loop);
     };
-    voice.listeners.add(onSpeak);
-    voice.wordListeners.add(onWord);
-    return () => {
-      voice.listeners.delete(onSpeak);
-      voice.wordListeners.delete(onWord);
-    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
   }, []);
 
-  /** Vela says something: transcript, bubble, typewriter, voice. */
-  const say = useCallback((reply: Reply, opts: { silent?: boolean } = {}) => {
-    const m: Msg = { id: nextId.current++, from: 'vela', text: reply.text, chips: reply.chips };
-    setMsgs((x) => [...x.slice(-40), m]);
-    setBubble(m);
-    if (!opts.silent) {
-      chime('arrive');
-      void voice.say(reply.text);
-    }
+  /* ------------------------------------------------------------------ dialogue engine */
+  const next = useCallback(() => {
+    const b = queue.current.shift() ?? null;
+    setShown(0);
+    setBeat(b);
   }, []);
 
-  // Typewriter for the bubble, roughly at speaking pace
+  /** Queue lines. `now` interrupts whatever she is saying. */
+  const say = useCallback(
+    (beats: Beat | Beat[], now = false) => {
+      const list = Array.isArray(beats) ? beats : [beats];
+      if (now) {
+        voice.stop();
+        queue.current = [...list];
+        next();
+      } else {
+        queue.current.push(...list);
+        if (!beatRef.current) next();
+      }
+      voice.preload(list.map((b) => b.id));
+    },
+    [next]
+  );
+
+  // Play the current beat and type it out at the pace of the recording
   useEffect(() => {
-    if (!bubble) return;
+    if (!beat) return;
+    let cancelled = false;
+    const t = lineText(beat.id);
+    const seconds = voice.seconds(beat.id) ?? Math.max(1.6, t.length * 0.055);
+    const perChar = Math.max(14, (seconds * 900) / Math.max(1, t.length));
     let i = 0;
-    setTyped('');
-    const id = window.setInterval(() => {
-      i += 2;
-      setTyped(bubble.text.slice(0, i));
-      if (i >= bubble.text.length) window.clearInterval(id);
-    }, 45);
-    return () => window.clearInterval(id);
-  }, [bubble]);
+    const typer = window.setInterval(() => {
+      i += 1;
+      setShown(i);
+      if (i >= t.length) window.clearInterval(typer);
+    }, perChar);
+    let hold = 0;
+    const finish = () => {
+      if (cancelled || beat.choices?.length) return;
+      hold = window.setTimeout(() => {
+        if (cancelled) return;
+        beat.after?.();
+        next();
+      }, 2200);
+    };
+    if (voice.enabled) {
+      void voice.play(beat.id).then(finish);
+    } else {
+      hold = window.setTimeout(finish, seconds * 1000);
+    }
+    // Choices wait a while, then she lets it go
+    const giveUp = beat.choices?.length ? window.setTimeout(() => !cancelled && next(), 22000) : 0;
+    return () => {
+      cancelled = true;
+      window.clearInterval(typer);
+      window.clearTimeout(hold);
+      window.clearTimeout(giveUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [beat]);
 
-  // Bubble steps aside a while after its line has finished
+  const choose = useCallback(
+    (c: Choice) => {
+      lastActivity.current = performance.now();
+      voice.stop();
+      queue.current = [];
+      setBeat(null);
+      c.run();
+    },
+    []
+  );
+
+  // Keys 1–4 answer; Space/Enter finishes the line
   useEffect(() => {
-    if (!bubble || speaking || panelOpen) return;
-    const t = setTimeout(() => setBubble((b) => (b?.id === bubble.id ? null : b)), bubble.chips?.length ? 16000 : 9000);
-    return () => clearTimeout(t);
-  }, [bubble, speaking, panelOpen]);
+    if (!beat) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || tourOpen) return;
+      const n = Number(e.key);
+      if (beat.choices && n >= 1 && n <= beat.choices.length && !typing) {
+        e.preventDefault();
+        choose(beat.choices[n - 1]);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [beat, typing, choose, tourOpen]);
 
-  /* ---------------------------------------------------------------- actions */
+  /* ------------------------------------------------------------------ what she can do */
   const run = useCallback(
     (a: CompanionAction) => {
       const act = actionsRef.current;
-      lastActivity.current = performance.now();
       switch (a.kind) {
-        case 'fly':
-          act.fly(a.body);
-          break;
-        case 'sky':
-          act.sky(a.body, a.facing);
-          break;
-        case 'landmark':
-          act.landmark(a.id);
-          break;
+        case 'fly': act.fly(a.body); break;
+        case 'sky': act.sky(a.body, a.facing); break;
+        case 'landmark': act.landmark(a.id); break;
         case 'horizon':
           if (current === 'Sagittarius A*' && !inTransit) act.horizon(true);
           else {
@@ -137,54 +197,58 @@ export const Companion: React.FC<{
             act.fly('Sagittarius A*');
           }
           break;
-        case 'lens':
-          act.lens(a.name);
-          break;
-        case 'scale':
-          act.scale(a.mode);
-          break;
-        case 'time':
-          act.time(a.rate);
-          break;
-        case 'orbits':
-          act.toggleOrbits();
-          break;
-        case 'tour':
-          setPanelOpen(false);
-          act.tour();
-          break;
-        case 'overview':
-          act.overview();
-          break;
+        case 'lens': act.lens(a.name); break;
+        case 'scale': act.scale(a.mode); break;
+        case 'time': act.time(a.rate); break;
+        case 'tour': act.tour(); break;
       }
     },
     [current, inTransit]
   );
 
-  const ask = useCallback(
-    (text: string) => {
-      lastActivity.current = performance.now();
-      setMsgs((x) => [...x.slice(-40), { id: nextId.current++, from: 'you', text }]);
-      const r = answer(text, { current, lightFromEarthSec, info });
-      say(r);
-      if (r.action) setTimeout(() => run(r.action!), 500);
-    },
-    [current, lightFromEarthSec, info, say, run]
+  const offerSecret = useCallback(
+    (s: Secret): Beat => ({
+      id: `secret.${s.id}`,
+      choices: [
+        { label: s.label, run: () => { say({ id: pick(idsWith('accept.')) }); setTimeout(() => run(s.action), 350); } },
+        { label: 'Not now', run: () => say({ id: pick(idsWith('decline.')) }) },
+      ],
+    }),
+    [run, say]
   );
 
-  const tapChip = useCallback(
-    (c: Chip) => {
-      if (c.action) {
-        setMsgs((x) => [...x.slice(-40), { id: nextId.current++, from: 'you', text: c.label }]);
-        voice.stop();
-        run(c.action);
-        setBubble(null);
-      } else if (c.ask) ask(c.ask);
-    },
-    [ask, run]
-  );
+  const factFor = useCallback((body: string): string | null => {
+    const fresh = factIds(body).filter((id) => !usedFacts.current.has(id));
+    const pool = fresh.length ? fresh : factIds(body);
+    if (!pool.length) return null;
+    const id = pick(pool);
+    usedFacts.current.add(id);
+    return id;
+  }, []);
 
-  /* ---------------------------------------------------------------- reactions */
+  /** Her menu when you tap the orb. */
+  const menu = useCallback((): Choice[] => {
+    const here = secretsAt(current);
+    return [
+      { label: 'Tell me something', run: () => { const f = factFor(current) ?? factFor(pick(['Saturn', 'Mars', 'Jupiter', 'Venus'])); if (f) say({ id: f }); } },
+      { label: 'Show me a secret', run: () => say(offerSecret(here.length ? pick(here) : pick(beautifulPlaces()))) },
+      { label: 'Somewhere beautiful', run: () => { const s = pick(beautifulPlaces()); say({ id: pick(idsWith('accept.')) }); setTimeout(() => run(s.action), 400); } },
+      quiet
+        ? { label: 'Talk to me again', run: () => { setQuiet(false); say({ id: pick(idsWith('poke.')) }); } }
+        : { label: 'Hush for a while', run: () => { say({ id: 'hush', after: () => setQuiet(true) }); } },
+    ];
+  }, [current, quiet, factFor, offerSecret, run, say]);
+
+  const poke = () => {
+    lastActivity.current = performance.now();
+    if (beat && typing) {
+      setShown(text.length);
+      return;
+    }
+    say({ id: pick(idsWith('poke.')), choices: menu() }, true);
+  };
+
+  /* ------------------------------------------------------------------ she reacts */
   // First words
   useEffect(() => {
     if (!ready) return;
@@ -196,228 +260,161 @@ export const Companion: React.FC<{
       /* ignore */
     }
     visited.current.add(current);
-    const briefing = !tourSeen();
-    let poll = 0;
-    const t = setTimeout(() => {
-      say(
-        briefing
-          ? { text: `Hello. You made it… I'm Vela. That is ${current}, exactly where it is in the sky right now. Everything you'll see here is real. Let me show you around.` }
-          : met
-            ? { text: `Welcome back, traveller. We're at ${current}. Where shall we go?`, chips: HELP_CHIPS }
-            : { text: `Hello. I'm Vela, your companion out here. Ask me anything, or tap me whenever you want me.`, chips: HELP_CHIPS }
-      );
-      if (briefing) {
-        // Start the briefing once she has finished speaking (or after a few seconds in silence)
-        const start = performance.now();
-        const wait = () => {
-          const el = performance.now() - start;
-          if ((!voice.speaking && el > (voice.enabled ? 2500 : 6500)) || el > 16000) {
-            setBubble(null);
-            actionsRef.current.tour();
-          } else poll = window.setTimeout(wait, 300);
-        };
-        poll = window.setTimeout(wait, 1200);
+    const t = window.setTimeout(() => {
+      if (!tourSeen()) {
+        say([{ id: 'greet.first.1' }, { id: 'greet.first.2' }, { id: 'greet.first.3', after: () => actionsRef.current.tour() }]);
+      } else {
+        say({ id: met ? pick(idsWith('greet.back.')) : 'greet.first.2', choices: menu() });
       }
     }, 900);
-    return () => {
-      clearTimeout(t);
-      clearTimeout(poll);
-    };
+    return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
-  // Long journeys
-  const lastRoute = useRef<number>(-1);
+  // Tour: she narrates each step in her own words (voice only; the card shows the details)
   useEffect(() => {
-    if (!route || route.id === lastRoute.current || tourOpen) return;
-    lastRoute.current = route.id;
-    const ly = route.distanceKm / 9.4607e12;
-    if (ly > 0.05) {
-      say({ text: `Twenty seven thousand light years. Light that left there when the last ice age began is only arriving at Earth now. Hold on.` });
-    } else if (route.distanceKm > 1.5e9) {
-      const hours = route.distanceKm / 299792.458 / 3600;
-      say({ text: `${(route.distanceKm / 1e9).toFixed(1)} billion kilometres to ${route.to}. Even light needs ${hours >= 1 ? `${hours.toFixed(1)} hours` : `${Math.round(hours * 60)} minutes`} for this.` });
+    if (!tourStep) return;
+    const id = `tour.${tourStep.index}`;
+    if (lineText(id)) say({ id }, true);
+  }, [tourStep, say]);
+  useEffect(() => {
+    if (!tourOpen && beatRef.current?.id.startsWith('tour.')) {
+      voice.stop();
+      queue.current = [];
+      setBeat(null);
     }
-  }, [route, tourOpen, say]);
+  }, [tourOpen]);
 
-  // Arrivals: a fact, and on the first visit the world's secret
+  // Long journeys
+  const lastRoute = useRef(-1);
   useEffect(() => {
-    if (!arrival || tourOpen) return;
+    if (!route || route.id === lastRoute.current || tourOpen || quiet) return;
+    lastRoute.current = route.id;
+    const id = `journey.${route.to}`;
+    if (lineText(id) && !said.current.has(id)) {
+      said.current.add(id);
+      say({ id }, true);
+    }
+  }, [route, tourOpen, quiet, say]);
+
+  // Arrivals
+  useEffect(() => {
+    const a = arrival;
+    if (!a || tourOpen) return;
     lastActivity.current = performance.now();
-    if (pendingHorizon.current && arrival.name === 'Sagittarius A*') {
+    if (pendingHorizon.current && a.name === 'Sagittarius A*') {
       pendingHorizon.current = false;
-      setTimeout(() => actionsRef.current.horizon(true), 800);
-      say({ text: 'Here. Now, the shore. Drag to look around. When you are ready, fly towards it with W.' });
+      window.setTimeout(() => actionsRef.current.horizon(true), 700);
       return;
     }
-    const first = !visited.current.has(arrival.name);
-    visited.current.add(arrival.name);
-    const r = arrivalLine(arrival.name, first);
-    if (r) setTimeout(() => say(r), 1200);
-  }, [arrival, tourOpen, say]);
+    // Standing on a surface, the sky is the point: she says "look up" instead (see reactions)
+    if (quiet || surfaceActive) return;
+    const first = !visited.current.has(a.name);
+    visited.current.add(a.name);
+    const fact = factFor(a.name);
+    const secret = first ? secretsAt(a.name)[0] : undefined;
+    const beats: Beat[] = [];
+    if (fact && (first || Math.random() < 0.5)) beats.push({ id: fact });
+    if (secret) beats.push(offerSecret(secret));
+    if (beats.length) window.setTimeout(() => say(beats, true), 1100);
+  }, [arrival, tourOpen, quiet, surfaceActive, factFor, offerSecret, say]);
 
-  // The horizon itself
-  const wasHorizon = useRef(false);
+  // Little reactions to what you change (not during the tour's own demos)
+  const prev = useRef({ orbitsOn: orbitsOn, timeRate: timeRate, lens: lens, scaleMode: scaleMode, surface: surfaceActive });
   useEffect(() => {
-    if (inHorizon && !wasHorizon.current) {
-      setTimeout(
-        () =>
-          say({
-            text: 'This world circles at twenty Schwarzschild radii. Any closer, and the black hole\'s tides would tear it apart. Time runs a little slower here. Every hour you spend on this shore, about an hour and two minutes pass back home.',
-          }),
-        1500
-      );
-    }
-    wasHorizon.current = inHorizon;
-  }, [inHorizon, say]);
+    const was = prev.current;
+    prev.current = { orbitsOn: orbitsOn, timeRate: timeRate, lens: lens, scaleMode: scaleMode, surface: surfaceActive };
+    if (!ready || tourOpen || quiet) return;
+    if (was.orbitsOn && !orbitsOn) say({ id: 'react.orbits-off' }, true);
+    else if (was.timeRate !== timeRate && timeRate >= 31536000) say({ id: 'react.year' }, true);
+    else if (was.lens !== lens && lens === 'fisheye') say({ id: 'react.fisheye' }, true);
+    else if (was.scaleMode !== scaleMode && scaleMode === 'scientific') say({ id: 'react.true-scale' }, true);
+    else if (!was.surface && surfaceActive) window.setTimeout(() => say({ id: pick(idsWith('surface.')) }, true), 1500);
+  }, [orbitsOn, timeRate, lens, scaleMode, surfaceActive, ready, tourOpen, quiet, say]);
 
-  // Tour narration: voice only, the briefing card already shows the words
+  // The black hole, up close
   useEffect(() => {
-    if (!narration) return;
-    setBubble(null);
-    void voice.say(narration.text);
-  }, [narration]);
+    const h = horizon;
+    if (!h || quiet) return;
+    const once = (id: string) => {
+      if (said.current.has(id)) return;
+      said.current.add(id);
+      window.setTimeout(() => say({ id }, true), 600);
+    };
+    if (h.onShore) once('bh.horizon');
+    else if (h.rRs < 1.5) once('bh.photon');
+    else if (h.rRs < 3) once('bh.deep');
+  }, [horizon, quiet, say]);
 
-  // Idle: once per world, after a quiet minute, offer something
+  // Idle: once per world, after a quiet stretch, she says something
   useEffect(() => {
     if (!ready) return;
     const onAct = () => (lastActivity.current = performance.now());
     window.addEventListener('pointerdown', onAct);
     window.addEventListener('keydown', onAct);
+    const hinted = new Set<string>();
     const id = window.setInterval(() => {
-      if (tourOpen || inTransit || voice.speaking || panelOpen) return;
-      if (performance.now() - lastActivity.current < 60000 || idleHinted.current.has(current)) return;
-      idleHinted.current.add(current);
-      const r = answer('show me something hidden', { current, lightFromEarthSec, info });
-      say({ text: `Still here? ${r.text}`, chips: r.chips });
+      if (quiet || tourOpen || inTransit || beatRef.current || hinted.has(current)) return;
+      if (performance.now() - lastActivity.current < 75000) return;
+      hinted.add(current);
+      say({ id: pick(idsWith('idle.')), choices: menu() });
     }, 5000);
     return () => {
       window.removeEventListener('pointerdown', onAct);
       window.removeEventListener('keydown', onAct);
       window.clearInterval(id);
     };
-  }, [ready, tourOpen, inTransit, panelOpen, current, lightFromEarthSec, info, say]);
-
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [msgs, panelOpen]);
-
-  /* ---------------------------------------------------------------- UI */
-  const toggleVoice = () => {
-    voice.enabled = !voice.enabled;
-    if (!voice.enabled) voice.stop();
-    setVoiceOn(voice.enabled);
-  };
-
-  const mic = () => {
-    if (listening) {
-      stopListening.current?.();
-      return;
-    }
-    setListening(true);
-    stopListening.current = listen(
-      (t) => ask(t),
-      () => setListening(false)
-    );
-  };
+  }, [ready, tourOpen, inTransit, current, quiet, menu, say]);
 
   if (!ready) return null;
+  const showBox = beat !== null && !tourOpen;
 
   return (
-    <div className="vela-root pointer-events-auto" data-tour="vela">
-      {/* Speech bubble */}
-      {bubble && !panelOpen && (
-        <div key={bubble.id} className="vela-bubble hud-frame">
-          <button className="vela-x" onClick={() => setBubble(null)} aria-label="Dismiss">
-            <X size={11} />
-          </button>
-          <p className="text-[12px] leading-relaxed text-white/85 pr-4">
-            {typed}
-            {typed.length < bubble.text.length && <span className="vela-caret" />}
+    <>
+      {showBox && (
+        <div
+          ref={boxRef}
+          key={beat.id + (beat.choices ? 'c' : '')}
+          className={`vela-dialog ${inTransit ? 'in-transit' : ''}`}
+          role="dialog"
+          aria-live="polite"
+          aria-label={`Vela says: ${text}`}
+          onClick={() => (typing ? setShown(text.length) : !beat.choices && next())}
+        >
+          <span className="vela-tag">
+            <i aria-hidden /> Vela
+          </span>
+          <p className="vela-line">
+            <span aria-hidden>“</span>
+            {text.slice(0, shown)}
+            {typing ? <span className="vela-cursor" aria-hidden /> : <span aria-hidden>”</span>}
           </p>
-          {bubble.chips && typed.length >= bubble.text.length && (
-            <div className="flex flex-wrap gap-1.5 mt-2.5 hud-rise">
-              {bubble.chips.map((c) => (
-                <button key={c.label} className="vela-chip" onClick={() => tapChip(c)}>
-                  {c.label}
-                </button>
+          {beat.choices && !typing && (
+            <ol className="vela-choices">
+              {beat.choices.map((c, i) => (
+                <li key={c.label}>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      choose(c);
+                    }}
+                  >
+                    <span className="k">{i + 1}</span> {c.label}
+                  </button>
+                </li>
               ))}
-            </div>
+            </ol>
           )}
         </div>
       )}
 
-      {/* Chat panel */}
-      {panelOpen && (
-        <div className="vela-panel hud-frame hud-menu">
-          <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-white/10">
-            <div>
-              <div className="text-[12px] tracking-[0.4em] uppercase text-white font-light">Vela</div>
-              <div className="hud-label !text-[8px]">Your companion · {voiceOn ? voice.voiceName : 'voice off'}</div>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <button className="hud-icon-btn !w-7 !h-7" onClick={toggleVoice} aria-label={voiceOn ? 'Mute Vela' : 'Unmute Vela'} title={voiceOn ? 'Mute voice' : 'Voice on'}>
-                {voiceOn ? <Volume2 size={12} /> : <VolumeX size={12} />}
-              </button>
-              <button className="hud-icon-btn !w-7 !h-7" onClick={() => setPanelOpen(false)} aria-label="Close">
-                <X size={12} />
-              </button>
-            </div>
-          </div>
-          <div ref={scrollRef} className="vela-log hud-scroll">
-            {msgs.map((m) => (
-              <div key={m.id} className={`vela-msg ${m.from}`}>
-                <p>{m.text}</p>
-                {m.from === 'vela' && m.chips && (
-                  <div className="flex flex-wrap gap-1.5 mt-2">
-                    {m.chips.map((c) => (
-                      <button key={c.label} className="vela-chip" onClick={() => tapChip(c)}>
-                        {c.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-          <form
-            className="flex items-center gap-2 p-3 border-t border-white/10"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!input.trim()) return;
-              ask(input.trim());
-              setInput('');
-            }}
-          >
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={listening ? 'Listening…' : 'Ask Vela anything…'}
-              className="hud-input !py-2"
-              aria-label="Ask Vela"
-            />
-            {recognitionSupported() && (
-              <button type="button" onClick={mic} className={`hud-icon-btn !w-8 !h-8 shrink-0 ${listening ? 'vela-listening' : ''}`} aria-label="Speak to Vela">
-                <Mic size={13} />
-              </button>
-            )}
-            <button type="submit" className="hud-icon-btn !w-8 !h-8 shrink-0" aria-label="Send">
-              <Send size={12} />
-            </button>
-          </form>
-        </div>
-      )}
-
-      {/* The orb */}
       <button
         ref={orbRef}
-        className={`vela-orb ${speaking ? 'speaking' : ''} ${listening ? 'listening' : ''}`}
-        onClick={() => {
-          setPanelOpen((o) => !o);
-          if (!msgs.length) say({ text: 'I\'m here. Ask me anything about where we are.', chips: HELP_CHIPS }, { silent: true });
-        }}
-        aria-label={panelOpen ? 'Close Vela' : 'Talk to Vela'}
-        title="Vela · your companion"
+        className={`vela-orb ${speaking ? 'speaking' : ''} ${quiet ? 'quiet' : ''} ${surfaceActive ? 'on-surface' : ''}`}
+        onClick={poke}
+        aria-label="Talk to Vela"
+        title="Vela · tap to talk"
+        data-tour="vela"
       >
         <svg viewBox="0 0 64 64" aria-hidden>
           <circle className="ring r1" cx="32" cy="32" r="29" />
@@ -428,7 +425,7 @@ export const Companion: React.FC<{
         </svg>
         <span className="vela-name">Vela</span>
       </button>
-    </div>
+    </>
   );
 };
 

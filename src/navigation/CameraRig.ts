@@ -257,7 +257,9 @@ export class CameraRig {
 
   /** The flight in progress (for the HUD), or null when the camera is holding a shot. */
   public getTransit(): { progress: number; target: string } | null {
-    if (!this.transition) return null;
+    // While another controller (surface view, horizon) owns the camera there is no flight, even if
+    // one was interrupted: otherwise the HUD would stay in travel mode and hide the surface panel
+    if (!this.transition || this.suspended) return null;
     return { progress: this.transitProgress, target: this.transition.targetBodyName };
   }
 

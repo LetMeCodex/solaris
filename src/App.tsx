@@ -19,7 +19,7 @@ export const App: React.FC = () => {
   const handleReveal = useCallback(() => setRevealed(true), []);
   const handleBegin = useCallback((withVoice: boolean) => {
     voice.enabled = withVoice;
-    voice.init();
+    voice.unlock();
     chime('open');
   }, []);
   const handleRevealed = useCallback(() => {
