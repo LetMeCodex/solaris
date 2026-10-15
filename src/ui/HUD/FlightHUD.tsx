@@ -9,6 +9,7 @@ import { AttitudeScope, DecodeText, TargetLock, ViewStateGetter } from './Instru
 import { ArrivalStamp, fmtDuration, LOG_WORLDS, SystemPlot, useLogbook, useTransitState, VoyageConsole } from './Voyage';
 import type { FlightRoute } from '../../rendering/SolarSystemScene';
 import { Popover, ScaleDomain, ScaleLadder, Segmented, TimeDeck } from './Controls';
+import { CatalogueScreen, ShowcaseControls } from './CatalogueScreen';
 import { Search, Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle } from 'lucide-react';
 import { Tour } from './Tour';
 import { Companion } from './Companion';
@@ -39,9 +40,9 @@ interface FlightHUDProps {
   onHorizon?: (on: boolean) => void;
   /** True once the opening sequence has finished: starts the first-visit briefing. */
   introDone?: boolean;
+  /** The scene's cinematic reel, filmed behind the catalogue. */
+  showcase?: ShowcaseControls;
 }
-
-type CatalogueFilter = 'all' | 'planet' | 'moon' | 'minor';
 
 // Reference navigation order: Sagittarius A* at top, then Pluto down to Mercury, plus Sun
 const REFERENCE_NAV_ORDER = [
@@ -89,6 +90,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   onSurface,
   onHorizon,
   introDone = true,
+  showcase,
 }) => {
   const target = telemetry?.activeTarget;
   const isPaused = telemetry?.isPaused ?? false;
@@ -101,7 +103,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const orbitsOn = telemetry?.orbitsVisible ?? true;
 
   const observerScale = telemetry?.observerScaleMetric ?? '1.00 AU';
-  const lensProfile = telemetry?.lensProfile ?? 'cinematic';
+  const lensProfile = telemetry?.lensProfile ?? 'clean';
   const bloomGain = telemetry?.bloomGain ?? 1;
   const bloomAvailable = LENS_PROFILES[lensProfile].bloomStrength > 0;
   const observerDomain = telemetry?.observerDomain ?? 'inner_system';
@@ -115,8 +117,6 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const [isReadMoreOpen, setIsReadMoreOpen] = useState<boolean>(false);
   const [isCatalogueOpen, setIsCatalogueOpen] = useState<boolean>(false);
   const [isOpticsOpen, setIsOpticsOpen] = useState<boolean>(false);
-  const [catalogueFilter, setCatalogueFilter] = useState<CatalogueFilter>('all');
-  const [searchQuery, setSearchQuery] = useState<string>('');
 
   // Staged cinematic intro choreography (0 -> 1 -> 2)
   const [introPhase, setIntroPhase] = useState<number>(0);
@@ -328,24 +328,6 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
     setSelectionNonce((n) => n + 1);
   }, []);
 
-  const filteredBodies = useMemo(() => {
-    return allBodies.filter((b) => {
-      if (catalogueFilter === 'planet' && b.category !== 'planet') return false;
-      if (catalogueFilter === 'moon' && b.category !== 'moon') return false;
-      if (catalogueFilter === 'minor' && b.category !== 'asteroid' && b.category !== 'dwarf_planet') return false;
-
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        return (
-          b.name.toLowerCase().includes(q) ||
-          b.category.toLowerCase().includes(q) ||
-          (b.parentName && b.parentName.toLowerCase().includes(q))
-        );
-      }
-      return true;
-    });
-  }, [allBodies, catalogueFilter, searchQuery]);
-
   const baseUrl = import.meta.env.BASE_URL || '/';
   const closeOptics = useCallback(() => setIsOpticsOpen(false), []);
 
@@ -403,7 +385,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   );
 
   return (
-    <div ref={rootRef} className={`hud-root font-sans ${route ? 'is-transit' : ''}`}>
+    <div ref={rootRef} className={`hud-root font-sans ${route ? 'is-transit' : ''} ${isCatalogueOpen ? 'is-under-catalogue' : ''}`}>
       {/* Visor glass */}
       <div className="hud-visor" />
       <div className="hud-scanlines" />
@@ -1113,7 +1095,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
             {/* Third-party data & image credits (required by CC BY / CC BY-SA licences) */}
             <p className="text-[10px] leading-relaxed font-light text-white/35">
-              Textures: Solar System Scope (CC BY 4.0) · Sky map: ESA/Gaia/DPAC (CC BY-SA 3.0 IGO) ·
+              Textures: Solar System Scope (CC BY 4.0) · Moon maps: NASA/JPL/USGS/SSI/LPI, Björn Jónsson · Sky map: ESA/Gaia/DPAC (CC BY-SA 3.0 IGO) ·
               Stars: ESA/Hipparcos (CC BY-NC 3.0 IGO) · Galaxy art: NASA/JPL-Caltech/ESO/R. Hurt (CC BY 4.0) ·
               Orbits: NASA JPL.{' '}
               <a href="https://github.com/LetMeCodex/solaris/blob/main/ASSETS.md" target="_blank" rel="noopener noreferrer" className="underline hover:text-white/70">
@@ -1124,96 +1106,19 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         </div>
       )}
 
-      {/* ========================================================
-          CATALOGUE drawer
-          ======================================================== */}
-      {isCatalogueOpen && (
-        <div className="fixed inset-0 z-50 pointer-events-auto flex">
-          <div onClick={() => setIsCatalogueOpen(false)} className="flex-1 bg-black/55 backdrop-blur-[3px] hud-fade-in" />
-
-          <aside className="hud-drawer-in w-[400px] max-w-full bg-[#05040a]/95 backdrop-blur-2xl border-l border-[color:var(--sol-line)] p-6 flex flex-col gap-5 shadow-2xl h-full">
-            <div className="flex justify-between items-start">
-              <div className="flex flex-col gap-1">
-                <span className="hud-label">Index · NASA JPL elements</span>
-                <h3 className="text-xl font-extralight text-white tracking-[0.28em] uppercase">Catalogue</h3>
-                <div className="hud-rule w-20 mt-1" />
-              </div>
-              <button onClick={() => setIsCatalogueOpen(false)} className="hud-icon-btn" aria-label="Close catalogue">
-                <X size={14} />
-              </button>
-            </div>
-
-            <div className="flex flex-col gap-3">
-              <div className="relative">
-                <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--sol-amber)] opacity-70" />
-                <input
-                  autoFocus
-                  type="text"
-                  placeholder="Filter by name, kind, parent…"
-                  aria-label="Filter catalogue by name or category"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="hud-input !pl-8"
-                />
-              </div>
-              <Segmented
-                ariaLabel="Filter by kind"
-                items={[
-                  { value: 'all' as CatalogueFilter, label: `All ${allBodies.length}` },
-                  { value: 'planet' as CatalogueFilter, label: 'Planets' },
-                  { value: 'moon' as CatalogueFilter, label: 'Moons' },
-                  { value: 'minor' as CatalogueFilter, label: 'Minor' },
-                ]}
-                value={catalogueFilter}
-                onChange={setCatalogueFilter}
-              />
-            </div>
-
-            <div className="flex-1 overflow-y-auto hud-scroll flex flex-col gap-1 pr-1 -mx-1 px-1">
-              {filteredBodies.map((b, i) => {
-                const isSelected = activeTargetName === b.name;
-                return (
-                  <button
-                    key={b.name}
-                    aria-current={isSelected ? 'true' : undefined}
-                    onClick={() => {
-                      onSelectPlanet(b.name);
-                      handleRevealMonograph();
-                      setIsCatalogueOpen(false);
-                    }}
-                    className="hud-row hud-rise flex items-center justify-between px-3 py-2 text-left"
-                    style={{ ['--d' as string]: `${Math.min(i, 24) * 22}ms` }}
-                  >
-                    <div className="flex items-center gap-3">
-                      <span
-                        className="w-2 h-2 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: b.physical.colorHex || '#ffffff', boxShadow: `0 0 8px ${b.physical.colorHex || '#ffffff'}80` }}
-                      />
-                      <div className="flex flex-col">
-                        <span className="text-[11px] text-white font-light tracking-[0.18em] uppercase">{b.name}</span>
-                        <span className="text-[9px] text-white/35 uppercase tracking-[0.14em]">
-                          {b.category.replace('_', ' ')}
-                          {b.parentName && ` · ${b.parentName}`}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="text-right hud-num text-[9.5px] text-white/40">
-                      <div>{b.physical.meanRadiusKm.toLocaleString()} km</div>
-                      <div>
-                        {b.category === 'moon'
-                          ? `${b.orbit.semiMajorAxisKm >= 1e6 ? `${(b.orbit.semiMajorAxisKm / 1e6).toFixed(1)}M` : `${Math.round(b.orbit.semiMajorAxisKm / 1000)}k`} km`
-                          : `${b.orbit.semiMajorAxisAU.toFixed(2)} AU`}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-              {filteredBodies.length === 0 && (
-                <p className="text-[10px] uppercase tracking-[0.2em] text-white/35 text-center py-8">Nothing on record by that name</p>
-              )}
-            </div>
-          </aside>
-        </div>
+      {isCatalogueOpen && showcase && (
+        <CatalogueScreen
+          visited={logbook.log.visited}
+          current={activeTargetName}
+          showcase={showcase}
+          onClose={() => setIsCatalogueOpen(false)}
+          onFly={(name) => {
+            if (name === 'Sagittarius A*') onJumpToScale?.('sgr_a');
+            onSelectPlanet(name);
+            handleRevealMonograph();
+          }}
+          onSkyFrom={(body, facing) => onSurface?.({ type: 'skyFrom', body, facing })}
+        />
       )}
     </div>
   );

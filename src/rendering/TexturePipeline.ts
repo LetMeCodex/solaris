@@ -293,9 +293,25 @@ export class TexturePipeline {
   /**
    * Retrieves photographic texture sets for any body in the solar system.
    */
+  /** Moons with a real (spacecraft) global map bundled. */
+  private static readonly MOON_MAPS = new Set([
+    'Io', 'Europa', 'Ganymede', 'Callisto', 'Mimas', 'Enceladus', 'Tethys', 'Dione', 'Rhea', 'Iapetus',
+    'Miranda', 'Ariel', 'Umbriel', 'Titania', 'Oberon', 'Triton', 'Phobos',
+  ]);
+
   public getPlanetTextures(bodyName: string, minorKind?: 'dark' | 'grey' | 'icy' | 'red'): PlanetTextureSet {
-    // The hundreds of small moons without maps share a few procedural regoliths
-    if (minorKind) return { map: TextureGenerator.getTexture(`minor:${minorKind}`) };
+    // The hundreds of small moons without maps share a few procedural regoliths (with relief)
+    if (minorKind) {
+      return { map: TextureGenerator.getTexture(`minor:${minorKind}`), normalMap: TextureGenerator.getTexture(`minor-n:${minorKind}`) };
+    }
+    // Real global maps of the larger moons (see public/textures/moons/SOURCES.md), with relief
+    if (TexturePipeline.MOON_MAPS.has(bodyName)) {
+      const f = bodyName.toLowerCase();
+      return {
+        map: this.loadTexture(`/textures/moons/${f}.jpg`, true, bodyName),
+        normalMap: this.loadTexture(`/textures/moons/${f}_normal.jpg`, false),
+      };
+    }
     switch (bodyName) {
       case 'Sun':
         return {

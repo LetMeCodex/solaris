@@ -100,7 +100,7 @@ export const PLANET_NARRATIVES: Record<string, PlanetNarrative> = {
     distanceAU: '5.203 AU',
     textureThumb: 'textures/thumbs/jupiter.webp',
     monographText:
-      'THE TITAN OF OUR SOLAR SYSTEM, MORE THAN TWICE AS MASSIVE AS ALL THE OTHER PLANETS COMBINED. A SWIRLING GAS GIANT DOMINATED BY THE CENTURIES-OLD GREAT RED SPOT AND NEARLY A HUNDRED KNOWN MOONS.',
+      'THE TITAN OF OUR SOLAR SYSTEM, MORE THAN TWICE AS MASSIVE AS ALL THE OTHER PLANETS COMBINED. A SWIRLING GAS GIANT DOMINATED BY THE CENTURIES-OLD GREAT RED SPOT AND 115 KNOWN MOONS.',
     extendedLore:
       'Jupiter acted as the primary gravitational architect of the early Solar System, shaping asteroid orbits and scattering comets. Below its dynamic ammonia cloud belts, hydrogen transitions into liquid and eventually into an exotic state of liquid metallic hydrogen that conducts immense electrical currents, powering the most powerful planetary magnetic field in the system.',
     missions: [

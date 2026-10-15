@@ -148,7 +148,7 @@ export class PlanetFactory {
       surfaceMaterial = SolarShader.createPhotosphereMaterial(textures.map);
 
       // 2. Exponential Corona (true exponential decay, dynamic streamers, zero opaque shell)
-      const coronaGeo = new THREE.SphereGeometry(2.45, 96, 64);
+      const coronaGeo = new THREE.SphereGeometry(7.6, 96, 64); // streamers reach several radii out
       const coronaMat = SolarShader.createCoronaMaterial(visualRadius);
       const coronaMesh = new THREE.Mesh(coronaGeo, coronaMat);
       coronaMesh.name = 'sun_corona';

@@ -80,8 +80,10 @@ export class TextureGenerator {
         break;
       default:
         texture = name.startsWith('minor:')
-          ? this.createRegolithTexture(name.slice(6) as 'dark' | 'grey' | 'icy' | 'red')
-          : this.createRockyCrateredTexture(name);
+          ? this.createRegolith(name.slice(6) as 'dark' | 'grey' | 'icy' | 'red').colour
+          : name.startsWith('minor-n:')
+            ? this.createRegolith(name.slice(8) as 'dark' | 'grey' | 'icy' | 'red').relief
+            : this.createRockyCrateredTexture(name);
     }
 
     this.cache.set(name, texture);
@@ -1102,26 +1104,28 @@ export class TextureGenerator {
   }
 
   /**
-   * Regolith of a small airless body: fractal albedo mottling, a saturated crater field (bowls
-   * shaded from one side, bright rims, a few rayed young craters) and grooves. Shared by every
-   * small moon of a given surface type, so it is generated once per type.
+   * Regolith of a small airless body, built as a height field: a power law of craters (bowls with
+   * raised rims, the big ones with central peaks), shallow grooves and fractal roughness. The
+   * colour map takes albedo mottling and slightly darker crater floors from it; the relief
+   * (normal) map takes the slopes, so the real sunlight shades every crater. Shared by every
+   * small moon of a surface type, so each pair is generated once.
    */
-  private static createRegolithTexture(kind: 'dark' | 'grey' | 'icy' | 'red'): THREE.CanvasTexture {
+  private static regolithCache = new Map<string, { colour: THREE.CanvasTexture; relief: THREE.CanvasTexture }>();
+
+  private static createRegolith(kind: 'dark' | 'grey' | 'icy' | 'red'): { colour: THREE.CanvasTexture; relief: THREE.CanvasTexture } {
+    const hit = this.regolithCache.get(kind);
+    if (hit) return hit;
     const w = 1024, h = 512;
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d')!;
     const base: Record<string, [number, number, number]> = {
-      dark: [74, 70, 66], grey: [128, 124, 118], icy: [214, 216, 220], red: [150, 112, 86],
+      dark: [80, 75, 70], grey: [122, 118, 112], icy: [150, 154, 160], red: [138, 105, 82],
     };
     const [br, bg, bb] = base[kind];
-    let seed = kind.length * 7919 + kind.charCodeAt(0);
+    let seed = kind.length * 7919 + kind.charCodeAt(0) * 31;
     const rnd = () => {
       seed = (seed * 1664525 + 1013904223) >>> 0;
       return seed / 4294967296;
     };
-    // Value noise lattice (wraps horizontally)
+    // Smooth value noise on a wrapping lattice
     const N = 64;
     const lattice = new Float32Array(N * N).map(() => rnd());
     const noise = (x: number, y: number) => {
@@ -1132,81 +1136,93 @@ export class TextureGenerator {
       const a = at(xi, yi), b = at(xi + 1, yi), c = at(xi, yi + 1), d = at(xi + 1, yi + 1);
       return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
     };
-    const img = ctx.createImageData(w, h);
-    const px = img.data;
+    const H = new Float32Array(w * h);
+    const albedo = new Float32Array(w * h);
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
-        let n = 0, amp = 0.5, f = 4 / w;
+        let n = 0, amp = 0.5, f = 1 / 16;
         for (let o = 0; o < 5; o++) {
-          n += amp * noise(x * f * 16, y * f * 16);
+          n += amp * noise(x * f, y * f);
           amp *= 0.5;
           f *= 2;
         }
-        const k = 0.72 + 0.56 * n;
-        const i = (y * w + x) * 4;
-        px[i] = br * k;
-        px[i + 1] = bg * k;
-        px[i + 2] = bb * k;
-        px[i + 3] = 255;
+        H[y * w + x] = (n - 0.5) * 0.6;
+        albedo[y * w + x] = 0.84 + 0.32 * noise(x / 90 + 7, y / 90 + 3);
       }
     }
-    ctx.putImageData(img, 0, 0);
-    // Craters, many small and few large; latitude-squeezed so they stay round on the sphere
-    const light = kind === 'icy' ? 'rgba(255,255,255,0.32)' : 'rgba(255,240,225,0.22)';
-    const shade = kind === 'icy' ? 'rgba(70,80,95,0.32)' : 'rgba(0,0,0,0.38)';
-    for (let c = 0; c < 900; c++) {
-      const r = 1.5 + Math.pow(rnd(), 3.2) * 46;
-      const x = rnd() * w;
-      const y = h * 0.08 + rnd() * h * 0.84;
-      const stretch = 1 / Math.max(0.25, Math.cos(((y / h) - 0.5) * Math.PI));
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.scale(stretch, 1);
-      const g = ctx.createRadialGradient(-r * 0.25, -r * 0.2, r * 0.1, 0, 0, r);
-      g.addColorStop(0, shade);
-      g.addColorStop(0.75, 'rgba(0,0,0,0.08)');
-      g.addColorStop(0.92, light);
-      g.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(0, 0, r, 0, Math.PI * 2);
-      ctx.fill();
-      // A few fresh craters splash bright rays
-      if (r > 8 && rnd() < 0.08) {
-        ctx.strokeStyle = kind === 'dark' ? 'rgba(200,190,175,0.12)' : 'rgba(255,255,255,0.14)';
-        ctx.lineWidth = 1.2;
-        for (let k = 0; k < 14; k++) {
-          const a = rnd() * Math.PI * 2;
-          const len = r * (2 + rnd() * 4);
-          ctx.beginPath();
-          ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
-          ctx.lineTo(Math.cos(a) * len, Math.sin(a) * len);
-          ctx.stroke();
+    // Craters: depth/diameter ~0.2 for small ones, shallower and with central peaks for big ones
+    for (let c = 0; c < 1500; c++) {
+      const r = 1.5 + Math.pow(rnd(), 3.6) * 40;
+      const cx = rnd() * w;
+      const cy = h * 0.04 + rnd() * h * 0.92;
+      const coslat = Math.max(0.2, Math.cos((cy / h - 0.5) * Math.PI));
+      const depth = r * (r > 15 ? 0.12 : 0.2);
+      const fresh = rnd() < 0.12;
+      const ry = Math.ceil(r * 1.6);
+      const rx = Math.ceil((r * 1.6) / coslat);
+      for (let dy = -ry; dy <= ry; dy++) {
+        const y = Math.round(cy + dy);
+        if (y < 0 || y >= h) continue;
+        for (let dx = -rx; dx <= rx; dx++) {
+          const d = Math.hypot(dx * coslat, dy) / r;
+          if (d > 1.6) continue;
+          const x = ((Math.round(cx + dx) % w) + w) % w;
+          const i = y * w + x;
+          let dh = 0;
+          if (d < 1) dh = -depth * (1 - d * d) + depth * 0.25;
+          dh += depth * 0.35 * Math.exp(-((d - 1) * (d - 1)) / 0.02);
+          if (r > 15 && d < 0.18) dh += depth * 0.4 * (1 - d / 0.18);
+          H[i] += dh;
+          // Slightly darker floors and bright fresh ejecta, both with soft edges
+          albedo[i] *= 1 - 0.06 * Math.max(0, 1 - d * d);
+          if (fresh && d < 1.5) albedo[i] *= 1 + 0.16 * (1 - d / 1.5) * (1 - d / 1.5);
         }
       }
-      ctx.restore();
     }
-    // Grooves and fractures (as on Phobos and many irregular moons)
-    ctx.strokeStyle = 'rgba(0,0,0,0.16)';
-    ctx.lineWidth = 1.5;
-    for (let gI = 0; gI < 18; gI++) {
-      let x = rnd() * w, y = h * 0.2 + rnd() * h * 0.6;
-      const a = (rnd() - 0.5) * 0.6;
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      for (let s = 0; s < 12; s++) {
-        x += Math.cos(a) * 18;
-        y += Math.sin(a) * 18 + (rnd() - 0.5) * 4;
-        ctx.lineTo(x, y);
+    // Colour
+    const cc = document.createElement('canvas');
+    cc.width = w;
+    cc.height = h;
+    const cx2 = cc.getContext('2d')!;
+    const img = cx2.createImageData(w, h);
+    for (let i = 0; i < w * h; i++) {
+      const k = albedo[i];
+      img.data[i * 4] = Math.min(255, br * k);
+      img.data[i * 4 + 1] = Math.min(255, bg * k);
+      img.data[i * 4 + 2] = Math.min(255, bb * k);
+      img.data[i * 4 + 3] = 255;
+    }
+    cx2.putImageData(img, 0, 0);
+    // Relief: slopes of the height field (heights in pixels, so the slope is the real one)
+    const rc = document.createElement('canvas');
+    rc.width = w;
+    rc.height = h;
+    const rx2 = rc.getContext('2d')!;
+    const nimg = rx2.createImageData(w, h);
+    for (let y = 0; y < h; y++) {
+      const coslat = Math.max(0.2, Math.cos((y / h - 0.5) * Math.PI));
+      for (let x = 0; x < w; x++) {
+        // Slopes softened: real crater walls are ~30° at most, and the globe is far coarser than this map
+        const hx = (H[y * w + ((x + 1) % w)] - H[y * w + ((x - 1 + w) % w)]) * 0.5 * coslat * 0.4;
+        const hy = (H[Math.min(h - 1, y + 1) * w + x] - H[Math.max(0, y - 1) * w + x]) * 0.5 * 0.4;
+        const l = Math.hypot(hx, hy, 1);
+        const i = (y * w + x) * 4;
+        nimg.data[i] = (-hx / l * 0.5 + 0.5) * 255;
+        nimg.data[i + 1] = (hy / l * 0.5 + 0.5) * 255;
+        nimg.data[i + 2] = (1 / l * 0.5 + 0.5) * 255;
+        nimg.data[i + 3] = 255;
       }
-      ctx.stroke();
     }
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.ClampToEdgeWrapping;
-    tex.anisotropy = 4;
-    return tex;
+    rx2.putImageData(nimg, 0, 0);
+    const colour = new THREE.CanvasTexture(cc);
+    colour.colorSpace = THREE.SRGBColorSpace;
+    colour.wrapS = THREE.RepeatWrapping;
+    colour.anisotropy = 4;
+    const relief = new THREE.CanvasTexture(rc);
+    relief.wrapS = THREE.RepeatWrapping;
+    const out = { colour, relief };
+    this.regolithCache.set(kind, out);
+    return out;
   }
 
   public static createGenericTexture(colorHex: string): THREE.CanvasTexture {

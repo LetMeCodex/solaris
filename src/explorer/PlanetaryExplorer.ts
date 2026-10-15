@@ -42,12 +42,12 @@ export interface ExplorerStatus {
 }
 
 /** Tiles are streamed only below this altitude (body radii); above it the globe map is sharper than needed. */
-const STREAM_BELOW_ALTITUDE = 2.5;
+const STREAM_BELOW_ALTITUDE = 0.9; // below the arrival shot (~1 radius up): arrivals show the whole, even globe
 /** Ride along with the body's rotation below this altitude (body radii). */
 const CO_ROTATE_BELOW_ALTITUDE = 1.5;
 /** Imagery fades in over the globe map between these altitudes (body radii). */
-const FADE_IN_FROM = 2.4;
-const FADE_IN_TO = 1.6;
+const FADE_IN_FROM = 0.85;
+const FADE_IN_TO = 0.5;
 /** 'auto' lighting evens the imagery out between these altitudes (body radii), like a web map. */
 const EVEN_LIGHT_FROM = 0.15; // arrival shots sit at ~0.5 radii and keep real sunlight
 const EVEN_LIGHT_TO = 0.03;

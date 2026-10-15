@@ -12,6 +12,7 @@ import { OrbitalTrails } from './OrbitalTrails';
 import { Starfield } from './Starfield';
 import { SmallBodies } from './SmallBodies';
 import { BodyMarkers, MarkerBody } from './BodyMarkers';
+import { Showcase, ShowcaseBody, ShowcaseSubject } from './Showcase';
 import { LensPipeline, LensProfileName } from './LensPipeline';
 import { HorizonView } from './HorizonView';
 import { PlanetaryExplorer, ExplorerStatus } from '../explorer/PlanetaryExplorer';
@@ -564,6 +565,15 @@ export class SolarSystemScene {
 
   public setLensProfile(name: LensProfileName): void {
     this.lens.setProfile(name);
+    this.rememberLens();
+  }
+
+  private rememberLens(): void {
+    try {
+      localStorage.setItem(LensPipeline.STORAGE_KEY, this.lens.profile.name);
+    } catch {
+      /* storage blocked */
+    }
   }
 
   public setBloomGain(gain: number): void {
@@ -571,7 +581,9 @@ export class SolarSystemScene {
   }
 
   public cycleLensProfile(): LensProfileName {
-    return this.lens.cycleProfile();
+    const name = this.lens.cycleProfile();
+    this.rememberLens();
+    return name;
   }
 
   public resetLook(): void {
@@ -634,7 +646,7 @@ export class SolarSystemScene {
   private onCanvasClick = (e: MouseEvent): void => {
     // Only handle clicks directly on the WebGL canvas
     if (e.target !== this.renderer.domElement) return;
-    if (this.surface.isActive() || this.horizon?.active) return;
+    if (this.surface.isActive() || this.horizon?.active || this.showcase.active) return;
 
     // Ignore drags
     const dist = Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y);
@@ -975,11 +987,16 @@ export class SolarSystemScene {
     }
 
     this.cameraRig.update();
+    if (this.showcase.active) {
+      const bodies: ShowcaseBody[] = [];
+      for (const b of this.planetBundles.values()) bodies.push({ name: b.definition.name, object: b.bodyGroup, radius: b.visualRadius });
+      this.showcase.update(this.cameraRig.camera, now * 0.001, bodies);
+    }
     this.surface.update();
     if (this.horizon?.active) this.horizon.update(this.cameraRig.camera, now * 0.001);
 
     const isBlackHole = this.selectedBody.name === 'Sagittarius A*';
-    const focusedName = this.cameraRig.focusedObject && !isBlackHole ? this.selectedBody.name : null;
+    const focusedName = this.cameraRig.focusedObject && !isBlackHole && !this.showcase.active ? this.selectedBody.name : null;
     this.explorer.update(focusedName, this.cameraRig.camera, this.renderer.domElement.height);
     if (this.pendingSkyView && this.explorer.getStatus().body === this.pendingSkyView.body) {
       const p = this.pendingSkyView;
@@ -1011,7 +1028,7 @@ export class SolarSystemScene {
     }
 
     // Markers for worlds too small to see (hidden on surfaces, at the black hole and in the galaxy)
-    const markersOn = !this.surface.isActive() && !this.horizon?.active && !isBlackHole &&
+    const markersOn = !this.surface.isActive() && !this.horizon?.active && !isBlackHole && !this.showcase.active &&
       this.cameraRig.camera.position.length() < 3500.0 * COSMIC_SCALE;
     this.markers.setVisible(markersOn);
     if (markersOn) {
@@ -1065,6 +1082,89 @@ export class SolarSystemScene {
   };
 
   private renderOrigin = new THREE.Vector3();
+
+  // --- Catalogue showcase: a cinematic reel of a planet system behind the catalogue ---
+  private showcase = new Showcase();
+  private showcaseSaved: { rate: number; paused: boolean; body: string; constellations: boolean } | null = null;
+
+  /** While filming a planet: only its moons' orbits and no star-chart lines, like a clean plate. */
+  private setShowcaseClean(on: boolean, planetSystem: boolean): void {
+    for (const child of this.orbitLinesGroup.children) {
+      if (child.name.startsWith('kepler_orbit_')) child.visible = !(on && planetSystem);
+    }
+    if (this.showcaseSaved) this.starfield.setConstellationsVisible(on ? false : this.showcaseSaved.constellations);
+  }
+
+  private showcaseBody(name: string): ShowcaseBody | null {
+    const b = this.planetBundles.get(name);
+    return b ? { name, object: b.bodyGroup, radius: b.visualRadius } : null;
+  }
+
+  /** The subject for a world (its moons, the region to frame), or the whole inner system for null. */
+  private showcaseSubject(name: string | null, hero?: string | null): ShowcaseSubject | null {
+    if (!name || name === 'Sun') {
+      const sun = this.showcaseBody('Sun');
+      if (!sun) return null;
+      // The Sun with the inner planets out to the asteroid belt
+      return { ...sun, moons: ['Mercury', 'Venus', 'Earth', 'Mars'].map((n) => this.showcaseBody(n)).filter((b): b is ShowcaseBody => !!b), extent: name ? sun.radius * 6 : 2.6 * 56355, star: true };
+    }
+    const subj = this.showcaseBody(name);
+    if (!subj) return null;
+    const moons = CatalogueManager.getMoonsOf(name)
+      .filter((m) => !m.minor)
+      .sort((a, b) => b.physical.meanRadiusKm - a.physical.meanRadiusKm)
+      .map((m) => this.showcaseBody(m.name))
+      .filter((b): b is ShowcaseBody => !!b);
+    const outer = CatalogueManager.getMoonsOf(name).filter((m) => !m.minor).reduce((a, m) => Math.max(a, m.orbit.semiMajorAxisKm), 0) / (6371 / 2.4);
+    const extent = Math.max(subj.radius * 8, Math.min(outer * 1.1 || subj.radius * 8, subj.radius * 30));
+    const heroBody = hero ? this.showcaseBody(hero) : null;
+    return { ...subj, moons, extent, hero: heroBody };
+  }
+
+  /** Start (or switch) the catalogue's background reel. `name` null films the inner Solar System. */
+  public startShowcase(name: string | null, hero?: string | null): boolean {
+    const subject = this.showcaseSubject(name, hero);
+    if (!subject) return false;
+    if (this.surface.isActive()) this.exitSurface(false);
+    this.exitHorizonView(false);
+    const now = performance.now() * 0.001;
+    if (!this.showcase.active) {
+      this.showcaseSaved = { rate: this.clock.timeMultiplier, paused: this.clock.isPaused, body: this.selectedBody.name, constellations: this.starfield.areConstellationsVisible() };
+      // An hour every second: the moons visibly sweep round while the camera moves
+      this.clock.timeMultiplier = 3600;
+      this.clock.isPaused = false;
+      this.cameraRig.suspended = true;
+      this.showcase.start(subject, this.cameraRig.camera, now);
+    } else {
+      this.showcase.retarget(subject, this.cameraRig.camera, now);
+    }
+    this.setShowcaseClean(true, !!name && name !== 'Sun');
+    return true;
+  }
+
+  /** Leave the reel and fly back to where the viewer was. */
+  public stopShowcase(): void {
+    if (!this.showcase.active) return;
+    this.showcase.stop();
+    this.setShowcaseClean(false, true);
+    const saved = this.showcaseSaved;
+    this.showcaseSaved = null;
+    if (saved) {
+      this.clock.timeMultiplier = saved.rate;
+      this.clock.isPaused = saved.paused;
+    }
+    this.cameraRig.suspended = false;
+    this.cameraRig.syncFromCamera();
+    if (saved) this.selectBody(saved.body, 1600);
+  }
+
+  public showcaseCaption(): string {
+    return this.showcase.active ? this.showcase.caption() : '';
+  }
+
+  public isShowcasing(): boolean {
+    return this.showcase.active;
+  }
 
   /**
    * Draw with a floating origin (see RenderOrigin.ts): the camera is moved to (0, 0, 0) and the

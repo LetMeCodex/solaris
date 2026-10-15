@@ -8,7 +8,7 @@ import { PlanetFactory } from '../rendering/PlanetFactory';
 import { CatalogueManager } from '../data/CatalogueManager';
 
 describe('Astrophysical Shaders & Materials Suite', () => {
-  it('1. SolarShader constructs valid photosphere, exponential corona, and 7 prominence arches', () => {
+  it('1. SolarShader constructs the photosphere, the corona and living magnetic loops', () => {
     const dummyTex = new THREE.Texture();
     const photoMat = SolarShader.createPhotosphereMaterial(dummyTex);
     expect(photoMat).toBeInstanceOf(THREE.ShaderMaterial);
@@ -25,12 +25,14 @@ describe('Astrophysical Shaders & Materials Suite', () => {
 
     const prominences = SolarShader.createProminencesGroup(14.0);
     expect(prominences).toBeInstanceOf(THREE.Group);
-    expect(prominences.children.length).toBe(7);
+    expect(prominences.children.length).toBe(9);
     prominences.children.forEach((child) => {
       expect(child).toBeInstanceOf(THREE.Mesh);
       const mesh = child as THREE.Mesh;
       expect(mesh.material).toBeInstanceOf(THREE.ShaderMaterial);
-      expect(mesh.geometry).toBeInstanceOf(THREE.BufferGeometry);
+      expect(mesh.geometry).toBeInstanceOf(THREE.TubeGeometry);
+      // Each loop stands on the photosphere (its base point is on the surface)
+      expect(mesh.position.length()).toBeCloseTo(14.0, 3);
     });
   });
 

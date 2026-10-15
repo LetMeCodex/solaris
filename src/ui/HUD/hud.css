@@ -812,3 +812,123 @@
 .sol-marker > * { pointer-events: none; }
 .sol-marker { margin-top: -5px; }
 @media (max-width: 640px) { .sol-marker.is-minor span { display: none; } }
+
+/* ===================== Catalogue: the live scene as a stage ===================== */
+.cat-screen {
+  position: fixed; inset: 0; z-index: 60; pointer-events: none; color: rgba(236, 242, 239, 0.86);
+  font-family: 'Montserrat', ui-sans-serif, system-ui, sans-serif; animation: cat-in 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.cat-screen > * { pointer-events: auto; }
+.cat-screen > .cat-shade { pointer-events: none; }
+@keyframes cat-in { from { opacity: 0; } to { opacity: 1; } }
+.cat-shade {
+  position: absolute; inset: 0;
+  background:
+    linear-gradient(90deg, rgba(2, 2, 6, 0.86) 0%, rgba(2, 2, 6, 0.55) 28%, rgba(2, 2, 6, 0) 52%),
+    linear-gradient(0deg, rgba(2, 2, 6, 0.75) 0%, rgba(2, 2, 6, 0) 26%),
+    linear-gradient(180deg, rgba(2, 2, 6, 0.6) 0%, rgba(2, 2, 6, 0) 16%);
+}
+.cat-top { position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; gap: 28px; padding: 22px 32px; }
+.cat-kicker { font-size: 9px; letter-spacing: 0.32em; text-transform: uppercase; color: var(--sol-amber, #f4cd72); opacity: 0.8; }
+.cat-title { font-size: 19px; font-weight: 200; letter-spacing: 0.5em; text-transform: uppercase; color: #fff; }
+.cat-tabs { display: flex; gap: 4px; margin-left: auto; }
+.cat-tabs button, .cat-filters button {
+  font-size: 10px; letter-spacing: 0.24em; text-transform: uppercase; padding: 7px 14px; color: rgba(236, 242, 239, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 999px; transition: all 0.3s ease;
+}
+.cat-tabs button[aria-selected="true"], .cat-filters button[aria-pressed="true"] { color: #fff; border-color: rgba(109, 252, 192, 0.55); background: rgba(109, 252, 192, 0.08); }
+.cat-tabs button:hover, .cat-filters button:hover { color: #fff; }
+.cat-close { font-size: 12px; letter-spacing: 0.2em; color: rgba(236, 242, 239, 0.6); display: flex; gap: 10px; align-items: center; }
+.cat-close span { font-size: 9px; padding: 3px 6px; border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 4px; }
+.cat-close:hover { color: #fff; }
+
+/* The worlds: a procession of turning globes along the bottom */
+.cat-worlds {
+  position: absolute; left: 0; right: 0; bottom: 64px; display: flex; justify-content: center; align-items: flex-end; gap: clamp(10px, 2.4vw, 34px);
+  padding: 0 24px; overflow-x: auto; scrollbar-width: none;
+}
+.cat-world {
+  display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 14px 8px 10px; min-width: 86px; border-radius: 14px;
+  animation: cat-rise 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) both; animation-delay: var(--d);
+  transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1), background 0.4s ease;
+}
+.cat-world:hover, .cat-world:focus-visible { transform: translateY(-10px); background: rgba(255, 255, 255, 0.035); outline: none; }
+.cat-world:hover .cat-globe { box-shadow: inset -14px -8px 22px rgba(0, 0, 0, 0.85), inset 3px 2px 8px rgba(255, 255, 255, 0.25), 0 0 34px rgba(255, 220, 160, 0.25); }
+@keyframes cat-rise { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
+.cat-globe {
+  display: block; border-radius: 50%; background-size: 200% 100%; background-repeat: repeat-x;
+  box-shadow: inset -14px -8px 22px rgba(0, 0, 0, 0.85), inset 3px 2px 8px rgba(255, 255, 255, 0.2), 0 0 18px rgba(0, 0, 0, 0.6);
+  animation: cat-spin var(--spin, 24s) linear infinite; transition: box-shadow 0.4s ease;
+}
+@keyframes cat-spin { from { background-position: 0% 50%; } to { background-position: -200% 50%; } }
+.cat-world-name { font-size: 10.5px; letter-spacing: 0.32em; text-transform: uppercase; color: #fff; font-weight: 300; }
+.cat-world-sub { font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: rgba(236, 242, 239, 0.45); display: flex; gap: 6px; align-items: center; }
+.cat-seen { font-style: normal; color: var(--sol-mint, #6dfcc0); font-size: 9px; }
+.cat-unseen { font-style: normal; color: rgba(236, 242, 239, 0.3); font-size: 9px; }
+
+/* Left column (a world's page, or everything) */
+.cat-panel {
+  position: absolute; left: 32px; top: 86px; bottom: 64px; width: min(430px, calc(100vw - 48px)); overflow-y: auto; scrollbar-width: thin;
+  padding-right: 10px; animation: cat-slide 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes cat-slide { from { opacity: 0; transform: translateX(-18px); } to { opacity: 1; transform: none; } }
+.cat-back { font-size: 10px; letter-spacing: 0.26em; text-transform: uppercase; color: rgba(236, 242, 239, 0.5); margin-bottom: 22px; }
+.cat-back:hover { color: #fff; }
+.cat-eyebrow { font-size: 9.5px; letter-spacing: 0.3em; text-transform: uppercase; color: var(--sol-amber, #f4cd72); }
+.cat-name { font-size: clamp(38px, 5.4vw, 64px); font-weight: 200; letter-spacing: 0.26em; text-transform: uppercase; color: #fff; line-height: 1.05; margin: 8px 0 14px; }
+.cat-name-sm { font-size: clamp(30px, 4vw, 48px); }
+.cat-lede { font-size: 13px; line-height: 1.6; color: rgba(236, 242, 239, 0.78); font-weight: 300; }
+.cat-lore { font-size: 12px; line-height: 1.65; color: rgba(236, 242, 239, 0.55); margin-top: 16px; }
+.cat-data { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin-top: 20px; background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.07); }
+.cat-data > div { background: rgba(4, 4, 10, 0.72); padding: 10px 12px; }
+.cat-data dt { font-size: 8.5px; letter-spacing: 0.26em; text-transform: uppercase; color: rgba(236, 242, 239, 0.4); }
+.cat-data dd { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; color: #fff; margin-top: 4px; }
+.cat-dim { color: rgba(236, 242, 239, 0.4); }
+.cat-actions { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+.cat-cta, .cat-ghost { font-size: 10px; letter-spacing: 0.26em; text-transform: uppercase; padding: 11px 18px; border-radius: 999px; transition: all 0.3s ease; }
+.cat-cta { color: #04130c; background: var(--sol-mint, #6dfcc0); box-shadow: 0 0 22px rgba(109, 252, 192, 0.35); }
+.cat-cta:hover { transform: translateY(-1px); box-shadow: 0 0 34px rgba(109, 252, 192, 0.55); }
+.cat-ghost { color: #fff; border: 1px solid rgba(255, 255, 255, 0.25); }
+.cat-ghost:hover { border-color: #fff; }
+.cat-h { display: block; font-size: 9px; letter-spacing: 0.3em; text-transform: uppercase; color: rgba(236, 242, 239, 0.5); margin: 26px 0 10px; }
+.cat-missions .cat-mission { font-size: 11.5px; color: rgba(236, 242, 239, 0.7); padding: 7px 0; border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.cat-mission b { color: #fff; font-weight: 500; }
+.cat-mission span { color: rgba(236, 242, 239, 0.4); font-size: 10px; }
+.cat-mission em { display: block; font-style: normal; color: rgba(236, 242, 239, 0.5); font-size: 11px; margin-top: 2px; }
+.cat-moon-group { margin-top: 12px; }
+.cat-moon-label { font-size: 8.5px; letter-spacing: 0.24em; text-transform: uppercase; color: var(--sol-amber, #f4cd72); opacity: 0.75; }
+.cat-moon-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.cat-chip {
+  font-size: 10.5px; padding: 4px 9px; border-radius: 999px; color: rgba(236, 242, 239, 0.7); border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(4, 4, 10, 0.5); transition: all 0.25s ease;
+}
+.cat-chip:hover { color: #fff; border-color: rgba(255, 255, 255, 0.4); }
+.cat-chip.is-seen { color: var(--sol-mint, #6dfcc0); border-color: rgba(109, 252, 192, 0.35); }
+.cat-chip.is-on { color: #04130c; background: var(--sol-mint, #6dfcc0); border-color: var(--sol-mint, #6dfcc0); }
+.cat-filters { display: flex; gap: 4px; margin: 12px 0; }
+.cat-list { display: flex; flex-direction: column; gap: 1px; }
+.cat-row { width: 100%; display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px; text-align: left; transition: background 0.2s; }
+.cat-row:hover { background: rgba(255, 255, 255, 0.05); }
+.cat-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.cat-row-name { font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #fff; }
+.cat-row-sub { font-size: 9.5px; color: rgba(236, 242, 239, 0.4); margin-left: auto; text-transform: uppercase; letter-spacing: 0.12em; }
+.cat-caption {
+  position: absolute; right: 32px; bottom: 22px; font-size: 9px; letter-spacing: 0.24em; text-transform: uppercase; color: rgba(236, 242, 239, 0.5);
+  display: flex; align-items: center; gap: 8px;
+}
+.cat-live { width: 6px; height: 6px; border-radius: 50%; background: #ff5d5d; box-shadow: 0 0 8px #ff5d5d; animation: hud-led-pulse 1.6s ease-in-out infinite; }
+/* Entrance animations pin opacity, so the HUD steps away with visibility */
+.hud-root.is-under-catalogue > *:not(.cat-screen) { visibility: hidden !important; pointer-events: none !important; }
+@media (max-width: 640px) {
+  .cat-top { padding: 14px 16px; gap: 12px; }
+  .cat-kicker { display: none; }
+  .cat-panel { left: 16px; top: 64px; width: calc(100vw - 32px); }
+  .cat-worlds { justify-content: flex-start; bottom: 48px; }
+  .cat-caption { right: 16px; left: 16px; bottom: 12px; }
+}
+@media (prefers-reduced-motion: reduce) { .cat-globe { animation: none; } .cat-world { animation: none; } }
+
+.cat-panel::-webkit-scrollbar { width: 4px; }
+.cat-panel::-webkit-scrollbar-track { background: transparent; }
+.cat-panel::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.14); border-radius: 4px; }
+.cat-panel { scrollbar-color: rgba(255, 255, 255, 0.14) transparent; }

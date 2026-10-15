@@ -1,5 +1,5 @@
 import { SurfaceAction } from './ui/HUD/SurfacePanel';
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useMemo, useEffect, useRef, useState, useCallback } from 'react';
 import { SolarSystemScene, TelemetryData } from './rendering/SolarSystemScene';
 import { FlightHUD } from './ui/HUD/FlightHUD';
 import { LensProfileName } from './rendering/LensPipeline';
@@ -137,6 +137,13 @@ export const App: React.FC = () => {
     sceneRef.current?.cycleLensProfile();
   }, []);
 
+  // The catalogue's cinematic reel (stable object: the catalogue restarts the reel when it changes)
+  const showcase = useMemo(() => ({
+    start: (name: string | null, hero?: string | null) => { sceneRef.current?.startShowcase(name, hero); },
+    stop: () => sceneRef.current?.stopShowcase(),
+    caption: () => sceneRef.current?.showcaseCaption() ?? '',
+  }), []);
+
   const handleJumpToScale = useCallback((domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic' | 'sgr_a') => {
     sceneRef.current?.jumpToScale(domain);
   }, []);
@@ -169,6 +176,7 @@ export const App: React.FC = () => {
         onSurface={handleSurface}
         onHorizon={handleHorizon}
         introDone={introFinished}
+        showcase={showcase}
       />}
 
       <Preloader progress={load.progress} stage={load.stage} done={load.done} onReveal={handleReveal} onBegin={handleBegin} onFinished={handleRevealed} />

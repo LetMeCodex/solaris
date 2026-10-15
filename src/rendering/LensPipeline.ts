@@ -263,8 +263,18 @@ export class LensPipeline {
     }
 
     this.setSize(size.x, size.y);
-    this.setProfile('cinematic');
+    // First visit: the clean lens. Afterwards, whatever the viewer chose last time.
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem(LensPipeline.STORAGE_KEY);
+    } catch {
+      /* storage blocked */
+    }
+    this.setProfile(saved && saved in LENS_PROFILES ? (saved as LensProfileName) : 'clean');
   }
+
+  /** Remembers the viewer's lens between visits. */
+  public static readonly STORAGE_KEY = 'solaris.lens';
 
   /** 0–1: how much of the lens character is applied (fades to a clean view over a map). */
   private effectScale = 1;
