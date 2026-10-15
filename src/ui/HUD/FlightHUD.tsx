@@ -32,6 +32,7 @@ interface FlightHUDProps {
   onToggleOrbits?: () => void;
   onJumpToScale?: (domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic' | 'sgr_a') => void;
   onSetLens?: (name: LensProfileName) => void;
+  onSetBloom?: (gain: number) => void;
   onCycleLens?: () => void;
   onFlyToLandmark?: (id: string) => void;
   onExplorerDaylight?: (on: boolean) => void;
@@ -69,6 +70,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   onToggleOrbits,
   onJumpToScale,
   onSetLens,
+  onSetBloom,
   onCycleLens,
   onFlyToLandmark,
   onExplorerDaylight,
@@ -87,6 +89,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
   const observerScale = telemetry?.observerScaleMetric ?? '1.00 AU';
   const lensProfile = telemetry?.lensProfile ?? 'cinematic';
+  const bloomGain = telemetry?.bloomGain ?? 1;
+  const bloomAvailable = LENS_PROFILES[lensProfile].bloomStrength > 0;
   const observerDomain = telemetry?.observerDomain ?? 'inner_system';
   const travelSpeed = telemetry?.travelSpeed ?? 0;
   // Close to a globe the view becomes a map: editorial overlays step aside
@@ -533,6 +537,29 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               </button>
             ))}
           </div>
+
+          {/* Bloom strength (multiplier on the lens profile's glare) */}
+          <label
+            className={`flex items-center gap-2 bg-black/40 backdrop-blur-md border border-white/10 rounded-full px-3 py-1 text-[10px] uppercase tracking-[0.2em] font-light shadow-lg ${
+              bloomAvailable ? 'text-white/60' : 'text-white/25'
+            }`}
+            title={bloomAvailable ? 'Bloom strength' : 'The Clean lens has no bloom'}
+            onClick={(e) => e.stopPropagation()}
+          >
+            Bloom
+            <input
+              type="range"
+              min={0}
+              max={300}
+              step={5}
+              value={Math.round(bloomGain * 100)}
+              disabled={!bloomAvailable}
+              onChange={(e) => onSetBloom?.(Number(e.target.value) / 100)}
+              aria-label="Bloom strength"
+              className="w-20 accent-white/80 cursor-pointer disabled:cursor-not-allowed"
+            />
+            <span className="w-8 text-right tabular-nums text-white/50">{Math.round(bloomGain * 100)}%</span>
+          </label>
 
           {/* Catalogue Index Drawer Trigger */}
           <button

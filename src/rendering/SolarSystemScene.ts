@@ -38,6 +38,7 @@ export interface TelemetryData {
   travelSpeed: number;
   cameraDistance: number;
   lensProfile: LensProfileName;
+  bloomGain: number;
   explorer: ExplorerStatus;
   surface: SurfaceStatus | null;
 }
@@ -497,6 +498,10 @@ export class SolarSystemScene {
     this.lens.setProfile(name);
   }
 
+  public setBloomGain(gain: number): void {
+    this.lens.setBloomGain(gain);
+  }
+
   public cycleLensProfile(): LensProfileName {
     return this.lens.cycleProfile();
   }
@@ -913,7 +918,8 @@ export class SolarSystemScene {
       deltaSec,
       this.cameraRig.getVelocity(),
       this.cameraRig.getZoomVelocity(),
-      this.cameraRig.camera
+      this.cameraRig.camera,
+      this.renderer.domElement.height
     );
 
     this.lens.render(now * 0.001);
@@ -993,6 +999,7 @@ export class SolarSystemScene {
       travelSpeed: Math.round(travelSpeed),
       cameraDistance: Math.round(scaleMetric.distance),
       lensProfile: this.lens.profile.name,
+      bloomGain: this.lens.getBloomGain(),
       explorer: this.explorer.getStatus(),
       surface: this.surface.getStatus(),
     });

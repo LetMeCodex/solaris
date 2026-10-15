@@ -40,8 +40,8 @@ The main-belt "asteroid belt" (3,200 rocks) is **synthetic**: seeded Mulberry32 
 
 | File | Content | Source & licence |
 | :--- | :--- | :--- |
-| `gaia_sky.webp` | All-sky map in galactic coordinates (equirectangular, l = 0 at centre) | ESA/Gaia/DPAC, CC BY-SA 3.0 IGO. Credit: "ESA/Gaia/DPAC". Re-encoded to WebP (q75, 4000×2000). |
-| `milky_way_disk.webp` | Face-on Milky Way disk with alpha, used for the 3D galaxy | *Artist's impression of the Milky Way* (NASA/JPL-Caltech/ESO/R. Hurt, ESO eso1339e), CC BY 4.0. Resized to 2048², colour-graded and alpha-masked (black background → transparent) with a local preprocessing script, then re-encoded to WebP. |
+| `gaia_sky.webp` | All-sky map in galactic coordinates (equirectangular, l = 0 at centre); split into depth for the 3D sky around the Solar System | ESA/Gaia/DPAC, CC BY-SA 3.0 IGO. Credit: "ESA/Gaia/DPAC". Re-encoded to WebP (q75, 4000×2000). |
+| `milky_way_disk.webp` | Face-on Milky Way disk with alpha, used for the 3D galaxy and sampled for the 3D galactic disk | *Artist's impression of the Milky Way* (NASA/JPL-Caltech/ESO/R. Hurt, ESO eso1339e), CC BY 4.0. Resized to 2048², colour-graded and alpha-masked (black background → transparent) with a local preprocessing script, then re-encoded to WebP. |
 | `thumbs/*.webp` | 128×64 HUD thumbnails | Downscaled from the planet textures below (same licences). |
 
 ## 5. Planet textures (`public/textures/`)

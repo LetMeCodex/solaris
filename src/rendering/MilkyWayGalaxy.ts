@@ -68,7 +68,7 @@ export class MilkyWayGalaxy {
   private opacityUniform: { value: number } = { value: 0.0 };
   private timeUniform: { value: number } = { value: 0.0 };
   private bulgeFadeUniform: { value: number } = { value: 1.0 };
-  // The ~1 MB disk artwork is only fetched the first time the galaxy becomes visible
+  // The ~1 MB disk artwork only becomes a GPU texture the first time the galaxy becomes visible
   private diskTextureUniform: { value: THREE.Texture } = { value: MilkyWayGalaxy.createEmptyTexture() };
   private diskTextureRequested: boolean = false;
 
