@@ -34,6 +34,7 @@ interface FlightHUDProps {
   onToggleOrbits?: () => void;
   onJumpToScale?: (domain: ScaleDomain) => void;
   onSetLens?: (name: LensProfileName) => void;
+  onSetBloom?: (gain: number) => void;
   onCycleLens?: () => void;
   onFlyToLandmark?: (id: string) => void;
   onExplorerDaylight?: (on: boolean) => void;
@@ -85,6 +86,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   onToggleOrbits,
   onJumpToScale,
   onSetLens,
+  onSetBloom,
   onCycleLens,
   onFlyToLandmark,
   onExplorerDaylight,
@@ -105,6 +107,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
   const observerScale = telemetry?.observerScaleMetric ?? '1.00 AU';
   const lensProfile = telemetry?.lensProfile ?? 'cinematic';
+  const bloomGain = telemetry?.bloomGain ?? 1;
+  const bloomAvailable = LENS_PROFILES[lensProfile].bloomStrength > 0;
   const observerDomain = telemetry?.observerDomain ?? 'inner_system';
   // Close to a globe the view becomes a map: editorial overlays step aside
   const onSurfaceView = !!telemetry?.surface?.active;
@@ -579,6 +583,24 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 items={LENS_ORDER.map((n) => ({ value: n, label: LENS_PROFILES[n].label }))}
                 value={lensProfile}
                 onChange={(n) => onSetLens?.(n)}
+              />
+            </div>
+            <div className={`flex flex-col gap-2 ${bloomAvailable ? '' : 'opacity-40'}`} title={bloomAvailable ? 'Bloom strength' : 'The Clean lens has no bloom'}>
+              <div className="flex items-baseline justify-between">
+                <span className="hud-label">Bloom</span>
+                <span className="hud-num text-[10px] text-white/60">{Math.round(bloomGain * 100)}%</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={300}
+                step={5}
+                value={Math.round(bloomGain * 100)}
+                disabled={!bloomAvailable}
+                onChange={(e) => onSetBloom?.(Number(e.target.value) / 100)}
+                aria-label="Bloom strength"
+                className="hud-range"
+                style={{ ['--fill' as string]: `${(bloomGain / 3) * 100}%` }}
               />
             </div>
             <div className="flex flex-col gap-2">

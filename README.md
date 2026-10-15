@@ -40,7 +40,8 @@ It is an explorer, not a navigation-grade ephemeris: positions come from two-bod
 
 - **Stars:** Hipparcos (ESA 1997) positions, rotated from ICRF into the ecliptic render frame. The shipped file holds 12,596 stars: all 1,016 stars with V ≤ 4.6 on the celestial sphere, plus 12,281 stars within 120 pc drawn in 3D when you zoom out past the Solar System. `scripts/build_star_subset.cjs` regenerates it from the full 41,394-star (V ≤ 8.0) catalogue in `data/source/`.
 - **Constellation figures:** stick figures for nine bright constellations and asterisms (Ursa Major, Orion, Cassiopeia, Crux, Cygnus, Leo, Scorpius, Canis Major, Lyra). This is not the full set of 88.
-- **Milky Way:** the ESA/Gaia all-sky map, aligned with the galactic frame (north galactic pole RA 192.859°, Dec +27.128°).
+- **Milky Way:** a 3D environment around the Solar System built from the ESA/Gaia all-sky map, aligned with the galactic frame (north galactic pole RA 192.859°, Dec +27.128°). The map's diffuse light is shared between three nested shells (≈ 3,200, 7,000 and 13,000 units across the plane), flattened along the galactic plane, and 54,000 stars in blue, white, yellow, orange and red sit at their own distances inside the same slab, denser along the band. From the Sun everything lines up into the Gaia sky (warm bulge, dust filaments, Magellanic Clouds); when the camera moves, the shells and stars slide past each other with parallax, so zooming in and out reads as depth.
+- **Galactic disk:** 140,000 stars, glow and dust are importance-sampled from the face-on galaxy map and lifted off the mid-plane with a sech² profile (scale height ≈ 0.16 kpc in the disk, ≈ 0.7 kpc in the bulge). Leaving the Solar System, the Gaia sky fades between 4,000 and 15,000 units from the Sun while the disk fades in, so the camera flies out through the disk until the whole spiral is seen from outside.
 
 ### Multiscale zoom
 
@@ -53,7 +54,7 @@ Each zoom tier is drawn at its own scale, and the HUD distance readout converts 
 | Local stars (< 120 pc) | 700 + 38 units per parsec, so the nearest stars sit beyond Pluto |
 | Milky Way | 1,320 units per kpc; Sun at R₀ = 8.277 kpc, 21 pc above the mid-plane |
 
-The galaxy is an artist's face-on disk (NASA/JPL-Caltech/ESO, R. Hurt) plus 14,000 procedurally placed stars, oriented to the real galactic frame. The LMC, SMC and Sagittarius dwarf are placed at their measured galactocentric positions. Sagittarius A* uses GRAVITY/EHT physical parameters for its readouts; the shader is an artistic ray-marched rendering with approximate light bending, not a general-relativistic ray tracer.
+The galaxy is the 3D galactic disk above, joined from about 20,000 units out by an artist's face-on disk (NASA/JPL-Caltech/ESO, R. Hurt) and 14,000 procedurally placed stars, all oriented to the real galactic frame. The flat disk only fades in once the camera is well outside the local disk, so the transition is carried by the 3D particles. The LMC, SMC and Sagittarius dwarf are placed at their measured galactocentric positions. Sagittarius A* uses GRAVITY/EHT physical parameters for its readouts; the shader is an artistic ray-marched rendering with approximate light bending, not a general-relativistic ray tracer.
 
 ### Observation camera & lens
 
@@ -68,7 +69,8 @@ Selecting a body flies an *observation camera* to it, modelled on a real spacecr
   - *Fisheye*: a strong barrel lens with a circular image circle.
   - *Clean*: no post-processing, for scientific inspection.
   - Motion blur re-projects each pixel's view ray with the previous frame's orientation. It is exact for the sky, and a tracked planet that moves with the camera is not smeared. It is disabled under `prefers-reduced-motion`.
-- **Resolved Milky Way.** 26,000 pinpoint stars are importance-sampled from the Gaia map (weight ∝ brightness² × cos b), so star density follows the real band, bulge and dust lanes. The panorama's off-plane count noise is filtered to a clean black sky.
+- **Resolved Milky Way.** The sky's stars are importance-sampled from the Gaia map (∝ brightness^0.45), plus an isotropic field. Below one pixel a star keeps its flux (opacity ∝ area), so surface brightness does not change with distance, and stars close to the camera fade out instead of growing into blobs.
+- **Bloom control.** The Bloom slider in the toolbar scales the lens profile's glare from 0 to 300 % (the Clean lens has none).
 
 ### Planetary Explorer
 
@@ -204,7 +206,7 @@ npm run dev          # http://localhost:5173/solaris/
 
 ## Data and asset credits
 
-See [ASSETS.md](./ASSETS.md) for sources, licences and the attribution required for each dataset and texture. In short: orbital elements from NASA JPL (public domain), rotation models from the IAU WGCCRE, stars from ESA Hipparcos (CC BY-NC 3.0 IGO), sky map from ESA/Gaia/DPAC (CC BY-SA 3.0 IGO), and planet textures from Solar System Scope (CC BY 4.0).
+See [ASSETS.md](./ASSETS.md) for sources, licences and the attribution required for each dataset and texture. In short: orbital elements from NASA JPL (public domain), rotation models from the IAU WGCCRE, stars from ESA Hipparcos (CC BY-NC 3.0 IGO), sky map from ESA/Gaia/DPAC (CC BY-SA 3.0 IGO), galaxy art from NASA/JPL-Caltech/ESO/R. Hurt (CC BY 4.0), and planet textures from Solar System Scope (CC BY 4.0).
 
 ## License
 

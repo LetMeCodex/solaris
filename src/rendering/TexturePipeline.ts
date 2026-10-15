@@ -372,15 +372,9 @@ export class TexturePipeline {
   }
 
   /**
-   * ESA/Gaia/DPAC all-sky map (Gaia EDR3), equirectangular in galactic coordinates
-   */
-  public getMilkyWayTexture(): THREE.Texture {
-    return this.loadTexture('/textures/gaia_sky.webp', true);
-  }
-
-  /**
    * Face-on Milky Way disk artwork (NASA/JPL-Caltech/ESO/R. Hurt), with alpha.
-   * Only requested once the galaxy view is reached (see MilkyWayGalaxy).
+   * The GPU texture is only created once the galaxy view is reached (see MilkyWayGalaxy); the image
+   * itself is already in the HTTP cache, because MilkyWayVolume samples it at startup.
    */
   public getMilkyWayDiskTexture(): THREE.Texture {
     return this.loadTexture('/textures/milky_way_disk.webp', true);

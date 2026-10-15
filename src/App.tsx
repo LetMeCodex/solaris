@@ -106,6 +106,10 @@ export const App: React.FC = () => {
     sceneRef.current?.setLensProfile(name);
   }, []);
 
+  const handleSetBloom = useCallback((gain: number) => {
+    sceneRef.current?.setBloomGain(gain);
+  }, []);
+
   const handleFlyToLandmark = useCallback((id: string) => {
     sceneRef.current?.flyToLandmark(id);
   }, []);
@@ -164,6 +168,7 @@ export const App: React.FC = () => {
         onToggleOrbits={handleToggleOrbits}
         onJumpToScale={handleJumpToScale}
         onSetLens={handleSetLens}
+        onSetBloom={handleSetBloom}
         onCycleLens={handleCycleLens}
         onFlyToLandmark={handleFlyToLandmark}
         onExplorerDaylight={handleExplorerDaylight}

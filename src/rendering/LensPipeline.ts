@@ -282,8 +282,22 @@ export class LensPipeline {
     u.uVignette.value = this.profile.vignette * (0.35 + 0.65 * k);
     u.uGrain.value = this.profile.grain * k;
     // No glow over a map (bright snow and desert would bloom into haze)
-    this.bloomPass.strength = this.profile.bloomStrength * k;
+    this.bloomPass.strength = this.profile.bloomStrength * k * this.bloomGain;
     this.bloomPass.threshold = this.bloomThresholdOverride ?? this.profile.bloomThreshold;
+  }
+
+  /** User bloom control: multiplier on the profile's bloom strength (0 = off, 1 = as designed). */
+  private bloomGain = 1;
+
+  public setBloomGain(gain: number): void {
+    const g = THREE.MathUtils.clamp(gain, 0, 3);
+    if (g === this.bloomGain) return;
+    this.bloomGain = g;
+    this.applyProfileUniforms();
+  }
+
+  public getBloomGain(): number {
+    return this.bloomGain;
   }
 
   /** Raise the bloom threshold (e.g. under a bright daytime sky) or null to use the profile's. */

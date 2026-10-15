@@ -39,6 +39,7 @@ export interface TelemetryData {
   travelSpeed: number;
   cameraDistance: number;
   lensProfile: LensProfileName;
+  bloomGain: number;
   explorer: ExplorerStatus;
   surface: SurfaceStatus | null;
   /** Standing on the hypothetical ocean world beside Sgr A*. */
@@ -546,6 +547,10 @@ export class SolarSystemScene {
     this.lens.setProfile(name);
   }
 
+  public setBloomGain(gain: number): void {
+    this.lens.setBloomGain(gain);
+  }
+
   public cycleLensProfile(): LensProfileName {
     return this.lens.cycleProfile();
   }
@@ -993,7 +998,8 @@ export class SolarSystemScene {
       deltaSec,
       this.cameraRig.getVelocity(),
       this.cameraRig.getZoomVelocity(),
-      this.cameraRig.camera
+      this.cameraRig.camera,
+      this.renderer.domElement.height
     );
 
     this.lens.render(now * 0.001);
@@ -1058,6 +1064,7 @@ export class SolarSystemScene {
     };
     reveal(galaxy);
     reveal(bh.group);
+    reveal(this.starfield.milkyWay?.group);
     const camera = this.cameraRig.camera;
     // Programs depend on the output target (colour space, float type): compile for the half-float
     // target the lens pipeline renders the scene into, and for the screen (the clean lens)
@@ -1244,6 +1251,7 @@ export class SolarSystemScene {
       travelSpeed: Math.round(travelSpeed),
       cameraDistance: Math.round(scaleMetric.distance),
       lensProfile: this.lens.profile.name,
+      bloomGain: this.lens.getBloomGain(),
       explorer: this.explorer.getStatus(),
       surface: this.surface.getStatus(),
       horizonView: !!this.horizon?.active,
