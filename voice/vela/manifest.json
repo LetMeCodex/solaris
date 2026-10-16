@@ -61,8 +61,8 @@
  },
  "tour.5": {
   "file": "tour.5.mp3",
-  "key": "55673440fb62",
-  "seconds": 8.74
+  "key": "5c56a9b9aea3",
+  "seconds": 11.43
  },
  "tour.6": {
   "file": "tour.6.mp3",
@@ -96,8 +96,8 @@
  },
  "tour.12": {
   "file": "tour.12.mp3",
-  "key": "bc71b31fd326",
-  "seconds": 7.29
+  "key": "62519ac84d06",
+  "seconds": 9.15
  },
  "arrive.Sun.1": {
   "file": "arrive.Sun.1.mp3",
@@ -2573,5 +2573,285 @@
   "file": "noise.15.mp3",
   "key": "b929ef8ff4a1",
   "seconds": 3.75
+ },
+ "music.deck": {
+  "file": "music.deck.mp3",
+  "key": "390e28ac2d2c",
+  "seconds": 8.87
+ },
+ "music.track.00-helios-overture": {
+  "file": "music.track.00-helios-overture.mp3",
+  "key": "6ce4283af2bd",
+  "seconds": 5.73
+ },
+ "music.track.01-quicksilver-clockwork": {
+  "file": "music.track.01-quicksilver-clockwork.mp3",
+  "key": "b2a0ac0b5164",
+  "seconds": 6.71
+ },
+ "music.track.02-veil-of-sulphur": {
+  "file": "music.track.02-veil-of-sulphur.mp3",
+  "key": "7f94966d9a30",
+  "seconds": 5.76
+ },
+ "music.track.04-red-dust-drums": {
+  "file": "music.track.04-red-dust-drums.mp3",
+  "key": "8ce58f767201",
+  "seconds": 3.84
+ },
+ "music.track.05-cathedral-of-storms": {
+  "file": "music.track.05-cathedral-of-storms.mp3",
+  "key": "81053f9d6f71",
+  "seconds": 5.16
+ },
+ "music.track.07-frozen-tilt": {
+  "file": "music.track.07-frozen-tilt.mp3",
+  "key": "9fed8b6a8a6f",
+  "seconds": 5.29
+ },
+ "music.track.08-deep-blue-echoes": {
+  "file": "music.track.08-deep-blue-echoes.mp3",
+  "key": "4b34711389fc",
+  "seconds": 4.42
+ },
+ "nebula.swing": {
+  "file": "nebula.swing.mp3",
+  "key": "247e8217af80",
+  "seconds": 8.11
+ },
+ "nebula.cosmic-cliffs": {
+  "file": "nebula.cosmic-cliffs.mp3",
+  "key": "d25cfbbbe9a0",
+  "seconds": 8.82
+ },
+ "nebula.mystic-mountain": {
+  "file": "nebula.mystic-mountain.mp3",
+  "key": "0a6b3da0fc3a",
+  "seconds": 7.44
+ },
+ "nebula.orion-cloud": {
+  "file": "nebula.orion-cloud.mp3",
+  "key": "4a59d2182ea7",
+  "seconds": 6.12
+ },
+ "nebula.rosette-ring": {
+  "file": "nebula.rosette-ring.mp3",
+  "key": "15e02bc7e6f8",
+  "seconds": 6.96
+ },
+ "nebula.veil-filaments": {
+  "file": "nebula.veil-filaments.mp3",
+  "key": "7d69ef9299a2",
+  "seconds": 8.19
+ },
+ "nebula.lagoon-lane": {
+  "file": "nebula.lagoon-lane.mp3",
+  "key": "4577992b1d13",
+  "seconds": 5.16
+ },
+ "shot.taken.2": {
+  "file": "shot.taken.2.mp3",
+  "key": "86ff6631bbb7",
+  "seconds": 3.47
+ },
+ "shot.first": {
+  "file": "shot.first.mp3",
+  "key": "ac577d564e89",
+  "seconds": 8.26
+ },
+ "postcard.arrive.2": {
+  "file": "postcard.arrive.2.mp3",
+  "key": "d1bfe8ef99a9",
+  "seconds": 5.1
+ },
+ "gallery.tip": {
+  "file": "gallery.tip.mp3",
+  "key": "ae81dcc67223",
+  "seconds": 7.36
+ },
+ "timelapse.2": {
+  "file": "timelapse.2.mp3",
+  "key": "e0d4b062dcd3",
+  "seconds": 5.29
+ },
+ "timelapse.3": {
+  "file": "timelapse.3.mp3",
+  "key": "61110f5b843f",
+  "seconds": 5.15
+ },
+ "settings.open.2": {
+  "file": "settings.open.2.mp3",
+  "key": "0d1e64876bf6",
+  "seconds": 5.2
+ },
+ "worlds.big": {
+  "file": "worlds.big.mp3",
+  "key": "dfab68532eeb",
+  "seconds": 9.2
+ },
+ "explore.atlas.4": {
+  "file": "explore.atlas.4.mp3",
+  "key": "babf1472cc01",
+  "seconds": 7.46
+ },
+ "explore.atlas.5": {
+  "file": "explore.atlas.5.mp3",
+  "key": "38e14a53f2f2",
+  "seconds": 7.03
+ },
+ "idle.17": {
+  "file": "idle.17.mp3",
+  "key": "f194e0f6404e",
+  "seconds": 5.47
+ },
+ "idle.18": {
+  "file": "idle.18.mp3",
+  "key": "36537fc9b78c",
+  "seconds": 7.23
+ },
+ "idle.19": {
+  "file": "idle.19.mp3",
+  "key": "0bd7c524c7b8",
+  "seconds": 8.39
+ },
+ "tour.13": {
+  "file": "tour.13.mp3",
+  "key": "ffcdbae9d431",
+  "seconds": 11.05
+ },
+ "tour.14": {
+  "file": "tour.14.mp3",
+  "key": "b9e8b5ffbb1c",
+  "seconds": 9.42
+ },
+ "tour.15": {
+  "file": "tour.15.mp3",
+  "key": "7391ebb0c1ae",
+  "seconds": 8.19
+ },
+ "tour.16": {
+  "file": "tour.16.mp3",
+  "key": "e002b69833e0",
+  "seconds": 7.31
+ },
+ "music.first": {
+  "file": "music.first.mp3",
+  "key": "7c68279c3b86",
+  "seconds": 10.53
+ },
+ "music.picked": {
+  "file": "music.picked.mp3",
+  "key": "d63c63c7f3ed",
+  "seconds": 3.69
+ },
+ "music.muted": {
+  "file": "music.muted.mp3",
+  "key": "3b32b98290f1",
+  "seconds": 4.36
+ },
+ "music.track.03-pale-blue-lullaby": {
+  "file": "music.track.03-pale-blue-lullaby.mp3",
+  "key": "ebbfc67915c4",
+  "seconds": 4.89
+ },
+ "music.track.06-orbit-of-glass-rings": {
+  "file": "music.track.06-orbit-of-glass-rings.mp3",
+  "key": "da28f7607934",
+  "seconds": 4.59
+ },
+ "music.track.09-event-horizon-silence": {
+  "file": "music.track.09-event-horizon-silence.mp3",
+  "key": "b9cf8a8ba429",
+  "seconds": 3.7
+ },
+ "nebula.leaving": {
+  "file": "nebula.leaving.mp3",
+  "key": "cd20025198ec",
+  "seconds": 7.03
+ },
+ "nebula.back": {
+  "file": "nebula.back.mp3",
+  "key": "c4b3e43b6671",
+  "seconds": 3.71
+ },
+ "nebula.helix": {
+  "file": "nebula.helix.mp3",
+  "key": "dca0c0fcf7ae",
+  "seconds": 8.2
+ },
+ "nebula.crab-shell": {
+  "file": "nebula.crab-shell.mp3",
+  "key": "7ecc200d1b2a",
+  "seconds": 7.31
+ },
+ "nebula.north-america": {
+  "file": "nebula.north-america.mp3",
+  "key": "6ca0e06df7ac",
+  "seconds": 8.19
+ },
+ "shot.taken.1": {
+  "file": "shot.taken.1.mp3",
+  "key": "ffcc8111bd7d",
+  "seconds": 3.0
+ },
+ "shot.taken.3": {
+  "file": "shot.taken.3.mp3",
+  "key": "85f5095d74ac",
+  "seconds": 3.6
+ },
+ "shot.taken.4": {
+  "file": "shot.taken.4.mp3",
+  "key": "35a00005d533",
+  "seconds": 2.03
+ },
+ "postcard.arrive.1": {
+  "file": "postcard.arrive.1.mp3",
+  "key": "7b78a20b98a0",
+  "seconds": 6.32
+ },
+ "timelapse.1": {
+  "file": "timelapse.1.mp3",
+  "key": "da611e82efcf",
+  "seconds": 2.55
+ },
+ "timelapse.bh": {
+  "file": "timelapse.bh.mp3",
+  "key": "fcafb73107a6",
+  "seconds": 3.72
+ },
+ "settings.open.1": {
+  "file": "settings.open.1.mp3",
+  "key": "ff855fb1d416",
+  "seconds": 4.15
+ },
+ "settings.quiet": {
+  "file": "settings.quiet.mp3",
+  "key": "f609e01f0973",
+  "seconds": 4.93
+ },
+ "settings.chatty": {
+  "file": "settings.chatty.mp3",
+  "key": "218adb7a8406",
+  "seconds": 4.12
+ },
+ "worlds.big.2": {
+  "file": "worlds.big.2.mp3",
+  "key": "2c1e8af412b7",
+  "seconds": 7.05
+ },
+ "worlds.true": {
+  "file": "worlds.true.mp3",
+  "key": "8985cd78d063",
+  "seconds": 6.5
+ },
+ "idle.16": {
+  "file": "idle.16.mp3",
+  "key": "dc067e0db5fc",
+  "seconds": 4.77
+ },
+ "idle.20": {
+  "file": "idle.20.mp3",
+  "key": "5b1c89a475be",
+  "seconds": 2.92
  }
 }
