@@ -1326,3 +1326,60 @@
   .gal-view-title { font-size: 24px; }
 }
 @media (prefers-reduced-motion: reduce) { .gal-card, .gal-card img, .gal-figure img, .gal-empty-shutter { animation: none; transition: none; } }
+
+/* ===================== Settings drawer ===================== */
+.set-scrim { position: absolute; inset: 0; z-index: 60; pointer-events: auto; background: rgba(2, 3, 6, 0.35); animation: vd-in 0.3s ease both; }
+.set-panel {
+  position: absolute; top: 12px; right: 12px; bottom: 12px; z-index: 61; width: min(380px, calc(100vw - 24px)); pointer-events: auto;
+  display: flex; flex-direction: column; overflow: hidden; border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.09);
+  background: linear-gradient(160deg, rgba(20, 24, 30, 0.96), rgba(8, 10, 13, 0.97)); backdrop-filter: blur(16px);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6); animation: set-in 0.45s cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+@keyframes set-in { from { opacity: 0; transform: translateX(24px); } }
+.set-head { display: grid; grid-template-columns: 1fr auto; align-items: end; padding: 22px 22px 14px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
+.set-kicker { grid-column: 1; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 9px; letter-spacing: 0.3em; text-transform: uppercase; color: #ffd28a; }
+.set-title { grid-column: 1; font-family: Georgia, 'Times New Roman', serif; font-style: italic; font-size: 28px; color: #f4efe6; line-height: 1.1; }
+.set-close { grid-column: 2; grid-row: 1 / span 2; align-self: center; padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.14); font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: rgba(236, 242, 239, 0.7); background: transparent; cursor: pointer; }
+.set-close:hover { color: #fff; border-color: rgba(255, 255, 255, 0.4); }
+.set-body { overflow-y: auto; padding: 6px 22px 22px; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.15) transparent; }
+.set-body section { padding: 16px 0 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+.set-body h3 { margin: 0 0 8px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 400; font-size: 9px; letter-spacing: 0.3em; text-transform: uppercase; color: rgba(182, 228, 203, 0.8); }
+.set-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 9px 0; cursor: pointer; }
+.set-text { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: #e7ece9; min-width: 0; }
+.set-text em { font-style: normal; font-size: 10px; color: rgba(236, 242, 239, 0.45); line-height: 1.35; }
+.set-text b { font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 400; font-size: 10px; color: #ffd28a; }
+.set-switch input { position: absolute; opacity: 0; pointer-events: none; }
+.set-toggle { position: relative; flex-shrink: 0; width: 32px; height: 18px; border-radius: 10px; background: #2c3334; transition: background 0.25s; }
+.set-toggle i { position: absolute; left: 2px; top: 2px; width: 14px; height: 14px; border-radius: 50%; background: #c9d1cc; transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), background 0.25s; }
+.set-switch.is-on .set-toggle { background: rgba(182, 228, 203, 0.5); }
+.set-switch.is-on .set-toggle i { transform: translateX(14px); background: #f0fff6; }
+.set-switch:focus-within .set-toggle { outline: 1px solid #b6e4cb; outline-offset: 2px; }
+.set-slider { flex-direction: column; align-items: stretch; gap: 6px; cursor: default; }
+.set-slider .set-text { flex-direction: row; justify-content: space-between; }
+.set-slider.is-off { opacity: 0.4; }
+.set-choice { flex-direction: column; align-items: stretch; gap: 8px; cursor: default; }
+.set-seg { display: flex; padding: 3px; gap: 3px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.07); }
+.set-seg button { flex: 1; padding: 7px 6px; border-radius: 7px; border: 0; background: transparent; color: rgba(236, 242, 239, 0.6); font-size: 10.5px; letter-spacing: 0.04em; cursor: pointer; transition: background 0.2s, color 0.2s; }
+.set-seg button:hover { color: #fff; background: rgba(255, 255, 255, 0.05); }
+.set-seg button.is-on { background: rgba(255, 210, 138, 0.16); color: #ffd28a; box-shadow: inset 0 0 0 1px rgba(255, 210, 138, 0.3); }
+.set-apply { width: 100%; margin: 2px 0 8px; padding: 10px; border-radius: 10px; border: 0; background: #ffd28a; color: #14110a; font-size: 10.5px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; }
+.set-foot { padding-top: 18px; }
+.set-reset { padding: 9px 14px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.16); background: transparent; color: rgba(236, 242, 239, 0.75); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; cursor: pointer; }
+.set-reset:disabled { opacity: 0.35; cursor: default; }
+.set-reset:not(:disabled):hover { color: #fff; border-color: rgba(255, 255, 255, 0.45); }
+
+/* Calm interface: the HUD stops moving */
+.hud-root.is-calm *, .hud-root.is-calm *::before, .hud-root.is-calm *::after { animation-duration: 0.001s !important; animation-iteration-count: 1 !important; }
+.hud-root.is-calm .vd-record.is-playing, .hud-root.is-calm .vd-record.is-playing .vd-sheen { animation-duration: 1.8s !important; animation-iteration-count: infinite !important; }
+
+/* Visiting a nebula */
+.neb-visit {
+  position: absolute; left: clamp(16px, 3vw, 40px); bottom: 110px; z-index: 30; pointer-events: auto; width: min(380px, calc(100vw - 32px));
+  display: flex; flex-direction: column; gap: 8px; padding: 18px 20px; border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(160deg, rgba(14, 16, 22, 0.72), rgba(6, 7, 10, 0.6)); backdrop-filter: blur(10px); animation: set-in 0.6s cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+.neb-visit-title { font-family: Georgia, 'Times New Roman', serif; font-size: 26px; line-height: 1.05; letter-spacing: -0.02em; color: #f4efe6; }
+.neb-visit-blurb { font-size: 12px; line-height: 1.7; color: rgba(236, 242, 239, 0.72); }
+.neb-visit-hint { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 8.5px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(182, 228, 203, 0.75); }
+.neb-visit .gal-ghost { align-self: flex-start; margin-top: 4px; }
+.neb-card img { background: #020306; }

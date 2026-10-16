@@ -166,3 +166,11 @@ export const VinylDeck: React.FC<{ current: string }> = ({ current }) => {
     </div>
   );
 };
+
+/** With the record player hidden, the music still follows you. */
+export const VinylFollower: React.FC<{ current: string }> = ({ current }) => {
+  useEffect(() => {
+    music.goTo(current);
+  }, [current]);
+  return null;
+};

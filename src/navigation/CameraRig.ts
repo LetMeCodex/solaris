@@ -521,7 +521,8 @@ export class CameraRig {
       // the orbit pivot smoothly transfers from the individual body towards the Solar System barycenter (0,0,0).
       // For Sagittarius A*, preserve its Galactic Center anchor to allow wide deep-space black hole views.
       const r = this.spherical.radius;
-      const isBlackHole = this.focusedObject.name.includes('sagittarius') || this.focusedObject.name === 'Sagittarius A*';
+      // The black hole and the nebulae keep their own anchor: they are not part of the Solar System
+      const isBlackHole = this.focusedObject.name.includes('sagittarius') || this.focusedObject.name === 'Sagittarius A*' || this.focusedObject.name.startsWith('nebula_stage');
       const h0 = this.handoffDistance();
       if (!isBlackHole && r > h0) {
         const handoffFactor = Math.min(1.0, (r - h0) / (h0 * 3.0));
@@ -881,6 +882,13 @@ export class CameraRig {
     } else {
       viewingDistance = CameraRig.calculateViewingDistance(radius, profile, profile.fov);
     }
+    // A nebula: centred, from the Sun's side, close enough that it spills past the edges
+    const isNebula = bodyName.startsWith('nebula:');
+    if (isNebula) {
+      this.targetNdcOffset.set(0, 0);
+      viewingDistance = radius * 1.1;
+      shotFov = OBSERVATION_FOV_DEG;
+    }
     this.focusDistance = viewingDistance;
 
     // Direction to Sun (Sun sits at 0, 0, 0)
@@ -893,7 +901,9 @@ export class CameraRig {
     }
 
     let cameraOffset: THREE.Vector3;
-    if (isSun) {
+    if (isNebula) {
+      cameraOffset = toSun.clone().multiplyScalar(viewingDistance);
+    } else if (isSun) {
       cameraOffset = new THREE.Vector3(0, 0.40, 1.0).normalize().multiplyScalar(viewingDistance);
     } else if (bodyName === 'Saturn') {
       // Sunlit vantage lifted ~30° out of the ring plane, on the side of the rings the Sun lights,
@@ -1026,7 +1036,7 @@ export class CameraRig {
     this.focusCinematic(object, radius, object.name, durationMs);
   }
 
-  public resetToOverview(durationMs: number = 1600): void {
+  public resetToOverview(durationMs: number = 1600, distance: number = SYSTEM_VIEW_DISTANCE): void {
     this.resetLook();
     this.focusedObject = null;
     this.focusedRadius = 262.2;
@@ -1039,8 +1049,8 @@ export class CameraRig {
       durationMs = 150;
     }
 
-    const targetSpherical = new THREE.Spherical(SYSTEM_VIEW_DISTANCE, Math.PI * 0.30, Math.PI * 0.25);
-    durationMs = this.flightDuration(durationMs, this.orbitPivot, CameraRig.ORIGIN_VEC, this.spherical.radius, SYSTEM_VIEW_DISTANCE);
+    const targetSpherical = new THREE.Spherical(distance, Math.PI * 0.30, Math.PI * 0.25);
+    durationMs = this.flightDuration(durationMs, this.orbitPivot, CameraRig.ORIGIN_VEC, this.spherical.radius, distance);
 
     this.transition = {
       startPos: this.camera.position.clone(),
@@ -1058,7 +1068,7 @@ export class CameraRig {
       targetFov: 45.0,
       targetNdcOffsetX: 0.0,
       targetNdcOffsetY: 0.0,
-      targetDistance: SYSTEM_VIEW_DISTANCE,
+      targetDistance: distance,
       targetTheta: targetSpherical.theta,
       targetPhi: targetSpherical.phi,
 
@@ -1235,10 +1245,12 @@ export class CameraRig {
     const focusedOnBody = this.focusedObject !== null && d < this.handoffDistance();
     if (d < 30.0 || (focusedOnBody && d < 0.05 * UNITS_PER_AU)) {
       // Around a body, report altitude above its surface (as an observation camera would)
+      // Near a world, read distances in its own true kilometres (globes are drawn enlarged)
+      const kmPerUnit = this.focusedPhysicalRadiusKm && this.focusedRadius > 0 ? this.focusedPhysicalRadiusKm / this.focusedRadius : KM_PER_UNIT;
       if (this.focusedObject && this.focusedRadius > 0 && d > this.focusedRadius) {
-        return { distance: d, formatted: `ALT ${fmtKm((d - this.focusedRadius) * KM_PER_UNIT)}`, domain: 'planetary' };
+        return { distance: d, formatted: `ALT ${fmtKm((d - this.focusedRadius) * kmPerUnit)}`, domain: 'planetary' };
       }
-      return { distance: d, formatted: fmtKm(d * KM_PER_UNIT), domain: 'planetary' };
+      return { distance: d, formatted: fmtKm(d * kmPerUnit), domain: 'planetary' };
     }
     if (d < 3500.0 * COSMIC_SCALE) {
       const au = d / UNITS_PER_AU;

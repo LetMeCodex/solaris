@@ -1,6 +1,6 @@
 {
   "greet.first.1": "Oh, hey, you're awake. Good, I was starting to talk to the stars again, and they never answer.",
-  "greet.first.2": "I'm Vela. I've been out here a long time. That world in front of you is Mercury, sitting exactly where it really is tonight, and everything you'll see out here is real, at its true size and its true distance.",
+  "greet.first.2": "I'm Vela. I've been out here a long time. That's the inner Solar System in front of you, every planet exactly where it really is tonight, at its true distance. Pick any world on the left, and we'll fly there together.",
   "greet.first.3": "Come on, let me show you around. Try to keep up.",
   "greet.back.1": "You came back! I kept the Sun on for you.",
   "greet.back.2": "Welcome back, traveller. Nothing exploded while you were gone, I checked.",
@@ -231,7 +231,7 @@
   "convo.home.q": "Do you miss Earth? I've never been, I've only ever seen it from out here. A lot.",
   "convo.home.go": "Let's go and see it, then. It's so blue, even from far away.",
   "convo.home.no": "Spoken like a true astronaut. Okay, space cadet.",
-  "overview.1": "And there it is, everything, all of it on one screen, at its real size and distance. Mostly empty, isn't it? Funny.",
+  "overview.1": "And there it is, everything, all of it on one screen, every orbit at its real distance. Mostly empty, isn't it? Funny.",
   "overview.2": "From here, all our worlds are just little lights going round in circles, and I think it's beautiful.",
   "home.1": "Home. It always looks smaller than I expect. Smaller, and braver.",
   "home.2": "Earth. Everyone you've ever met is down there, all of them, on that one little ball.",

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { moonDistanceKm } from '../rendering/Scale';
 import { CatalogueManager } from '../data/CatalogueManager';
 import { RenderSpaceTransform } from '../rendering/RenderSpaceTransform';
 
@@ -56,14 +57,15 @@ describe('Phase 3 Celestial Catalogue & Hierarchy', () => {
     expect(triton?.orbit.inclinationDeg).toBeCloseTo(129.13, 1);
   });
 
-  it('places moons at their true distance from the parent', () => {
+  it('places moons along their true direction, pushed out with the enlarged planet', () => {
     const transform = new RenderSpaceTransform();
     const parentPos: [number, number, number] = [100, 0, 50];
-    const pos = transform.toMoonRenderPosition([384400, 0, 0], parentPos);
+    const pos = transform.toMoonRenderPosition([384400, 0, 0], parentPos, 6371);
     const dist = Math.hypot(pos[0] - parentPos[0], pos[1] - parentPos[1], pos[2] - parentPos[2]);
-    // 384,400 km at 2,654.6 km per unit: ~144.8 units, 60 Earth radii
-    expect(dist).toBeCloseTo(384400 / (6371 / 2.4), 3);
-    expect(dist / transform.getVisualRadius(CatalogueManager.getBody('Earth')!)).toBeCloseTo(60.3, 1);
+    expect(dist).toBeCloseTo(moonDistanceKm(384400, 6371) / (6371 / 2.4), 3);
+    // Without enlargement the Moon is 60 Earth radii out
+    expect(moonDistanceKm(384400, 6371, 1) / 6371).toBeCloseTo(60.3, 1);
+    expect(pos[1]).toBeCloseTo(0, 9);
   });
 
   it('filters and searches the catalogue accurately', () => {

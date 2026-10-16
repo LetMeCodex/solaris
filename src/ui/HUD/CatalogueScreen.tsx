@@ -7,6 +7,7 @@ import { systemMoons } from './moonGroups';
 import { ExploredGauge } from './Atlas';
 import { exploredStats, fmtPct } from './explored';
 import { Gallery } from './Gallery';
+import { NEBULAE } from '../../rendering/NebulaSky';
 import type { Postcard } from '../../data/Postcards';
 
 export interface ShowcaseControls {
@@ -24,12 +25,14 @@ interface Props {
   onPostcard: (p: Postcard) => void;
   /** Open on a given tab. */
   initialTab?: Tab;
+  /** Fly out to a nebula (the Atlas closes). */
+  onNebula?: (name: string) => void;
 }
 
 const WORLDS = ['Sun', 'Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto'];
 const ORDINAL = ['', '1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th', '9th'];
 
-export type Tab = 'worlds' | 'all' | 'gallery';
+export type Tab = 'worlds' | 'all' | 'gallery' | 'nebulae';
 type Filter = 'all' | 'planet' | 'moon' | 'minor';
 
 const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
@@ -89,7 +92,7 @@ const Globe: React.FC<{ name: string; size: number; color?: string }> = ({ name,
  * a world's page gives its story and numbers on the left and every moon on the right (the ones
  * you have visited glowing), and picking a moon swings the camera to it.
  */
-export const CatalogueScreen: React.FC<Props> = ({ visited, current, showcase, onClose, onPostcard, initialTab = 'worlds' }) => {
+export const CatalogueScreen: React.FC<Props> = ({ visited, current, showcase, onClose, onPostcard, initialTab = 'worlds', onNebula }) => {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [system, setSystem] = useState<string | null>(null);
   const [moon, setMoon] = useState<string | null>(null);
@@ -167,6 +170,7 @@ export const CatalogueScreen: React.FC<Props> = ({ visited, current, showcase, o
         <nav className="cat-tabs" role="tablist">
           <button role="tab" aria-selected={tab === 'worlds' && !system} onClick={() => { setTab('worlds'); setSystem(null); setMoon(null); }}>Worlds</button>
           <button role="tab" aria-selected={tab === 'all' && !system} onClick={() => { setTab('all'); setSystem(null); setMoon(null); }}>Index · {CatalogueManager.getAllBodies().length}</button>
+          <button role="tab" aria-selected={tab === 'nebulae' && !system} onClick={() => { setTab('nebulae'); setSystem(null); setMoon(null); }}>Nebulae</button>
           <button role="tab" aria-selected={tab === 'gallery' && !system} onClick={() => { setTab('gallery'); setSystem(null); setMoon(null); }}>Gallery</button>
         </nav>
         <div className="cat-mini">
@@ -219,6 +223,34 @@ export const CatalogueScreen: React.FC<Props> = ({ visited, current, showcase, o
             onPostcard(p);
           }}
         />
+      )}
+
+      {/* Nebulae you can fly out to */}
+      {!system && tab === 'nebulae' && (
+        <section className="gal" aria-label="Nebulae">
+          <header className="gal-head">
+            <span className="gal-kicker">Beyond the Solar System</span>
+            <h2 className="gal-h">The clouds between the stars. <em>Go and stand inside one.</em></h2>
+            <p className="gal-sub">
+              Every nebula on your sky is waiting out there in its own direction. Fly to one and it grows from a smudge of
+              light into something that fills the sky; drag to swing around it and see its layers separate, and watch it
+              move the way it really does.
+            </p>
+          </header>
+          <div className="gal-grid">
+            {NEBULAE.map((n, i) => (
+              <button key={n.name} className={`gal-card neb-card ${i === 0 ? 'is-hero' : ''}`} onClick={() => { onClose(); onNebula?.(n.name); }} style={{ ['--d' as string]: `${i * 70}ms` }}>
+                <img src={`${import.meta.env.BASE_URL || '/'}textures/nebulae/${n.name}_lite.webp`} alt={n.title} loading="lazy" draggable={false} />
+                <span className="gal-shade" />
+                <span className="gal-copy">
+                  <span className="gal-place">{i < 3 ? 'Photographed' : 'Imagined'} · {n.kind === 'jets' ? 'jets' : n.kind === 'expand' ? 'expanding' : n.kind === 'pulsar' ? 'pulsar' : n.kind === 'evaporate' ? 'evaporating' : 'drifting'}</span>
+                  <span className="gal-title">{n.title}</span>
+                </span>
+                <span className="gal-step">Fly there</span>
+              </button>
+            ))}
+          </div>
+        </section>
       )}
 
       {/* Index of everything */}

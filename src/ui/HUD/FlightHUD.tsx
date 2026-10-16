@@ -11,13 +11,15 @@ import type { FlightRoute } from '../../rendering/SolarSystemScene';
 import { Popover, ScaleDomain, ScaleLadder, Segmented, TimeDeck } from './Controls';
 import { CatalogueScreen, ShowcaseControls } from './CatalogueScreen';
 import { AtlasLauncher } from './Atlas';
-import { VinylDeck } from './VinylDeck';
+import { VinylDeck, VinylFollower } from './VinylDeck';
 import { exploredStats } from './explored';
-import { UNITS_PER_KM } from '../../rendering/Scale';
+import { SUN_SCALE, UNITS_PER_KM } from '../../rendering/Scale';
 
 /** Closer than this to the Sun's centre and Vela gets nervous (about 2.2 solar radii). */
-const SUN_CLOSE_UNITS = 695700 * UNITS_PER_KM * 2.2;
-import { Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle, Camera } from 'lucide-react';
+const SUN_CLOSE_UNITS = 695700 * UNITS_PER_KM * SUN_SCALE * 2.2;
+import { Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle, Camera, Settings2 } from 'lucide-react';
+import { SettingsPanel } from './SettingsPanel';
+import { useSettings } from '../settings';
 import type { Postcard } from '../../data/Postcards';
 import type { Tab as AtlasTab } from './CatalogueScreen';
 import { Tour } from './Tour';
@@ -55,6 +57,8 @@ interface FlightHUDProps {
   onPostcard?: (p: Postcard) => void;
   /** Take a picture of the view (no interface); resolves true when it was saved. */
   onCapture?: () => Promise<boolean>;
+  /** Fly out to a nebula; false while its picture is still loading. */
+  onNebula?: (name: string) => boolean;
 }
 
 // Reference navigation order: Sagittarius A* at top, then Pluto down to Mercury, plus Sun
@@ -106,6 +110,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   showcase,
   onPostcard,
   onCapture,
+  onNebula,
 }) => {
   const target = telemetry?.activeTarget;
   const isPaused = telemetry?.isPaused ?? false;
@@ -149,6 +154,9 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null);
   const showToast = useCallback((text: string) => setToast({ id: performance.now(), text }), []);
   const [atlasTab, setAtlasTab] = useState<AtlasTab>('worlds');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const prefs = useSettings();
   // A picture: the shutter flashes, the frame goes to your Gallery
   const [flash, setFlash] = useState(0);
   const takeShot = useCallback(async () => {
@@ -410,7 +418,21 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   );
 
   return (
-    <div ref={rootRef} className={`hud-root font-sans ${route ? 'is-transit' : ''} ${isCatalogueOpen ? 'is-under-catalogue' : ''}`}>
+    <div ref={rootRef} className={`hud-root font-sans ${route ? 'is-transit' : ''} ${isCatalogueOpen ? 'is-under-catalogue' : ''} ${prefs.calmUi ? 'is-calm' : ''}`}>
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={closeSettings}
+        lens={lensProfile}
+        onSetLens={(l) => onSetLens?.(l)}
+        bloom={bloomGain}
+        bloomAvailable={bloomAvailable}
+        onSetBloom={(g) => onSetBloom?.(g)}
+        layers={[
+          { label: 'Orbits', on: orbitsOn, toggle: onToggleOrbits },
+          { label: 'Constellations', on: constellationsOn, toggle: onToggleConstellations },
+          { label: 'Asteroid belt', on: asteroidBeltOn, toggle: onToggleAsteroidBelt },
+        ]}
+      />
       {/* Visor glass */}
       <div className="hud-visor" />
       <div className="hud-scanlines" />
@@ -501,7 +523,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         <div className="relative flex items-center gap-1.5 md:gap-2 pointer-events-auto shrink-0 hud-boot" style={{ ['--d' as string]: '420ms' }}>
           <div data-tour="layers" className="hidden lg:flex items-center">{layerSwitches}</div>
           <span className="hidden lg:block w-px h-4 bg-white/10 mx-1" />
-          <VinylDeck current={activeTargetName} />
+          {prefs.showRecord ? <VinylDeck current={activeTargetName} /> : <VinylFollower current={activeTargetName} />}
           <button
             type="button"
             data-tour="optics"
@@ -565,6 +587,19 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             aria-label="Hide interface"
           >
             <EyeOff size={12} />
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setSettingsOpen((o) => !o);
+            }}
+            className={`hud-icon-btn ${settingsOpen ? 'is-on' : ''}`}
+            title="Settings"
+            aria-label="Settings"
+            aria-expanded={settingsOpen}
+          >
+            <Settings2 size={12} />
           </button>
 
           <Popover open={isOpticsOpen} onClose={closeOptics} className="absolute right-0 top-[calc(100%+12px)] w-[340px] max-w-[calc(100vw-24px)] p-4 flex flex-col gap-4 z-40">
@@ -882,7 +917,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
       {/* System plot — bottom right */}
       {!onSurfaceView && (
-        <div data-tour="plot" className="hud-dim absolute right-6 bottom-5 hidden md:block z-20 hud-boot hud-parallax-near [@media(max-height:620px)]:hidden" style={{ ['--d' as string]: '820ms' }}>
+        <div data-tour="plot" className={`hud-dim absolute right-6 bottom-5 ${prefs.showMinimap ? 'hidden md:block' : 'hidden'} z-20 hud-boot hud-parallax-near [@media(max-height:620px)]:hidden`} style={{ ['--d' as string]: '820ms' }}>
           <SystemPlot
             getView={getView}
             target={activeTargetName}
@@ -916,6 +951,18 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           TIME DECK
           ======================================================== */}
       {flash > 0 && <div key={flash} className="hud-flash" aria-hidden />}
+
+      {telemetry?.nebula && (
+        <aside className="neb-visit" aria-label={telemetry.nebula.title}>
+          <span className="gal-kicker">Nebula</span>
+          <span className="neb-visit-title">{telemetry.nebula.title}</span>
+          <span className="neb-visit-blurb">{telemetry.nebula.blurb}</span>
+          <span className="neb-visit-hint">Drag to swing around it · scroll to go deeper</span>
+          <button type="button" className="gal-ghost" onClick={(e) => { e.stopPropagation(); onResetView(); }}>
+            Back to the Solar System
+          </button>
+        </aside>
+      )}
 
       {(telemetry?.surface?.timelapse || telemetry?.horizon?.timelapse) && (
         <div className="hud-timelapse" role="status">
@@ -1152,6 +1199,9 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           showcase={showcase}
           initialTab={atlasTab}
           onPostcard={(p) => onPostcard?.(p)}
+          onNebula={(n) => {
+            if (!onNebula?.(n)) showToast('That nebula is still arriving, try again in a moment');
+          }}
           onClose={() => setIsCatalogueOpen(false)}
         />
       )}

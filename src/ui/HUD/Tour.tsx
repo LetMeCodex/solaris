@@ -25,7 +25,7 @@ const STEPS: Step[] = [
   {
     target: null,
     title: 'Welcome aboard',
-    body: 'This is the real Solar System, at today\'s positions, computed from NASA JPL orbital elements. Every distance, size and light-delay you will see is calculated, not invented. A short briefing on your instruments follows.',
+    body: 'This is the real Solar System, at today\'s positions, computed from NASA JPL orbital elements. Every position, distance and light-delay you will see is calculated, not invented. A short briefing on your instruments follows.',
   },
   {
     target: 'nav',
@@ -53,7 +53,7 @@ const STEPS: Step[] = [
   {
     target: 'optics',
     title: 'Optics',
-    body: 'Choose the camera lens (cinematic, fisheye, clean), bloom and the layers. Everything is drawn at true size and true distance; tiny worlds carry a marker so you can find them. Keyboard shortcuts live here too.',
+    body: 'Choose the camera lens (cinematic, fisheye, clean), bloom and the layers. Every distance is true; the worlds themselves are drawn larger than life so you can feel their size (change it in Settings). Small worlds carry a marker so you can find them. Keyboard shortcuts live here too.',
     demo: (d) => {
       const a = setTimeout(() => d.openOptics?.(true), 700);
       return () => {

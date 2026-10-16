@@ -22,21 +22,67 @@ interface NebulaSpec {
   opacity: number;
   /** Turn on the sky, degrees. */
   roll: number;
+  /** For a visit: its name, a line about it, and how it moves up close. */
+  title: string;
+  blurb: string;
+  kind: 'evaporate' | 'jets' | 'expand' | 'pulsar' | 'drift';
+  /** How close a visit frames it (1 = its full width fills the view; procedural gas sits mid-picture). */
+  frame?: number;
+  /** Jets: where they leave the image (uv, v up) and their direction (uv units). */
+  jets?: Array<{ at: [number, number]; dir: [number, number] }>;
 }
 
 export const NEBULAE: NebulaSpec[] = [
   // The real photographs, where they really are (the two Carina pictures side by side)
-  { name: 'cosmic-cliffs', ra: 10.1, dec: -52, width: 50, opacity: 1.0, roll: -8 },
-  { name: 'mystic-mountain', ra: 11.6, dec: -68, width: 30, opacity: 1.0, roll: 12 },
-  { name: 'helix', ra: 22.49, dec: -20.8, width: 30, opacity: 1.0, roll: 18 },
+  {
+    name: 'cosmic-cliffs', ra: 10.1, dec: -52, width: 50, opacity: 1.0, roll: 0, kind: 'evaporate',
+    title: 'The Cosmic Cliffs',
+    blurb: 'The rim of a vast cavity in NGC 3324, 7,600 light-years away, photographed by Webb. Ultraviolet light from hot young stars above is boiling gas off the cliffs; you can watch it lift away.',
+  },
+  {
+    name: 'mystic-mountain', ra: 11.6, dec: -68, width: 30, opacity: 1.0, roll: 0, kind: 'jets',
+    title: 'Mystic Mountain',
+    blurb: 'A pillar of gas and dust three light-years tall in the Carina Nebula, photographed by Hubble. Young stars buried in its peaks fire jets of gas out of the tips: HH 901 and HH 902.',
+    jets: [
+      { at: [0.69, 0.885], dir: [0.13, 0.012] },
+      { at: [0.69, 0.885], dir: [-0.11, -0.01] },
+      { at: [0.315, 0.62], dir: [-0.08, 0.09] },
+    ],
+  },
+  {
+    name: 'helix', ra: 22.49, dec: -20.8, width: 30, opacity: 1.0, roll: 0, kind: 'expand',
+    title: 'The Helix Nebula',
+    blurb: "What our Sun will become: a dying star's outer layers drifting away at about 30 km/s, 650 light-years from us, lit by the white dwarf left at its heart. Photographed by ESO's VISTA.",
+  },
   // Procedural figures, spread around the rest of the sky
-  { name: 'orion-cloud', ra: 5.59, dec: -5.4, width: 24, opacity: 1.8, roll: 25 },
-  { name: 'rosette-ring', ra: 7.6, dec: 26, width: 17, opacity: 1.1, roll: 0 },
-  { name: 'crab-shell', ra: 3.1, dec: 42, width: 12, opacity: 2.2, roll: -30 },
-  { name: 'veil-filaments', ra: 20.85, dec: 31, width: 28, opacity: 3.0, roll: 40 },
-  { name: 'lagoon-lane', ra: 17.7, dec: -30, width: 22, opacity: 1.7, roll: -15 },
-  { name: 'north-america', ra: 13.6, dec: 52, width: 24, opacity: 1.5, roll: 60 },
+  { name: 'orion-cloud', ra: 5.59, dec: -5.4, width: 24, opacity: 1.8, roll: 25, frame: 0.6, kind: 'evaporate', title: 'A stellar nursery', blurb: 'An imagined emission nebula, the kind where stars are born: hydrogen glowing pink, oxygen teal, and dark lanes of dust. Like the Orion Nebula, 1,344 light-years away.' },
+  { name: 'rosette-ring', ra: 7.6, dec: 26, width: 17, opacity: 1.1, roll: 0, frame: 0.6, kind: 'expand', title: 'A rosette', blurb: 'An imagined ring nebula: the winds of hot stars at its centre have blown a hollow in the gas around them, like the Rosette Nebula in Monoceros.' },
+  { name: 'crab-shell', ra: 3.1, dec: 42, width: 12, opacity: 2.2, roll: -30, frame: 0.5, kind: 'pulsar', title: 'A supernova remnant', blurb: 'An imagined remnant of an exploded star, like the Crab: orange filaments over a blue glow, powered by a pulsar at the centre spinning thirty times a second.' },
+  { name: 'veil-filaments', ra: 20.85, dec: 31, width: 28, opacity: 3.0, roll: 40, frame: 0.7, kind: 'expand', title: 'A veil of filaments', blurb: 'Imagined filaments of an ancient supernova, still racing outwards, like the Veil Nebula in Cygnus.' },
+  { name: 'lagoon-lane', ra: 17.7, dec: -30, width: 22, opacity: 1.7, roll: -15, frame: 0.6, kind: 'evaporate', title: 'A lagoon', blurb: 'An imagined cloud of glowing hydrogen cut by a lane of dust, like the Lagoon Nebula toward the centre of the galaxy.' },
+  { name: 'north-america', ra: 13.6, dec: 52, width: 24, opacity: 1.5, roll: 60, frame: 0.6, kind: 'drift', title: 'A drifting cloud', blurb: 'An imagined wisp of glowing gas, drifting slowly, like the North America Nebula.' },
 ];
+
+/** Unit direction of a nebula's centre (scene frame). */
+export function nebulaDirection(spec: NebulaSpec): THREE.Vector3 {
+  return new THREE.Vector3(...CoordinateFrames.icrfToThree(CoordinateFrames.raDecToIcrf(spec.ra * 15, spec.dec)));
+}
+
+/**
+ * The axes of a nebula's picture: `n` is "up" (towards ecliptic north, as the camera's up is) and
+ * `e` is "right" as seen from the Sun looking out at it, so pictures are upright and never mirrored.
+ * `roll` turns the picture about its centre.
+ */
+export function nebulaBasis(dir: THREE.Vector3, rollDeg: number): { e: THREE.Vector3; n: THREE.Vector3 } {
+  const ref = Math.abs(dir.y) > 0.98 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+  const up = ref.clone().addScaledVector(dir, -ref.dot(dir)).normalize();
+  const right = new THREE.Vector3().crossVectors(dir, up).normalize();
+  const roll = THREE.MathUtils.degToRad(rollDeg);
+  return {
+    e: right.clone().multiplyScalar(Math.cos(roll)).addScaledVector(up, Math.sin(roll)),
+    n: up.clone().multiplyScalar(Math.cos(roll)).addScaledVector(right, -Math.sin(roll)),
+  };
+}
 
 const BASE = `${import.meta.env.BASE_URL || '/'}textures/nebulae/`;
 
@@ -87,12 +133,7 @@ const fragmentShader = /* glsl */ `
 
 /** A rectangle of sky bent onto the sphere (gnomonic grid around a direction). */
 function skyPatch(dir: THREE.Vector3, widthDeg: number, aspect: number, rollDeg: number, radius: number): THREE.BufferGeometry {
-  const up = Math.abs(dir.y) > 0.98 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
-  const east = new THREE.Vector3().crossVectors(up, dir).normalize();
-  const north = new THREE.Vector3().crossVectors(dir, east).normalize();
-  const roll = THREE.MathUtils.degToRad(rollDeg);
-  const e = east.clone().multiplyScalar(Math.cos(roll)).addScaledVector(north, Math.sin(roll));
-  const n = north.clone().multiplyScalar(Math.cos(roll)).addScaledVector(east, -Math.sin(roll));
+  const { e, n } = nebulaBasis(dir, rollDeg);
   const halfW = Math.tan(THREE.MathUtils.degToRad(widthDeg / 2));
   const halfH = halfW / aspect;
   const N = 16;
@@ -127,7 +168,10 @@ export class NebulaSky {
   private zoom = { value: 0 };
   private scratch = new THREE.Vector3();
   private fade = 1;
-  private layers: { mat: THREE.ShaderMaterial; base: number }[] = [];
+  private layers: { mat: THREE.ShaderMaterial; base: number; name: string }[] = [];
+  private byName = new Map<string, { tex: THREE.Texture; aspect: number }>();
+  private hidden: string | null = null;
+  private visitFade = 1;
   private textures: THREE.Texture[] = [];
   private loaded = false;
   private reveal = 0;
@@ -138,6 +182,26 @@ export class NebulaSky {
   constructor(private radius: number) {
     this.group.name = 'nebulae';
     this.group.visible = false;
+  }
+
+  /** The loaded picture of a nebula (for a visit), or null until it has loaded. */
+  public picture(name: string): { tex: THREE.Texture; aspect: number } | null {
+    return this.byName.get(name) ?? null;
+  }
+
+  /** While you visit a nebula, the flat sky pictures step aside for the real thing. */
+  public hide(name: string | null): void {
+    this.hidden = name;
+  }
+
+  public get userBrightness(): number {
+    return this.userGain;
+  }
+
+  /** From Settings: 0 hides them, 1 as designed, up to 2 brighter. */
+  private userGain = 1;
+  public setUserGain(g: number): void {
+    this.userGain = THREE.MathUtils.clamp(g, 0, 2);
   }
 
   /** Under an atmosphere, daylight and twilight wash the nebulae out (as they do the stars). */
@@ -172,7 +236,8 @@ export class NebulaSky {
   }
 
   private add(spec: NebulaSpec, tex: THREE.Texture, aspect: number): void {
-    const dir = new THREE.Vector3(...CoordinateFrames.icrfToThree(CoordinateFrames.raDecToIcrf(spec.ra * 15, spec.dec)));
+    this.byName.set(spec.name, { tex, aspect });
+    const dir = nebulaDirection(spec);
     // The image, and a softer, larger halo of it a little further out (depth when travelling)
     for (const [depth, scale, gain, bias] of [[0, 1, 1, 0], [1, 1.12, 0.32, 2.5]] as const) {
       const mat = new THREE.ShaderMaterial({
@@ -206,7 +271,7 @@ export class NebulaSky {
       // Sky meshes travel with the camera: never culled (like the stars)
       mesh.frustumCulled = false;
       this.group.add(mesh);
-      this.layers.push({ mat, base: spec.opacity * gain });
+      this.layers.push({ mat, base: spec.opacity * gain, name: spec.name });
     }
   }
 
@@ -226,9 +291,11 @@ export class NebulaSky {
     this.drift.value.lerp(target, 1 - Math.exp(-dt * 2.5));
     this.zoom.value += (THREE.MathUtils.clamp(-zoomRate * 0.5, -1, 1) - this.zoom.value) * (1 - Math.exp(-dt * 3));
     this.skyDark += (this.skyDarkTarget - this.skyDark) * (1 - Math.exp(-dt * 4));
-    this.fade = (1 - leaving) * this.skyDark;
+    this.fade = (1 - leaving) * this.skyDark * this.userGain;
     const k = this.reveal * this.reveal * (3 - 2 * this.reveal) * this.fade * (1 + Math.max(0, this.zoom.value) * 0.15);
-    for (const l of this.layers) l.mat.uniforms.uOpacity.value = l.base * k;
+    // During a visit the flat pictures step aside (they would overlap the real thing up close)
+    this.visitFade += ((this.hidden ? 0 : 1) - this.visitFade) * (1 - Math.exp(-dt * 2));
+    for (const l of this.layers) l.mat.uniforms.uOpacity.value = l.base * k * this.visitFade;
     this.group.visible = this.fade > 0.003 || this.reveal < 1;
   }
 

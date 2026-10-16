@@ -5,7 +5,7 @@ import { SolarShader } from './SolarShader';
 import { AtmosphereShader, ATMOSPHERE_CONFIGS } from './AtmosphereShader';
 import { EarthMaterial } from './EarthMaterial';
 import { PlanetMaterial } from './PlanetMaterial';
-import { trueRadius } from './Scale';
+import { drawnRadius } from './Scale';
 import { SUN_WORLD } from './RenderOrigin';
 
 export interface PlanetMeshBundle {
@@ -24,7 +24,7 @@ export interface PlanetMeshBundle {
 export class PlanetFactory {
   /** True globe radius in render units (see Scale.ts). */
   public static getVisualRadius(body: CelestialBodyDefinition): number {
-    return trueRadius(body);
+    return drawnRadius(body);
   }
 
   /**

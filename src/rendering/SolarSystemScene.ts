@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Postcard } from '../data/Postcards';
+import { settings, Settings } from '../ui/settings';
 import { CatalogueManager } from '../data/CatalogueManager';
 import { PlanetFactory, PlanetMeshBundle } from './PlanetFactory';
 import { CameraRig } from '../navigation/CameraRig';
@@ -16,6 +17,7 @@ import { BodyMarkers, MarkerBody } from './BodyMarkers';
 import { Showcase, ShowcaseBody, ShowcaseSubject } from './Showcase';
 import { LensPipeline, LensProfileName } from './LensPipeline';
 import { HorizonView } from './HorizonView';
+import { NebulaStage } from './NebulaStage';
 import { PlanetaryExplorer, ExplorerStatus } from '../explorer/PlanetaryExplorer';
 import { SurfaceObserver, SurfaceStatus } from '../explorer/SurfaceObserver';
 import { ScreenLabels } from '../explorer/ScreenLabels';
@@ -48,6 +50,8 @@ export interface TelemetryData {
   surface: SurfaceStatus | null;
   /** Standing on the hypothetical ocean world beside Sgr A*. */
   horizonView: boolean;
+  /** Visiting a nebula: which one, and a line about it. */
+  nebula: { name: string; title: string; blurb: string } | null;
   /** In the horizon view: distance from the hole (r_s) and whether still on the shore. */
   horizon: { rRs: number; onShore: boolean; timelapse?: boolean } | null;
   /** One-way light time Earth → selected body, seconds (null for Earth itself). */
@@ -111,6 +115,11 @@ export class SolarSystemScene {
   private pendingSkyView: { body: string; lat: number; lon: number; place: string } | null = null;
   private pendingPostcard: Postcard | null = null;
   private pendingHorizonPostcard = false;
+  private unsubscribeSettings: (() => void) | null = null;
+  private nebulaStages = new Map<string, NebulaStage>();
+  private visiting: NebulaStage | null = null;
+  /** How far out the nebulae you can visit stand (the same size to the eye as on the sky). */
+  public static readonly NEBULA_DISTANCE = 4000 * COSMIC_SCALE;
   private orbitLinesEpochDays: number = 0;
 
   // Scratch objects reused every frame
@@ -139,6 +148,8 @@ export class SolarSystemScene {
   private labels: ScreenLabels;
   /** Rings and names for worlds too small to see at true scale. */
   private markers: BodyMarkers;
+  /** From Settings: world labels and markers on/off. */
+  private userMarkers = true;
   private markerBodies: MarkerBody[] = [];
   private tmpMarker = new THREE.Vector3();
   private perceivedVelocity = new THREE.Vector3();
@@ -185,6 +196,8 @@ export class SolarSystemScene {
 
   // Selection
   public selectedBody: CelestialBodyDefinition;
+  /** Camera distance of the opening view (14 AU: Mercury out to Saturn). */
+  public static readonly OPENING_DISTANCE = 14 * UNITS_PER_AU;
   private onTelemetryUpdate?: (telemetry: TelemetryData) => void;
   private lastTelemetryTime: number = 0;
   private static readonly TELEMETRY_INTERVAL_MS = 100;
@@ -310,10 +323,24 @@ export class SolarSystemScene {
     // against where the bodies actually are (not where they were at J2000)
     this.propagateAll(this.clock.getJulianDateTDB() - SimulationClock.J2000_JD);
     this.scene.updateMatrixWorld(true);
-    this.selectBody('Mercury', 1800);
+    // The opening shot: the inner Solar System out to Saturn, nothing selected (you choose)
+    this.selectedBody = CatalogueManager.getBody('Sun') || this.selectedBody;
+    this.cameraRig.resetToOverview(120, SolarSystemScene.OPENING_DISTANCE);
+    this.cameraRig.focusedPhysicalRadiusKm = this.selectedBody.physical.meanRadiusKm;
 
     // 8. Interaction
     this.setupInteraction();
+
+    // Settings that live in the scene (labels, nebulae, idle motion)
+    const apply = (st: Settings) => {
+      this.userMarkers = st.markers;
+      this.starfield.nebulae.setUserGain(st.nebulae);
+      this.cameraRig.enableIdleDrift = st.idleMotion;
+      this.surface.idleEnabled = st.idleMotion;
+      HorizonView.idleEnabled = st.idleMotion;
+    };
+    apply(settings.get());
+    this.unsubscribeSettings = settings.subscribe(apply);
 
     // 9. Start loop
     this.animate();
@@ -468,6 +495,7 @@ export class SolarSystemScene {
    * Moon); it is computed from the real positions and the body's IAU orientation at this moment.
    */
   public enterSkyView(body: string, facing?: string): boolean {
+    this.endNebulaVisit();
     const b = this.planetBundles.get(body);
     if (!b || body === 'Sun') return false;
     if (this.surface.isActive()) this.exitSurface(false);
@@ -480,8 +508,41 @@ export class SolarSystemScene {
     return true;
   }
 
+  /**
+   * Fly out to a nebula: the 3D version standing where its picture hangs on the sky. Returns false
+   * until its picture has loaded.
+   */
+  public visitNebula(name: string): boolean {
+    const pic = this.starfield.nebulae.picture(name);
+    if (!pic) return false;
+    if (this.surface.isActive()) this.exitSurface(false);
+    this.exitHorizonView(false);
+    if (this.showcase.active) this.stopShowcase();
+    let stage = this.nebulaStages.get(name);
+    if (!stage) {
+      stage = new NebulaStage(name, pic.tex, pic.aspect, SolarSystemScene.NEBULA_DISTANCE);
+      this.scene.add(stage.group);
+      this.nebulaStages.set(name, stage);
+    }
+    if (this.visiting && this.visiting !== stage) this.visiting.setVisible(false);
+    this.visiting = stage;
+    stage.setVisible(true);
+    this.starfield.nebulae.hide(name);
+    this.explorer.clearLandmark();
+    this.cameraRig.focusCinematic(stage.group, stage.radius * (stage.spec.frame ?? 1), `nebula:${stage.spec.name}`, 3600);
+    return true;
+  }
+
+  private endNebulaVisit(): void {
+    if (!this.visiting) return;
+    this.visiting.setVisible(false);
+    this.visiting = null;
+    this.starfield.nebulae.hide(null);
+  }
+
   /** Go into a postcard: the same world, place, moment and framing as its picture. */
   public openPostcard(c: Postcard): boolean {
+    this.endNebulaVisit();
     // The black hole: fly out and stand on the shore of the world beside it
     if (c.body === 'Sagittarius A*') {
       if (this.surface.isActive()) this.exitSurface(false);
@@ -809,6 +870,7 @@ export class SolarSystemScene {
   }
 
   public selectBody(name: string, durationMs: number = 1800): void {
+    this.endNebulaVisit();
     if (this.surface?.isActive()) this.exitSurface(false);
     this.exitHorizonView(false);
     this.recordRoute(name === 'Sgr A*' || name === 'sagittarius_a_star' ? 'Sagittarius A*' : name);
@@ -845,6 +907,7 @@ export class SolarSystemScene {
   }
 
   public resetView(): void {
+    this.endNebulaVisit();
     if (this.surface?.isActive()) this.exitSurface(false);
     this.exitHorizonView(false);
     this.recordRoute('Sun');
@@ -970,7 +1033,7 @@ export class SolarSystemScene {
         eccentricAnomalyDeg: moonRelState.eccentricAnomalyDeg,
       });
 
-      const renderPos = this.transform.toMoonRenderPosition(moonRelState.positionKm, parentRenderPos);
+      const renderPos = this.transform.toMoonRenderPosition(moonRelState.positionKm, parentRenderPos, parentDef.physical.meanRadiusKm);
       moonBundle.bodyGroup.position.set(renderPos[0], renderPos[1], renderPos[2]);
 
       const moonOrbitLine = this.moonOrbitLines.get(moon.name);
@@ -1046,6 +1109,7 @@ export class SolarSystemScene {
       this.showcase.update(this.cameraRig.camera, now * 0.001, bodies);
     }
     this.surface.update();
+    for (const st of this.nebulaStages.values()) st.update(deltaSec, this.starfield.nebulae.userBrightness || 0.6);
     if (this.pendingHorizonPostcard && this.selectedBody.name === 'Sagittarius A*' && !this.cameraRig.getTransit()) {
       this.pendingHorizonPostcard = false;
       this.enterHorizonView();
@@ -1097,7 +1161,7 @@ export class SolarSystemScene {
     }
 
     // Markers for worlds too small to see (hidden on surfaces, at the black hole and in the galaxy)
-    const markersOn = !this.surface.isActive() && !this.horizon?.active && !isBlackHole && !this.showcase.active &&
+    const markersOn = this.userMarkers && !this.surface.isActive() && !this.horizon?.active && !isBlackHole && !this.showcase.active &&
       this.cameraRig.camera.position.length() < 3500.0 * COSMIC_SCALE;
     this.markers.setVisible(markersOn);
     if (markersOn) {
@@ -1433,6 +1497,7 @@ export class SolarSystemScene {
   }
 
   public jumpToScale(domain: 'planetary' | 'inner_system' | 'outer_system' | 'interstellar' | 'galactic' | 'sgr_a'): void {
+    this.endNebulaVisit();
     if (domain === 'sgr_a') {
       this.selectBody('Sagittarius A*');
       return;
@@ -1502,6 +1567,7 @@ export class SolarSystemScene {
       explorer: this.explorer.getStatus(),
       surface: this.surface.getStatus(),
       horizonView: !!this.horizon?.active,
+      nebula: this.visiting ? { name: this.visiting.spec.name, title: this.visiting.spec.title, blurb: this.visiting.spec.blurb } : null,
       horizon: this.horizon?.active ? this.horizon.getStatus() : null,
       lightFromEarthSec: (() => {
         if (this.selectedBody.name === 'Earth') return null;
@@ -1526,6 +1592,7 @@ export class SolarSystemScene {
     this.surface.dispose();
     this.labels.dispose();
     this.markers.dispose();
+    this.unsubscribeSettings?.();
     this.cameraRig.dispose();
     this.explorer.dispose();
     this.lens.dispose();

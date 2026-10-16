@@ -6,6 +6,7 @@ import { LensProfileName } from './rendering/LensPipeline';
 import { Preloader } from './ui/Preloader';
 import { voice, chime } from './companion/voice';
 import { music } from './audio/music';
+import { settings } from './ui/settings';
 import type { Postcard } from './data/Postcards';
 import { saveShot } from './ui/HUD/shots';
 
@@ -21,6 +22,7 @@ export const App: React.FC = () => {
   const handleReveal = useCallback(() => setRevealed(true), []);
   const handleBegin = useCallback((withVoice: boolean) => {
     voice.enabled = withVoice;
+    settings.set({ velaVoice: withVoice });
     voice.unlock();
     chime('open');
     // The soundtrack starts softly with the journey ("in silence" leaves the needle up)
@@ -138,6 +140,8 @@ export const App: React.FC = () => {
     else sceneRef.current?.exitHorizonView();
   }, []);
 
+  const handleNebula = useCallback((name: string): boolean => sceneRef.current?.visitNebula(name) ?? false, []);
+
   const handlePostcard = useCallback((p: Postcard) => {
     sceneRef.current?.openPostcard(p);
   }, []);
@@ -203,6 +207,7 @@ export const App: React.FC = () => {
         showcase={showcase}
         onPostcard={handlePostcard}
         onCapture={handleCapture}
+        onNebula={handleNebula}
       />}
 
       <Preloader progress={load.progress} stage={load.stage} done={load.done} onReveal={handleReveal} onBegin={handleBegin} onFinished={handleRevealed} />

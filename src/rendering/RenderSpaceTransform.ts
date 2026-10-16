@@ -1,11 +1,11 @@
 import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 import { CelestialBodyDefinition } from '../types/catalogue';
-import { UNITS_PER_KM, trueRadius } from './Scale';
+import { UNITS_PER_KM, drawnRadius, moonDistanceKm } from './Scale';
 
 /**
  * Physical → render space. Everything is to true scale (see Scale.ts): heliocentric ecliptic km
- * are converted linearly and rotated into the Three.js frame (+Y = ecliptic north). Bodies are
- * never moved or resized to make them easier to see; the HUD marks the ones too small to see.
+ * are converted linearly and rotated into the Three.js frame (+Y = ecliptic north). Globes are drawn
+ * WORLD_SCALE times larger than life, and moons are pushed out with their enlarged planets.
  */
 export class RenderSpaceTransform {
   /**
@@ -22,14 +22,23 @@ export class RenderSpaceTransform {
   /** Parent-relative moon position (km) → render coordinates around the parent's render position. */
   public toMoonRenderPosition(
     moonRelPhysicalKm: [number, number, number],
-    parentRenderPos: [number, number, number]
+    parentRenderPos: [number, number, number],
+    parentRadiusKm: number = 0
   ): [number, number, number] {
-    const rel = this.toRenderPosition(moonRelPhysicalKm);
+    const rel = this.toRenderPosition(this.moonOffsetKm(moonRelPhysicalKm, parentRadiusKm));
     return [parentRenderPos[0] + rel[0], parentRenderPos[1] + rel[1], parentRenderPos[2] + rel[2]];
   }
 
-  /** Globe radius in render units: the true radius. */
+  /** A moon's planet-relative offset (km) as drawn: pushed out with the enlarged planet. */
+  public moonOffsetKm(relKm: [number, number, number], parentRadiusKm: number): [number, number, number] {
+    const d = Math.hypot(relKm[0], relKm[1], relKm[2]);
+    if (d <= 0 || parentRadiusKm <= 0) return relKm;
+    const k = moonDistanceKm(d, parentRadiusKm) / d;
+    return [relKm[0] * k, relKm[1] * k, relKm[2] * k];
+  }
+
+  /** Globe radius in render units, as drawn (see WORLD_SCALE). */
   public getVisualRadius(body: CelestialBodyDefinition): number {
-    return trueRadius(body);
+    return drawnRadius(body);
   }
 }

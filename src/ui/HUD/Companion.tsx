@@ -4,6 +4,7 @@ import { beautifulPlaces, CompanionAction, factIds, idsWith, lineText, pick, Sec
 import { voice } from '../../companion/voice';
 import type { FlightRoute } from '../../rendering/SolarSystemScene';
 import { tourSeen } from './Tour';
+import { settings, useSettings } from '../settings';
 import type { ExploredStats } from './explored';
 
 /**
@@ -128,9 +129,12 @@ export const Companion: React.FC<{
 }> = ({ ready, current, inTransit, route, arrival, tourStep, tourOpen, horizon, surfaceActive, orbitsOn, constellationsOn, worldsLogged, explored, atlasOpen, sunClose, timeRate, lens, actions, onTalkingChange }) => {
   const [beat, setBeat] = useState<Beat | null>(null);
   const [shown, setShown] = useState(0);
-  const [quiet, setQuiet] = useState(false);
+  const prefs = useSettings();
+  const [quiet, setQuiet] = useState(() => !settings.get().velaChatty);
   const quietRef = useRef(false);
   quietRef.current = quiet;
+  // Settings: whether she starts conversations on her own
+  useEffect(() => setQuiet(!prefs.velaChatty), [prefs.velaChatty]);
   const [speaking, setSpeaking] = useState(false);
   useEffect(() => {
     const l = (s: boolean) => setSpeaking(s);
@@ -416,8 +420,8 @@ export const Companion: React.FC<{
       { label: 'How far have we come?', run: () => say([{ id: 'menu.progress' }, { id: exploreStatusId(exploredRef.current.pct) }]) },
       { label: 'Show me a secret', run: () => say(offerSecret(here.length ? pick(here) : pick(beautifulPlaces()))) },
       quiet
-        ? { label: 'Talk to me again', run: () => { setQuiet(false); say({ id: pick(idsWith('poke.')) }); } }
-        : { label: 'Hush for a while', run: () => { say({ id: 'hush', after: () => setQuiet(true) }); } },
+        ? { label: 'Talk to me again', run: () => { settings.set({ velaChatty: true }); say({ id: pick(idsWith('poke.')) }); } }
+        : { label: 'Hush for a while', run: () => { say({ id: 'hush', after: () => settings.set({ velaChatty: false }) }); } },
     ];
   }, [current, quiet, factFor, offerSecret, say, joke, talk]);
 
@@ -836,7 +840,7 @@ export const Companion: React.FC<{
     (window as unknown as { __vela: unknown }).__vela = { farewell: startFarewell, offer: offerFarewell, say: (id: string) => say({ id }, true) };
   }, [startFarewell, offerFarewell, say]);
 
-  if (!ready) return null;
+  if (!ready || !prefs.showVela) return null;
   const showBox = beat !== null && !tourOpen;
   const farewellOn = farewell === 'on' || (farewell === 'done' && beat !== null);
 

@@ -2,7 +2,8 @@ import * as THREE from 'three';
 import { KeplerSolver } from '../astronomy/KeplerSolver';
 import { RenderSpaceTransform } from './RenderSpaceTransform';
 import { CelestialBodyDefinition } from '../types/catalogue';
-import { UNITS_PER_KM } from './Scale';
+import { UNITS_PER_KM, moonDistanceKm } from './Scale';
+import { CatalogueManager } from '../data/CatalogueManager';
 
 /**
  * Orbit guide lines at true scale.
@@ -94,9 +95,11 @@ export class OrbitalTrails {
   ): THREE.Line | null {
     if (moon.orbit.semiMajorAxisKm <= 0) return null;
     const physicalPoints = KeplerSolver.sampleOrbitPath(moon.orbit, segments, elapsedDaysSinceJ2000);
-    const renderVectors = physicalPoints.map((pt) => new THREE.Vector3(...transform.toRenderPosition(pt)));
+    // Drawn where the moon is drawn: pushed out with its enlarged planet
+    const parentKm = CatalogueManager.getBody(moon.parentName ?? '')?.physical.meanRadiusKm ?? 0;
+    const renderVectors = physicalPoints.map((pt) => new THREE.Vector3(...transform.toRenderPosition(transform.moonOffsetKm(pt as [number, number, number], parentKm))));
     const geometry = new THREE.BufferGeometry().setFromPoints(renderVectors);
-    const a = moon.orbit.semiMajorAxisKm * UNITS_PER_KM;
+    const a = moonDistanceKm(moon.orbit.semiMajorAxisKm, parentKm) * UNITS_PER_KM;
     const material = lineMaterial(moon.physical.colorHex || '#778899', opacity, [a * 0.004, a * 0.015], [a * 40, a * 160]);
     const line = new THREE.Line(geometry, material);
     line.name = `kepler_moon_orbit_${moon.name}`;

@@ -172,6 +172,8 @@ export class SurfaceObserver {
   private lastInput = performance.now();
   private idle = 0;
   private cap: THREE.Mesh | null = null;
+  /** From Settings: the idle time-lapse may run. */
+  public idleEnabled = true;
 
   constructor(deps: SurfaceObserverDeps) {
     this.d = deps;
@@ -375,7 +377,7 @@ export class SurfaceObserver {
     this.targetPitch = THREE.MathUtils.clamp(this.targetPitch, -80 * DEG, 89.5 * DEG);
     // Idle: after a quiet spell the view drifts slowly and the sky turns (a time-lapse); any input
     // hands control straight back
-    const quiet = (now - this.lastInput) / 1000 > IDLE_AFTER && !this.dragging && this.keys.size === 0;
+    const quiet = this.idleEnabled && (now - this.lastInput) / 1000 > IDLE_AFTER && !this.dragging && this.keys.size === 0;
     this.idle = THREE.MathUtils.clamp(this.idle + (quiet ? dt / 4 : -dt * 3), 0, 1);
     if (this.idle > 0) {
       const e = this.idle * this.idle * (3 - 2 * this.idle);

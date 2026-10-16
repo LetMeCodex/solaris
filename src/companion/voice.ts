@@ -3,6 +3,7 @@
  * (scripts/generate_vela_voice.py → public/voice/vela/*.mp3), played through Web Audio so the
  * orb can follow the real loudness of her speech. No robotic browser speech synthesis.
  */
+import { settings } from '../ui/settings';
 
 interface ManifestEntry {
   file: string;
@@ -27,6 +28,7 @@ function loadManifest(): Promise<void> {
 
 let ctx: AudioContext | null = null;
 let analyser: AnalyserNode | null = null;
+let voiceGain: GainNode | null = null;
 let level = new Uint8Array(256);
 let current: HTMLAudioElement | null = null;
 const cache = new Map<string, HTMLAudioElement>();
@@ -40,7 +42,9 @@ export function audioCtx(): AudioContext | null {
       analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
       level = new Uint8Array(analyser.fftSize);
-      analyser.connect(ctx.destination);
+      voiceGain = ctx.createGain();
+      voiceGain.gain.value = settings.get().velaVolume;
+      analyser.connect(voiceGain).connect(ctx.destination);
     }
     if (ctx.state === 'suspended') void ctx.resume();
     return ctx;
@@ -149,7 +153,7 @@ export const voice = {
 
 /* A soft two-partial chime (Web Audio) for moments that deserve one */
 export function chime(kind: 'arrive' | 'open' = 'arrive'): void {
-  if (!voice.enabled) return;
+  if (!voice.enabled || !settings.get().chimes) return;
   const c = audioCtx();
   if (!c) return;
   const now = c.currentTime;
@@ -167,3 +171,13 @@ export function chime(kind: 'arrive' | 'open' = 'arrive'): void {
     o.stop(now + delay + 1.7);
   }
 }
+
+// Settings: her volume, and whether she speaks aloud (applied live)
+settings.subscribe((st) => {
+  if (voiceGain && ctx) voiceGain.gain.setTargetAtTime(st.velaVolume, ctx.currentTime, 0.05);
+  if (voice.enabled !== st.velaVoice) {
+    voice.enabled = st.velaVoice;
+    if (!st.velaVoice) voice.stop();
+    else voice.unlock();
+  }
+});

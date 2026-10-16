@@ -200,6 +200,9 @@ export class HorizonView {
     return { rRs: this.pos.length() / rs, onShore: this.pos.distanceTo(this.eyeLocal) < 0.5, timelapse: this.idle > 0.5 };
   }
 
+  /** From Settings: the idle sweep may run. */
+  public static idleEnabled = true;
+
   /** Left alone, the view sweeps slowly across the hole and back, like a long-exposure film. */
   private lastInput = performance.now();
   private idle = 0;
@@ -248,7 +251,7 @@ export class HorizonView {
     const dt = this.lastTime === null ? 0 : Math.min(0.25, Math.max(0, timeSec - this.lastTime)); // frame-rate independent
     this.lastTime = timeSec;
     this.uniforms.uTime.value = timeSec;
-    const quiet = performance.now() - this.lastInput > 10000 && !this.drag && this.keys.size === 0;
+    const quiet = HorizonView.idleEnabled && performance.now() - this.lastInput > 10000 && !this.drag && this.keys.size === 0;
     if (quiet && this.idle === 0) this.idleBase = { yaw: this.targetYaw, pitch: this.targetPitch };
     this.idle = THREE.MathUtils.clamp(this.idle + (quiet ? dt / 5 : -1), 0, 1);
     if (this.idle > 0) {
