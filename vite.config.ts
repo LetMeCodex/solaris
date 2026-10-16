@@ -5,7 +5,8 @@ import tailwindcss from 'tailwindcss';
 import autoprefixer from 'autoprefixer';
 
 export default defineConfig({
-  base: '/solaris/',
+  // GitHub Pages serves the site under /solaris/; Vercel serves it at the root
+  base: process.env.VERCEL ? '/' : '/solaris/',
   plugins: [react()],
   css: {
     postcss: {
