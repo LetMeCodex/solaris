@@ -1,0 +1,186 @@
+[
+{
+"t": "2026-10-13T01:38:04+05:30",
+"s": "feat: initial release of SOLARIS ultra-realistic solar system explorer"
+},
+{
+"t": "2026-10-13T01:55:32+05:30",
+"s": "fix: configure base URL and client typings for deployment"
+},
+{
+"t": "2026-10-13T02:45:14+05:30",
+"s": "fix(physics): parent-relative moon GM, unit sphere scale invariance, shader & HUD repairs, 35 passing tests"
+},
+{
+"t": "2026-10-13T03:17:53+05:30",
+"s": "fix(pipeline): resolve texture cache key mismatch, polish Earth atmosphere, Saturn ring shadow, and Europa icy albedo"
+},
+{
+"t": "2026-10-13T04:11:30+05:30",
+"s": "feat(ui): cinematic interface transformation with reference-matched art direction, 3D camera choreography, and planetary monograph"
+},
+{
+"t": "2026-10-13T04:48:53+05:30",
+"s": "feat(ui): unify Montserrat typography across HUD, animate SOLARIS brand, and add auto-vanish monograph with blur dissolve"
+},
+{
+"t": "2026-10-13T05:34:10+05:30",
+"s": "feat(rendering): master visual realism overhaul with solar plasma, physical atmospheres, and bilateral shadows"
+},
+{
+"t": "2026-10-13T12:28:17+05:30",
+"s": "feat(rendering): physically realistic lighting, natural colors, tonemapping, and 3D camera overhaul"
+},
+{
+"t": "2026-10-13T14:37:29+05:30",
+"s": "feat(cosmos): immersive deep space, Gaia Milky Way, 3D stardust parallax & true planetary scale"
+},
+{
+"t": "2026-10-13T15:19:10+05:30",
+"s": "fix(skybox): match authentic photographic Gaia DR3 contrast and remove white noise"
+},
+{
+"t": "2026-10-13T16:25:02+05:30",
+"s": "feat(camera): overhaul camera rig with off-center observer composition, optical aim point, and responsive framing"
+},
+{
+"t": "2026-10-13T17:39:52+05:30",
+"s": "feat(navigation): infinite scale engine and multiscale universe navigation overhaul"
+},
+{
+"t": "2026-10-13T18:12:49+05:30",
+"s": "feat(rendering): master photorealistic 3D Milky Way galaxy overhaul"
+},
+{
+"t": "2026-10-13T18:56:31+05:30",
+"s": "feat(astronomy): implement relativistic Sagittarius A* supermassive black hole with null-geodesic ray tracing and EHT metrics"
+},
+{
+"t": "2026-10-13T22:07:47+05:30",
+"s": "feat(rendering): overhaul Sagittarius A* with fibrous Keplerian streamlines, Gaussian relativistic jets, and macro galactic disk clearance"
+},
+{
+"t": "2026-10-13T22:44:02+05:30",
+"s": "feat(rendering): match Sagittarius A* colors and light rays to Interstellar reference and enable 3D canvas click navigation from Milky Way view"
+},
+{
+"t": "2026-10-13T21:14:18Z",
+"s": "fix: real ephemerides, IAU orientation, correct sky frame, perf and docs"
+},
+{
+"t": "2026-10-14T08:54:00Z",
+"s": "feat(camera): observation camera, lens pipeline and resolved Milky Way"
+},
+{
+"t": "2026-10-14T10:32:51Z",
+"s": "feat: Planetary Explorer — stream real NASA/USGS surface imagery down to each source's limit"
+},
+{
+"t": "2026-10-14T18:03:58Z",
+"s": "feat: Google Earth–style zoom and \"stand on the surface and look up\" sky views"
+},
+{
+"t": "2026-10-15T03:05:07+05:30",
+"s": "feat: observatory HUD, cinematic flights, ray-traced Sgr A*, real Pluto and galactic map"
+},
+{
+"t": "2026-10-15T03:14:40+05:30",
+"s": "Merge origin/main into feat/observatory-hud-black-hole"
+},
+{
+"t": "2026-10-15T03:15:17+05:30",
+"s": "chore: redeploy (previous Pages run was cancelled)"
+},
+{
+"t": "2026-10-15T04:07:20+05:30",
+"s": "feat: black hole free flight, real infall rocks, preloader, guided tour, no first-use stutter"
+},
+{
+"t": "2026-10-15T08:07:33+05:30",
+"s": "feat(sky): 3D Gaia Milky Way around the Solar System, galactic disk fly-out and bloom control"
+},
+{
+"t": "2026-10-15T13:53:53+05:30",
+"s": "feat: Vela, a voice companion that guides and chats"
+},
+{
+"t": "2026-10-15T13:57:24+05:30",
+"s": "Merge pull request #2 from Dashrath175/feat/3d-milky-way"
+},
+{
+"t": "2026-10-15T14:01:39+05:30",
+"s": "fix(preloader): finish the iris even when animation frames are throttled"
+},
+{
+"t": "2026-10-15T14:38:15+05:30",
+"s": "feat: Vela becomes a companion with a real voice; fix reveal and surface glitches"
+},
+{
+"t": "2026-10-15T15:10:27+05:30",
+"s": "feat: real Hipparcos star sky that reacts to travel; Vela gets jokes, feelings and conversations"
+},
+{
+"t": "2026-10-15T19:10:45+05:30",
+"s": "feat: true-scale Solar System with every known moon and the real small bodies"
+},
+{
+"t": "2026-10-15T19:35:55+05:30",
+"s": "feat: landmark-sized arrivals; Vela rewritten for the true-scale universe with memory and a smoother voice"
+},
+{
+"t": "2026-10-16T00:06:04+05:30",
+"s": "feat: 3D catalogue with cinematic system reels, a physically drawn Sun, real moon maps with relief"
+},
+{
+"t": "2026-10-16T00:28:34+05:30",
+"s": "feat: the Atlas — animated launcher, explored gauge, redesigned catalogue pages"
+},
+{
+"t": "2026-10-16T06:03:46+05:30",
+"s": "feat: Vela v4 — her own cloned voice, 515 lines, a giggle, real fright, exploration memory and a farewell at 100%"
+},
+{
+"t": "2026-10-16T15:29:52+05:30",
+"s": "feat: the Solaris soundtrack on a turning record, and real nebulae across the sky"
+},
+{
+"t": "2026-10-16T16:18:23+05:30",
+"s": "feat: the Gallery of postcards, a camera, idle time-lapse, music that follows every flight, and an astrolabe Atlas"
+},
+{
+"t": "2026-10-16T16:33:39+05:30",
+"s": "fix: look-up view glitches — smooth horizon, glowing twilight, tidy sky labels"
+},
+{
+"t": "2026-10-16T17:16:32+05:30",
+"s": "feat: giant worlds, a Settings drawer, nebulae you can fly into, and a new opening view"
+},
+{
+"t": "2026-10-16T18:46:09+05:30",
+"s": "feat: a photoreal fiery Sun, a nebulae list, a fuller briefing, and no more UI overlaps"
+},
+{
+"t": "2026-10-16T22:27:25+05:30",
+"s": "feat: the briefing opens the Atlas and the world panel; calmer nebula trips"
+},
+{
+"t": "2026-10-16T22:38:22+05:30",
+"s": "fix: build on Vercel from main at the root, and skip the gh-pages branch there"
+},
+{
+"t": "2026-10-17T00:06:39+05:30",
+"s": "feat: the Solaris mark as an animated logo and tab icon"
+},
+{
+"t": "2026-10-17T01:32:27+05:30",
+"s": "feat: the Solaris launch film (\"Light Travel\")"
+},
+{
+"t": "2026-10-17T02:29:19+05:30",
+"s": "feat(launch film): Skies of other worlds, and a scored sound design"
+},
+{
+"t": "2026-10-17T02:36:53+05:30",
+"s": "fix(launch film): back to the original sound effects, plus a whoosh on the zoom-through"
+}
+]
