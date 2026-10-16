@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Solaris: the Sun inside two orbits, a world on each, a star beside it (src/ui/brand/logo.ts) -->
+  <style>
+    .o { animation: o linear infinite; }
+    .s { animation: s 3.2s ease-in-out infinite; transform-origin: 74.5px 50px; }
+    @keyframes o { to { transform: rotate(-360deg); } }
+    @keyframes s { 0%, 100% { transform: scale(0.8); } 50% { transform: scale(1.08) rotate(22.5deg); } }
+    @media (prefers-reduced-motion: reduce) { .o, .s { animation: none; } }
+  </style>
+  <rect width="100" height="100" rx="22" fill="#0e0e0f"/>
+  <g transform="translate(13 13) scale(0.74)">
+  <g fill="none" stroke="#dcab76" stroke-width="2.5600000000000005" stroke-linecap="round">
+    <g class="o" style="transform-origin: 50px 50px; animation-duration: 26s">
+      <path d="M 22.238 13.699 A 45.7 45.7 0 1 1 10.996 26.184"/>
+      <circle cx="16.038" cy="19.421" r="6.0" fill="#dcab76" stroke="none"/>
+    </g>
+    <g class="o" style="transform-origin: 52.6px 49.4px; animation-duration: 15s">
+      <path d="M 52.755 83.300 A 33.9 33.9 0 1 1 68.795 79.181"/>
+      <circle cx="61.031" cy="82.235" r="4.38" stroke-width="2.4000000000000004"/>
+    </g>
+  </g>
+  <circle cx="44.6" cy="50" r="17.4" fill="#dcab76"/>
+  <polygon class="s" points="74.500,42.900 75.380,47.875 77.613,46.887 76.625,49.120 81.600,50.000 76.625,50.880 77.613,53.113 75.380,52.125 74.500,57.100 73.620,52.125 71.387,53.113 72.375,50.880 67.400,50.000 72.375,49.120 71.387,46.887 73.620,47.875" fill="#dcab76"/>
+  </g>
+</svg>
