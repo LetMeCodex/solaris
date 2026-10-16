@@ -38,7 +38,7 @@ export const POSTCARDS: Postcard[] = [
   },
   {
     id: 'charon-core', title: 'Charon over the heart of the galaxy', place: 'Pluto, the side that faces Charon',
-    caption: 'Pluto and Charon face each other forever, so Charon hangs over only one half of Pluto and never moves. Behind it, the centre of the Milky Way. It is midday, and the sky is black.',
+    caption: 'Pluto and Charon face each other forever, so Charon hangs over only one half of Pluto and never moves. Behind it, the centre of the Milky Way and a glowing nebula. It is midday, and the sky is black.',
     body: 'Pluto', lat: 44.95, lon: 26.1, utc: '2026-11-18T01:05:05Z', heading: 213, pitch: 29, fov: 46, magnification: 1,
   },
   {
@@ -48,7 +48,7 @@ export const POSTCARDS: Postcard[] = [
   },
   {
     id: 'uranus-galaxy', title: 'Uranus and the Milky Way', place: 'Miranda, southern hemisphere',
-    caption: 'Half-lit Uranus beside the Milky Way and both Magellanic Clouds, from the little moon with the tallest cliffs known.',
+    caption: 'Half-lit Uranus beside the Milky Way, the Magellanic Clouds and the glowing clouds of Carina, from the little moon with the tallest cliffs known.',
     body: 'Miranda', lat: -48.8, lon: -12.63, utc: '2026-11-19T01:05:20Z', heading: 22, pitch: 37, fov: 66, magnification: 1,
   },
   {
@@ -63,7 +63,7 @@ export const POSTCARDS: Postcard[] = [
   },
   {
     id: 'martian-dusk', title: 'Two worlds at dusk', place: 'Mars, Meridiani Planum',
-    caption: 'Minutes after sunset, the blue Martian dusk glows over the horizon. Above it, Earth with its Moon, and Venus, drawn poster-size.',
+    caption: 'Minutes after sunset, a golden Martian dusk with its blue heart glows over the horizon. Above it, Earth with its Moon, and Venus, drawn poster-size.',
     body: 'Mars', lat: 4.94, lon: -3.65, utc: '2026-11-14T05:49:00Z', heading: 283, pitch: 15, fov: 72, magnification: 1000,
   },
 ];

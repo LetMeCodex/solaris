@@ -216,7 +216,8 @@ export class NebulaSky {
    * @param zoomRate d ln(distance)/dt of the camera (negative while zooming in)
    */
   public update(dt: number, velocity: THREE.Vector3, leaving: number, zoomRate = 0): void {
-    if (!this.group.visible) return;
+    // Keep easing even while hidden: a daylit sky fades them out, night must bring them back
+    if (!this.layers.length) return;
     this.time.value += dt;
     this.reveal = Math.min(1, this.reveal + dt / 3.5);
     // The halo drifts against the motion (eased, capped), and the whole sky breathes back after

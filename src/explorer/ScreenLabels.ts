@@ -34,27 +34,50 @@ export class ScreenLabels {
     container.appendChild(this.root);
   }
 
-  /** Show `items` (anything not listed is hidden). Points behind the camera are skipped. */
+  /**
+   * Show `items` (anything not listed is hidden). Points behind the camera are skipped. Earlier
+   * items win: a later label whose point falls right on an earlier one merges into it ("Earth ·
+   * Moon"), one that would overlap steps below or above, and one with no room left is hidden.
+   */
   public update(items: ScreenLabelItem[], camera: THREE.Camera, width: number, height: number): void {
-    const seen = new Set<string>();
+    const placed: Array<{ item: ScreenLabelItem; x: number; y: number; dy: number; text: string; sub: string; w: number; merged: boolean }> = [];
+    const box = (p: { x: number; y: number; dy: number; w: number }) => ({ l: p.x - 4, r: p.x + p.w, t: p.y + p.dy - 9, b: p.y + p.dy + 9 });
+    const hit = (a: ReturnType<typeof box>, b: ReturnType<typeof box>) => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
+    const widthOf = (text: string, sub: string) => text.length * 7 + (sub ? sub.length * 5.6 + 6 : 0) + 6;
     for (const item of items) {
       this.tmp.copy(item.world).project(camera);
       if (this.tmp.z > 1 || this.tmp.z < -1) continue;
       const x = (this.tmp.x * 0.5 + 0.5) * width;
       const y = (-this.tmp.y * 0.5 + 0.5) * height;
       if (x < -50 || y < -20 || x > width + 50 || y > height + 20) continue;
-      seen.add(item.id);
-      let node = this.nodes.get(item.id);
+      // Practically the same point as a label already placed: say both names on one label
+      const twin = item.kind === 'sky' ? placed.find((p) => !p.merged && Math.hypot(p.x - x, p.y - y) < 26) : undefined;
+      if (twin) {
+        twin.text = `${twin.text} · ${item.text}`;
+        twin.sub = '';
+        twin.w = widthOf(twin.text, '');
+        continue;
+      }
+      const text = item.text;
+      const sub = item.sub ?? '';
+      const w = widthOf(text, sub);
+      const spot = [0, 16, -16, 32].map((dy) => ({ x, y, dy, w })).find((c) => !placed.some((p) => hit(box(c), box(p))));
+      if (!spot) continue;
+      placed.push({ item, x, y, dy: spot.dy, text, sub, w, merged: false });
+    }
+    const seen = new Set<string>();
+    for (const p of placed) {
+      seen.add(p.item.id);
+      let node = this.nodes.get(p.item.id);
       if (!node) {
-        node = this.createNode(item);
-        this.nodes.set(item.id, node);
+        node = this.createNode(p.item);
+        this.nodes.set(p.item.id, node);
       }
       const label = node.firstChild!.nextSibling as HTMLSpanElement;
-      if (label.textContent !== item.text) label.textContent = item.text;
+      if (label.textContent !== p.text) label.textContent = p.text;
       const sub = label.nextSibling as HTMLSpanElement;
-      const subText = item.sub ?? '';
-      if (sub.textContent !== subText) sub.textContent = subText;
-      node.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+      if (sub.textContent !== p.sub) sub.textContent = p.sub;
+      node.style.transform = `translate(${p.x.toFixed(1)}px, ${(p.y + p.dy).toFixed(1)}px)`;
       node.style.display = 'flex';
     }
     for (const [id, node] of this.nodes) {

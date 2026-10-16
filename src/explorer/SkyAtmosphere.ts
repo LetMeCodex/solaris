@@ -4,8 +4,9 @@ import * as THREE from 'three';
  * Sky seen from a planet's surface: single-scattering Rayleigh + Mie (Nishita-style), evaluated
  * per pixel on a dome around the observer. Parameters are physical where known (Earth: standard
  * clear-sky coefficients; Mars: CO₂ Rayleigh + suspended dust, τ≈0.5) and approximate for the
- * giant planets. Venus's surface sits under a total overcast. Multiple scattering is ignored, so
- * deep twilight is somewhat darker than reality.
+ * giant planets. Venus's surface sits under a total overcast. Light scattered more than once is
+ * added as a soft isotropic term (it is most of what lights the sky in twilight), and the exposure
+ * adapts after sunset as the eye does, so civil twilight is a glowing blue, not black.
  */
 export interface AtmosphereModel {
   kind: 'none' | 'scatter' | 'overcast';
@@ -118,6 +119,7 @@ const fragmentShader = /* glsl */ `
   uniform float uSunElev;   // sine of the solar elevation (overcast brightness)
   uniform float uExposure;
   uniform float uStarDim;   // 0 at night … 1 in daylight: the sky drowns the stars
+  uniform float uMulti;     // strength of the multiple-scattering term
   varying vec3 vDir;
 
   const float PI = 3.14159265;
@@ -189,7 +191,10 @@ const fragmentShader = /* glsl */ `
     }
     float mu = dot(d, s);
     float pr = 3.0 / (16.0 * PI) * (1.0 + mu * mu);
-    vec3 col = uSunI * (sumR * uBetaR * pr + sumM * uBetaMs * phaseM(mu));
+    vec3 single = sumR * uBetaR * pr + sumM * uBetaMs * phaseM(mu);
+    // Multiple scattering (approx.): light already scattered once, spread evenly over the sky
+    vec3 multi = (sumR * uBetaR + sumM * uBetaMs) * (uMulti / (4.0 * PI));
+    vec3 col = uSunI * (single + multi);
     vec3 trans = exp(-(uBetaR * odR + uBetaMe * odM + uBetaA * odR));
     col *= uExposure;
     float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
@@ -204,6 +209,7 @@ export class SkyAtmosphere {
   public readonly mesh: THREE.Mesh;
   private material: THREE.ShaderMaterial;
   public model: AtmosphereModel = NONE;
+  private static readonly EXPOSURE = 1.15;
 
   constructor() {
     this.material = new THREE.ShaderMaterial({
@@ -228,6 +234,7 @@ export class SkyAtmosphere {
         uSunElev: { value: 0 },
         uExposure: { value: 1.15 },
         uStarDim: { value: 0 },
+        uMulti: { value: 0.1 },
       },
       vertexShader,
       fragmentShader,
@@ -290,6 +297,11 @@ export class SkyAtmosphere {
     // Stars fade from civil twilight (−6°) to sunrise, as they do to the eye
     const sunAlt = (Math.asin(THREE.MathUtils.clamp(u.uSunElev.value, -1, 1)) * 180) / Math.PI;
     u.uStarDim.value = this.model.kind === 'scatter' ? THREE.MathUtils.smoothstep(sunAlt, -10, -1) * this.starDimScale : 0;
+    // The eye adapts after sunset: twilight reads as a lit sky, not the black of a daytime exposure
+    const dusk = THREE.MathUtils.smoothstep(-sunAlt, -1, 5);
+    u.uExposure.value = SkyAtmosphere.EXPOSURE * (1 + 7 * dusk);
+    // By day single scattering already looks right; in twilight most of the light is multiply scattered
+    u.uMulti.value = 0.1 + 1.1 * dusk;
   }
 
   /** Thin atmospheres (giants' upper air in dim sunlight) dim the stars less. */

@@ -81,6 +81,61 @@ function eyeHeightKm(body: SurfaceBody): number {
 }
 
 /**
+ * A finely curved patch of ground around where you stand, on the body's own material. The globe
+ * itself is a coarse sphere (on small moons its facets are 10° wide): seen from a few hundred metres
+ * up, a flat facet's straight edges stick up above the true horizon as a wedge. The cap reaches a
+ * few horizon distances out, so the horizon you see is the real curve.
+ */
+function groundCap(centre: THREE.Vector3, horizonRad: number): THREE.BufferGeometry {
+  const RINGS = 72;
+  const SECTORS = 160;
+  const reach = Math.min(Math.PI * 0.45, Math.max(horizonRad * 4, 0.01));
+  const c = centre.clone().normalize();
+  const a = Math.abs(c.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+  const e1 = new THREE.Vector3().crossVectors(a, c).normalize();
+  const e2 = new THREE.Vector3().crossVectors(c, e1);
+  // SphereGeometry's own mapping, so the cap shows exactly the globe's texture
+  const uvOf = (p: THREE.Vector3): [number, number] => {
+    const theta = Math.acos(THREE.MathUtils.clamp(p.y, -1, 1));
+    let u = Math.atan2(p.z, -p.x) / (2 * Math.PI);
+    if (u < 0) u += 1;
+    return [u, 1 - theta / Math.PI];
+  };
+  const uc = uvOf(c)[0];
+  const pos: number[] = [], nor: number[] = [], uv: number[] = [], idx: number[] = [];
+  const p = new THREE.Vector3();
+  for (let i = 0; i <= RINGS; i++) {
+    // Rings packed towards the middle: the horizon (a quarter of the reach) gets the most
+    const ang = reach * Math.pow(i / RINGS, 1.6);
+    const sa = Math.sin(ang), ca = Math.cos(ang);
+    for (let j = 0; j <= SECTORS; j++) {
+      const t = (j / SECTORS) * Math.PI * 2;
+      p.copy(c).multiplyScalar(ca).addScaledVector(e1, sa * Math.cos(t)).addScaledVector(e2, sa * Math.sin(t)).normalize();
+      // A hair above the globe (where their vertices meet) and below the imagery tiles
+      pos.push(p.x * 1.00002, p.y * 1.00002, p.z * 1.00002);
+      nor.push(p.x, p.y, p.z);
+      const [u0, v] = uvOf(p);
+      const u = uc + ((((u0 - uc + 0.5) % 1) + 1) % 1) - 0.5; // no jump across the date line
+      uv.push(u, v);
+    }
+  }
+  for (let i = 0; i < RINGS; i++) {
+    for (let j = 0; j < SECTORS; j++) {
+      const k = i * (SECTORS + 1) + j;
+      const n = k + SECTORS + 1;
+      idx.push(k, n, k + 1, k + 1, n, n + 1);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeBoundingSphere();
+  return g;
+}
+
+/**
  * "Stand on the surface and look up": a camera fixed to a point on a rotating body, with the
  * body's own sky (atmospheric scattering), the Sun, planets and moons at their true topocentric
  * positions and sizes, and a telescope-like zoom. Takes over the camera from the orbit rig while
@@ -116,6 +171,7 @@ export class SurfaceObserver {
   private lastTime = performance.now();
   private lastInput = performance.now();
   private idle = 0;
+  private cap: THREE.Mesh | null = null;
 
   constructor(deps: SurfaceObserverDeps) {
     this.d = deps;
@@ -145,6 +201,7 @@ export class SurfaceObserver {
     this.fov = this.targetFov = DEFAULT_FOV;
     this.active = true;
     this.attach();
+    this.addGroundCap(body, lat, lon);
     this.computeFrame();
     this.d.setSceneMode(true, bodyName, this.skyRadii().stars);
     // Aim after the first sky update so we know what is above the horizon
@@ -159,6 +216,7 @@ export class SurfaceObserver {
     if (!this.active) return;
     this.active = false;
     this.detach();
+    this.removeGroundCap();
     this.atmosphere.mesh.visible = false;
     this.sky.group.visible = false;
     this.d.camera.up.set(0, 1, 0);
@@ -167,6 +225,31 @@ export class SurfaceObserver {
     if (this.body) this.d.setSceneMode(false, this.body.name, 0);
     this.d.setGround(null, null);
     this.status = null;
+  }
+
+  private addGroundCap(body: SurfaceBody, lat: number, lon: number): void {
+    this.removeGroundCap();
+    const mat = body.surfaceMesh.material as THREE.Material & { uniforms?: Record<string, { value: unknown }> };
+    // The cap may cross the map's date line: let the textures repeat instead of clamping there
+    for (const key of ['map', 'normalMap']) {
+      const t = mat.uniforms?.[key]?.value;
+      if (t instanceof THREE.Texture && t.wrapS !== THREE.RepeatWrapping) {
+        t.wrapS = THREE.RepeatWrapping;
+        t.needsUpdate = true;
+      }
+    }
+    const horizon = Math.sqrt((2 * eyeHeightKm(body)) / body.radiusKm);
+    this.cap = new THREE.Mesh(groundCap(new THREE.Vector3(...latLonToLocal(lat, lon)), horizon), mat);
+    this.cap.name = 'surface_ground_cap';
+    this.cap.renderOrder = body.surfaceMesh.renderOrder;
+    body.surfaceMesh.add(this.cap);
+  }
+
+  private removeGroundCap(): void {
+    if (!this.cap) return;
+    this.cap.removeFromParent();
+    this.cap.geometry.dispose();
+    this.cap = null;
   }
 
   /** Current standing point (for "back to orbit"). */
@@ -230,6 +313,8 @@ export class SurfaceObserver {
     if (!this.active) return [];
     return this.objects
       .filter((o) => o.visible && o.altDeg > -1 && (o.magnitude < 3.5 || o.name === 'Sun'))
+      // Brightest first: they keep their place when labels crowd together
+      .sort((a, b) => (a.name === 'Sun' ? -99 : a.magnitude) - (b.name === 'Sun' ? -99 : b.magnitude))
       .slice(0, 14)
       .map((o) => ({
         id: `sky:${o.name}`,
