@@ -11,6 +11,8 @@ export const BAR = BEAT * 4;
 export const DOWNBEAT = 16.37;
 /** Time of bar n (0 = the first downbeat), plus beats. */
 export const bar = (n: number, beats = 0) => DOWNBEAT + n * BAR + beats * BEAT;
+/** Seconds added to everything from the nebulae on, if a section is inserted before them (sound design reads it). */
+export const SKY_SHIFT = 9.938; // four bars of the music as it is really played (capture/extend_music.py)
 
 export const montserrat = loadMontserrat('normal', { weights: ['200', '300', '400', '500'], subsets: ['latin'] }).fontFamily;
 export const serif = loadSerif('italic', { subsets: ['latin'] }).fontFamily;

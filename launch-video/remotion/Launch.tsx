@@ -1,12 +1,16 @@
 import React from 'react';
 import { AbsoluteFill, Audio, Sequence, interpolate, staticFile, useCurrentFrame, Easing } from 'remotion';
-import { C, FPS, bar, BEAT, mono, montserrat, serif, sec } from './theme';
+import { C, FPS, bar, BEAT, SKY_SHIFT, mono, montserrat, serif, sec } from './theme';
+import { Skies, SKY_SHOTS, skyAt } from './Skies';
 import { Shot, Screen, Grain, Vignette, LightLeak, Glint, Flash, Motes } from './fx';
 import { Mark, Wordmark } from './Logo';
 import { Rise, Callout, Caption } from './Type';
 import { LightClock, Stop } from './LightClock';
+import { SoundDesign } from './Sound';
 
-export const DURATION = 66.6;
+export const DURATION = 66.6 + SKY_SHIFT;
+/** Everything after the Skies act moves by the four inserted bars. */
+const late = (t: number) => t + SKY_SHIFT;
 const ease = Easing.bezier(0.16, 1, 0.3, 1);
 const H = BEAT * 2; // half a bar
 
@@ -128,7 +132,7 @@ const Black: React.FC<{ from: number; to: number; inS?: number; outS?: number }>
 
 // ---- the film ----------------------------------------------------------------------------------
 export const Launch: React.FC = () => {
-  const cuts = [bar(1), ...JOURNEY.map((j) => j.from), bar(9), bar(10), bar(11), bar(11) + H, bar(12), bar(13), bar(13) + H, bar(14), bar(15), bar(16)];
+  const cuts = [bar(1), ...JOURNEY.map((j) => j.from), bar(9), bar(10), skyAt(1), skyAt(2), skyAt(3), late(bar(11)), late(bar(11)) + H, late(bar(12)), late(bar(13)), late(bar(13)) + H, late(bar(14)), late(bar(15)), late(bar(16))];
   return (
     <AbsoluteFill style={{ background: C.night, fontFamily: montserrat }}>
       {/* ---------------- picture ---------------- */}
@@ -144,16 +148,17 @@ export const Launch: React.FC = () => {
         <At key={j.shot} from={j.from} to={j.to} name={j.shot}><Shot src={j.shot} from={j.clipFrom ?? 0.4} /></At>
       ))}
       <At from={bar(9)} to={bar(10)} name="ui_overview"><Screen src="ui_overview" from={0.4} /></At>
-      <At from={bar(10)} to={bar(11)} name="ui_explorer"><Screen src="ui_explorer" from={0.6} focus="85% 25%" zoom={0.12} /></At>
-      <At from={bar(11)} to={bar(11) + H} name="nebula"><Shot src="nebula" from={1.0} push={0.1} /></At>
-      <At from={bar(11) + H} to={bar(12)} name="nebula2"><Shot src="nebula2" from={1.0} push={0.1} /></At>
-      <At from={bar(12)} to={bar(13)} name="ui_vela"><Screen src="ui_vela" from={0.2} focus="45% 88%" zoom={0.14} /></At>
-      <At from={bar(13)} to={bar(13) + H} name="ui_vinyl"><Screen src="ui_vinyl" from={0.8} focus="60% 25%" zoom={0.1} /></At>
-      <At from={bar(13) + H} to={bar(14)} name="ui_atlas"><Screen src="ui_atlas" from={1.0} /></At>
-      <At from={bar(14)} to={bar(15)} name="galaxy"><Shot src="galaxy" from={3.4} push={0.1} /></At>
-      <At from={bar(15)} to={bar(16)} name="sgra"><Shot src="sgra" from={0.6} push={0.1} /></At>
-      <At from={bar(16)} to={bar(17) + 0.4} name="bh_sea"><Shot src="bh_sea" from={0.3} push={0.06} punch={false} /></At>
-      <At from={bar(17)} to={DURATION} name="Lockup">
+      <At from={skyAt(0) - 0.6} to={skyAt(4)} name="Skies"><Skies /></At>
+      <At from={bar(10)} to={bar(11)} name="ui_explorer"><Screen src="ui_explorer" from={0.6} focus="85% 25%" zoom={0.12} exit={18} /></At>
+      <At from={late(bar(11))} to={late(bar(11)) + H} name="nebula"><Shot src="nebula" from={1.0} push={0.1} /></At>
+      <At from={late(bar(11)) + H} to={late(bar(12))} name="nebula2"><Shot src="nebula2" from={1.0} push={0.1} /></At>
+      <At from={late(bar(12))} to={late(bar(13))} name="ui_vela"><Screen src="ui_vela" from={0.2} focus="45% 88%" zoom={0.14} /></At>
+      <At from={late(bar(13))} to={late(bar(13)) + H} name="ui_vinyl"><Screen src="ui_vinyl" from={0.8} focus="60% 25%" zoom={0.1} /></At>
+      <At from={late(bar(13)) + H} to={late(bar(14))} name="ui_atlas"><Screen src="ui_atlas" from={1.0} /></At>
+      <At from={late(bar(14))} to={late(bar(15))} name="galaxy"><Shot src="galaxy" from={3.4} push={0.1} /></At>
+      <At from={late(bar(15))} to={late(bar(16))} name="sgra"><Shot src="sgra" from={0.6} push={0.1} /></At>
+      <At from={late(bar(16))} to={late(bar(17)) + 0.4} name="bh_sea"><Shot src="bh_sea" from={0.3} push={0.06} punch={false} /></At>
+      <At from={late(bar(17))} to={DURATION} name="Lockup">
         <AbsoluteFill style={{ background: `radial-gradient(ellipse at 50% 46%, #160d07 0%, ${C.night} 60%)` }} />
         <Motes n={36} opacity={0.4} />
         <Title tagline="The real Solar System. Live in your browser." url />
@@ -167,11 +172,11 @@ export const Launch: React.FC = () => {
       ))}
       <LightLeak at={sec(4.0)} dur={sec(2.4)} side="left" />
       <LightLeak at={sec(bar(3))} dur={sec(1.6)} />
-      <LightLeak at={sec(bar(11))} dur={sec(2.2)} hue="255, 120, 80" side="left" />
-      <LightLeak at={sec(bar(17)) - 6} dur={sec(2.6)} />
+      <LightLeak at={sec(late(bar(11)))} dur={sec(2.2)} hue="255, 120, 80" side="left" />
+      <LightLeak at={sec(late(bar(17))) - 6} dur={sec(2.6)} />
       <Flash at={sec(15.0)} dur={16} peak={0.95} />
-      <Flash at={sec(bar(14))} dur={10} peak={0.5} />
-      <Black from={bar(17) - 0.5} to={bar(17) + 0.4} inS={0} outS={0.5} />
+      <Flash at={sec(late(bar(14)))} dur={10} peak={0.5} />
+      <Black from={late(bar(17)) - 0.5} to={late(bar(17)) + 0.4} inS={0} outS={0.5} />
       <Black from={DURATION - 1.6} to={DURATION} outS={1.6} />
 
       {/* ---------------- type ---------------- */}
@@ -205,24 +210,24 @@ export const Launch: React.FC = () => {
 
       <At from={bar(9)} to={bar(10)} name="c1"><Callout n="01" kicker="NASA JPL orbital elements" caps="The real sky" serifText="Every world exactly where it is, right now." /></At>
       <At from={bar(10)} to={bar(11)} name="c2"><Callout n="02" kicker="Surface view" caps="Stand anywhere" serifText="and look up." align="left" /></At>
-      <At from={bar(11)} to={bar(12)} name="c3"><Callout n="03" kicker="Nebulae, up close" caps="Fly into the light" serifText="Cosmic Cliffs. The Helix. And more." /></At>
-      <At from={bar(12)} to={bar(13)} name="c4"><Callout n="04" kicker="Your companion" caps="Meet Vela" serifText="She talks. She laughs. She remembers." /></At>
-      <At from={bar(13)} to={bar(14)} name="c5"><Callout n="05" kicker="Atlas · Soundtrack · Gallery" caps="Yours to explore" serifText="478 worlds. A song for each one." /></At>
-      <At from={bar(11)} to={bar(11) + H} name="cap-n1"><Caption text="Cosmic Cliffs · 7,600 light-years" /></At>
-      <At from={bar(11) + H} to={bar(12)} name="cap-n2"><Caption text="The Helix · 650 light-years" /></At>
+      <At from={late(bar(11))} to={late(bar(12))} name="c3"><Callout n="03" kicker="Nebulae, up close" caps="Fly into the light" serifText="Cosmic Cliffs. The Helix. And more." /></At>
+      <At from={late(bar(12))} to={late(bar(13))} name="c4"><Callout n="04" kicker="Your companion" caps="Meet Vela" serifText="She talks. She laughs. She remembers." /></At>
+      <At from={late(bar(13))} to={late(bar(14))} name="c5"><Callout n="05" kicker="Atlas · Soundtrack · Gallery" caps="Yours to explore" serifText="478 worlds. A song for each one." /></At>
+      <At from={late(bar(11))} to={late(bar(11)) + H} name="cap-n1"><Caption text="Cosmic Cliffs · 7,600 light-years" /></At>
+      <At from={late(bar(11)) + H} to={late(bar(12))} name="cap-n2"><Caption text="The Helix · 650 light-years" /></At>
 
-      <At from={bar(14)} to={bar(15)} name="t:beyond">
+      <At from={late(bar(14))} to={late(bar(15))} name="t:beyond">
         <AbsoluteFill style={{ alignItems: 'center', justifyContent: 'flex-start', paddingTop: 120 }}>
           <Rise text="And beyond" size={72} font={montserrat} weight={200} track="0.4em" upper stagger={4} />
         </AbsoluteFill>
       </At>
-      <At from={bar(15)} to={bar(16)} name="deep"><DeepTime /></At>
-      <At from={bar(16) + 0.2} to={bar(17) - 0.2} name="t:why">
+      <At from={late(bar(15))} to={late(bar(16))} name="deep"><DeepTime /></At>
+      <At from={late(bar(16)) + 0.2} to={late(bar(17)) - 0.2} name="t:why">
         <AbsoluteFill style={{ alignItems: 'center', justifyContent: 'flex-start', paddingTop: 170 }}>
           <Rise text="Why do you think people look up?" size={62} stagger={3} />
         </AbsoluteFill>
       </At>
-      <At from={63.2} to={DURATION - 0.8} name="t:lookup">
+      <At from={late(63.2)} to={DURATION - 0.8} name="t:lookup">
         <AbsoluteFill style={{ alignItems: 'center', justifyContent: 'flex-end', paddingBottom: 90 }}>
           <Rise text="Look up." size={40} font={montserrat} weight={200} track="0.6em" upper color={C.white} />
         </AbsoluteFill>
@@ -230,7 +235,7 @@ export const Launch: React.FC = () => {
 
       {/* ---------------- sound ---------------- */}
       <Audio
-        src={staticFile('audio/helios-overture.mp3')}
+        src={staticFile('audio/helios-overture-ext.mp3')}
         volume={(f) => {
           const t = f / FPS;
           const duck = VO.some((v) => t > v.at - 0.15 && t < v.at + v.len + 0.2) ? 0.45 : 1;
@@ -242,11 +247,7 @@ export const Launch: React.FC = () => {
           <Audio src={staticFile(`audio/${v.src}`)} volume={v.vol ?? 1} />
         </Sequence>
       ))}
-      {SFX.map((s, i) => (
-        <Sequence key={i} from={Math.max(0, sec(s.at))} durationInFrames={sec(s.len)}>
-          <Audio src={staticFile(`audio/sfx/${s.src}`)} volume={s.vol} />
-        </Sequence>
-      ))}
+      <SoundDesign />
     </AbsoluteFill>
   );
 };
@@ -256,19 +257,8 @@ const VO: Array<{ src: string; at: number; len: number; vol?: number }> = [
   { src: 'vela/film.open.mp3', at: 0.7, len: 3.42 },
   { src: 'vela/film.sun.mp3', at: 8.9, len: 5.83 },
   { src: 'vela/surface.2.mp3', at: bar(10) + 0.1, len: 3.78 },
-  { src: 'vela/giggle.6.mp3', at: bar(12) + 0.35, len: 1.15 },
-  { src: 'vela/convo.why.q.mp3', at: bar(16) + 0.3, len: 1.95 },
-  { src: 'vela/film.end.mp3', at: 63.0, len: 1.61 },
-];
-
-// Sound design: risers into the hits, sub drops on them, whooshes on the big cuts
-const SFX: Array<{ src: string; at: number; len: number; vol: number }> = [
-  { src: 'riser.wav', at: 15.0 - 3.2, len: 3.3, vol: 0.55 },
-  { src: 'impact.wav', at: 15.0, len: 4, vol: 0.9 },
-  { src: 'whoosh.wav', at: bar(1) - 0.35, len: 1.6, vol: 0.5 },
-  { src: 'whoosh.wav', at: bar(9) - 0.35, len: 1.6, vol: 0.35 },
-  { src: 'riser.wav', at: bar(14) - 3.2, len: 3.3, vol: 0.4 },
-  { src: 'impact.wav', at: bar(14), len: 4, vol: 0.6 },
-  { src: 'shimmer.wav', at: bar(17), len: 5, vol: 0.45 },
-  ...Array.from({ length: 12 }, (_, i) => ({ src: 'tick.wav', at: JOURNEY[i].from, len: 0.4, vol: 0.32 })),
+  { src: 'vela/giggle.6.mp3', at: late(bar(12)) + 0.35, len: 1.15 },
+  { src: 'vela/convo.why.q.mp3', at: late(bar(16)) + 0.3, len: 1.95 },
+  { src: 'vela/noise.5.mp3', at: skyAt(3) + 0.4, len: 2.01 },
+  { src: 'vela/film.end.mp3', at: late(63.0), len: 1.61 },
 ];

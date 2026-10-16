@@ -126,21 +126,40 @@ export async function advance(page, seconds) {
  * Record `seconds` of footage into out/<name>.mp4. `each(page, i, t)` runs before every frame for
  * scripted camera moves.
  */
-export async function record(page, name, seconds, each) {
+/** Where the named sky objects are on screen this frame (pixels), for tracked annotations. */
+async function trackFrame(page) {
+  return page.evaluate(() => {
+    const s = window.__solaris;
+    const cam = s.cameraRig.camera;
+    const out = {};
+    for (const o of s.surface.objects) {
+      if (!o.visible || o.altDeg < -2) continue;
+      const v = o.labelWorld.clone().project(cam);
+      if (v.z > 1) continue;
+      out[o.name] = [Math.round((v.x * 0.5 + 0.5) * innerWidth * 10) / 10, Math.round((0.5 - v.y * 0.5) * innerHeight * 10) / 10, +o.magnitude.toFixed(1)];
+    }
+    return out;
+  });
+}
+
+export async function record(page, name, seconds, each, { track = false } = {}) {
   const dir = path.resolve('out/shots');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${name}.mp4`);
   const ff = spawn('ffmpeg', ['-v', 'error', '-y', '-f', 'image2pipe', '-framerate', String(FPS), '-c:v', 'png', '-i', '-', '-c:v', 'libx264', '-preset', 'slow', '-crf', '12', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', file], { stdio: ['pipe', 'inherit', 'inherit'] });
   const n = Math.round(seconds * FPS);
   const t0 = Date.now();
+  const tracks = [];
   for (let i = 0; i < n; i++) {
     if (each) await each(page, i, i / FPS);
     await page.evaluate((dt) => window.__vstep(dt), 1000 / FPS);
+    if (track) tracks.push(await trackFrame(page));
     const png = await page.screenshot({ type: 'png', animations: 'allow', caret: 'initial' });
     if (!ff.stdin.write(png)) await new Promise((r) => ff.stdin.once('drain', r));
     if (i % 30 === 0) process.stdout.write(`\r  ${name}: ${i}/${n} frames (${((Date.now() - t0) / (i + 1)).toFixed(0)} ms/frame)   `);
   }
   ff.stdin.end();
+  if (track) fs.writeFileSync(path.join(dir, `${name}.track.json`), JSON.stringify(tracks));
   await new Promise((r) => ff.on('close', r));
   process.stdout.write(`\r  ${name}: ${n} frames done in ${((Date.now() - t0) / 1000).toFixed(0)} s           \n`);
   return file;

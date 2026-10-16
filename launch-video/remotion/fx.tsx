@@ -146,20 +146,26 @@ export const Motes: React.FC<{ n?: number; opacity?: number }> = ({ n = 40, opac
  * The interface, presented: the site floats as a screen in perspective, top right, drifting a
  * little, over a blurred and darkened copy of itself. Leaves the lower left free for the callout.
  */
-export const Screen: React.FC<{ src: string; from?: number; focus?: string; zoom?: number }> = ({ src, from = 0, focus = '50% 50%', zoom = 0.06 }) => {
+export const Screen: React.FC<{ src: string; from?: number; focus?: string; zoom?: number; exit?: number }> = ({ src, from = 0, focus = '50% 50%', zoom = 0.06, exit = 0 }) => {
   const f = useCurrentFrame();
   const { durationInFrames } = useVideoConfig();
   const p = f / Math.max(1, durationInFrames);
   const enter = interpolate(f, [0, 16], [0, 1], { extrapolateRight: 'clamp', easing: ease });
-  const ry = -16 + 5 * p - (1 - enter) * 8;
-  const rx = 5 - 2 * p;
+  // The zoom-through: in the last `exit` frames the screen squares up, flies to fill the frame and
+  // keeps coming, dissolving into whatever waits underneath
+  const x = exit ? interpolate(f, [durationInFrames - exit, durationInFrames], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: Easing.bezier(0.55, 0, 0.35, 1) }) : 0;
+  const ry = (-16 + 5 * p - (1 - enter) * 8) * (1 - x);
+  const rx = (5 - 2 * p) * (1 - x);
+  const fly = `translate(${-237 * Math.min(1, x * 1.15)}px, ${103 * Math.min(1, x * 1.15)}px) scale(${1 + 0.47 * x + 0.5 * x * x * x})`;
+  const fade = interpolate(x, [0.55, 1], [1, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
   const video = (style: React.CSSProperties) => (
     <OffthreadVideo src={staticFile(`shots/${src}.mp4`)} startFrom={Math.round(from * FPS)} muted style={{ width: '100%', height: '100%', objectFit: 'cover', ...style }} />
   );
   return (
-    <AbsoluteFill style={{ background: C.night, overflow: 'hidden' }}>
-      <AbsoluteFill style={{ transform: 'scale(1.25)', filter: 'blur(36px) brightness(0.38) saturate(1.3)' }}>{video({})}</AbsoluteFill>
-      <AbsoluteFill style={{ background: 'radial-gradient(ellipse 70% 70% at 30% 85%, rgba(5,4,7,0.85), transparent 70%)' }} />
+    <AbsoluteFill style={{ overflow: 'hidden', opacity: fade }}>
+      <AbsoluteFill style={{ background: C.night, opacity: 1 - x }} />
+      <AbsoluteFill style={{ transform: 'scale(1.25)', filter: 'blur(36px) brightness(0.38) saturate(1.3)', opacity: 1 - x }}>{video({})}</AbsoluteFill>
+      <AbsoluteFill style={{ background: 'radial-gradient(ellipse 70% 70% at 30% 85%, rgba(5,4,7,0.85), transparent 70%)', opacity: 1 - x }} />
       <AbsoluteFill style={{ perspective: 2200, perspectiveOrigin: '30% 40%' }}>
         <div
           style={{
@@ -168,9 +174,9 @@ export const Screen: React.FC<{ src: string; from?: number; focus?: string; zoom
             top: 70,
             width: 1920 * 0.68,
             height: 1080 * 0.68,
-            transform: `translateY(${(1 - enter) * 40}px) rotateY(${ry}deg) rotateX(${rx}deg)`,
-            transformOrigin: '100% 0%',
-            borderRadius: 18,
+            transform: `${fly} translateY(${(1 - enter) * 40}px) rotateY(${ry}deg) rotateX(${rx}deg)`,
+            transformOrigin: x > 0 ? '50% 50%' : '100% 0%',
+            borderRadius: 18 * (1 - x),
             overflow: 'hidden',
             opacity: enter,
             boxShadow: `0 40px 120px rgba(0,0,0,0.75), 0 0 0 1px rgba(220,171,118,0.35), 0 0 60px rgba(220,171,118,0.18)`,

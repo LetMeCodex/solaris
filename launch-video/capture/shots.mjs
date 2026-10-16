@@ -37,7 +37,7 @@ async function reset(page) {
 async function postcard(page, id) {
   await S(page, async (id) => {
     const { POSTCARDS } = await import('/solaris/src/data/Postcards.ts');
-    const p = POSTCARDS.find((c) => c.id === id);
+    const p = typeof id === 'string' ? POSTCARDS.find((c) => c.id === id) : id;
     window.__solaris.openPostcard(p);
     window.__shotPostcard = p;
   }, id);
@@ -227,6 +227,38 @@ export const SHOTS = {
     each: orbit(0.04),
   },
 
+  // Skies of other worlds (custom postcards from the scouting)
+  sky_saturn: {
+    seconds: 3.5, track: true,
+    async setup(p) { await postcard(p, { id: 'x', body: 'Saturn', lat: -28.6776, lon: -164.0119, utc: '2026-10-20T11:22:49Z', heading: 8, pitch: 22, fov: 95, magnification: 1 }); },
+    each: drift(5, 1.2, 0.04),
+  },
+  sky_phobos_rise: {
+    seconds: 3.5, track: true,
+    async setup(p) { await postcard(p, { id: 'x', body: 'Phobos', lat: 2.7246, lon: -49.9456, utc: '2026-10-16T23:52:58Z', heading: 96, pitch: 30, fov: 62, magnification: 1 }); },
+    each: drift(-1.5, 3, 0.05),
+  },
+  sky_phobos_dusk: {
+    seconds: 3.5, track: true,
+    async setup(p) { await postcard(p, { id: 'x', body: 'Phobos', lat: 3.3959, lon: 49.9154, utc: '2026-10-17T03:28:18Z', heading: 276, pitch: 30, fov: 84, magnification: 1 }); },
+    each: drift(2, 0.8, 0.05),
+  },
+  sky_phobos_dusk30: {
+    seconds: 3.5, track: true,
+    async setup(p) { await postcard(p, { id: 'x', body: 'Phobos', lat: 3.3959, lon: 49.9154, utc: '2026-10-17T03:28:18Z', heading: 276, pitch: 30, fov: 84, magnification: 30 }); },
+    each: drift(2, 0.8, 0.05),
+  },
+  sky_io: {
+    seconds: 3.5, track: true,
+    async setup(p) { await postcard(p, { id: 'x', body: 'Io', lat: 4.0501, lon: 49.8795, utc: '2026-10-17T19:16:58Z', heading: 267, pitch: 36, fov: 46, magnification: 1 }); },
+    each: drift(-2, 1, 0.05),
+  },
+  sky_enceladus: {
+    seconds: 3.5, track: true,
+    async setup(p) { await postcard(p, { id: 'x', body: 'Enceladus', lat: -41.5546, lon: 30.7989, utc: '2026-10-18T09:16:55Z', heading: 322, pitch: 32, fov: 80, magnification: 1 }); },
+    each: drift(2, 1, 0.05),
+  },
+
   // Beyond
   galaxy: {
     seconds: 6,
@@ -285,7 +317,7 @@ for (const name of list) {
         await page.screenshot({ path: `out/stills/${name}${tag}.jpg`, type: 'jpeg', quality: 85 });
       }
     } else {
-      await record(page, name, shot.seconds, shot.each);
+      await record(page, name, shot.seconds, shot.each, { track: !!shot.track });
     }
   } catch (e) {
     console.log(`  ${name} failed:`, e.message);
