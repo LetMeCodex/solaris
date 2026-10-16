@@ -50,7 +50,10 @@ def main() -> None:
     ap.add_argument('--ref', required=True, help='reference recording of her voice (wav)')
     ap.add_argument('--only', default='')
     ap.add_argument('--force', action='store_true')
+    ap.add_argument('--lines', default=LINES, help='lines to record (default: the website companion)')
+    ap.add_argument('--out', default=OUT, help='where the recordings go')
     args = ap.parse_args()
+    lines_path, out_dir = args.lines, args.out
 
     import torch, torchaudio, soundfile as sf
     from chatterbox.tts import ChatterboxTTS
@@ -58,16 +61,16 @@ def main() -> None:
     from chatterbox.vc import ChatterboxVC
 
     ref_key = hashlib.sha1(open(args.ref, 'rb').read()).hexdigest()[:8]
-    lines = json.load(open(LINES, encoding='utf-8'))
-    os.makedirs(OUT, exist_ok=True)
-    manifest_path = os.path.join(OUT, 'manifest.json')
+    lines = json.load(open(lines_path, encoding='utf-8'))
+    os.makedirs(out_dir, exist_ok=True)
+    manifest_path = os.path.join(out_dir, 'manifest.json')
     manifest = json.load(open(manifest_path, encoding='utf-8')) if os.path.exists(manifest_path) else {}
     only = set(filter(None, args.only.split(',')))
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
     tts = turbo = None
     vc = ChatterboxVC.from_pretrained(device=dev)
     vc.set_target_voice(args.ref)  # analyse her voice once, not for every line
-    tmp = os.path.join(OUT, '_tmp')
+    tmp = os.path.join(out_dir, '_tmp')
 
     def save_manifest():
         json.dump(manifest, open(manifest_path, 'w', encoding='utf-8'), indent=1, ensure_ascii=False)
@@ -79,7 +82,7 @@ def main() -> None:
             continue
         key = hashlib.sha1(f'{VERSION}|{ref_key}|{FINISH}|{text}'.encode('utf-8')).hexdigest()[:12]
         name = f'{safe(id_)}.mp3'
-        if not args.force and manifest.get(id_, {}).get('key') == key and os.path.exists(os.path.join(OUT, name)):
+        if not args.force and manifest.get(id_, {}).get('key') == key and os.path.exists(os.path.join(out_dir, name)):
             continue
         tagged = bool(TAG.search(text))
         want = spoken_seconds(text)
@@ -115,7 +118,7 @@ def main() -> None:
             if ok:
                 break
             print(f'  retake {id_} ({dur:.1f}s for ~{want:.1f}s)', flush=True)
-        out = os.path.join(OUT, name)
+        out = os.path.join(out_dir, name)
         subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', tmp + '_best.wav', '-ac', '1', '-b:a', '64k', out], check=True)
         for f in ('_a.wav', '_b.wav', '_c.wav', '_best.wav'):
             if os.path.exists(tmp + f):
@@ -128,7 +131,7 @@ def main() -> None:
     # Lines that were removed: drop their recordings too
     if not only:
         for gone in [k for k in manifest if k not in lines]:
-            f = os.path.join(OUT, manifest.pop(gone)['file'])
+            f = os.path.join(out_dir, manifest.pop(gone)['file'])
             if os.path.exists(f):
                 os.remove(f)
             print('removed', gone)

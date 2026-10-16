@@ -31,6 +31,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    host: true
+    host: true,
+    // The launch film project lives alongside; its files must not reload the site
+    watch: { ignored: ['**/launch-video/**'] },
   }
 });
