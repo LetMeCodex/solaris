@@ -756,6 +756,55 @@
 }
 
 
+/* The goodbye at 100%: the universe dims, the count of every world rests at the top, and her orb
+   comes to the middle of the screen while she speaks. */
+.vela-veil {
+  position: absolute; inset: 0; z-index: 44; pointer-events: auto;
+  background:
+    radial-gradient(60% 50% at 50% 58%, rgba(255, 196, 120, 0.07), transparent 70%),
+    radial-gradient(120% 90% at 50% 50%, rgba(2, 3, 8, 0.74), rgba(0, 0, 3, 0.95) 75%);
+  animation: vela-veil-in 4.5s ease both;
+}
+.vela-veil.is-leaving { animation: vela-veil-out 3.5s ease both; pointer-events: none; }
+.vela-veil::before, .vela-veil::after {
+  content: ''; position: absolute; inset: -50% 0 0; pointer-events: none; opacity: 0.55;
+  background-image:
+    radial-gradient(1.4px 1.4px at 12% 80%, #ffe2b0, transparent), radial-gradient(1px 1px at 28% 60%, #fff, transparent),
+    radial-gradient(1.6px 1.6px at 47% 90%, #c9fff0, transparent), radial-gradient(1px 1px at 63% 70%, #fff, transparent),
+    radial-gradient(1.3px 1.3px at 78% 85%, #ffe2b0, transparent), radial-gradient(1px 1px at 90% 65%, #c9fff0, transparent);
+  background-size: 100% 50%; animation: vela-motes 26s linear infinite;
+}
+.vela-veil::after { animation-duration: 38s; animation-delay: -12s; opacity: 0.35; transform: scaleX(-1); }
+@keyframes vela-motes { from { transform: translateY(0); } to { transform: translateY(-50%); } }
+@keyframes vela-veil-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes vela-veil-out { from { opacity: 1; } to { opacity: 0; } }
+.vela-veil-count {
+  position: absolute; left: 50%; top: 14vh; transform: translateX(-50%); text-align: center; white-space: nowrap;
+  font-family: 'Montserrat', ui-sans-serif, sans-serif; font-weight: 200; font-size: 15px; letter-spacing: 0.32em; text-transform: uppercase;
+  color: rgba(236, 242, 239, 0.62); animation: vela-veil-in 3s 2.5s ease both;
+}
+.vela-veil-count b { font-weight: 200; font-size: 44px; letter-spacing: 0.06em; color: #fff; text-shadow: 0 0 24px rgba(255, 200, 120, 0.45); }
+.vela-veil-count span { display: block; margin-top: 10px; font-size: 10px; letter-spacing: 0.5em; color: rgba(255, 214, 150, 0.6); }
+.vela-dialog.is-farewell {
+  bottom: 22vh; width: min(620px, calc(100vw - 32px)); padding: 16px 22px 15px;
+  background: linear-gradient(180deg, rgba(10, 9, 12, 0.72), rgba(4, 3, 7, 0.66));
+}
+.vela-dialog.is-farewell::before { background: linear-gradient(135deg, rgba(255, 210, 150, 0.6), rgba(214, 228, 220, 0.2) 50%, rgba(109, 252, 192, 0.45)); }
+.vela-dialog.is-farewell .vela-line { font-size: 22px; line-height: 1.28; color: #f4efe6; text-shadow: 0 0 12px rgba(255, 220, 170, 0.2); }
+.vela-orb.is-farewell {
+  z-index: 47; right: calc(50% - 26px); bottom: calc(22vh + 150px); transform: scale(1.9);
+  transition: right 2.4s cubic-bezier(0.4, 0, 0.2, 1), bottom 2.4s cubic-bezier(0.4, 0, 0.2, 1), transform 2.4s ease;
+}
+.vela-orb.is-farewell .core { fill: #fff3e0; filter: drop-shadow(0 0 6px #ffd9a0) drop-shadow(0 0 calc(12px + var(--amp) * 28px) rgba(255, 214, 160, 0.7)); }
+.vela-orb.is-farewell .vela-name { display: none; }
+@media (max-width: 640px) {
+  .vela-veil-count b { font-size: 32px; }
+  .vela-dialog.is-farewell { bottom: 16vh; }
+  .vela-dialog.is-farewell .vela-line { font-size: 19px; }
+  .vela-orb.is-farewell { bottom: calc(16vh + 170px); }
+}
+@media (prefers-reduced-motion: reduce) { .vela-veil::before, .vela-veil::after { animation: none; } }
+
 /* Begin choice at the end of the preloader */
 .sol-begin {
   display: inline-flex; align-items: center; gap: 9px; padding: 9px 16px; font-size: 10px; letter-spacing: 0.26em; text-transform: uppercase;

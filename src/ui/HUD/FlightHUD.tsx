@@ -12,6 +12,10 @@ import { Popover, ScaleDomain, ScaleLadder, Segmented, TimeDeck } from './Contro
 import { CatalogueScreen, ShowcaseControls } from './CatalogueScreen';
 import { AtlasLauncher } from './Atlas';
 import { exploredStats } from './explored';
+import { UNITS_PER_KM } from '../../rendering/Scale';
+
+/** Closer than this to the Sun's centre and Vela gets nervous (about 2.2 solar radii). */
+const SUN_CLOSE_UNITS = 695700 * UNITS_PER_KM * 2.2;
 import { Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle } from 'lucide-react';
 import { Tour } from './Tour';
 import { Companion } from './Companion';
@@ -899,6 +903,9 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         orbitsOn={orbitsOn}
         constellationsOn={constellationsOn}
         worldsLogged={logbook.worlds}
+        explored={explored}
+        atlasOpen={isCatalogueOpen}
+        sunClose={!route && target?.name === 'Sun' && (telemetry?.cameraDistance ?? Infinity) < SUN_CLOSE_UNITS}
         timeRate={isPaused ? 0 : multiplier}
         lens={lensProfile}
         onTalkingChange={setVelaTalking}

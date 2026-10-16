@@ -18,8 +18,12 @@ export type CompanionAction =
 
 export const VELA_LINES = LINES as Record<string, string>;
 
+/**
+ * The subtitle for a line. Square-bracket tags like [laugh] or [sniff] are sounds in the recording
+ * (her giggle, a gasp, a sniffle), so they never appear as text.
+ */
 export function lineText(id: string): string {
-  return VELA_LINES[id] ?? '';
+  return (VELA_LINES[id] ?? '').replace(/\[[a-z ]+\]/g, '').replace(/\s{2,}/g, ' ').trim();
 }
 
 export const pick = <T,>(xs: T[]): T => xs[Math.floor(Math.random() * xs.length)];

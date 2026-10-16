@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import manifest from '../../public/voice/vela/manifest.json';
-import { factIds, idsWith, SECRETS, VELA_LINES, secretsAt } from '../companion/knowledge';
+import { factIds, idsWith, lineText, SECRETS, VELA_LINES, secretsAt } from '../companion/knowledge';
+import { EXPLORE_MILESTONES, exploreStatusId, FAREWELL } from '../ui/HUD/Companion';
 import { SKY_DESTINATIONS } from '../ui/HUD/SkyDestinations';
 import { LANDMARKS } from '../explorer/Landmarks';
 
@@ -39,5 +40,22 @@ describe('Vela', () => {
     }
     expect(idsWith('tour.').length).toBe(13);
     expect(secretsAt('Saturn').length).toBeGreaterThan(1);
+  });
+
+  it('only uses sounds the voice model can perform, and never shows them as text', () => {
+    const known = new Set(['laugh', 'chuckle', 'sigh', 'gasp', 'sniff', 'crying', 'fear', 'whispering', 'surprised', 'happy', 'clear throat']);
+    for (const [id, text] of Object.entries(VELA_LINES)) {
+      for (const m of text.matchAll(/\[([^\]]+)\]/g)) expect(known.has(m[1]), `${id}: [${m[1]}]`).toBe(true);
+      expect(lineText(id)).not.toMatch(/[[\]]/);
+    }
+  });
+
+  it('has a line for every exploration milestone, every progress answer and the whole goodbye', () => {
+    for (const p of EXPLORE_MILESTONES) expect(VELA_LINES[`explore.p${p}`], `explore.p${p}`).toBeTruthy();
+    for (const p of [0, 3, 12, 30, 60, 80, 99]) expect(VELA_LINES[exploreStatusId(p)], String(p)).toBeTruthy();
+    for (const id of [...FAREWELL, 'farewell.choice', 'farewell.later']) expect(VELA_LINES[id], id).toBeTruthy();
+    expect(idsWith('giggle.').length).toBeGreaterThan(5);
+    expect(idsWith('fright.').length).toBeGreaterThan(15);
+    expect(Object.keys(VELA_LINES).length).toBeGreaterThanOrEqual(500);
   });
 });
