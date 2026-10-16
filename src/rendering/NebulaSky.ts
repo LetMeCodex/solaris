@@ -168,10 +168,9 @@ export class NebulaSky {
   private zoom = { value: 0 };
   private scratch = new THREE.Vector3();
   private fade = 1;
-  private layers: { mat: THREE.ShaderMaterial; base: number; name: string }[] = [];
+  private layers: { mat: THREE.ShaderMaterial; base: number; name: string; dir: THREE.Vector3; width: number; fade: number }[] = [];
   private byName = new Map<string, { tex: THREE.Texture; aspect: number }>();
   private hidden: string | null = null;
-  private visitFade = 1;
   private textures: THREE.Texture[] = [];
   private loaded = false;
   private reveal = 0;
@@ -271,7 +270,7 @@ export class NebulaSky {
       // Sky meshes travel with the camera: never culled (like the stars)
       mesh.frustumCulled = false;
       this.group.add(mesh);
-      this.layers.push({ mat, base: spec.opacity * gain, name: spec.name });
+      this.layers.push({ mat, base: spec.opacity * gain, name: spec.name, dir, width: spec.width, fade: 1 });
     }
   }
 
@@ -294,8 +293,19 @@ export class NebulaSky {
     this.fade = (1 - leaving) * this.skyDark * this.userGain;
     const k = this.reveal * this.reveal * (3 - 2 * this.reveal) * this.fade * (1 + Math.max(0, this.zoom.value) * 0.15);
     // During a visit the flat pictures step aside (they would overlap the real thing up close)
-    this.visitFade += ((this.hidden ? 0 : 1) - this.visitFade) * (1 - Math.exp(-dt * 2));
-    for (const l of this.layers) l.mat.uniforms.uOpacity.value = l.base * k * this.visitFade;
+    // During a visit only the visited picture (and any that overlaps it on the sky) steps aside;
+    // every other nebula stays where it is
+    const hid = this.hidden ? this.layers.find((l) => l.name === this.hidden) : undefined;
+    const ease = 1 - Math.exp(-dt * 2);
+    for (const l of this.layers) {
+      let want = 1;
+      if (hid) {
+        const sep = THREE.MathUtils.radToDeg(l.dir.angleTo(hid.dir));
+        if (l.name === hid.name || sep < (l.width + hid.width) * 0.45) want = 0;
+      }
+      l.fade += (want - l.fade) * ease;
+      l.mat.uniforms.uOpacity.value = l.base * k * l.fade;
+    }
     this.group.visible = this.fade > 0.003 || this.reveal < 1;
   }
 

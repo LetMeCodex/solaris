@@ -161,6 +161,8 @@ export const Companion: React.FC<{
   const pendingHorizon = useRef(false);
   const lastActivity = useRef(performance.now());
   const arrivals = useRef<number[]>([]);
+  // The nebula we are out at, if any (set by the nebula effect)
+  const nebulaRef = useRef<string | null>(null);
   const sessionStart = useRef(performance.now());
   const beatRef = useRef<Beat | null>(null);
   beatRef.current = beat;
@@ -636,31 +638,46 @@ export const Companion: React.FC<{
     });
   }, [ready, tourOpen, say, tellOnce]);
 
-  // Flying out to a nebula, arriving, and coming home
+  // Flying out to a nebula, arriving, and coming home. Each thing is said once in a while, never on
+  // every trip: the departure line once per long stretch, a nebula's own line once per visit to the
+  // site, the welcome home only after a real absence
   useEffect(() => {
     if (!ready) return;
     let visiting: string | null = null;
+    let backTimer = 0;
     return onVela('nebula', (name) => {
       const was = visiting;
       visiting = name;
+      nebulaRef.current = name;
+      if (name && name === was) return;
+      window.clearTimeout(backTimer);
       if (quietRef.current) return;
       if (name) {
         const beats: Beat[] = [];
-        if (!was) beats.push({ id: 'nebula.leaving' });
-        say(beats.length ? beats : { id: `nebula.${name}` }, true);
+        if (!was && cool('nebula-leaving', 20 * 60000)) beats.push({ id: 'nebula.leaving' });
+        const own = `nebula.${name}`;
+        const fresh1 = lineText(own) && !said.current.has(own);
+        const after = () => {
+          if (visiting !== name) return;
+          const more: Beat[] = [];
+          if (fresh1) {
+            said.current.add(own);
+            more.push({ id: own });
+          }
+          if (tellOnce('nebula-swing')) more.push({ id: 'nebula.swing' });
+          if (more.length) say(more);
+        };
         if (beats.length) {
-          window.setTimeout(() => {
-            if (visiting !== name) return;
-            const more: Beat[] = [{ id: `nebula.${name}` }];
-            if (tellOnce('nebula-swing')) more.push({ id: 'nebula.swing' });
-            say(more);
-          }, 6500);
-        }
+          say(beats, true);
+          window.setTimeout(after, 6500);
+        } else window.setTimeout(after, 1800);
       } else if (was) {
-        window.setTimeout(() => say({ id: 'nebula.back' }), 2500);
+        backTimer = window.setTimeout(() => {
+          if (!visiting && cool('nebula-back', 15 * 60000)) say({ id: 'nebula.back' });
+        }, 2500);
       }
     });
-  }, [ready, say, tellOnce]);
+  }, [ready, say, tellOnce, cool]);
 
   // The idle time-lapse
   useEffect(() => {
@@ -760,6 +777,7 @@ export const Companion: React.FC<{
 
   // Arrivals
   const rememberedArrival = useRef(-1);
+  const spokenArrival = useRef(-1);
   useEffect(() => {
     const a = arrival;
     if (!a) return;
@@ -773,7 +791,11 @@ export const Companion: React.FC<{
       if (CatalogueManager.getBody(a.name)?.category === 'moon' && !m.moons.includes(a.name)) m.moons.push(a.name);
       saveMemory(m);
     }
-    if (tourOpen) return;
+    // Each arrival is spoken about once at most: a later re-run (the tour closing, hush lifting)
+    // must not say it again, and nothing about the world we left while out at a nebula
+    if (spokenArrival.current === a.nonce) return;
+    spokenArrival.current = a.nonce;
+    if (tourOpen || nebulaRef.current) return;
     lastActivity.current = performance.now();
     if (pendingHorizon.current && a.name === 'Sagittarius A*') {
       pendingHorizon.current = false;

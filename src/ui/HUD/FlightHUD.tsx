@@ -3,7 +3,7 @@ import { TelemetryData } from '../../rendering/SolarSystemScene';
 import { CatalogueManager } from '../../data/CatalogueManager';
 import { getPlanetNarrative, PLANET_NARRATIVES } from '../../data/PlanetNarratives';
 import { LENS_ORDER, LENS_PROFILES, LensProfileName } from '../../rendering/LensPipeline';
-import { ExplorerPanel } from './ExplorerPanel';
+import { ExplorerPanel, type SlateTab } from './ExplorerPanel';
 import { SurfacePanel, SurfaceAction } from './SurfacePanel';
 import { AttitudeScope, DecodeText, TargetLock, ViewStateGetter } from './Instruments';
 import { ArrivalStamp, fmtDuration, LOG_WORLDS, SystemPlot, useLogbook, useTransitState, VoyageConsole } from './Voyage';
@@ -173,6 +173,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null);
   const showToast = useCallback((text: string) => setToast({ id: performance.now(), text }), []);
   const [atlasTab, setAtlasTab] = useState<AtlasTab>('worlds');
+  // The briefing opens the world panel on a tab
+  const [tourExplorer, setTourExplorer] = useState<SlateTab | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The left list: the worlds, or the nebulae you can fly out to
   const [navMode, setNavMode] = useState<'worlds' | 'nebulae'>('worlds');
@@ -1000,6 +1002,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         <ExplorerPanel
           status={telemetry?.explorer}
           autoOpen={exploring}
+          tourTab={tourExplorer}
           onFlyToLandmark={(id) => onFlyToLandmark?.(id)}
           onDaylight={(on) => onExplorerDaylight?.(on)}
           onStandHere={() => onSurface?.({ type: 'enter' })}
@@ -1094,6 +1097,17 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           timeRate: multiplier,
           openOptics: (o) => setIsOpticsOpen(o),
           showNebulae: (on) => setNavMode(on ? 'nebulae' : 'worlds'),
+          atlas: (tab) => {
+            if (tab) {
+              setAtlasTab(tab);
+              setIsCatalogueOpen(true);
+            } else setIsCatalogueOpen(false);
+          },
+          explorer: (tab) => {
+            // The panel lives at a world: fly to Earth if we are out in the overview
+            if (tab && !telemetry?.explorer?.body) onSelectPlanet('Earth');
+            setTourExplorer(tab);
+          },
         }}
       />
 

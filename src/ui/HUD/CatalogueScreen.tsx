@@ -94,6 +94,12 @@ const Globe: React.FC<{ name: string; size: number; color?: string }> = ({ name,
  */
 export const CatalogueScreen: React.FC<Props> = ({ visited, current, showcase, onClose, onPostcard, initialTab = 'worlds', onNebula }) => {
   const [tab, setTab] = useState<Tab>(initialTab);
+  // Asked for another tab while open (the briefing walks through them)
+  useEffect(() => {
+    setTab(initialTab);
+    setSystem(null);
+    setMoon(null);
+  }, [initialTab]);
   const [system, setSystem] = useState<string | null>(null);
   const [moon, setMoon] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -167,7 +173,7 @@ export const CatalogueScreen: React.FC<Props> = ({ visited, current, showcase, o
           <span className="cat-kicker">Atlas</span>
           <span className="cat-title">Every known world</span>
         </button>
-        <nav className="cat-tabs" role="tablist">
+        <nav className="cat-tabs" role="tablist" data-tour="atlas-tabs">
           <button role="tab" aria-selected={tab === 'worlds' && !system} onClick={() => { setTab('worlds'); setSystem(null); setMoon(null); }}>Worlds</button>
           <button role="tab" aria-selected={tab === 'all' && !system} onClick={() => { setTab('all'); setSystem(null); setMoon(null); }}>Index · {CatalogueManager.getAllBodies().length}</button>
           <button role="tab" aria-selected={tab === 'nebulae' && !system} onClick={() => { setTab('nebulae'); setSystem(null); setMoon(null); }}>Nebulae</button>

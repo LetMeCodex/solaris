@@ -13,10 +13,16 @@ export interface TourDemos {
   timeRate?: number;
   openOptics?: (open: boolean) => void;
   showNebulae?: (on: boolean) => void;
+  /** Open the Atlas on a tab (null closes it). */
+  atlas?: (tab: 'worlds' | 'all' | 'nebulae' | 'gallery' | null) => void;
+  /** Make sure a world is in view and open its explorer panel on a tab (null lets it go). */
+  explorer?: (tab: 'survey' | 'waypoints' | 'moons' | 'skies' | null) => void;
 }
 
 interface Step {
-  target: string | null; // data-tour id; null = centred card
+  target: string | null; // data-tour id ("a|b": the first one on screen); null = centred card
+  /** The demo brings its own instrument on screen, so never skip this step. */
+  stage?: boolean;
   title: string;
   body: string;
   /** Vela's recorded line for this step. */
@@ -86,10 +92,35 @@ const STEPS: Step[] = [
     },
   },
   {
-    target: 'catalogue',
     title: 'Atlas',
     voice: 'tour.5',
-    body: 'Every planet, moon and small world, with a live cinematic view of each system behind it and how much you have explored. The Nebulae tab flies you out to them; the Gallery holds postcards from real places (step into any of them) and the pictures you take. Press / to open it from anywhere.',
+    body: 'Every planet, moon and small world, with a live cinematic view of each system behind it and how much you have explored. Index lists all of them; the Nebulae tab flies you out to them; the Gallery holds postcards from real places (step into any of them) and the pictures you take. Press / to open it from anywhere.',
+    target: 'atlas-tabs|catalogue',
+    stage: true,
+    demo: (d) => {
+      const seq: Array<[number, 'worlds' | 'all' | 'nebulae' | 'gallery']> = [[1400, 'worlds'], [4600, 'all'], [7600, 'nebulae'], [10600, 'gallery']];
+      const t = seq.map(([ms, tab]) => setTimeout(() => d.atlas?.(tab), ms));
+      return () => {
+        t.forEach(clearTimeout);
+        d.atlas?.(null);
+      };
+    },
+  },
+  {
+    target: 'explorer',
+    stage: true,
+    title: 'World panel',
+    voice: 'tour.17',
+    body: 'At every world this panel opens up. Survey: your altitude and Stand here · look up, which puts you on the ground under that world\'s own sky. Places: landmarks to fly down to. Moons: the family around it. Skies: stand anywhere and look up at another world.',
+    demo: (d) => {
+      d.explorer?.('survey');
+      const seq: Array<[number, 'survey' | 'waypoints' | 'moons' | 'skies']> = [[6500, 'waypoints'], [9500, 'moons'], [12500, 'skies']];
+      const t = seq.map(([ms, tab]) => setTimeout(() => d.explorer?.(tab), ms));
+      return () => {
+        t.forEach(clearTimeout);
+        d.explorer?.(null);
+      };
+    },
   },
   {
     target: 'record',
@@ -191,6 +222,21 @@ function markSeen() {
 
 type Rect = { x: number; y: number; w: number; h: number };
 
+/** The instrument a step points at, if it is on screen ("a|b": the first of them that is). */
+function findTarget(id: string | null): HTMLElement | null {
+  if (!id) return null;
+  for (const part of id.split('|')) {
+    const el = document.querySelector<HTMLElement>(`[data-tour="${part}"]`);
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    if (r.width < 4 || r.height < 4 || style.visibility === 'hidden' || Number(style.opacity) < 0.05) continue;
+    if (r.right < 0 || r.bottom < 0 || r.left > window.innerWidth || r.top > window.innerHeight) continue;
+    return el;
+  }
+  return null;
+}
+
 export const Tour: React.FC<{ open: boolean; onClose: () => void; demos: TourDemos; onStep?: (index: number) => void }> = ({ open, onClose, demos, onStep }) => {
   const [i, setI] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
@@ -199,22 +245,13 @@ export const Tour: React.FC<{ open: boolean; onClose: () => void; demos: TourDem
   const demosRef = useRef(demos);
   demosRef.current = demos;
 
-  const visibleTarget = useCallback((id: string | null): HTMLElement | null => {
-    if (!id) return null;
-    const el = document.querySelector<HTMLElement>(`[data-tour="${id}"]`);
-    if (!el) return null;
-    const r = el.getBoundingClientRect();
-    const style = getComputedStyle(el);
-    if (r.width < 4 || r.height < 4 || style.visibility === 'hidden' || Number(style.opacity) < 0.05) return null;
-    if (r.right < 0 || r.bottom < 0 || r.left > window.innerWidth || r.top > window.innerHeight) return null;
-    return el;
-  }, []);
+  const visibleTarget = useCallback((id: string | null) => findTarget(id), []);
 
   // Skip steps whose instrument is not on screen at this size
   const go = useCallback(
     (to: number, dir: 1 | -1) => {
       let n = to;
-      while (n > 0 && n < STEPS.length - 1 && STEPS[n].target && !visibleTarget(STEPS[n].target)) n += dir;
+      while (n > 0 && n < STEPS.length - 1 && STEPS[n].target && !STEPS[n].stage && !visibleTarget(STEPS[n].target)) n += dir;
       setI(Math.max(0, Math.min(STEPS.length - 1, n)));
     },
     [visibleTarget]

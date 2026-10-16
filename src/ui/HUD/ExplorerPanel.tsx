@@ -14,6 +14,8 @@ interface ExplorerPanelProps {
   onResetView: () => void;
   /** Open by itself when the camera is down near the surface. */
   autoOpen?: boolean;
+  /** The briefing holds the panel open on this tab. */
+  tourTab?: SlateTab | null;
 }
 
 const KIND_LABEL: Record<string, string> = {
@@ -43,7 +45,7 @@ function altFraction(km: number): number {
   return Math.min(1, Math.max(0, (Math.log10(Math.max(10, km)) - 1) / 6));
 }
 
-type SlateTab = 'survey' | 'waypoints' | 'moons' | 'skies';
+export type SlateTab = 'survey' | 'waypoints' | 'moons' | 'skies';
 
 function fmtSize(radiusKm: number): string {
   const d = radiusKm * 2;
@@ -84,7 +86,7 @@ const SlateTabs: React.FC<{ tab: SlateTab; onTab: (t: SlateTab) => void; counts:
  * Compact Planetary Explorer panel: breadcrumb, imagery source and honesty labels, live streaming
  * state, and landmark navigation/search. Kept small so the globe stays the focus.
  */
-export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLandmark, onDaylight, onStandHere, onSkyFrom, onSelectBody, onResetView, autoOpen = false }) => {
+export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLandmark, onDaylight, onStandHere, onSkyFrom, onSelectBody, onResetView, autoOpen = false, tourTab = null }) => {
   // Collapsed to a slim altimeter until the camera is near the ground (or the user opens it);
   // phones stay collapsed so the globe keeps the screen
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
@@ -101,6 +103,12 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
   const results = useMemo(() => searchLandmarks(query).slice(0, 8), [query]);
   // A new world starts from the automatic behaviour again
   useEffect(() => setUserOpen(null), [body]);
+  useEffect(() => {
+    if (!tourTab) return;
+    setUserOpen(true);
+    setTab(tourTab === 'moons' && !moons?.count ? 'skies' : tourTab);
+    return () => setUserOpen(null);
+  }, [tourTab, body, moons]);
 
   if (!status || !body || !status.imagery) return null;
   const img = status.imagery;
@@ -122,6 +130,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
   return (
     <section
       aria-label="Planetary explorer"
+      data-tour="explorer"
       className={`hud-frame hud-slide-in absolute right-3 md:right-7 top-[76px] md:top-[92px] ${open ? 'w-[300px]' : 'w-auto'} max-w-[calc(100vw-24px)] max-h-[calc(100vh-200px)] md:max-h-[calc(100vh-480px)] [@media(max-height:620px)]:max-h-[calc(100vh-200px)] overflow-y-auto overflow-x-hidden hud-scroll pointer-events-auto z-30 text-white/80 font-light`}
     >
       {/* Breadcrumb */}
