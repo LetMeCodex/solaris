@@ -172,8 +172,11 @@ def procedural(name, kind, size=2048):
     elif kind == 'ring':  # a ring nebula: a hollow shell lit by the hot stars inside it
         shell = np.exp(-((r - 0.42 - (base - 0.5) * 0.25) ** 2) / 0.018)
         dens = np.clip(shell * (0.4 + base) * 1.2, 0, 1)
-        col = ramp(dens, [(0, (0, 0, 0)), (0.3, (0.55, 0.05, 0.08)), (0.7, (0.95, 0.25, 0.22)), (1, (1, 0.7, 0.55))])
-        light = col * (0.35 + 0.65 * ridge[..., None])
+        col = ramp(dens, [(0, (0, 0, 0)), (0.3, (0.42, 0.08, 0.14)), (0.7, (0.85, 0.36, 0.38)), (1, (1, 0.78, 0.66))])
+        # Broken, uneven shell: brighter knots, gaps, and gas drifting into the hole
+        knots = fbm(h, w, 5, 6, seed=s + 61)
+        light = col * (0.25 + 0.75 * ridge[..., None]) * (0.45 + 0.9 * knots[..., None])
+        light += (np.clip(0.45 - r, 0, 1) * base * 0.35)[..., None] * np.array([0.5, 0.25, 0.3])
         alpha = np.clip(dens * 0.6, 0, 0.6)
     elif kind == 'shell':  # a supernova remnant: orange filaments over a blue synchrotron glow
         body = np.clip(1 - (r / (0.5 + (base - 0.5) * 0.25)) ** 2, 0, 1)

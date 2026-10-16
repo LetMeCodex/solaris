@@ -6,6 +6,8 @@ import { CelestialBodyDefinition } from '../../types/catalogue';
 import { systemMoons } from './moonGroups';
 import { ExploredGauge } from './Atlas';
 import { exploredStats, fmtPct } from './explored';
+import { Gallery } from './Gallery';
+import type { Postcard } from '../../data/Postcards';
 
 export interface ShowcaseControls {
   start: (name: string | null, hero?: string | null) => void;
@@ -18,12 +20,16 @@ interface Props {
   current: string;
   showcase: ShowcaseControls;
   onClose: () => void;
+  /** Step into a postcard (the Atlas closes). */
+  onPostcard: (p: Postcard) => void;
+  /** Open on a given tab. */
+  initialTab?: Tab;
 }
 
 const WORLDS = ['Sun', 'Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto'];
 const ORDINAL = ['', '1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th', '9th'];
 
-type Tab = 'worlds' | 'all';
+export type Tab = 'worlds' | 'all' | 'gallery';
 type Filter = 'all' | 'planet' | 'moon' | 'minor';
 
 const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
@@ -83,8 +89,8 @@ const Globe: React.FC<{ name: string; size: number; color?: string }> = ({ name,
  * a world's page gives its story and numbers on the left and every moon on the right (the ones
  * you have visited glowing), and picking a moon swings the camera to it.
  */
-export const CatalogueScreen: React.FC<Props> = ({ visited, current, showcase, onClose }) => {
-  const [tab, setTab] = useState<Tab>('worlds');
+export const CatalogueScreen: React.FC<Props> = ({ visited, current, showcase, onClose, onPostcard, initialTab = 'worlds' }) => {
+  const [tab, setTab] = useState<Tab>(initialTab);
   const [system, setSystem] = useState<string | null>(null);
   const [moon, setMoon] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -161,6 +167,7 @@ export const CatalogueScreen: React.FC<Props> = ({ visited, current, showcase, o
         <nav className="cat-tabs" role="tablist">
           <button role="tab" aria-selected={tab === 'worlds' && !system} onClick={() => { setTab('worlds'); setSystem(null); setMoon(null); }}>Worlds</button>
           <button role="tab" aria-selected={tab === 'all' && !system} onClick={() => { setTab('all'); setSystem(null); setMoon(null); }}>Index · {CatalogueManager.getAllBodies().length}</button>
+          <button role="tab" aria-selected={tab === 'gallery' && !system} onClick={() => { setTab('gallery'); setSystem(null); setMoon(null); }}>Gallery</button>
         </nav>
         <div className="cat-mini">
           <span className="cat-mini-pct">{fmtPct(stats.pct)}%</span>
@@ -202,6 +209,16 @@ export const CatalogueScreen: React.FC<Props> = ({ visited, current, showcase, o
             })}
           </section>
         </>
+      )}
+
+      {/* Postcards: the most beautiful views, and your own pictures */}
+      {!system && tab === 'gallery' && (
+        <Gallery
+          onVisit={(p) => {
+            onClose();
+            onPostcard(p);
+          }}
+        />
       )}
 
       {/* Index of everything */}

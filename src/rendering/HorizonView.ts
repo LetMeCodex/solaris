@@ -195,10 +195,16 @@ export class HorizonView {
   }
 
   /** Where the observer is, in units of r_s, and whether they are still standing on the sea. */
-  public getStatus(): { rRs: number; onShore: boolean } {
+  public getStatus(): { rRs: number; onShore: boolean; timelapse: boolean } {
     const rs = this.bh.config.schwarzschildRadius;
-    return { rRs: this.pos.length() / rs, onShore: this.pos.distanceTo(this.eyeLocal) < 0.5 };
+    return { rRs: this.pos.length() / rs, onShore: this.pos.distanceTo(this.eyeLocal) < 0.5, timelapse: this.idle > 0.5 };
   }
+
+  /** Left alone, the view sweeps slowly across the hole and back, like a long-exposure film. */
+  private lastInput = performance.now();
+  private idle = 0;
+  private idleT = 0;
+  private idleBase = { yaw: 0, pitch: 0 };
 
   private keys = new Set<string>();
   private pos = new THREE.Vector3();
@@ -209,6 +215,7 @@ export class HorizonView {
 
   private onKeyDown = (e: KeyboardEvent) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    this.lastInput = performance.now();
     const k = e.key.toLowerCase();
     if (HorizonView.FLIGHT_KEYS.includes(k)) {
       this.keys.add(k);
@@ -222,6 +229,7 @@ export class HorizonView {
   private onBlur = () => this.keys.clear();
 
   private onDown = (e: PointerEvent) => {
+    this.lastInput = performance.now();
     this.drag = { x: e.clientX, y: e.clientY };
   };
   private onMove = (e: PointerEvent) => {
@@ -240,6 +248,15 @@ export class HorizonView {
     const dt = this.lastTime === null ? 0 : Math.min(0.25, Math.max(0, timeSec - this.lastTime)); // frame-rate independent
     this.lastTime = timeSec;
     this.uniforms.uTime.value = timeSec;
+    const quiet = performance.now() - this.lastInput > 10000 && !this.drag && this.keys.size === 0;
+    if (quiet && this.idle === 0) this.idleBase = { yaw: this.targetYaw, pitch: this.targetPitch };
+    this.idle = THREE.MathUtils.clamp(this.idle + (quiet ? dt / 5 : -1), 0, 1);
+    if (this.idle > 0) {
+      const e = this.idle * this.idle * (3 - 2 * this.idle);
+      this.idleT += dt;
+      this.targetYaw = this.idleBase.yaw + e * 0.5 * Math.sin(this.idleT * 0.07);
+      this.targetPitch = this.idleBase.pitch + e * 0.08 * Math.sin(this.idleT * 0.045 + 1.3);
+    } else this.idleT = 0;
     this.yaw += (this.targetYaw - this.yaw) * 0.12;
     this.pitch += (this.targetPitch - this.pitch) * 0.12;
 

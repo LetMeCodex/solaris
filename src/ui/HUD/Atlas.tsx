@@ -38,7 +38,7 @@ export const AtlasLauncher: React.FC<{ stats: ExploredStats; onOpen: () => void 
       return false;
     }
   });
-  const r = 15.5;
+  const r = 14.2;
   const c = 2 * Math.PI * r;
   const frac = Math.min(1, stats.pct / 100);
   const open = () => {
@@ -52,6 +52,7 @@ export const AtlasLauncher: React.FC<{ stats: ExploredStats; onOpen: () => void 
     }
     onOpen();
   };
+  // An astrolabe: a graduated limb, a turning star-pointer (the rete), the explored arc in gold
   return (
     <button
       type="button"
@@ -62,46 +63,45 @@ export const AtlasLauncher: React.FC<{ stats: ExploredStats; onOpen: () => void 
       }}
       data-tour="catalogue"
       aria-label={`Open the Atlas: ${stats.total} worlds, ${fmtPct(stats.pct)}% explored`}
-      title="Atlas · every world and moon ( / )"
+      title="Atlas · worlds, moons and the Gallery ( / )"
     >
-      <span className="atlas-orrery" aria-hidden>
+      <span className="atlas-astro" aria-hidden>
         <svg viewBox="0 0 40 40">
           <defs>
-            <radialGradient id="atlas-core" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="#fff6dc" />
-              <stop offset="45%" stopColor="#ffc861" />
-              <stop offset="100%" stopColor="#ff8a2a" stopOpacity="0" />
+            <linearGradient id="atlas-brass" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor="#fff0c8" />
+              <stop offset="45%" stopColor="#d9a24a" />
+              <stop offset="100%" stopColor="#7a5520" />
+            </linearGradient>
+            <radialGradient id="atlas-glass" cx="35%" cy="30%" r="75%">
+              <stop offset="0%" stopColor="rgba(255,240,200,0.16)" />
+              <stop offset="60%" stopColor="rgba(20,16,10,0.0)" />
             </radialGradient>
           </defs>
-          {/* Explored arc around everything */}
+          <circle cx="20" cy="20" r="18.6" className="atlas-limb" />
+          <g className="atlas-ticks">
+            {Array.from({ length: 48 }, (_, i) => (
+              <line key={i} x1="20" y1="1.9" x2="20" y2={i % 4 === 0 ? 4.4 : 3.2} transform={`rotate(${i * 7.5} 20 20)`} />
+            ))}
+          </g>
           <circle cx="20" cy="20" r={r} className="atlas-track" />
-          <circle
-            cx="20"
-            cy="20"
-            r={r}
-            className="atlas-progress"
-            strokeDasharray={`${c * Math.max(0.012, frac)} ${c}`}
-            transform="rotate(-90 20 20)"
-          />
-          {/* Tilted orbits with their worlds */}
-          <g className="atlas-orbit atlas-orbit-a">
-            <ellipse cx="20" cy="20" rx="10.5" ry="4.2" />
-            <circle className="atlas-world" r="1.5" />
+          <circle cx="20" cy="20" r={r} className="atlas-progress" strokeDasharray={`${c * Math.max(0.015, frac)} ${c}`} transform="rotate(-90 20 20)" />
+          <g className="atlas-rete">
+            <circle cx="20" cy="20" r="9.2" className="atlas-rete-ring" />
+            <ellipse cx="20" cy="22.2" rx="9.2" ry="6.4" className="atlas-rete-ring" />
+            <path d="M20 9.6 L21.1 18.9 L30.4 20 L21.1 21.1 L20 30.4 L18.9 21.1 L9.6 20 L18.9 18.9 Z" className="atlas-star" />
+            <circle cx="27.6" cy="14.4" r="0.9" className="atlas-pointer" />
+            <circle cx="13.1" cy="25.4" r="0.7" className="atlas-pointer" />
           </g>
-          <g className="atlas-orbit atlas-orbit-b">
-            <ellipse cx="20" cy="20" rx="6.8" ry="2.8" />
-            <circle className="atlas-world atlas-world-b" r="1.1" />
-          </g>
-          <circle cx="20" cy="20" r="5.4" fill="url(#atlas-core)" />
-          <circle cx="20" cy="20" r="1.9" fill="#fffbe9" />
+          <circle cx="20" cy="20" r="1.7" className="atlas-pin" />
+          <circle cx="20" cy="20" r="18.6" fill="url(#atlas-glass)" />
         </svg>
-        {fresh && <span className="atlas-ping" />}
+        <span className="atlas-glint" />
       </span>
       <span className="atlas-text">
         <span className="atlas-name">Atlas</span>
         <span className="atlas-sub">
-          <span className="atlas-sub-a">{stats.total} worlds · {fmtPct(stats.pct)}%</span>
-          <span className="atlas-sub-b">Open · /</span>
+          <b>{fmtPct(stats.pct)}%</b> of {stats.total} worlds
         </span>
       </span>
     </button>

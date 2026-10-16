@@ -6,6 +6,8 @@ import { LensProfileName } from './rendering/LensPipeline';
 import { Preloader } from './ui/Preloader';
 import { voice, chime } from './companion/voice';
 import { music } from './audio/music';
+import type { Postcard } from './data/Postcards';
+import { saveShot } from './ui/HUD/shots';
 
 export const App: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -136,6 +138,25 @@ export const App: React.FC = () => {
     else sceneRef.current?.exitHorizonView();
   }, []);
 
+  const handlePostcard = useCallback((p: Postcard) => {
+    sceneRef.current?.openPostcard(p);
+  }, []);
+
+  const handleCapture = useCallback(async (): Promise<boolean> => {
+    const sc = sceneRef.current;
+    if (!sc) return false;
+    const blob = await sc.captureShot();
+    if (!blob) return false;
+    const view = sc.currentPostcardView();
+    const where = view ? (view.body === 'Sagittarius A*' ? 'Sagittarius A*' : `On ${view.body}`) : sc.selectedBodyName();
+    try {
+      await saveShot({ blob, where, view });
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const handleCycleLens = useCallback(() => {
     sceneRef.current?.cycleLensProfile();
   }, []);
@@ -180,6 +201,8 @@ export const App: React.FC = () => {
         onHorizon={handleHorizon}
         introDone={introFinished}
         showcase={showcase}
+        onPostcard={handlePostcard}
+        onCapture={handleCapture}
       />}
 
       <Preloader progress={load.progress} stage={load.stage} done={load.done} onReveal={handleReveal} onBegin={handleBegin} onFinished={handleRevealed} />

@@ -6,6 +6,7 @@ import { latLonToLocal } from './TileMath';
 import { findTimeOfDay, TimeOfDay } from './SkyAstronomy';
 import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 import { ScreenLabelItem } from './ScreenLabels';
+import { CatalogueManager } from '../data/CatalogueManager';
 
 type Vec3 = [number, number, number];
 
@@ -43,6 +44,8 @@ export interface SurfaceStatus {
   sunAltDeg: number;
   sunAzDeg: number;
   objects: SurfaceSkyObject[];
+  /** Left alone for a while: the sky turns on its own, like a time-lapse. */
+  timelapse: boolean;
 }
 
 export interface SurfaceObserverDeps {
@@ -67,6 +70,10 @@ const DEG = Math.PI / 180;
 const DEFAULT_FOV = 70;
 const MIN_FOV = 0.2;
 const MAX_FOV = 100;
+/** Seconds without input before the time-lapse begins. */
+const IDLE_AFTER = 10;
+/** One full turn of the sky in about this many real seconds while idle. */
+const TIMELAPSE_TURN_S = 150;
 
 /** Eye height above the imagery (km): a hill-top view on rocky worlds, above the cloud deck on giants. */
 function eyeHeightKm(body: SurfaceBody): number {
@@ -107,6 +114,8 @@ export class SurfaceObserver {
   private frame = { east: new THREE.Vector3(), north: new THREE.Vector3(), up: new THREE.Vector3() };
   private tmp = new THREE.Vector3();
   private lastTime = performance.now();
+  private lastInput = performance.now();
+  private idle = 0;
 
   constructor(deps: SurfaceObserverDeps) {
     this.d = deps;
@@ -142,6 +151,7 @@ export class SurfaceObserver {
     this.pendingAim = 'auto';
     this.heading = this.targetHeading = 180 * DEG;
     this.pitch = this.targetPitch = 25 * DEG;
+    this.touch();
     return true;
   }
 
@@ -182,6 +192,28 @@ export class SurfaceObserver {
     if (!o) return;
     this.targetHeading = this.continuousHeading(o.azDeg * DEG);
     this.targetPitch = THREE.MathUtils.clamp(o.altDeg * DEG, -0.3, 1.5);
+    this.touch();
+  }
+
+  /** Frame an exact view (a postcard): compass heading, height above the horizon, field of view. */
+  public setView(headingDeg: number, pitchDeg: number, fovDeg: number = DEFAULT_FOV): void {
+    this.pendingAim = null;
+    this.heading = this.targetHeading = headingDeg * DEG;
+    this.pitch = this.targetPitch = THREE.MathUtils.clamp(pitchDeg, -80, 89.5) * DEG;
+    this.fov = this.targetFov = THREE.MathUtils.clamp(fovDeg, MIN_FOV, MAX_FOV);
+    this.touch();
+  }
+
+  /** Someone is using the view: the time-lapse stops at once. */
+  private touch(): void {
+    this.lastInput = performance.now();
+  }
+
+  /** Sky time per real second for the time-lapse: a full turn of this world's sky in ~2.5 minutes. */
+  private timelapseDaysPerSecond(): number {
+    const h = CatalogueManager.getBody(this.body?.name ?? '')?.physical.rotationPeriodHours;
+    const dayDays = Math.abs(h ?? 24) / 24;
+    return THREE.MathUtils.clamp(dayDays / TIMELAPSE_TURN_S, 1 / 1440, 2);
   }
 
   /** Jump the simulation clock to the next sunrise / noon / sunset / midnight here. */
@@ -256,6 +288,15 @@ export class SurfaceObserver {
     if (this.keys.has('ArrowUp')) this.targetPitch += rate;
     if (this.keys.has('ArrowDown')) this.targetPitch -= rate;
     this.targetPitch = THREE.MathUtils.clamp(this.targetPitch, -80 * DEG, 89.5 * DEG);
+    // Idle: after a quiet spell the view drifts slowly and the sky turns (a time-lapse); any input
+    // hands control straight back
+    const quiet = (now - this.lastInput) / 1000 > IDLE_AFTER && !this.dragging && this.keys.size === 0;
+    this.idle = THREE.MathUtils.clamp(this.idle + (quiet ? dt / 4 : -dt * 3), 0, 1);
+    if (this.idle > 0) {
+      const e = this.idle * this.idle * (3 - 2 * this.idle);
+      this.targetHeading += e * 0.03 * (this.fov / DEFAULT_FOV) * dt;
+      this.d.setDays(this.d.getDays() + e * this.timelapseDaysPerSecond() * dt);
+    }
     const k = 1 - Math.pow(0.0005, dt);
     this.heading += (this.targetHeading - this.heading) * k;
     this.pitch += (this.targetPitch - this.pitch) * k;
@@ -360,6 +401,7 @@ export class SurfaceObserver {
       atmosphereLabel: this.model.label,
       sunAltDeg: sunAlt,
       sunAzDeg: sunAz,
+      timelapse: this.idle > 0.5,
       objects: this.objects
         .filter((o) => o.altDeg > 0 && o.name !== b.name && (o.magnitude < 6.5 || o.diameterArcsec > 60))
         .sort((a, c) => a.magnitude - c.magnitude)
@@ -464,12 +506,14 @@ export class SurfaceObserver {
   }
 
   private onDown = (e: MouseEvent): void => {
+    this.touch();
     this.dragging = true;
     this.last = { x: e.clientX, y: e.clientY };
   };
 
   private onMove = (e: MouseEvent): void => {
     if (!this.dragging) return;
+    this.touch();
     const dx = e.clientX - this.last.x;
     const dy = e.clientY - this.last.y;
     this.last = { x: e.clientX, y: e.clientY };
@@ -484,6 +528,7 @@ export class SurfaceObserver {
 
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
+    this.touch();
     const lineScale = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
     const dy = THREE.MathUtils.clamp(e.deltaY * lineScale, -600, 600);
     // Wheel up zooms in, like a telescope
@@ -491,6 +536,7 @@ export class SurfaceObserver {
   };
 
   private onTouchStart = (e: TouchEvent): void => {
+    this.touch();
     if (e.touches.length === 1) {
       this.dragging = true;
       this.last = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -501,6 +547,7 @@ export class SurfaceObserver {
   };
 
   private onTouchMove = (e: TouchEvent): void => {
+    this.touch();
     if (e.touches.length === 1 && this.dragging) {
       const t = e.touches[0];
       const dx = t.clientX - this.last.x;
@@ -516,12 +563,14 @@ export class SurfaceObserver {
   };
 
   private onDbl = (): void => {
+    this.touch();
     this.targetFov = DEFAULT_FOV;
   };
 
   private onKeyDown = (e: KeyboardEvent): void => {
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+    this.touch();
     if (e.key.startsWith('Arrow')) {
       this.keys.add(e.key);
       e.preventDefault();

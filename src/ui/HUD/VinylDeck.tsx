@@ -24,17 +24,17 @@ const Record: React.FC<{ track: number; playing: boolean; size: number }> = ({ t
   </span>
 );
 
-export const VinylDeck: React.FC<{ current: string; inTransit: boolean; hidden?: boolean }> = ({ current, inTransit, hidden }) => {
+export const VinylDeck: React.FC<{ current: string }> = ({ current }) => {
   const s = useMusic();
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const here = trackFor(current);
   const t = TRACKS[s.track];
 
-  // The music moves with you (once you have arrived, not on the way)
+  // The music moves with you: the moment you choose a new world, its track takes over
   useEffect(() => {
-    if (!inTransit) music.arriveAt(current);
-  }, [current, inTransit]);
+    music.goTo(current);
+  }, [current]);
 
   // Close the album on Escape or a click elsewhere
   useEffect(() => {
@@ -52,7 +52,7 @@ export const VinylDeck: React.FC<{ current: string; inTransit: boolean; hidden?:
   const vol = s.muted ? 0 : s.volume;
 
   return (
-    <div ref={root} className={`vinyl-deck ${open ? 'is-open' : ''} ${hidden ? 'is-hidden' : ''}`}>
+    <div ref={root} className={`vinyl-deck ${open ? 'is-open' : ''}`}>
       <button
         type="button"
         className={`vd-launch ${s.playing ? 'is-playing' : ''}`}
@@ -76,7 +76,7 @@ export const VinylDeck: React.FC<{ current: string; inTransit: boolean; hidden?:
         <span className="vd-stage" aria-hidden>
           <span className="vd-glow" />
           <span className="vd-platter">
-            <Record track={s.track} playing={s.playing} size={58} />
+            <Record track={s.track} playing={s.playing} size={34} />
           </span>
           <svg className="vd-arm" viewBox="0 0 40 60">
             <circle cx="31" cy="8" r="5" className="vd-arm-pivot" />
@@ -139,7 +139,7 @@ export const VinylDeck: React.FC<{ current: string; inTransit: boolean; hidden?:
             <span className="vd-switch" aria-hidden><i /></span>
             <span>
               Follow the planets
-              <em>{s.follow ? 'Each world plays its own track' : 'Playing the album through'}</em>
+              <em>{s.follow ? 'Each world plays its own track' : 'Playing the album until your next flight'}</em>
             </span>
           </label>
 

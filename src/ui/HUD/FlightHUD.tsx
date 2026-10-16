@@ -17,7 +17,9 @@ import { UNITS_PER_KM } from '../../rendering/Scale';
 
 /** Closer than this to the Sun's centre and Vela gets nervous (about 2.2 solar radii). */
 const SUN_CLOSE_UNITS = 695700 * UNITS_PER_KM * 2.2;
-import { Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle } from 'lucide-react';
+import { Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle, Camera } from 'lucide-react';
+import type { Postcard } from '../../data/Postcards';
+import type { Tab as AtlasTab } from './CatalogueScreen';
 import { Tour } from './Tour';
 import { Companion } from './Companion';
 import { voice } from '../../companion/voice';
@@ -49,6 +51,10 @@ interface FlightHUDProps {
   introDone?: boolean;
   /** The scene's cinematic reel, filmed behind the catalogue. */
   showcase?: ShowcaseControls;
+  /** Step into a postcard from the Gallery. */
+  onPostcard?: (p: Postcard) => void;
+  /** Take a picture of the view (no interface); resolves true when it was saved. */
+  onCapture?: () => Promise<boolean>;
 }
 
 // Reference navigation order: Sagittarius A* at top, then Pluto down to Mercury, plus Sun
@@ -98,6 +104,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   onHorizon,
   introDone = true,
   showcase,
+  onPostcard,
+  onCapture,
 }) => {
   const target = telemetry?.activeTarget;
   const isPaused = telemetry?.isPaused ?? false;
@@ -140,6 +148,17 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   // Status toasts ("ORBITS · OFFLINE")
   const [toast, setToast] = useState<{ id: number; text: string } | null>(null);
   const showToast = useCallback((text: string) => setToast({ id: performance.now(), text }), []);
+  const [atlasTab, setAtlasTab] = useState<AtlasTab>('worlds');
+  // A picture: the shutter flashes, the frame goes to your Gallery
+  const [flash, setFlash] = useState(0);
+  const takeShot = useCallback(async () => {
+    if (!onCapture) return;
+    setFlash(performance.now());
+    const ok = await onCapture();
+    showToast(ok ? 'Saved to your Gallery · open it from the Atlas' : 'Could not save the picture in this browser');
+  }, [onCapture, showToast]);
+  const takeShotRef = useRef(takeShot);
+  takeShotRef.current = takeShot;
 
   // Vela: arrivals, tour steps, and whether she is talking (the dossier steps aside)
   const [arrival, setArrival] = useState<{ name: string; nonce: number } | null>(null);
@@ -218,7 +237,11 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         setIsHudVisible((v) => !v);
       } else if (e.key === '/') {
         e.preventDefault();
+        setAtlasTab('worlds');
         setIsCatalogueOpen(true);
+      } else if ((e.key === 'p' || e.key === 'P') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        void takeShotRef.current();
       } else if (e.key === 'Escape') {
         if (tourOpen) return;
         if (isReadMoreOpen) {
@@ -478,6 +501,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         <div className="relative flex items-center gap-1.5 md:gap-2 pointer-events-auto shrink-0 hud-boot" style={{ ['--d' as string]: '420ms' }}>
           <div data-tour="layers" className="hidden lg:flex items-center">{layerSwitches}</div>
           <span className="hidden lg:block w-px h-4 bg-white/10 mx-1" />
+          <VinylDeck current={activeTargetName} />
           <button
             type="button"
             data-tour="optics"
@@ -493,7 +517,19 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             <SlidersHorizontal size={11} />
             <span className="hidden sm:inline">Optics</span>
           </button>
-          <AtlasLauncher stats={explored} onOpen={() => setIsCatalogueOpen(true)} />
+          <AtlasLauncher stats={explored} onOpen={() => { setAtlasTab('worlds'); setIsCatalogueOpen(true); }} />
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              void takeShot();
+            }}
+            className="hud-icon-btn"
+            title="Take a picture (P)"
+            aria-label="Take a picture"
+          >
+            <Camera size={12} />
+          </button>
           <button
             type="button"
             onClick={(e) => {
@@ -568,6 +604,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 ['Space', 'Play / hold'],
                 ['Esc', 'Overview'],
                 ['/', 'Catalogue'],
+                ['P', 'Take a picture'],
                 ['H', 'Hide HUD'],
                 ['Drag', 'Orbit'],
                 ['Wheel', 'Approach'],
@@ -878,6 +915,14 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
       {/* ========================================================
           TIME DECK
           ======================================================== */}
+      {flash > 0 && <div key={flash} className="hud-flash" aria-hidden />}
+
+      {(telemetry?.surface?.timelapse || telemetry?.horizon?.timelapse) && (
+        <div className="hud-timelapse" role="status">
+          <span className="dot" /> Time-lapse · move to take over
+        </div>
+      )}
+
       <footer data-tour="time" className="absolute bottom-4 md:bottom-5 left-1/2 -translate-x-1/2 pointer-events-auto z-30 hud-boot max-w-[calc(100vw-16px)]" style={{ ['--d' as string]: '560ms' }}>
         <TimeDeck
           isPaused={isPaused}
@@ -890,8 +935,6 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           onSeek={onSeekDate}
         />
       </footer>
-
-      <VinylDeck current={activeTargetName} inTransit={!!route} hidden={!isHudVisible} />
 
       <Companion
         ready={introDone}
@@ -1107,6 +1150,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           visited={logbook.log.visited}
           current={activeTargetName}
           showcase={showcase}
+          initialTab={atlasTab}
+          onPostcard={(p) => onPostcard?.(p)}
           onClose={() => setIsCatalogueOpen(false)}
         />
       )}

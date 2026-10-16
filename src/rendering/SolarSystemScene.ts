@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { Postcard } from '../data/Postcards';
 import { CatalogueManager } from '../data/CatalogueManager';
 import { PlanetFactory, PlanetMeshBundle } from './PlanetFactory';
 import { CameraRig } from '../navigation/CameraRig';
@@ -48,7 +49,7 @@ export interface TelemetryData {
   /** Standing on the hypothetical ocean world beside Sgr A*. */
   horizonView: boolean;
   /** In the horizon view: distance from the hole (r_s) and whether still on the shore. */
-  horizon: { rRs: number; onShore: boolean } | null;
+  horizon: { rRs: number; onShore: boolean; timelapse?: boolean } | null;
   /** One-way light time Earth → selected body, seconds (null for Earth itself). */
   lightFromEarthSec: number | null;
   route: FlightRoute | null;
@@ -108,6 +109,8 @@ export class SolarSystemScene {
   private latestPhysicalStates: Map<string, StateVector> = new Map();
   /** A surface view requested for a body that is not focused yet (entered once the explorer has it). */
   private pendingSkyView: { body: string; lat: number; lon: number; place: string } | null = null;
+  private pendingPostcard: Postcard | null = null;
+  private pendingHorizonPostcard = false;
   private orbitLinesEpochDays: number = 0;
 
   // Scratch objects reused every frame
@@ -475,6 +478,56 @@ export class SolarSystemScene {
     this.cameraRig.focusCinematic(b.bodyGroup, b.visualRadius, body, 150, undefined, b.definition.physical.meanRadiusKm);
     this.pendingSkyView = { body, lat: spot.lat, lon: spot.lon, place: facing ? `${facing} in the sky` : body };
     return true;
+  }
+
+  /** Go into a postcard: the same world, place, moment and framing as its picture. */
+  public openPostcard(c: Postcard): boolean {
+    // The black hole: fly out and stand on the shore of the world beside it
+    if (c.body === 'Sagittarius A*') {
+      if (this.surface.isActive()) this.exitSurface(false);
+      if (this.showcase.active) this.stopShowcase();
+      if (this.horizon?.active) return true;
+      if (this.selectedBody.name !== 'Sagittarius A*') this.jumpToScale('sgr_a');
+      this.pendingHorizonPostcard = true;
+      return true;
+    }
+    const b = this.planetBundles.get(c.body);
+    if (!b) return false;
+    if (this.horizon?.active) this.exitHorizonView(false);
+    if (this.surface.isActive()) this.exitSurface(false);
+    if (this.showcase.active) this.stopShowcase();
+    this.clock.setUtcMs(Date.parse(c.utc));
+    this.selectedBody = b.definition;
+    this.explorer.clearLandmark();
+    this.cameraRig.surfaceMinAltitude = null;
+    this.cameraRig.focusCinematic(b.bodyGroup, b.visualRadius, c.body, 150, undefined, b.definition.physical.meanRadiusKm);
+    this.pendingSkyView = { body: c.body, lat: c.lat, lon: c.lon, place: c.place };
+    this.pendingPostcard = c;
+    return true;
+  }
+
+  public selectedBodyName(): string {
+    return this.selectedBody.name;
+  }
+
+  /** Where you are, as a postcard you could return to (standing on a world, or at the black hole). */
+  public currentPostcardView(): Postcard | null {
+    const utc = new Date(this.clock.getUtcMs()).toISOString();
+    if (this.horizon?.active) {
+      return { id: 'mine', title: 'Sagittarius A*', place: 'Beside the black hole', caption: '', body: 'Sagittarius A*', lat: 0, lon: 0, utc, heading: 0, pitch: 0, fov: 52, magnification: 1 };
+    }
+    const s = this.surface.getStatus();
+    if (!s) return null;
+    return {
+      id: 'mine', title: s.place ?? s.body, place: s.body, caption: '', body: s.body, lat: s.lat, lon: s.lon, utc,
+      heading: s.headingDeg, pitch: s.pitchDeg, fov: s.fovDeg, magnification: s.magnification, atmosphere: s.atmosphereOn,
+    };
+  }
+
+  /** The frame as it is on screen now (no interface), as a JPEG. */
+  public captureShot(quality = 0.92): Promise<Blob | null> {
+    this.renderFrame(performance.now() * 0.001);
+    return new Promise((resolve) => this.renderer.domElement.toBlob((b) => resolve(b), 'image/jpeg', quality));
   }
 
   /** Body-fixed point from which `facing` stands ~40° above the horizon, towards the Sun's side. */
@@ -993,6 +1046,16 @@ export class SolarSystemScene {
       this.showcase.update(this.cameraRig.camera, now * 0.001, bodies);
     }
     this.surface.update();
+    if (this.pendingHorizonPostcard && this.selectedBody.name === 'Sagittarius A*' && !this.cameraRig.getTransit()) {
+      this.pendingHorizonPostcard = false;
+      this.enterHorizonView();
+    }
+    // Nebulae show only in a dark sky: always in space and on airless worlds, after twilight under air
+    const sky = this.surface.getStatus();
+    const airy = !!sky && sky.atmosphereOn && sky.atmosphereKind !== 'none';
+    this.starfield.nebulae.setSkyDarkness(
+      !sky || !airy ? 1 : sky.atmosphereKind === 'overcast' ? 0 : 1 - THREE.MathUtils.smoothstep(sky.sunAltDeg, -16, -7)
+    );
     if (this.horizon?.active) this.horizon.update(this.cameraRig.camera, now * 0.001);
 
     const isBlackHole = this.selectedBody.name === 'Sagittarius A*';
@@ -1001,7 +1064,13 @@ export class SolarSystemScene {
     if (this.pendingSkyView && this.explorer.getStatus().body === this.pendingSkyView.body) {
       const p = this.pendingSkyView;
       this.pendingSkyView = null;
-      this.enterSurface(p.lat, p.lon, p.place);
+      if (this.enterSurface(p.lat, p.lon, p.place) && this.pendingPostcard) {
+        const c = this.pendingPostcard;
+        this.pendingPostcard = null;
+        this.surface.setView(c.heading, c.pitch, c.fov);
+        this.surface.setMagnification(c.magnification);
+        this.surface.setAtmosphere(c.atmosphere ?? true);
+      }
     }
 
     // Over a map the lens character steps aside (clean, web-map look); it returns in space

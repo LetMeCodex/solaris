@@ -65,7 +65,7 @@ const STEPS: Step[] = [
   {
     target: 'catalogue',
     title: 'Atlas',
-    body: 'Every planet, moon and small world, with a live cinematic view of each system behind it and how much of the Solar System you have explored. Press / to open it from anywhere.',
+    body: 'Every planet, moon and small world, with a live cinematic view of each system behind it, how much of the Solar System you have explored, and the Gallery: postcards from real places you can step into. Press / to open it, and P to take a picture of your own.',
   },
   {
     target: 'time',

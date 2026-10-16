@@ -31,7 +31,7 @@ export const NEBULAE: NebulaSpec[] = [
   { name: 'helix', ra: 22.49, dec: -20.8, width: 30, opacity: 1.0, roll: 18 },
   // Procedural figures, spread around the rest of the sky
   { name: 'orion-cloud', ra: 5.59, dec: -5.4, width: 24, opacity: 1.8, roll: 25 },
-  { name: 'rosette-ring', ra: 7.6, dec: 26, width: 17, opacity: 1.6, roll: 0 },
+  { name: 'rosette-ring', ra: 7.6, dec: 26, width: 17, opacity: 1.1, roll: 0 },
   { name: 'crab-shell', ra: 3.1, dec: 42, width: 12, opacity: 2.2, roll: -30 },
   { name: 'veil-filaments', ra: 20.85, dec: 31, width: 28, opacity: 3.0, roll: 40 },
   { name: 'lagoon-lane', ra: 17.7, dec: -30, width: 22, opacity: 1.7, roll: -15 },
@@ -131,10 +131,18 @@ export class NebulaSky {
   private textures: THREE.Texture[] = [];
   private loaded = false;
   private reveal = 0;
+  /** How dark the sky is where you stand (1 in space or at night, 0 in daylight under air). */
+  private skyDark = 1;
+  private skyDarkTarget = 1;
 
   constructor(private radius: number) {
     this.group.name = 'nebulae';
     this.group.visible = false;
+  }
+
+  /** Under an atmosphere, daylight and twilight wash the nebulae out (as they do the stars). */
+  public setSkyDarkness(v: number): void {
+    this.skyDarkTarget = THREE.MathUtils.clamp(v, 0, 1);
   }
 
   /** Pick a size the device can afford and start loading (after the opening). */
@@ -216,7 +224,8 @@ export class NebulaSky {
     const target = speed > 1e-3 ? this.scratch.copy(velocity).multiplyScalar((-Math.min(1, speed / 400) * this.radius * 0.006) / speed) : this.scratch.set(0, 0, 0);
     this.drift.value.lerp(target, 1 - Math.exp(-dt * 2.5));
     this.zoom.value += (THREE.MathUtils.clamp(-zoomRate * 0.5, -1, 1) - this.zoom.value) * (1 - Math.exp(-dt * 3));
-    this.fade = 1 - leaving;
+    this.skyDark += (this.skyDarkTarget - this.skyDark) * (1 - Math.exp(-dt * 4));
+    this.fade = (1 - leaving) * this.skyDark;
     const k = this.reveal * this.reveal * (3 - 2 * this.reveal) * this.fade * (1 + Math.max(0, this.zoom.value) * 0.15);
     for (const l of this.layers) l.mat.uniforms.uOpacity.value = l.base * k;
     this.group.visible = this.fade > 0.003 || this.reveal < 1;

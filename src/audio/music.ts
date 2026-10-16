@@ -65,7 +65,10 @@ const PREFS_KEY = 'solaris.music';
 export const DEFAULT_VOLUME = 0.32;
 /** How much the music steps back while she speaks. */
 const DUCK = 0.38;
-const FADE = 4.5;
+/** Crossfade when you fly somewhere new: quick, so the music changes with you, never piled up. */
+const FADE = 1.8;
+/** Between tracks of the album, and when a world's track comes round again. */
+const ALBUM_FADE = 4;
 
 export interface MusicState {
   track: number;
@@ -102,12 +105,13 @@ class MusicDirector {
   private wanted = 0;
   private restTimer = 0;
   private looping = false;
+  private lastBody: string | null = null;
 
   constructor() {
     const p = loadPrefs();
     this.state = {
       track: 0, playing: false, volume: typeof p.volume === 'number' ? p.volume : DEFAULT_VOLUME,
-      muted: !!p.muted, follow: p.follow !== false, progress: 0, duration: 0,
+      muted: !!p.muted, follow: true, progress: 0, duration: 0,
     };
     voice.listeners.add(() => this.applyLevel(0.5));
   }
@@ -121,9 +125,9 @@ class MusicDirector {
   private set(patch: Partial<MusicState>): void {
     this.state = { ...this.state, ...patch };
     this.listeners.forEach((l) => l(this.state));
-    if ('volume' in patch || 'muted' in patch || 'follow' in patch) {
+    if ('volume' in patch || 'muted' in patch) {
       try {
-        localStorage.setItem(PREFS_KEY, JSON.stringify({ volume: this.state.volume, muted: this.state.muted, follow: this.state.follow }));
+        localStorage.setItem(PREFS_KEY, JSON.stringify({ volume: this.state.volume, muted: this.state.muted }));
       } catch {
         /* private mode */
       }
@@ -183,7 +187,7 @@ class MusicDirector {
     }
   }
 
-  /** Crossfade to a track on the other deck. */
+  /** Crossfade to a track on the other deck (the old one leaves faster than the new one arrives). */
   private cue(track: number, seconds = FADE): void {
     if (!this.ensure()) return;
     window.clearTimeout(this.restTimer);
@@ -196,8 +200,9 @@ class MusicDirector {
     void next.el.play().catch(() => undefined);
     this.fade(next, 1, prev.track >= 0 && !prev.el.paused ? seconds : 1.2);
     if (!prev.el.paused) {
-      this.fade(prev, 0, seconds);
-      window.setTimeout(() => prev !== this.decks[this.live] && prev.el.pause(), seconds * 1000 + 200);
+      const out = Math.min(seconds, seconds * 0.6 + 0.2);
+      this.fade(prev, 0, out);
+      window.setTimeout(() => prev !== this.decks[this.live] && prev.el.pause(), out * 1000 + 150);
     }
     this.applyLevel(0.3);
     this.set({ track, playing: true, progress: 0 });
@@ -209,10 +214,10 @@ class MusicDirector {
     if (!Number.isFinite(d) || d <= 0) return;
     this.set({ progress: deck.el.currentTime / d, duration: d });
     // The album plays on: crossfade into the next track a little before this one ends
-    if (!this.state.follow && !this.looping && d - deck.el.currentTime < FADE) {
+    if (!this.state.follow && !this.looping && d - deck.el.currentTime < ALBUM_FADE) {
       this.looping = true;
-      this.cue((this.state.track + 1) % TRACKS.length);
-      window.setTimeout(() => (this.looping = false), FADE * 1000 + 500);
+      this.cue((this.state.track + 1) % TRACKS.length, ALBUM_FADE);
+      window.setTimeout(() => (this.looping = false), ALBUM_FADE * 1000 + 500);
     }
   }
 
@@ -233,11 +238,20 @@ class MusicDirector {
     this.cue(this.state.follow ? this.wanted : this.state.track);
   }
 
-  /** Where you are now: in follow mode, the music moves with you. */
-  arriveAt(body: string): void {
-    this.wanted = trackFor(body);
-    if (this.state.follow && this.state.playing && this.wanted !== this.state.track) this.cue(this.wanted);
-    else if (this.state.follow && !this.state.playing) this.set({ track: this.wanted });
+  /**
+   * You chose a new world: the music follows at once. A track you picked yourself plays only until
+   * your next flight; after that the planets lead again.
+   */
+  goTo(body: string): void {
+    const wanted = trackFor(body);
+    const moved = this.lastBody !== null && this.lastBody !== body;
+    this.lastBody = body;
+    this.wanted = wanted;
+    if (moved && !this.state.follow) this.set({ follow: true });
+    if (!this.state.follow) return;
+    if (this.state.playing) {
+      if (wanted !== this.state.track) this.cue(wanted);
+    } else this.set({ track: wanted });
   }
 
   /** Pick a track yourself: the album plays on from there. */
