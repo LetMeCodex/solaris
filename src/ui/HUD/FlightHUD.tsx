@@ -11,6 +11,7 @@ import type { FlightRoute } from '../../rendering/SolarSystemScene';
 import { Popover, ScaleDomain, ScaleLadder, Segmented, TimeDeck } from './Controls';
 import { CatalogueScreen, ShowcaseControls } from './CatalogueScreen';
 import { AtlasLauncher } from './Atlas';
+import { VinylDeck } from './VinylDeck';
 import { exploredStats } from './explored';
 import { UNITS_PER_KM } from '../../rendering/Scale';
 
@@ -890,6 +891,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         />
       </footer>
 
+      <VinylDeck current={activeTargetName} inTransit={!!route} hidden={!isHudVisible} />
+
       <Companion
         ready={introDone}
         current={activeTargetName}
@@ -1089,6 +1092,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             <p className="text-[10px] leading-relaxed font-light text-white/35">
               Textures: Solar System Scope (CC BY 4.0) · Moon maps: NASA/JPL/USGS/SSI/LPI, Björn Jónsson · Sky map: ESA/Gaia/DPAC (CC BY-SA 3.0 IGO) ·
               Stars: ESA/Hipparcos (CC BY-NC 3.0 IGO) · Galaxy art: NASA/JPL-Caltech/ESO/R. Hurt (CC BY 4.0) ·
+              Nebulae: NASA, ESA, CSA, STScI, M. Livio &amp; the Hubble 20th Anniversary Team; ESO/J. Emerson/VISTA (CC BY 4.0) ·
               Orbits: NASA JPL.{' '}
               <a href="https://github.com/LetMeCodex/solaris/blob/main/ASSETS.md" target="_blank" rel="noopener noreferrer" className="underline hover:text-white/70">
                 Full credits

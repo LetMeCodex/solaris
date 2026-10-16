@@ -96,3 +96,16 @@ The 3D galaxy's spiral structure follows the disk artwork above; its 14,000 addi
 
 - `public/textures/2k_pluto.jpg` — NASA / Johns Hopkins APL / SwRI, New Horizons global colour mosaic of Pluto ("Pluto color mapmosaic", Wikimedia Commons, public domain). Re-centred on the IAU prime meridian; the southern latitudes, in polar night during the 2015 flyby, are a muted fill derived from imaged terrain.
 - `public/textures/2k_charon.jpg` — NASA / Johns Hopkins APL / SwRI, New Horizons Charon basemap (public domain). Relief taken from the basemap's luminance with grid lines and labels painted out; Mordor Macula's reddish north polar cap added from New Horizons colour imaging; unimaged south is a muted fill.
+
+## Nebulae (added)
+
+`public/textures/nebulae/` — three photographs, each used under CC BY 4.0 and credited in the HUD:
+Webb's "Cosmic Cliffs" (NASA, ESA, CSA, STScI; weic2205a), Hubble's "Mystic Mountain" (NASA, ESA,
+M. Livio and the Hubble 20th Anniversary Team; heic1007a) and the Helix Nebula from VISTA
+(ESO/VISTA/J. Emerson; eso1205a), plus six procedural figures. Details in
+`public/textures/nebulae/SOURCES.md`.
+
+## Music (added)
+
+`public/music/` — "Solaris — Slowed + Reverb (Lofi Edition)", the site's own soundtrack, with its
+cover art. Loudness-matched to −18 LUFS for background play.

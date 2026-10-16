@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { NebulaSky } from './NebulaSky';
 import { COSMIC_SCALE } from './Scale';
 import { MilkyWayGalaxy } from './MilkyWayGalaxy';
 import { MilkyWayVolume } from './MilkyWayVolume';
@@ -107,6 +108,7 @@ export class Starfield {
   public milkyWay: MilkyWayVolume;
   public externalGalaxy: MilkyWayGalaxy;
   public travelParticles: TravelParticles;
+  public nebulae: NebulaSky;
   public isLoaded: boolean = false;
 
   // Sphere radius for stars (× COSMIC_SCALE in space, see celestialGroup)
@@ -131,6 +133,10 @@ export class Starfield {
     this.group.add(this.cosmos);
 
     this.build3DCosmicStardust();
+
+    // Nebulae on the sky: just beyond the stars, which shine through them
+    this.nebulae = new NebulaSky(Starfield.SPHERE_RADIUS * 1.03);
+    this.celestialGroup.add(this.nebulae.group);
 
     // The Milky Way itself: a 3D volume of stars, glow and dust around the Solar System
     // (real galactic orientation, Sun at the origin) that the camera can fly out of
@@ -516,9 +522,10 @@ export class Starfield {
     const smoothT = t * t * (3.0 - 2.0 * t);
     this.externalGalaxy.setOpacity(smoothT);
 
-    // Constellation figures only make sense from the Sun's vantage point
+    // Constellation figures and the nebulae on the sky only make sense from the Sun's vantage point
+    const leaving = Math.max(THREE.MathUtils.smoothstep(distToSun, 3500.0 * K, 22000.0 * K), smoothT);
+    this.nebulae.update(deltaSec, cameraVelocity || new THREE.Vector3(), this.groundMode ? 0 : leaving, zoomRate || 0);
     if (this.constellationLines) {
-      const leaving = Math.max(THREE.MathUtils.smoothstep(distToSun, 3500.0 * K, 22000.0 * K), smoothT);
       (this.constellationLines.material as THREE.LineBasicMaterial).opacity = Starfield.CONSTELLATION_OPACITY * (1.0 - leaving);
     }
 
@@ -566,6 +573,7 @@ export class Starfield {
   }
 
   public dispose(): void {
+    this.nebulae.dispose();
     this.externalGalaxy.dispose();
     this.travelParticles.dispose();
     if (this.localInterstellarStars) {

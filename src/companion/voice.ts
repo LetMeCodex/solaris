@@ -31,7 +31,8 @@ let level = new Uint8Array(256);
 let current: HTMLAudioElement | null = null;
 const cache = new Map<string, HTMLAudioElement>();
 
-function audioCtx(): AudioContext | null {
+/** The one Web Audio context (her voice, chimes and the music share it). */
+export function audioCtx(): AudioContext | null {
   try {
     const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!ctx) {

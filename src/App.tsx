@@ -5,6 +5,7 @@ import { FlightHUD } from './ui/HUD/FlightHUD';
 import { LensProfileName } from './rendering/LensPipeline';
 import { Preloader } from './ui/Preloader';
 import { voice, chime } from './companion/voice';
+import { music } from './audio/music';
 
 export const App: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -20,6 +21,8 @@ export const App: React.FC = () => {
     voice.enabled = withVoice;
     voice.unlock();
     chime('open');
+    // The soundtrack starts softly with the journey ("in silence" leaves the needle up)
+    if (withVoice) music.start();
   }, []);
   const handleRevealed = useCallback(() => {
     setRevealed(true);

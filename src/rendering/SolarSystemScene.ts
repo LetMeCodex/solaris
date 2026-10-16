@@ -1277,6 +1277,8 @@ export class SolarSystemScene {
       }
     });
     onProgress(1, 'Ready');
+    // The nebulae are not needed for the first frame: they load now, in the background, and fade in
+    this.starfield.nebulae.load(this.renderer);
   }
 
   private textureFraction = 0;
