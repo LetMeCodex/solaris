@@ -77,7 +77,7 @@ export const ScaleLadder: React.FC<{ current: ScaleDomain; readout: string; onJu
   const idx = Math.max(0, LADDER.findIndex((l) => l.id === current));
   const pos = (i: number) => `${(i / (LADDER.length - 1)) * 100}%`;
   return (
-    <div className="hud-ladder w-[440px]" role="group" aria-label="Scale">
+    <div className="hud-ladder w-[clamp(300px,22vw,440px)] shrink-0" role="group" aria-label="Scale">
       <div className="flex items-baseline justify-center gap-2 mb-2">
         <span className="hud-label">Scale</span>
         <span className="hud-num text-[11px] text-white/90">{readout}</span>

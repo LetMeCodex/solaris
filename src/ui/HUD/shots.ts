@@ -1,3 +1,4 @@
+import { emitVela } from '../../companion/events';
 import type { Postcard } from '../../data/Postcards';
 
 /**
@@ -38,9 +39,11 @@ async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBReq
 }
 
 export async function saveShot(shot: Omit<Shot, 'id' | 'at'>): Promise<void> {
+  const first = (await listShots()).length === 0;
   const s: Shot = { ...shot, id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`, at: Date.now() };
   await tx('readwrite', (st) => st.put(s));
   window.dispatchEvent(new Event(SHOTS_CHANGED));
+  emitVela('shot', { first });
 }
 
 export async function listShots(): Promise<Shot[]> {

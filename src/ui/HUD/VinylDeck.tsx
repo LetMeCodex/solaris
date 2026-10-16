@@ -52,7 +52,7 @@ export const VinylDeck: React.FC<{ current: string }> = ({ current }) => {
   const vol = s.muted ? 0 : s.volume;
 
   return (
-    <div ref={root} className={`vinyl-deck ${open ? 'is-open' : ''}`}>
+    <div ref={root} className={`vinyl-deck ${open ? 'is-open' : ''}`} data-tour="record">
       <button
         type="button"
         className={`vd-launch ${s.playing ? 'is-playing' : ''}`}

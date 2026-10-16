@@ -4,19 +4,14 @@ import { SUN_WORLD } from './RenderOrigin';
 /**
  * The Sun, drawn from solar physics.
  *
- * Photosphere
- * - True colour: a 5,772 K blackbody is white with the faintest warmth; the yellow/orange of most
- *   renderings is atmospheric or artistic. Brightness is HDR so it reads as blinding.
- * - Limb darkening per colour channel (stronger in blue than in red, as measured), so the edge of
- *   the disk turns dimmer and warmer: I(μ)/I₀ = 1 − u(1 − μ) − v(1 − μ²).
- * - Convection: granules (bright upwelling cells, dark cooler lanes) whose centres wander so the
- *   surface boils, on top of larger supergranular mottling.
- * - Active regions: sunspot groups (dark umbra, filamentary penumbra) in the two activity belts
- *   (±5–35° latitude), with bright faculae that show up towards the limb.
- * - A thin pink-red chromosphere rim (H-α) at the very edge.
+ * Photosphere, as the solar observatories show it through their filters: boiling plasma. Convection
+ * cells at several scales (the finest are the true ~1,000 km granules and resolve only up close),
+ * swirls and bright filaments, differential rotation (the equator turns faster than the poles),
+ * sunspots with dark umbrae and filamentary penumbrae in the two activity belts, bright faculae, and
+ * limb darkening that cools the edge into deep orange.
  *
- * Corona: streamers fixed to the Sun (a 3D pattern, not a screen-space flare) falling off roughly
- * as r⁻³, out to several solar radii.
+ * Limb: a ragged fringe of spicules, flames of chromospheric gas, each tongue its own height.
+ * Corona: a hot glow hugging the disk, then streamers fixed to the Sun falling off as r^-3.
  *
  * Activity (SolarActivity): magnetic loops rise from active regions, glow, drain and fade, and now
  * and then one erupts and is flung outward like a coronal mass ejection.
@@ -103,59 +98,66 @@ export class SolarShader {
           vec3 v = normalize(cameraPosition - vWorldPosition);
           float mu = clamp(dot(n, v), 0.0, 1.0);
           float om = 1.0 - mu;
-
-          // Limb darkening per channel (quadratic law; blue darkens most)
-          vec3 u1 = vec3(0.36, 0.45, 0.56);
-          vec3 u2 = vec3(0.16, 0.16, 0.14);
-          vec3 limb = clamp(1.0 - u1 * om - u2 * (1.0 - mu * mu), 0.05, 1.0);
-
           vec3 p = vLocal;
           float t = time;
-          // Supergranulation and mottling (slow)
-          float mottle = fbm(p * 7.0 + vec3(0.0, t * 0.004, 0.0)) * 0.6 + fbm(p * 45.0 + t * 0.01) * 0.4;
-          // Granules, two scales, boiling. Fade the finest detail when it is smaller than a pixel.
-          // Granules are rounded bright cells (hot gas rising) fading into soft dark lanes
-          // True size: granules are ~1,000 km, about 1/1,400 of the disk, so they only resolve in
-          // close-ups (and fade out where they would be smaller than a pixel)
-          vec2 g1 = granules(p * 520.0, t * 0.35);
-          vec2 g2 = granules(p * 1400.0, t * 0.55);
-          float cell1 = smoothstep(0.0, 0.5, g1.y - g1.x) * (1.0 - smoothstep(0.1, 0.75, g1.x));
-          float cell2 = smoothstep(0.0, 0.45, g2.y - g2.x) * (1.0 - smoothstep(0.1, 0.75, g2.x));
-          float px1 = length(fwidth(p * 520.0));
-          float px2 = length(fwidth(p * 1400.0));
-          float mid = 1.0 - smoothstep(0.3, 0.9, px1);
-          float fine = 1.0 - smoothstep(0.3, 0.9, px2);
-          float gran = (cell1 - 0.45) * 0.16 * mid + (cell2 - 0.45) * 0.08 * fine;
 
-          // Active regions in the activity belts, seeded by the solar map and slow noise
-          float lat = asin(clamp(p.y, -1.0, 1.0));
+          // Differential rotation: the equator turns faster than the poles
+          float rot = t * 0.004 * (1.0 - 0.3 * p.y * p.y);
+          vec3 q = vec3(p.x * cos(rot) - p.z * sin(rot), p.y, p.x * sin(rot) + p.z * cos(rot));
+          // Boiling plasma: convection churned by a slowly evolving warp
+          vec3 w = vec3(fbm(q * 2.6 + t * 0.010), fbm(q * 2.6 + 5.2 - t * 0.012), fbm(q * 2.6 + 9.1 + t * 0.008));
+          vec3 qw = q + w * 0.28;
+          float big = fbm(qw * 5.5 + t * 0.012);
+          float mid = fbm(qw * 17.0 - t * 0.025);
+          // Convection cells at scales you can see, and granules that resolve as you come close
+          vec2 g1 = granules(qw * 55.0, t * 0.22);
+          vec2 g2 = granules(q * 180.0, t * 0.35);
+          vec2 g3 = granules(q * 520.0, t * 0.5);
+          float cellA = smoothstep(0.0, 0.55, g1.y - g1.x);
+          float cellB = smoothstep(0.0, 0.5, g2.y - g2.x);
+          float cellC = smoothstep(0.0, 0.45, g3.y - g3.x);
+          float fadeA = 1.0 - smoothstep(0.35, 0.9, length(fwidth(q * 55.0)));
+          float fadeB = 1.0 - smoothstep(0.35, 0.9, length(fwidth(q * 180.0)));
+          float fadeC = 1.0 - smoothstep(0.35, 0.9, length(fwidth(q * 520.0)));
+          float heat = 0.62 + big * 0.62 + mid * 0.22 + (cellA - 0.5) * 0.16 * fadeA + (cellB - 0.5) * 0.12 * fadeB + (cellC - 0.5) * 0.1 * fadeC;
+          // Bright plasma filaments threading the surface
+          float ridge = 1.0 - abs(fbm(qw * 8.0 + vec3(0.0, t * 0.02, 0.0)) * 2.2);
+          heat += pow(clamp(ridge, 0.0, 1.0), 8.0) * 0.22;
+
+          // Active regions in the two activity belts: sunspots (umbra, penumbra) and bright faculae
+          float lat = asin(clamp(q.y, -1.0, 1.0));
           float belt = smoothstep(0.08, 0.2, abs(lat)) * (1.0 - smoothstep(0.45, 0.62, abs(lat)));
           float tex = dot(texture2D(sunTexture, vUv).rgb, vec3(0.333));
-          // A handful of active regions per hemisphere, drifting slowly
-          float region = belt * smoothstep(0.1, 0.35, vnoise(p * 4.0 + vec3(3.0, t * 0.002, 1.0)) + tex * 0.2 - 0.1);
-          // Sunspots: small dark umbrae with a penumbra inside active regions
-          float spotField = vnoise(p * 34.0 + 11.0) + 0.45 * vnoise(p * 90.0);
-          float umbra = region * smoothstep(0.42, 0.52, spotField);
-          float penumbra = region * smoothstep(0.24, 0.42, spotField) * (1.0 - umbra);
-          // Faculae: bright magnetic patches, visible mostly near the limb
-          float faculae = region * smoothstep(0.1, 0.5, spotField) * (1.0 - smoothstep(0.48, 0.6, spotField)) * pow(om, 1.5);
+          float region = belt * smoothstep(0.1, 0.35, vnoise(q * 4.0 + vec3(3.0, t * 0.002, 1.0)) + tex * 0.2 - 0.1);
+          float spotField = vnoise(q * 30.0 + 11.0) + 0.45 * vnoise(q * 80.0);
+          float umbra = region * smoothstep(0.44, 0.54, spotField);
+          float penumbra = region * smoothstep(0.26, 0.44, spotField) * (1.0 - umbra);
+          // Penumbral filaments
+          penumbra *= 0.75 + 0.25 * vnoise(q * 260.0);
+          float faculae = region * smoothstep(0.1, 0.5, spotField) * (1.0 - smoothstep(0.48, 0.6, spotField));
+          heat *= 1.0 - umbra * 0.82 - penumbra * 0.38;
+          heat += faculae * (0.12 + 0.5 * om);
 
-          // Colour (written straight to the display): the disk centre is the white-gold of a
-          // 5,772 K photosphere seen through a solar filter; limb darkening is stronger in blue,
-          // so the edge deepens through gold to orange
-          float lum = dot(limb, vec3(0.2126, 0.7152, 0.0722));
-          vec3 centre = vec3(1.0, 0.975, 0.9);
-          vec3 edge = vec3(1.0, 0.56, 0.2);
-          vec3 base = mix(edge, centre, smoothstep(0.25, 1.0, pow(mu, 0.55)));
-          float I = 1.0 + mottle * 0.05 + gran + faculae * 0.3;
-          I *= 1.0 - penumbra * 0.5 - umbra * 0.85;
-          vec3 col = base * I * mix(0.62, 1.0, lum);
-          // Spots are cooler and redder
-          col *= mix(vec3(1.0), vec3(0.9, 0.55, 0.3), clamp(umbra + penumbra * 0.5, 0.0, 1.0));
+          // Limb darkening (the edge is cooler gas higher up): dimmer and redder towards the rim
+          float limb = 1.0 - 0.62 * om - 0.22 * (1.0 - mu * mu);
+          float h = heat * mix(0.5, 1.0, clamp(limb, 0.0, 1.0));
 
-          // Chromosphere: a thin pink-red H-alpha rim right at the edge
-          float rim = smoothstep(0.86, 1.0, om);
-          col += vec3(1.0, 0.32, 0.36) * rim * rim * 0.9;
+          // Plasma colours, from the dark cool lanes to the white-hot cell tops
+          vec3 c0 = vec3(0.32, 0.03, 0.0);
+          vec3 c1 = vec3(0.86, 0.24, 0.02);
+          vec3 c2 = vec3(1.0, 0.56, 0.1);
+          vec3 c3 = vec3(1.0, 0.82, 0.38);
+          vec3 c4 = vec3(1.0, 0.96, 0.82);
+          vec3 col = h < 0.35 ? mix(c0, c1, h / 0.35)
+                   : h < 0.62 ? mix(c1, c2, (h - 0.35) / 0.27)
+                   : h < 0.9 ? mix(c2, c3, (h - 0.62) / 0.28)
+                   : mix(c3, c4, clamp((h - 0.9) / 0.35, 0.0, 1.0));
+          // Spots are cooler: deep red-brown cores
+          col = mix(col, vec3(0.16, 0.035, 0.01), umbra * 0.85);
+          // The rim glows: hot gas seen edge-on, blending into the chromosphere
+          float rim = smoothstep(0.82, 1.0, om);
+          col = mix(col, vec3(1.0, 0.38, 0.06), rim * 0.55);
+          col += vec3(1.0, 0.3, 0.05) * pow(rim, 3.0) * 0.5;
 
           gl_FragColor = vec4(col, 1.0);
         }
@@ -198,29 +200,37 @@ export class SolarShader {
           vec3 closest = cameraPosition + ray * tc;
           vec3 off = closest - sunCenter;
           float r = length(off) / sunRadius;
-          if (r < 1.0) discard; // behind the disk
+          if (r < 0.995) discard; // behind the disk
 
-          // Direction of this sightline's closest point, in the Sun's own frame: streamers are
-          // fixed structures, brightest over the equatorial belt, polar plumes thinner
           vec3 dir = off / max(1e-6, length(off));
-          float latc = abs(dot(dir, normalize(vPole)));
+          vec3 pole = normalize(vPole);
+          float latc = abs(dot(dir, pole));
           float equator = 1.0 - smoothstep(0.25, 0.85, latc);
+          float h = max(r - 1.0, 0.0);
+
+          // Spicules and flames: a ragged fringe of burning gas right at the limb, each tongue its
+          // own height, flickering
+          float tongue = fbm(dir * 34.0 + vec3(0.0, time * 0.06, 0.0)) * 0.5 + 0.5;
+          float tongue2 = vnoise(dir * 120.0 + vec3(time * 0.15, 0.0, 0.0)) * 0.5 + 0.5;
+          float reach = 0.006 + 0.05 * pow(tongue, 3.0) + 0.018 * tongue2;
+          float flame = (1.0 - smoothstep(0.0, reach, h)) * (0.65 + 0.35 * tongue2);
+
+          // Coronal streamers: fixed to the Sun, strongest over the equator, polar plumes thinner
           float az = atan(dir.z, dir.x);
           float streak = fbm(vec3(cos(az) * 3.0, sin(az) * 3.0, latc * 2.0) + vec3(0.0, time * 0.01, 0.0));
-          float fine = vnoise(vec3(cos(az) * 22.0, sin(az) * 22.0, latc * 9.0 + time * 0.02));
-          float rays = clamp(0.25 + streak * 1.8 + fine * 0.45, 0.0, 2.6) * mix(0.4, 1.35, equator);
+          float fine = vnoise(vec3(cos(az) * 26.0, sin(az) * 26.0, latc * 9.0 + time * 0.02));
+          float rays = clamp(0.3 + streak * 1.9 + fine * 0.5, 0.0, 2.8) * mix(0.45, 1.35, equator);
 
-          // K-corona brightness ~ r^-3, extended with distance for streamers
-          float h = r - 1.0;
-          float inner = exp(-h * 9.0);
-          float body = pow(r, -3.0) * mix(1.0, rays, smoothstep(0.02, 0.4, h));
-          // The corona is a million times fainter than the disk: a soft pearly halo, not a wall
-          float I = inner * 0.35 + body * 0.24;
-          // Fade to nothing at the shell
-          I *= 1.0 - smoothstep(4.0, 7.5, r);
-
-          vec3 col = mix(vec3(1.0, 0.95, 0.88), vec3(0.92, 0.93, 1.0), smoothstep(0.1, 1.5, h));
-          gl_FragColor = vec4(col * I, 1.0);
+          // A hot golden glow hugging the disk, the K-corona falling as r^-3, and long streamers
+          float glow = exp(-h * 7.0);
+          float halo = exp(-h * 1.6);
+          float body = pow(max(r, 1.0), -3.0) * mix(1.0, rays, smoothstep(0.03, 0.4, h));
+          vec3 col = vec3(1.0, 0.42, 0.08) * flame * 1.1
+                   + vec3(1.0, 0.62, 0.22) * glow * 0.55
+                   + vec3(1.0, 0.78, 0.5) * halo * 0.12
+                   + mix(vec3(1.0, 0.9, 0.75), vec3(0.9, 0.92, 1.0), smoothstep(0.2, 2.0, h)) * body * 0.3;
+          col *= 1.0 - smoothstep(4.0, 7.5, r);
+          gl_FragColor = vec4(col, 1.0);
         }
       `,
       blending: THREE.AdditiveBlending,
@@ -259,19 +269,34 @@ export class SolarShader {
         varying vec2 vUv;
         varying vec3 vN;
         varying vec3 vV;
+        float h1(float n) { return fract(sin(n) * 43758.5453); }
+        float n2(vec2 p) {
+          vec2 i = floor(p), f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          float a = h1(dot(i, vec2(1.0, 57.0)));
+          float b = h1(dot(i + vec2(1.0, 0.0), vec2(1.0, 57.0)));
+          float c = h1(dot(i + vec2(0.0, 1.0), vec2(1.0, 57.0)));
+          float d = h1(dot(i + vec2(1.0, 1.0), vec2(1.0, 57.0)));
+          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
         void main() {
           float u = vUv.x; // along the loop
-          // Brighter at the rim of the tube (optically thin plasma seen edge-on)
-          float edge = 1.0 - abs(dot(normalize(vN), normalize(vV)));
-          float thick = 0.35 + 0.65 * pow(edge, 1.5);
-          // Knots of plasma sliding down both legs
-          float flow = 0.6 + 0.4 * sin((abs(u - 0.5) * 28.0) - time * 3.0 + uSeed * 6.28);
+          // A thick, soft tube of plasma: brightest through its middle, ragged at the edges
+          float facing = abs(dot(normalize(vN), normalize(vV)));
+          float core = pow(facing, 0.7);
+          // Turbulent knots and threads streaming down both legs
+          float flow = n2(vec2(abs(u - 0.5) * 11.0 - time * 0.9 + uSeed * 40.0, vUv.y * 2.0 + uSeed * 7.0));
+          float knots = n2(vec2(u * 26.0 + uSeed * 13.0 - time * 0.5, vUv.y * 3.0));
+          float threads = n2(vec2(u * 60.0 + uSeed * 5.0, vUv.y * 9.0 + time * 0.3));
+          float plasma = smoothstep(0.25, 0.95, flow * 0.5 + knots * 0.35 + threads * 0.25) * smoothstep(0.05, 0.6, core);
           float life = smoothstep(0.0, 0.15, uAge) * (1.0 - smoothstep(0.7, 1.0, uAge));
-          vec3 halpha = vec3(1.0, 0.36, 0.28);
-          vec3 hot = vec3(1.0, 0.9, 0.8);
-          vec3 col = mix(halpha, hot, uFlash * 0.8 + (1.0 - abs(u - 0.5) * 2.0) * 0.15);
-          float a = thick * flow * life;
-          gl_FragColor = vec4(col * a * (0.9 + uFlash * 4.0), 1.0);
+          // Feet fade into the surface
+          float feet = smoothstep(0.0, 0.08, u) * smoothstep(1.0, 0.92, u);
+          vec3 cool = vec3(1.0, 0.22, 0.05);
+          vec3 hot = vec3(1.0, 0.72, 0.3);
+          vec3 col = mix(cool, hot, clamp(plasma * 0.7 + uFlash * 0.8, 0.0, 1.0));
+          float a = plasma * life * feet;
+          gl_FragColor = vec4(col * a * (0.8 + uFlash * 3.5), 1.0);
         }
       `,
       blending: THREE.AdditiveBlending,
@@ -312,7 +337,7 @@ export class SolarActivity {
   constructor(radius: number) {
     this.radius = radius;
     this.group.name = 'solar_prominences';
-    for (let i = 0; i < 9; i++) this.loops.push(this.makeLoop(-Math.random() * 30));
+    for (let i = 0; i < 14; i++) this.loops.push(this.makeLoop(-Math.random() * 30));
     this.group.userData.activity = this;
   }
 
@@ -341,8 +366,10 @@ export class SolarActivity {
     const lon = this.rnd() * Math.PI * 2;
     const c = new THREE.Vector3(Math.cos(lat) * Math.cos(lon), Math.sin(lat), Math.cos(lat) * Math.sin(lon));
     // Footpoint separation and height (×R): a few percent of the radius, like real loops
-    const span = 0.035 + this.rnd() * 0.07;
-    const height = span * (0.7 + this.rnd() * 0.9);
+    // A few great prominences (a fifth of the radius high) among smaller loops
+    const great = this.rnd() < 0.3;
+    const span = great ? 0.12 + this.rnd() * 0.12 : 0.04 + this.rnd() * 0.07;
+    const height = span * (great ? 1.1 + this.rnd() * 0.9 : 0.7 + this.rnd() * 0.9);
     const east = new THREE.Vector3(0, 1, 0).cross(c).normalize();
     const north = c.clone().cross(east).normalize();
     const tilt = this.rnd() * Math.PI;
@@ -354,7 +381,7 @@ export class SolarActivity {
     const top = c.clone().multiplyScalar(R * height * 1.6);
     const curve = new THREE.QuadraticBezierCurve3(a, top, b);
     loop.mesh.geometry.dispose();
-    loop.mesh.geometry = new THREE.TubeGeometry(curve, 48, R * span * (0.018 + this.rnd() * 0.02), 8, false);
+    loop.mesh.geometry = new THREE.TubeGeometry(curve, 64, R * span * (0.07 + this.rnd() * 0.06), 12, false);
     loop.mesh.userData.center = c;
     loop.mesh.userData.base = base;
     loop.mesh.position.copy(base);
@@ -379,10 +406,11 @@ export class SolarActivity {
     if (loop.erupts && age > loop.flashAt) {
       const e = (age - loop.flashAt) / (1 - loop.flashAt);
       flash = Math.exp(-e * 10) * 1.5;
-      // The arch is flung out radially and swells as it goes
-      s *= 1 + e * e * 6;
+      // The arch is flung out radially, swells and thins away as it goes
+      s *= 1 + e * e * 1.8;
       const c = loop.mesh.userData.center as THREE.Vector3;
-      loop.mesh.position.copy(loop.mesh.userData.base as THREE.Vector3).addScaledVector(c, this.radius * e * e * 1.5);
+      loop.mesh.position.copy(loop.mesh.userData.base as THREE.Vector3).addScaledVector(c, this.radius * e * e * 0.45);
+      loop.mat.uniforms.uAge.value = Math.max(age, loop.flashAt + (1 - loop.flashAt) * Math.min(1, e * 1.6));
     }
     loop.mesh.scale.setScalar(s);
     loop.mat.uniforms.uFlash.value = flash;

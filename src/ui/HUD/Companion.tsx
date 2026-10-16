@@ -3,8 +3,11 @@ import { CatalogueManager } from '../../data/CatalogueManager';
 import { beautifulPlaces, CompanionAction, factIds, idsWith, lineText, pick, Secret, secretsAt } from '../../companion/knowledge';
 import { voice } from '../../companion/voice';
 import type { FlightRoute } from '../../rendering/SolarSystemScene';
-import { tourSeen } from './Tour';
+import { tourSeen, tourVoice } from './Tour';
 import { settings, useSettings } from '../settings';
+import { music, TRACKS } from '../../audio/music';
+import { onVela } from '../../companion/events';
+import { DEFAULT_WORLD_SCALE, WORLD_SCALE } from '../../rendering/Scale';
 import type { ExploredStats } from './explored';
 
 /**
@@ -57,6 +60,8 @@ interface VelaMemory {
   allPlanets: boolean;
   /** She said goodbye at 100%. */
   farewell: boolean;
+  /** One-time explanations she has already given (music, giant worlds, nebula controls). */
+  told: string[];
 }
 
 function loadMemory(): VelaMemory {
@@ -64,10 +69,10 @@ function loadMemory(): VelaMemory {
     const m = JSON.parse(localStorage.getItem(MEMORY_KEY) || 'null') as Partial<VelaMemory> | null;
     return {
       sessions: m?.sessions ?? 0, lastBody: m?.lastBody ?? null, lastAt: m?.lastAt ?? 0, lastStood: !!m?.lastStood, moons: m?.moons ?? [],
-      pct: m?.pct ?? 0, systems: m?.systems ?? [], allPlanets: !!m?.allPlanets, farewell: !!m?.farewell,
+      pct: m?.pct ?? 0, systems: m?.systems ?? [], allPlanets: !!m?.allPlanets, farewell: !!m?.farewell, told: m?.told ?? [],
     };
   } catch {
-    return { sessions: 0, lastBody: null, lastAt: 0, lastStood: false, moons: [], pct: 0, systems: [], allPlanets: false, farewell: false };
+    return { sessions: 0, lastBody: null, lastAt: 0, lastStood: false, moons: [], pct: 0, systems: [], allPlanets: false, farewell: false, told: [] };
   }
 }
 
@@ -166,6 +171,15 @@ export const Companion: React.FC<{
   const farewellRef = useRef(farewell);
   farewellRef.current = farewell;
   const pokes = useRef<number[]>([]);
+
+  /** True the first time ever (and remembers it): for explanations she should give only once. */
+  const tellOnce = useCallback((key: string): boolean => {
+    const m = memory.current!;
+    if (m.told.includes(key)) return false;
+    m.told.push(key);
+    saveMemory(m);
+    return true;
+  }, []);
 
   /** A line from a pool she has not said yet this visit (falls back to any of them). */
   const fresh = useCallback((prefix: string, filter: (id: string) => boolean = () => true): string => {
@@ -582,10 +596,119 @@ export const Companion: React.FC<{
     window.setTimeout(() => say({ id: fresh('explore.atlas.') }, true), 900);
   }, [atlasOpen, ready, quiet, tourOpen, say, fresh]);
 
+  /* ------------------------------------------------------------------ the new things around her */
+  // Cooldowns so she comments, not narrates
+  const cool = useCallback((key: string, ms: number): boolean => {
+    if (said.current.has(key)) return false;
+    said.current.add(key);
+    window.setTimeout(() => said.current.delete(key), ms);
+    return true;
+  }, []);
+  const settingsAt = useRef(0);
+
+  // The soundtrack: her first word about it, a line for some songs, your own pick, the mute
+  useEffect(() => {
+    if (!ready) return;
+    let prev = music.state;
+    return music.subscribe((st) => {
+      const was = prev;
+      prev = st;
+      if (quietRef.current || tourOpen) return;
+      if (st.playing && !was.playing && tellOnce('music')) {
+        window.setTimeout(() => say([{ id: 'music.first' }, { id: 'music.deck' }]), 2500);
+        return;
+      }
+      if (was.follow && !st.follow && st.playing) {
+        say({ id: 'music.picked' });
+        return;
+      }
+      if (!was.muted && st.muted) {
+        say({ id: 'music.muted' });
+        return;
+      }
+      if (st.playing && st.follow && st.track !== was.track) {
+        const id = `music.track.${TRACKS[st.track].slug}`;
+        if (lineText(id) && !said.current.has(id) && Math.random() < 0.45) {
+          said.current.add(id);
+          window.setTimeout(() => say({ id }), 7000);
+        }
+      }
+    });
+  }, [ready, tourOpen, say, tellOnce]);
+
+  // Flying out to a nebula, arriving, and coming home
+  useEffect(() => {
+    if (!ready) return;
+    let visiting: string | null = null;
+    return onVela('nebula', (name) => {
+      const was = visiting;
+      visiting = name;
+      if (quietRef.current) return;
+      if (name) {
+        const beats: Beat[] = [];
+        if (!was) beats.push({ id: 'nebula.leaving' });
+        say(beats.length ? beats : { id: `nebula.${name}` }, true);
+        if (beats.length) {
+          window.setTimeout(() => {
+            if (visiting !== name) return;
+            const more: Beat[] = [{ id: `nebula.${name}` }];
+            if (tellOnce('nebula-swing')) more.push({ id: 'nebula.swing' });
+            say(more);
+          }, 6500);
+        }
+      } else if (was) {
+        window.setTimeout(() => say({ id: 'nebula.back' }), 2500);
+      }
+    });
+  }, [ready, say, tellOnce]);
+
+  // The idle time-lapse
+  useEffect(() => {
+    if (!ready) return;
+    return onVela('timelapse', ({ on, where }) => {
+      if (!on || quietRef.current || beatRef.current || !cool('timelapse', 300000)) return;
+      say({ id: where === 'horizon' ? 'timelapse.bh' : fresh('timelapse.') });
+    });
+  }, [ready, say, fresh, cool]);
+
+  // Pictures and postcards
+  useEffect(() => {
+    if (!ready) return;
+    const offShot = onVela('shot', ({ first }) => {
+      if (quietRef.current) return;
+      if (first) say({ id: 'shot.first' }, true);
+      else if (cool('shot', 20000)) say({ id: fresh('shot.taken.') }, true);
+    });
+    const offCard = onVela('postcard', () => {
+      if (quietRef.current) return;
+      window.setTimeout(() => say({ id: fresh('postcard.arrive.') }), 5200);
+    });
+    return () => {
+      offShot();
+      offCard();
+    };
+  }, [ready, say, fresh, cool]);
+
+  // Settings: a word when you open them, and an answer when you change how chatty she is there
+  useEffect(() => {
+    if (!ready) return;
+    return onVela('settings', () => {
+      settingsAt.current = performance.now();
+      if (!quietRef.current && cool('settings-open', 600000)) say({ id: fresh('settings.open.') }, true);
+    });
+  }, [ready, say, fresh, cool]);
+  const chattyWas = useRef(prefs.velaChatty);
+  useEffect(() => {
+    const was = chattyWas.current;
+    chattyWas.current = prefs.velaChatty;
+    if (!ready || was === prefs.velaChatty || performance.now() - settingsAt.current > 120000) return;
+    say({ id: prefs.velaChatty ? 'settings.chatty' : 'settings.quiet' }, true);
+  }, [prefs.velaChatty, ready, say]);
+
   // Tour: she narrates each step in her own words (voice only; the card shows the details)
   useEffect(() => {
     if (!tourStep) return;
-    const id = `tour.${tourStep.index}`;
+    const id = tourVoice(tourStep.index) ?? `tour.${tourStep.index}`;
     if (lineText(id)) say({ id }, true);
   }, [tourStep, say]);
   useEffect(() => {
@@ -698,8 +821,12 @@ export const Companion: React.FC<{
       beats.push({ id: Math.random() < 0.4 ? fresh('explore.newmoon.') : pick(idsWith('minor.')) });
     }
     if (secret) beats.push(offerSecret(secret));
+    const cat = CatalogueManager.getBody(a.name)?.category;
+    if ((cat === 'planet' || cat === 'moon') && tellOnce('worlds')) {
+      beats.push({ id: WORLD_SCALE === 1 ? 'worlds.true' : WORLD_SCALE > DEFAULT_WORLD_SCALE ? 'worlds.big.2' : 'worlds.big' });
+    }
     if (beats.length) window.setTimeout(() => say(beats, true), 1100);
-  }, [arrival, tourOpen, quiet, surfaceActive, factFor, offerSecret, say, fresh]);
+  }, [arrival, tourOpen, quiet, surfaceActive, factFor, offerSecret, say, fresh, tellOnce]);
 
   // Little reactions to what you change (not during the tour's own demos)
   const prev = useRef({ orbitsOn, constellationsOn, timeRate, lens, surface: surfaceActive });
@@ -822,7 +949,10 @@ export const Companion: React.FC<{
       // Little human sounds: a sigh, humming, a half-remembered joke
       if (roll < 0.18) say({ id: fresh('noise.') });
       else if (roll < 0.42) say({ id: fresh('idle.'), choices: menu() });
-      else if (roll < 0.52) say({ id: fresh(exploredRef.current.pct < 90 ? 'explore.tease.' : 'care.thanks.') });
+      else if (roll < 0.47 && !said.current.has('gallery.tip')) {
+        said.current.add('gallery.tip');
+        say({ id: 'gallery.tip' });
+      } else if (roll < 0.52) say({ id: fresh(exploredRef.current.pct < 90 ? 'explore.tease.' : 'care.thanks.') });
       else if (roll < 0.6) say({ id: fresh('care.', (id) => /^care\.(proud|sad|thanks|night)/.test(id)) });
       else if (roll < 0.82) say(talk());
       else say(joke());

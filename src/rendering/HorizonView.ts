@@ -1,3 +1,4 @@
+import { emitVela } from '../companion/events';
 import * as THREE from 'three';
 import { COSMIC_SCALE } from './Scale';
 import type { SagittariusAStar } from './SagittariusAStar';
@@ -197,7 +198,12 @@ export class HorizonView {
   /** Where the observer is, in units of r_s, and whether they are still standing on the sea. */
   public getStatus(): { rRs: number; onShore: boolean; timelapse: boolean } {
     const rs = this.bh.config.schwarzschildRadius;
-    return { rRs: this.pos.length() / rs, onShore: this.pos.distanceTo(this.eyeLocal) < 0.5, timelapse: this.idle > 0.5 };
+    const timelapse = this.idle > 0.5;
+    if (timelapse !== this.wasTimelapse) {
+      this.wasTimelapse = timelapse;
+      emitVela('timelapse', { on: timelapse, where: 'horizon' });
+    }
+    return { rRs: this.pos.length() / rs, onShore: this.pos.distanceTo(this.eyeLocal) < 0.5, timelapse };
   }
 
   /** From Settings: the idle sweep may run. */
@@ -207,6 +213,7 @@ export class HorizonView {
   private lastInput = performance.now();
   private idle = 0;
   private idleT = 0;
+  private wasTimelapse = false;
   private idleBase = { yaw: 0, pitch: 0 };
 
   private keys = new Set<string>();

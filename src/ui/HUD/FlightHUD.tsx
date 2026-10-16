@@ -12,6 +12,7 @@ import { Popover, ScaleDomain, ScaleLadder, Segmented, TimeDeck } from './Contro
 import { CatalogueScreen, ShowcaseControls } from './CatalogueScreen';
 import { AtlasLauncher } from './Atlas';
 import { VinylDeck, VinylFollower } from './VinylDeck';
+import { NEBULAE } from '../../rendering/NebulaSky';
 import { exploredStats } from './explored';
 import { SUN_SCALE, UNITS_PER_KM } from '../../rendering/Scale';
 
@@ -74,6 +75,24 @@ const REFERENCE_NAV_ORDER = [
   'Venus',
   'Mercury'
 ];
+
+// The nebulae in the left list: a short name and what they are
+const NEBULA_SHORT: Record<string, string> = {
+  'cosmic-cliffs': 'Cosmic Cliffs',
+  'mystic-mountain': 'Mystic Mountain',
+  helix: 'Helix',
+  'orion-cloud': 'Nursery',
+  'rosette-ring': 'Rosette',
+  'crab-shell': 'Remnant',
+  'veil-filaments': 'Veil',
+  'lagoon-lane': 'Lagoon',
+  'north-america': 'Drift',
+};
+const NEBULA_SUB: Record<string, string> = {
+  'cosmic-cliffs': '7,600 ly · Webb',
+  'mystic-mountain': '7,500 ly · Hubble',
+  helix: '650 ly · VISTA',
+};
 
 // Order from the Sun, for the monograph index ("03 / PLANET")
 const SUNWARD_ORDER = ['Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto'];
@@ -155,6 +174,12 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const showToast = useCallback((text: string) => setToast({ id: performance.now(), text }), []);
   const [atlasTab, setAtlasTab] = useState<AtlasTab>('worlds');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // The left list: the worlds, or the nebulae you can fly out to
+  const [navMode, setNavMode] = useState<'worlds' | 'nebulae'>('worlds');
+  const visitingNebula = telemetry?.nebula?.name ?? null;
+  useEffect(() => {
+    if (visitingNebula) setNavMode('nebulae');
+  }, [visitingNebula]);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const prefs = useSettings();
   // A picture: the shutter flashes, the frame goes to your Gallery
@@ -445,7 +470,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           ======================================================== */}
       <header className="hud-dim absolute top-0 left-0 right-0 flex items-start justify-between gap-4 px-4 md:px-7 pt-4 md:pt-5 z-40 hud-parallax-far">
         {/* Wordmark & chronometer */}
-        <div className="flex flex-col gap-2 pointer-events-auto min-w-0 hud-boot" style={{ ['--d' as string]: '80ms' }}>
+        <div className="flex flex-col gap-2 pointer-events-auto min-w-0 shrink-0 hud-boot" style={{ ['--d' as string]: '80ms' }}>
           <div
             className="flex items-baseline gap-3 relative group cursor-pointer w-fit"
             onClick={onResetView}
@@ -503,7 +528,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         {/* Scale ladder */}
         <div
           data-tour="ladder"
-          className={`hidden ${exploring ? '' : 'xl:flex'} flex-col items-center pointer-events-auto hud-boot`}
+          className={`hidden ${exploring ? '' : 'min-[1500px]:flex'} flex-1 min-w-0 flex-col items-center pointer-events-auto hud-boot`}
           style={{ ['--d' as string]: '260ms' }}
         >
           <ScaleLadder
@@ -548,6 +573,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             }}
             className="hud-icon-btn"
             title="Take a picture (P)"
+            data-tour="camera"
             aria-label="Take a picture"
           >
             <Camera size={12} />
@@ -596,6 +622,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             }}
             className={`hud-icon-btn ${settingsOpen ? 'is-on' : ''}`}
             title="Settings"
+            data-tour="settings"
             aria-label="Settings"
             aria-expanded={settingsOpen}
           >
@@ -678,7 +705,43 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             : 'opacity-0 -translate-x-8'
         }`}
       >
-        {REFERENCE_NAV_ORDER.map((planetName) => {
+        <div className="hud-navmode" role="tablist" aria-label="List" data-tour="navmode">
+          <button type="button" role="tab" aria-selected={navMode === 'worlds'} onClick={(e) => { e.stopPropagation(); setNavMode('worlds'); }}>Worlds</button>
+          <button type="button" role="tab" aria-selected={navMode === 'nebulae'} onClick={(e) => { e.stopPropagation(); setNavMode('nebulae'); }}>Nebulae</button>
+          <span className="ink" style={{ transform: navMode === 'nebulae' ? 'translateX(100%)' : 'none' }} />
+        </div>
+        {navMode === 'nebulae' && NEBULAE.map((n) => {
+          const isSelected = visitingNebula === n.name;
+          return (
+            <button
+              key={n.name}
+              aria-current={isSelected ? 'true' : undefined}
+              aria-label={`Fly to ${n.title}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (!onNebula?.(n.name)) showToast('That nebula is still arriving, try again in a moment');
+              }}
+              className="flex items-center gap-3.5 group text-left cursor-pointer transition-all duration-200 outline-none focus-visible:ring-1 focus-visible:ring-white/60 rounded hud-nav-in"
+            >
+              <div className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center transition-all ${isSelected ? 'border-white' : 'border-white/35 group-hover:border-white/60'}`}>
+                {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+              </div>
+              <div
+                className={`w-6 h-6 rounded-full bg-cover bg-center flex-shrink-0 transition-all duration-300 ${isSelected ? 'opacity-100 scale-125' : 'opacity-70 group-hover:opacity-100'}`}
+                style={{ backgroundImage: `url(${baseUrl}textures/nebulae/${n.name}_lite.webp)`, backgroundColor: '#020306', backgroundSize: NEBULA_SUB[n.name] ? 'cover' : '210%', boxShadow: isSelected ? '0 0 12px rgba(255,200,120,0.45)' : 'inset 0 0 0 1px rgba(255,255,255,0.08)' }}
+              />
+              <div className="flex flex-col">
+                <span className={`text-[11px] uppercase tracking-[0.22em] transition-colors duration-200 ${isSelected ? 'text-white font-medium' : 'text-white/40 group-hover:text-white/80'}`}>
+                  {NEBULA_SHORT[n.name] ?? n.title}
+                </span>
+                <span className={`text-[9px] tracking-wider font-light transition-colors duration-200 ${isSelected ? 'text-white/50' : 'text-white/20 group-hover:text-white/40'}`}>
+                  {NEBULA_SUB[n.name] ?? 'Imagined'}
+                </span>
+              </div>
+            </button>
+          );
+        })}
+        {navMode === 'worlds' && REFERENCE_NAV_ORDER.map((planetName) => {
           const itemNarrative = PLANET_NARRATIVES[planetName];
           const isSelected = activeTargetName === planetName;
           const thumbUrl = `${baseUrl}${itemNarrative?.textureThumb || 'textures/2k_moon.jpg'}`;
@@ -1030,6 +1093,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           setTimeRate: (m) => onSetTimeMultiplier(m),
           timeRate: multiplier,
           openOptics: (o) => setIsOpticsOpen(o),
+          showNebulae: (on) => setNavMode(on ? 'nebulae' : 'worlds'),
         }}
       />
 

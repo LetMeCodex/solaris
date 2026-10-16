@@ -1,3 +1,4 @@
+import { emitVela } from '../companion/events';
 import * as THREE from 'three';
 import type { Postcard } from '../data/Postcards';
 import { settings, Settings } from '../ui/settings';
@@ -527,6 +528,7 @@ export class SolarSystemScene {
     if (this.visiting && this.visiting !== stage) this.visiting.setVisible(false);
     this.visiting = stage;
     stage.setVisible(true);
+    emitVela('nebula', name);
     this.starfield.nebulae.hide(name);
     this.explorer.clearLandmark();
     this.cameraRig.focusCinematic(stage.group, stage.radius * (stage.spec.frame ?? 1), `nebula:${stage.spec.name}`, 3600);
@@ -537,6 +539,7 @@ export class SolarSystemScene {
     if (!this.visiting) return;
     this.visiting.setVisible(false);
     this.visiting = null;
+    emitVela('nebula', null);
     this.starfield.nebulae.hide(null);
   }
 
@@ -564,6 +567,7 @@ export class SolarSystemScene {
     this.cameraRig.focusCinematic(b.bodyGroup, b.visualRadius, c.body, 150, undefined, b.definition.physical.meanRadiusKm);
     this.pendingSkyView = { body: c.body, lat: c.lat, lon: c.lon, place: c.place };
     this.pendingPostcard = c;
+    emitVela('postcard', c.id);
     return true;
   }
 

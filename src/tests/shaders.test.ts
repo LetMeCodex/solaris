@@ -25,7 +25,7 @@ describe('Astrophysical Shaders & Materials Suite', () => {
 
     const prominences = SolarShader.createProminencesGroup(14.0);
     expect(prominences).toBeInstanceOf(THREE.Group);
-    expect(prominences.children.length).toBe(9);
+    expect(prominences.children.length).toBe(14);
     prominences.children.forEach((child) => {
       expect(child).toBeInstanceOf(THREE.Mesh);
       const mesh = child as THREE.Mesh;

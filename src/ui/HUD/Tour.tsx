@@ -12,12 +12,15 @@ export interface TourDemos {
   setTimeRate?: (m: number) => void;
   timeRate?: number;
   openOptics?: (open: boolean) => void;
+  showNebulae?: (on: boolean) => void;
 }
 
 interface Step {
   target: string | null; // data-tour id; null = centred card
   title: string;
   body: string;
+  /** Vela's recorded line for this step. */
+  voice: string;
   demo?: (d: TourDemos) => (() => void) | void;
 }
 
@@ -25,21 +28,40 @@ const STEPS: Step[] = [
   {
     target: null,
     title: 'Welcome aboard',
+    voice: 'tour.0',
     body: 'This is the real Solar System, at today\'s positions, computed from NASA JPL orbital elements. Every position, distance and light-delay you will see is calculated, not invented. A short briefing on your instruments follows.',
   },
   {
     target: 'nav',
     title: 'Destinations',
+    voice: 'tour.1',
     body: 'Every major world, out to the black hole at the centre of the Milky Way. Pick one and the camera flies there; longer journeys take longer, because the distances are real.',
+  },
+  {
+    target: 'navmode',
+    title: 'Worlds & nebulae',
+    voice: 'tour.13',
+    body: 'Switch the list between the worlds and the nebulae. Pick a nebula and you leave the Solar System to stand in front of it: it grows from a smudge on the sky into something that fills it, and it moves the way it really does. Drag to swing around and see its layers.',
+    demo: (d) => {
+      const a = setTimeout(() => d.showNebulae?.(true), 1100);
+      const b = setTimeout(() => d.showNebulae?.(false), 4200);
+      return () => {
+        clearTimeout(a);
+        clearTimeout(b);
+        d.showNebulae?.(false);
+      };
+    },
   },
   {
     target: 'ladder',
     title: 'Scale ladder',
+    voice: 'tour.2',
     body: 'Jump between orders of magnitude: a planet\'s skyline, the inner and outer system, the nearby stars, the whole galaxy, Sgr A*. The marker shows the scale you are at now.',
   },
   {
     target: 'layers',
     title: 'Layers',
+    voice: 'tour.3',
     body: 'Overlay switches for orbits, constellation figures and the asteroid belt. Watch: the orbits switch off, then back on.',
     demo: (d) => {
       const a = setTimeout(() => d.toggleOrbits?.(), 900);
@@ -53,6 +75,7 @@ const STEPS: Step[] = [
   {
     target: 'optics',
     title: 'Optics',
+    voice: 'tour.4',
     body: 'Choose the camera lens (cinematic, fisheye, clean), bloom and the layers. Every distance is true; the worlds themselves are drawn larger than life so you can feel their size (change it in Settings). Small worlds carry a marker so you can find them. Keyboard shortcuts live here too.',
     demo: (d) => {
       const a = setTimeout(() => d.openOptics?.(true), 700);
@@ -65,11 +88,31 @@ const STEPS: Step[] = [
   {
     target: 'catalogue',
     title: 'Atlas',
-    body: 'Every planet, moon and small world, with a live cinematic view of each system behind it, how much of the Solar System you have explored, and the Gallery: postcards from real places you can step into. Press / to open it, and P to take a picture of your own.',
+    voice: 'tour.5',
+    body: 'Every planet, moon and small world, with a live cinematic view of each system behind it and how much you have explored. The Nebulae tab flies you out to them; the Gallery holds postcards from real places (step into any of them) and the pictures you take. Press / to open it from anywhere.',
+  },
+  {
+    target: 'record',
+    title: 'Soundtrack',
+    voice: 'tour.14',
+    body: 'The Solaris soundtrack on a turning record. Every world has its own track, and the music changes the moment you choose a new destination. Tap the record for the album, the volume, and to play it through.',
+  },
+  {
+    target: 'camera',
+    title: 'Camera',
+    voice: 'tour.15',
+    body: 'Press P, or this shutter, to take a picture of the view without the interface. It goes to your Gallery in the Atlas; a picture taken while standing on a world remembers the place and moment, so you can step back into it.',
+  },
+  {
+    target: 'settings',
+    title: 'Settings',
+    voice: 'tour.16',
+    body: 'Everything is yours to tune: Vela\'s voice and how chatty she is, the music, how large the worlds are drawn, the nebulae, labels and layers, the lens, idle motion, and which instruments are shown.',
   },
   {
     target: 'time',
     title: 'Time lever',
+    voice: 'tour.6',
     body: 'Time is a throttle: from real time up to a year per second. The ring around play spins faster as you push it. Watch the planets move as it jumps to a day per second, then comes back.',
     demo: (d) => {
       const prev = d.timeRate ?? 1;
@@ -85,36 +128,50 @@ const STEPS: Step[] = [
   {
     target: 'date',
     title: 'Travel in time',
+    voice: 'tour.7',
     body: 'Jump to J2000, back to now, or to any date. The rolling digits show the simulation date.',
   },
   {
     target: 'logbook',
     title: 'Logbook',
+    voice: 'tour.8',
     body: 'Each world you reach lights a diamond and adds to the distance you have flown. It is saved in this browser.',
   },
   {
     target: 'scope',
     title: 'Attitude scope',
+    voice: 'tour.9',
     body: 'Your orientation against the plane of the planets: Z is ecliptic north, ☉ marks the Sun, the mint arrow is where you are travelling.',
   },
   {
     target: 'plot',
     title: 'Galactic plot',
+    voice: 'tour.10',
     body: 'Where you are in the Milky Way: the Sun 27,000 light-years from Sgr A*, and the Solar System magnified a billion times in the lens. Hover to see the arms; click any world to fly there.',
   },
   {
     target: 'monograph',
     title: 'Dossier',
+    voice: 'tour.11',
     body: 'Each arrival brings a short dossier: distance from the Sun, size, length of day and how long a signal takes from Earth. Read more opens the full record.',
   },
   {
     target: null,
     title: 'You are cleared for departure',
-    body: 'Drag to look around, scroll to approach, Esc for the overview, H hides the interface. At Sgr A*, try the Horizon viewpoint and fly down towards the event horizon. Replay this briefing any time with the ? button.',
+    voice: 'tour.12',
+    body: 'Drag to look around, scroll to approach, Esc for the overview, H hides the interface. Stand on a world and look up, and leave it a while: the sky turns as a time-lapse. At Sgr A*, try the Horizon viewpoint. Replay this briefing any time with the ? button.',
   },
 ];
 
 const KEY = 'solaris.tour.v1';
+
+/** Vela's line for a step of the briefing (steps can be skipped at small sizes; the index is the step's). */
+export function tourVoice(index: number): string | null {
+  return STEPS[index]?.voice ?? null;
+}
+
+/** How many steps the briefing has. */
+export const TOUR_STEPS = (): number => STEPS.length;
 
 export function tourSeen(): boolean {
   try {

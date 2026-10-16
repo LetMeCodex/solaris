@@ -4,6 +4,7 @@ import { factIds, idsWith, lineText, SECRETS, VELA_LINES, secretsAt } from '../c
 import { EXPLORE_MILESTONES, exploreStatusId, FAREWELL } from '../ui/HUD/Companion';
 import { SKY_DESTINATIONS } from '../ui/HUD/SkyDestinations';
 import { LANDMARKS } from '../explorer/Landmarks';
+import { TOUR_STEPS, tourVoice } from '../ui/HUD/Tour';
 
 const RECORDINGS = Object.keys(import.meta.glob('../../public/voice/vela/*.mp3')).map((k) => k.split('/').pop());
 
@@ -38,7 +39,8 @@ describe('Vela', () => {
     for (const w of ['Sun', 'Mercury', 'Venus', 'Earth', 'Moon', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto', 'Sagittarius A*']) {
       expect(factIds(w).length, w).toBeGreaterThan(0);
     }
-    expect(idsWith('tour.').length).toBe(13);
+    expect(idsWith('tour.').length).toBe(TOUR_STEPS());
+    for (let i = 0; i < TOUR_STEPS(); i++) expect(VELA_LINES[tourVoice(i)!], `step ${i}`).toBeTruthy();
     expect(secretsAt('Saturn').length).toBeGreaterThan(1);
   });
 

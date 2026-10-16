@@ -1,3 +1,4 @@
+import { emitVela } from '../../companion/events';
 import React, { useEffect, useState } from 'react';
 import { music, MusicState } from '../../audio/music';
 import { DEFAULT_WORLD_SCALE, WORLD_SCALE, WORLD_SCALE_KEY, WORLD_SCALE_OPTIONS } from '../../rendering/Scale';
@@ -77,6 +78,10 @@ export const SettingsPanel: React.FC<Props> = ({ open, onClose, lens, onSetLens,
   const s = useSettings();
   const m = useMusic();
   const [worldScale, setWorldScale] = useState(WORLD_SCALE);
+
+  useEffect(() => {
+    if (open) emitVela('settings', true);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;

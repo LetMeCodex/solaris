@@ -118,9 +118,10 @@ export class BodyMarkers {
       cands.push({ b, x: p.x, y: p.y, prio, alpha, label: true });
     }
 
-    // Declutter: most important first; drop markers sitting on top of a placed one
+    // Declutter: most important first; drop markers sitting on top of a placed one, and never
+    // draw one over the interface (header, world list, time bar, panels)
     cands.sort((a, b) => b.prio - a.prio);
-    const placed: Placed[] = [];
+    const placed: Placed[] = [...this.hudZones()];
     let minor = 0;
     for (const c of cands) {
       if (this.used >= BodyMarkers.MAX) break;
@@ -160,6 +161,36 @@ export class BodyMarkers {
       }
     }
   }
+
+  private zones: Placed[] = [];
+  private zonesAt = 0;
+
+  /** Screen boxes of the interface panels (re-read twice a second; they rarely move). */
+  private hudZones(): Placed[] {
+    const now = performance.now();
+    if (now - this.zonesAt < 500) return this.zones;
+    this.zonesAt = now;
+    const host = this.root.getBoundingClientRect();
+    this.zones = [];
+    document.querySelectorAll<HTMLElement>(BodyMarkers.HUD_SELECTOR).forEach((el) => {
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2 || getComputedStyle(el).visibility === 'hidden') return;
+      this.zones.push({ x0: r.left - host.left - 6, y0: r.top - host.top - 4, x1: r.right - host.left + 6, y1: r.bottom - host.top + 4 });
+    });
+    return this.zones;
+  }
+
+  /** Interface panels markers must stay clear of. */
+  public static readonly HUD_SELECTOR = [
+    '.hud-root header > *',
+    '.hud-root nav',
+    '.hud-root footer',
+    '.hud-root [data-tour="plot"]',
+    '.hud-root .hud-frame',
+    '.vela-orb',
+    '.vela-dialog',
+    '.neb-visit',
+  ].join(', ');
 
   public dispose(): void {
     this.root.remove();

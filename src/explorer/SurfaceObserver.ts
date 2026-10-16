@@ -1,3 +1,4 @@
+import { emitVela } from '../companion/events';
 import * as THREE from 'three';
 import { SkyAtmosphere, atmosphereFor, AtmosphereModel, transmittance } from './SkyAtmosphere';
 import { SkyBodies, SkyBodySource, SkyObjectInfo } from './SkyBodies';
@@ -280,6 +281,17 @@ export class SurfaceObserver {
     this.touch();
   }
 
+  private wasTimelapse = false;
+  /** Whether the time-lapse is running (and tell Vela when that changes). */
+  private timelapseOn(): boolean {
+    const on = this.idle > 0.5;
+    if (on !== this.wasTimelapse) {
+      this.wasTimelapse = on;
+      emitVela('timelapse', { on, where: 'surface' });
+    }
+    return on;
+  }
+
   /** Frame an exact view (a postcard): compass heading, height above the horizon, field of view. */
   public setView(headingDeg: number, pitchDeg: number, fovDeg: number = DEFAULT_FOV): void {
     this.pendingAim = null;
@@ -488,7 +500,7 @@ export class SurfaceObserver {
       atmosphereLabel: this.model.label,
       sunAltDeg: sunAlt,
       sunAzDeg: sunAz,
-      timelapse: this.idle > 0.5,
+      timelapse: this.timelapseOn(),
       objects: this.objects
         .filter((o) => o.altDeg > 0 && o.name !== b.name && (o.magnitude < 6.5 || o.diameterArcsec > 60))
         .sort((a, c) => a.magnitude - c.magnitude)

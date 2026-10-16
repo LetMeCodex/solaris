@@ -1136,7 +1136,7 @@
 .vinyl-deck { position: relative; z-index: 36; pointer-events: auto; }
 .vd-launch { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 2px 0 0; background: none; border: 0; cursor: pointer; color: #fff; }
 .vd-meta { display: none; flex-direction: column; align-items: flex-end; gap: 3px; max-width: 150px; opacity: 0.72; transition: opacity 0.3s ease; }
-@media (min-width: 1280px) { .vd-meta { display: flex; } }
+@media (min-width: 1680px) { .vd-meta { display: flex; } }
 .vd-launch:hover .vd-meta, .vinyl-deck.is-open .vd-meta { opacity: 1; }
 .vd-kicker { display: inline-flex; align-items: center; gap: 6px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 8px; letter-spacing: 0.22em; text-transform: uppercase; color: rgba(182, 228, 203, 0.75); }
 .vd-title { font-family: 'Montserrat', ui-sans-serif, sans-serif; font-size: 10px; font-weight: 400; letter-spacing: 0.08em; color: #eef2ee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
@@ -1383,3 +1383,12 @@
 .neb-visit-hint { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 8.5px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(182, 228, 203, 0.75); }
 .neb-visit .gal-ghost { align-self: flex-start; margin-top: 4px; }
 .neb-card img { background: #020306; }
+
+/* The left list: worlds or nebulae */
+.hud-navmode { position: relative; display: grid; grid-template-columns: 1fr 1fr; width: 168px; margin: 0 0 6px 0; padding: 3px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.1); background: rgba(6, 8, 12, 0.4); backdrop-filter: blur(6px); }
+.hud-navmode button { position: relative; z-index: 1; padding: 5px 0; font-size: 8.5px; letter-spacing: 0.24em; text-transform: uppercase; color: rgba(236, 242, 239, 0.5); background: none; border: 0; cursor: pointer; transition: color 0.25s; }
+.hud-navmode button[aria-selected='true'] { color: #10140f; }
+.hud-navmode button:not([aria-selected='true']):hover { color: #fff; }
+.hud-navmode .ink { position: absolute; left: 3px; top: 3px; bottom: 3px; width: calc(50% - 3px); border-radius: 999px; background: linear-gradient(90deg, #ffe2ae, #ffd28a); box-shadow: 0 0 14px rgba(255, 210, 138, 0.35); transition: transform 0.45s cubic-bezier(0.2, 0.9, 0.2, 1); }
+.hud-nav-in { animation: hud-nav-in 0.45s cubic-bezier(0.2, 0.9, 0.2, 1) both; }
+@keyframes hud-nav-in { from { opacity: 0; transform: translateX(-10px); } }
