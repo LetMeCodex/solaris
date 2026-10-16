@@ -1392,3 +1392,18 @@
 .hud-navmode .ink { position: absolute; left: 3px; top: 3px; bottom: 3px; width: calc(50% - 3px); border-radius: 999px; background: linear-gradient(90deg, #ffe2ae, #ffd28a); box-shadow: 0 0 14px rgba(255, 210, 138, 0.35); transition: transform 0.45s cubic-bezier(0.2, 0.9, 0.2, 1); }
 .hud-nav-in { animation: hud-nav-in 0.45s cubic-bezier(0.2, 0.9, 0.2, 1) both; }
 @keyframes hud-nav-in { from { opacity: 0; transform: translateX(-10px); } }
+
+/* The Solaris mark beside the title */
+.sol-logo { flex-shrink: 0; overflow: visible; filter: drop-shadow(0 0 6px rgba(220, 171, 118, 0.28)); transition: filter 0.4s, transform 0.6s cubic-bezier(0.2, 0.9, 0.2, 1); }
+.group:hover .sol-logo { filter: drop-shadow(0 0 10px rgba(240, 190, 130, 0.6)); transform: rotate(-12deg) scale(1.06); }
+.sol-logo-orbit { animation: sol-logo-orbit linear infinite; }
+.sol-logo-star { animation: sol-logo-twinkle 3.2s ease-in-out infinite; }
+.sol-logo-glow { animation: sol-logo-glow 4.6s ease-in-out infinite; transform-origin: 44.6px 50px; }
+.sol-logo-sun { animation: sol-logo-sun 4.6s ease-in-out infinite; }
+@keyframes sol-logo-orbit { to { transform: rotate(-360deg); } }
+@keyframes sol-logo-twinkle { 0%, 100% { transform: scale(0.78) rotate(0deg); opacity: 0.8; } 50% { transform: scale(1.08) rotate(22.5deg); opacity: 1; } }
+@keyframes sol-logo-glow { 0%, 100% { opacity: 0.35; transform: scale(0.92); } 50% { opacity: 0.9; transform: scale(1.08); } }
+@keyframes sol-logo-sun { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.025); } }
+@media (prefers-reduced-motion: reduce) {
+  .sol-logo-orbit, .sol-logo-star, .sol-logo-glow, .sol-logo-sun { animation: none; }
+}

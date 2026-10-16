@@ -4,6 +4,7 @@ import { CatalogueManager } from '../../data/CatalogueManager';
 import { getPlanetNarrative, PLANET_NARRATIVES } from '../../data/PlanetNarratives';
 import { LENS_ORDER, LENS_PROFILES, LensProfileName } from '../../rendering/LensPipeline';
 import { ExplorerPanel, type SlateTab } from './ExplorerPanel';
+import { SolarisLogo } from '../brand/SolarisLogo';
 import { SurfacePanel, SurfaceAction } from './SurfacePanel';
 import { AttitudeScope, DecodeText, TargetLock, ViewStateGetter } from './Instruments';
 import { ArrivalStamp, fmtDuration, LOG_WORLDS, SystemPlot, useLogbook, useTransitState, VoyageConsole } from './Voyage';
@@ -490,8 +491,9 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             {/* Luminous stellar aura behind title */}
             <div className="absolute -inset-2 bg-gradient-to-r from-amber-500/10 via-white/5 to-transparent rounded-lg blur-md opacity-40 group-hover:opacity-90 transition-opacity animate-corona-aura pointer-events-none" />
 
-            <h1 className="relative text-xl md:text-2xl uppercase tracking-[0.52em] font-extralight drop-shadow-md select-none animate-solaris-shimmer">
-              SOLARIS
+            <h1 className="relative flex items-center gap-3 md:gap-3.5 text-xl md:text-2xl uppercase tracking-[0.52em] font-extralight drop-shadow-md select-none">
+              <SolarisLogo className="w-7 h-7 md:w-[34px] md:h-[34px]" />
+              <span className="animate-solaris-shimmer">SOLARIS</span>
             </h1>
           </div>
 
