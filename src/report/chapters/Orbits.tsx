@@ -22,19 +22,60 @@ const Clocks: React.FC = () => {
   );
 };
 
-const ACCURACY: Array<[string, string, string]> = [
-  ['8 planets', 'JPL secular-rate elements (Standish), valid 1800–2050', '< 0.25° vs a VSOP87-based ephemeris in 2026 and 2040, typically < 0.05°'],
-  ["Earth's Moon", 'JPL mean elements with 6.0 yr apsidal and 18.6 yr nodal precession', '< 2° vs JPL Horizons (0.7° on 2026-10-14)'],
-  ['21 major moons', 'JPL Horizons osculating elements, 2026-10-14 TDB', 'exact at the epoch; Titan within 5° propagated back 26.8 years'],
-  ['Pluto, Ceres, 9 asteroids', 'JPL Small-Body Database osculating elements', 'two-body; degrades slowly away from each epoch'],
+interface Acc { who: string; how: string; lo?: number; hi?: number; at?: number; note: string }
+const ACCURACY: Acc[] = [
+  { who: '8 planets', how: 'JPL secular-rate elements (Standish), valid 1800–2050', lo: 0.05, hi: 0.25, note: 'Under 0.25° against a VSOP87-based ephemeris in 2026 and 2040; typically under 0.05°.' },
+  { who: "Earth's Moon", how: 'JPL mean elements, with 6.0-year apsidal and 18.6-year nodal precession', lo: 0.7, hi: 2, note: 'Under 2° against JPL Horizons; 0.7° on 14 October 2026.' },
+  { who: '21 major moons', how: 'JPL Horizons osculating elements, epoch 2026-10-14 TDB', at: 5, note: 'Exact at the epoch. Titan, propagated back 26.8 years, is still within 5°.' },
+  { who: 'Pluto, Ceres, 9 asteroids', how: 'JPL Small-Body Database osculating elements', note: 'Two-body orbits: they drift slowly away from each epoch. Not plotted.' },
 ];
+/** Position on the shared log axis, 0.01° to 10°, as a percentage. */
+const ax = (deg: number) => ((Math.log10(deg) + 2) / 3) * 100;
+const REFS_DEG: Array<[number, string]> = [[1 / 60, 'the eye can just split 1′'], [0.52, 'the full Moon'], [10, 'a fist at arm’s length']];
+
+const Accuracy: React.FC = () => (
+  <div className="acc">
+    <div className="acc-axis">
+      <span />
+      <div className="acc-scale">
+        {[0.01, 0.1, 1, 10].map((d) => <i key={d} style={{ left: `${ax(d)}%` }}>{d < 1 ? `${d}°` : `${d}°`}</i>)}
+      </div>
+    </div>
+    {ACCURACY.map((a) => (
+      <div key={a.who} className={`acc-row ${a.lo === undefined && a.at === undefined ? 'is-none' : ''}`}>
+        <div className="acc-who">
+          <b>{a.who}</b>
+          <span>{a.how}</span>
+        </div>
+        <div className="acc-strip">
+          {REFS_DEG.map(([d]) => <i key={d} className="acc-ref" style={{ left: `${ax(d)}%` }} />)}
+          {a.lo !== undefined && a.hi !== undefined && (
+            <>
+              <span className="acc-bar" style={{ left: `${ax(a.lo)}%`, width: `${ax(a.hi) - ax(a.lo)}%` }} />
+              <span className="acc-pt lo" style={{ left: `${ax(a.lo)}%` }} />
+              <span className="acc-pt" style={{ left: `${ax(a.hi)}%` }} />
+            </>
+          )}
+          {a.at !== undefined && <span className="acc-pt" style={{ left: `${ax(a.at)}%` }} />}
+          <p className="acc-note">{a.note}</p>
+        </div>
+      </div>
+    ))}
+    <div className="acc-axis acc-legend">
+      <span />
+      <div className="acc-scale">
+        {REFS_DEG.map(([d, l]) => <em key={d} style={{ left: `${ax(d)}%` }}>{l}</em>)}
+      </div>
+    </div>
+  </div>
+);
 
 export const Orbits: React.FC = () => (
   <Chapter
     id="orbits"
     n="01"
     kicker="Ephemerides"
-    title="Where everything is, right now"
+    title="Where everything *is*, right now"
     intro="Chapter one: where everything is. Every planet you see in Solaris is where NASA says it is, this second. Let me show you how."
     mood="excited"
   >
@@ -55,7 +96,7 @@ export const Orbits: React.FC = () => (
       n={1}
       title="Live orrery · Solaris's own solver, running in this page"
       vela="This isn't an animation. It's the same Kepler solver that runs Solaris, fed NASA's elements, recomputed every frame. Drag the slider back to 1800 if you like, the numbers hold."
-      caption={<><b>The eight planets, computed in your browser.</b> Top-down on the ecliptic, distances on a log scale so Mercury and Neptune fit on one screen. Drag the slider anywhere between 1800 and 2050, the range the elements are valid for. Hover a planet for its distance, speed and light-time.</>}
+      caption={<><b>The eight planets, computed in your browser.</b> Drawn with the same surface maps Solaris uses, at their real inclinations, with distances on a log scale so Mercury and Neptune fit on one screen. Scroll to tilt from above the ecliptic into its plane, or drag to turn it yourself. Drag the slider anywhere between 1800 and 2050, the range the elements are valid for. Hover a planet for its distance, speed and light-time.</>}
     >
       <Orrery />
     </Fig>
@@ -93,15 +134,8 @@ export const Orbits: React.FC = () => (
         A model you can't check is a guess. Solaris's test suite compares its positions against independent references, and the numbers are below. This is an explorer, not a navigation-grade ephemeris: a spacecraft needs metres, a visitor needs to see Jupiter in the right part of the sky.
       </p>
     </div>
-    <Fig n={3} wide={false} title="Accuracy, checked by the test suite" vela="Every one of these numbers is enforced by a test. If an edit ever moved the planets more than this, the build would fail before it reached you." caption={<>From <code>src/tests/ephemerisAccuracy.test.ts</code>. Directions are heliocentric (planets) or parent-centred (moons).</>}>
-      <table className="dtable">
-        <thead><tr><th>Bodies</th><th>Elements</th><th>Checked accuracy</th></tr></thead>
-        <tbody>
-          {ACCURACY.map(([a, b, c]) => (
-            <tr key={a}><td>{a}</td><td>{b}</td><td className="num">{c}</td></tr>
-          ))}
-        </tbody>
-      </table>
+    <Fig n={3} title="Accuracy, checked by the test suite" vela="Every one of these numbers is enforced by a test. If an edit ever moved the planets more than this, the build would fail before it reached you." caption={<>From <code>src/tests/ephemerisAccuracy.test.ts</code>. Directions are heliocentric (planets) or parent-centred (moons). The axis is logarithmic: each step is ten times larger. The lines mark sizes you already know.</>}>
+      <Accuracy />
     </Fig>
     <VelaNote>Fun fact: Earth's day and night in Solaris match the real ones, because Earth's spin comes from the IAU rotation model too. Go check your own city.</VelaNote>
   </Chapter>

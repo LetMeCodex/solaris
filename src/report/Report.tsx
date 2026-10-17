@@ -5,6 +5,7 @@ import { ScrollSmoother } from 'gsap/ScrollSmoother';
 import { useGSAP } from '@gsap/react';
 import { Abstract } from './Hero';
 import { ScrollHero } from './ScrollHero';
+import { SkyBackground } from './SkyBackground';
 import { Mascot } from './vela/Mascot';
 import { vela } from './vela/bus';
 import { CHAPTERS } from './chapters';
@@ -108,6 +109,7 @@ export const Report: React.FC = () => {
   });
   return (
     <>
+      <SkyBackground />
       <LightClock />
       <Toc />
       <Mascot />

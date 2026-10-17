@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { Chapter, Fig, T, Cite, VelaNote, Loop } from '../kit';
@@ -27,19 +27,20 @@ const GROUPS: Array<[string, string]> = [
   ['farewell', 'The farewell at 100%'],
 ];
 
+/** A unit chart: every square is one recorded line, grouped by what it is for. */
 const LineChart: React.FC = () => {
   const ref = useRef<HTMLDivElement>(null);
-  const counts = useMemo(() => {
+  const rows = useMemo(() => {
     const c: Record<string, number> = {};
     for (const k of Object.keys(lines)) c[k.split('.')[0]] = (c[k.split('.')[0]] ?? 0) + 1;
-    return c;
+    const known = GROUPS.reduce((a, [g]) => a + (c[g] ?? 0), 0);
+    const r: Array<[string, string, number]> = GROUPS.map(([g, l]) => [g, l, c[g] ?? 0] as [string, string, number]).sort((a, b) => b[2] - a[2]);
+    r.push(['other', 'Everything else: postcards, nebulae, the camera, menus…', Object.keys(lines).length - known]);
+    return r;
   }, []);
-  const known = GROUPS.reduce((a, [g]) => a + (counts[g] ?? 0), 0);
-  const rows: Array<[string, string, number]> = [...GROUPS.map(([g, l]) => [g, l, counts[g] ?? 0] as [string, string, number]), ['other', 'Everything else: postcards, nebulae, the camera, menus…', Object.keys(lines).length - known]];
-  const max = Math.max(...rows.map((r) => r[2]));
   useGSAP(
     () => {
-      gsap.from('.lc-bar-fill', { scaleX: 0, transformOrigin: 'left', stagger: 0.04, duration: 1.1, ease: 'expo.out', scrollTrigger: { trigger: ref.current, start: 'top 75%' } });
+      gsap.from('.vl-u', { opacity: 0, scale: 0, duration: 0.5, ease: 'back.out(2)', stagger: { each: 0.0025, from: 'start' }, scrollTrigger: { trigger: ref.current, start: 'top 75%' } });
     },
     { scope: ref }
   );
@@ -49,12 +50,13 @@ const LineChart: React.FC = () => {
     vela.say({ text: `“${clean(lines[k])}” (that's ${k})`, target: el, mood: g === 'fright' ? 'scared' : g === 'farewell' ? 'sleepy' : g === 'joke' ? 'happy' : 'love', priority: 2, hold: 3.4 });
   };
   return (
-    <div ref={ref} className="lc-chart">
+    <div ref={ref} className="vl">
+      <div className="vl-key"><i className="vl-u" /> one square is one recorded line · {Object.keys(lines).length} in all · hover a row to hear what it sounds like</div>
       {rows.map(([g, l, n]) => (
-        <div key={g} className="lc-row" onPointerEnter={(e) => sample(g, e.currentTarget)} tabIndex={0} onFocus={(e) => sample(g, e.currentTarget)}>
-          <span className="lc-label">{l}</span>
-          <span className="lc-bar"><span className="lc-bar-fill" style={{ width: `${(n / max) * 100}%` }} /></span>
-          <span className="lc-n">{n}</span>
+        <div key={g} className={`vl-row ${g === 'other' ? 'is-other' : ''}`} onPointerEnter={(e) => sample(g, e.currentTarget)} tabIndex={0} onFocus={(e) => sample(g, e.currentTarget)}>
+          <span className="vl-label">{l}</span>
+          <span className="vl-units">{Array.from({ length: n }, (_, i) => <i key={i} className="vl-u" />)}</span>
+          <span className="vl-n">{n}</span>
         </div>
       ))}
     </div>
@@ -101,8 +103,22 @@ const Voices: React.FC = () => {
   );
 };
 
+const PL_LINE = 'joke.2';
+
+/**
+ * The voice pipeline, around one real take: its five stages on a rail, and the finished recording
+ * decoded in the browser, drawn as a waveform with its measured level and the [laugh] the Turbo
+ * model performed.
+ */
 const Pipeline: React.FC = () => {
-  const ref = useRef<SVGSVGElement>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const cv = useRef<HTMLCanvasElement>(null);
+  const head = useRef<HTMLDivElement>(null);
+  const [info, setInfo] = useState<{ dur: number; peak: number; rms: number } | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const audio = useRef<HTMLAudioElement | null>(null);
+  const peaks = useRef<Float32Array | null>(null);
+  const base = import.meta.env.BASE_URL;
   const STEPS: Array<[string, string]> = [
     ['The line', '572 written lines, some with sound tags like [laugh] or [sniff]'],
     ['Speech', 'Chatterbox text-to-speech; tagged lines go through its Turbo model, which performs the sounds'],
@@ -110,38 +126,116 @@ const Pipeline: React.FC = () => {
     ['Finishing', 'Long pauses trimmed to a breath, loudness levelled to −17 LUFS, soft fades'],
     ['Checked', 'If a take is far too long or short for its words, it is re-recorded with another seed'],
   ];
+
+  const draw = (progress: number) => {
+    const c = cv.current;
+    const p = peaks.current;
+    if (!c || !p) return;
+    const dpr = Math.min(2, window.devicePixelRatio);
+    const W = (c.width = Math.round(c.clientWidth * dpr));
+    const H = (c.height = Math.round(c.clientHeight * dpr));
+    const g = c.getContext('2d')!;
+    const n = p.length;
+    const bw = W / n;
+    for (let i = 0; i < n; i++) {
+      const h = Math.max(1.5 * dpr, p[i] * H * 0.92);
+      g.fillStyle = i / n <= progress ? '#6dfcc0' : 'rgba(243,231,211,0.28)';
+      g.fillRect(i * bw + bw * 0.18, (H - h) / 2, Math.max(1, bw * 0.64), h);
+    }
+  };
+
+  useEffect(() => {
+    let dead = false;
+    fetch(`${base}voice/vela/${PL_LINE}.mp3`)
+      .then((r) => r.arrayBuffer())
+      .then((b) => new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)().decodeAudioData(b))
+      .then((buf) => {
+        if (dead) return;
+        const d = buf.getChannelData(0);
+        const N = 180;
+        const out = new Float32Array(N);
+        const step = Math.floor(d.length / N);
+        let peak = 0;
+        let sum = 0;
+        for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a; sum += d[i] * d[i]; }
+        for (let i = 0; i < N; i++) {
+          let m = 0;
+          for (let j = i * step; j < (i + 1) * step; j++) m = Math.max(m, Math.abs(d[j]));
+          out[i] = m / peak;
+        }
+        peaks.current = out;
+        setInfo({ dur: buf.duration, peak: 20 * Math.log10(peak), rms: 10 * Math.log10(sum / d.length) });
+        draw(0);
+      })
+      .catch(() => {});
+    const onResize = () => draw(audio.current ? audio.current.currentTime / audio.current.duration : 0);
+    window.addEventListener('resize', onResize);
+    return () => { dead = true; window.removeEventListener('resize', onResize); audio.current?.pause(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useGSAP(
     () => {
       const tl = gsap.timeline({ scrollTrigger: { trigger: ref.current, start: 'top 75%' } });
-      tl.from('.pl-box', { opacity: 0, y: 30, stagger: 0.18, duration: 0.6, ease: 'back.out(1.6)' }).from('.pl-link', { drawSVG: '0%', stagger: 0.18, duration: 0.5 }, 0.2);
-      gsap.to('.pl-pulse', { motionPath: { path: '.pl-route', align: '.pl-route', alignOrigin: [0.5, 0.5] }, duration: 4, repeat: -1, ease: 'none' });
+      tl.from('.pl-node', { opacity: 0, y: 24, stagger: 0.14, duration: 0.7, ease: 'expo.out' }).from('.pl-rail i', { scaleX: 0, transformOrigin: 'left', duration: 1.4, ease: 'power2.inOut' }, 0);
+      gsap.to('.pl-spark', { left: '100%', duration: 3.2, repeat: -1, ease: 'none' });
     },
     { scope: ref }
   );
-  const w = 1180;
-  const bw = 200;
-  const gap = (w - 40 - bw * 5) / 4;
+
+  const play = () => {
+    if (playing) { audio.current?.pause(); setPlaying(false); return; }
+    const a = audio.current ?? new Audio(`${base}voice/vela/${PL_LINE}.mp3`);
+    audio.current = a;
+    a.currentTime = 0;
+    setPlaying(true);
+    const tick = () => {
+      const k = a.duration ? a.currentTime / a.duration : 0;
+      draw(k);
+      if (head.current) head.current.style.left = `${k * 100}%`;
+      if (!a.paused && !a.ended) requestAnimationFrame(tick);
+    };
+    a.onended = () => { setPlaying(false); draw(1); };
+    a.play().then(tick).catch(() => setPlaying(false));
+  };
+
   return (
-    <svg ref={ref} viewBox={`0 0 ${w} 300`} className="media" role="img" aria-label="How Vela's voice is made">
-      <path className="pl-route" d={`M ${20 + bw / 2} 96 L ${20 + 4 * (bw + gap) + bw / 2} 96`} stroke="none" fill="none" />
-      {STEPS.map(([t, d], i) => {
-        const x = 20 + i * (bw + gap);
-        return (
-          <g key={t}>
-            {i > 0 && <path className="pl-link" d={`M ${x - gap} 96 L ${x} 96`} stroke="#6dfcc0" strokeWidth="1.5" strokeDasharray="4 4" />}
-            <g className="pl-box" onPointerEnter={(e) => vela.say({ text: d, target: e.currentTarget, mood: 'calm', priority: 2 })}>
-              <rect x={x} y={56} width={bw} height={80} rx={12} fill="rgba(109,252,192,0.06)" stroke="rgba(109,252,192,0.45)" />
-              <text x={x + bw / 2} y={92} textAnchor="middle" fill="#fff" fontFamily="Montserrat" fontWeight={300} fontSize="15" letterSpacing="3">{t.toUpperCase()}</text>
-              <text x={x + bw / 2} y={116} textAnchor="middle" fill="#6dfcc0" fontFamily="JetBrains Mono" fontSize="11">STEP {i + 1}</text>
-              <foreignObject x={x - 6} y={150} width={bw + 12} height={130}>
-                <div className="pl-desc">{d}</div>
-              </foreignObject>
-            </g>
-          </g>
-        );
-      })}
-      <circle className="pl-pulse" r="6" fill="#ffd9a6" />
-    </svg>
+    <div ref={ref} className="pl">
+      <div className="pl-rail"><i /><span className="pl-spark" /></div>
+      <ol className="pl-nodes">
+        {STEPS.map(([t, d], i) => (
+          <li key={t} className="pl-node" onPointerEnter={(e) => vela.say({ text: d, target: e.currentTarget, mood: 'calm', priority: 2 })}>
+            <span className="pl-dot" />
+            <b>{t}</b>
+            <span className="pl-d">{d}</span>
+            <span className="pl-i">{String(i + 1).padStart(2, '0')}</span>
+          </li>
+        ))}
+      </ol>
+      <div className="pl-take">
+        <button type="button" className={`pl-play ${playing ? 'on' : ''}`} onClick={play} aria-label={playing ? 'Pause' : 'Play the finished take'}>
+          {playing ? '❚❚' : '▶'}
+        </button>
+        <div className="pl-wave">
+          <div className="pl-text">“{lines[PL_LINE].split(/(\[[a-z ]+\])/).map((s, i) => (i % 2 ? <em key={i} className="pl-tag">{s}</em> : s))}”</div>
+          <div className="pl-canvas">
+            <canvas ref={cv} aria-label="Waveform of the finished recording" />
+            <div ref={head} className="pl-head" />
+          </div>
+          <div className="pl-stats">
+            <span>{PL_LINE}.mp3</span>
+            {info && (
+              <>
+                <span><b>{info.dur.toFixed(2)} s</b> long</span>
+                <span>peak <b>{info.peak.toFixed(1)} dBFS</b></span>
+                <span>RMS <b>{info.rms.toFixed(1)} dBFS</b></span>
+              </>
+            )}
+            <span>measured in your browser</span>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 };
 
@@ -150,7 +244,7 @@ export const Companion: React.FC = () => (
     id="vela"
     n="09"
     kicker="The companion"
-    title="Meet Vela (that's me)"
+    title="Meet Vela *(that's me)*"
     intro="Chapter nine is about me! I'm a little embarrassed. Play some of my lines, I recorded them myself. Well. Sort of."
     mood="love"
   >
@@ -227,7 +321,7 @@ export const Sound: React.FC = () => (
     id="sound"
     n="10"
     kicker="The soundtrack"
-    title="A song for every world"
+    title="A song for *every* world"
     intro="Chapter ten: the music! Headphones on. Every world has its own song. Click a record and it'll spin."
     costume="headphones"
     mood="happy"
@@ -250,7 +344,7 @@ export const Interface: React.FC = () => (
     id="interface"
     n="11"
     kicker="The interface"
-    title="An observatory, not a game"
+    title="An *observatory*, not a game"
     intro="Chapter eleven: the interface. Everything you press in Solaris, and why it looks like an observatory."
     mood="proud"
   >

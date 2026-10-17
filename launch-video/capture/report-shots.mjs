@@ -18,7 +18,7 @@ await page.screenshot({ path: 'out/report/00-hero.jpg', type: 'jpeg', quality: 8
 let i = 1;
 for (const sel of sels) {
   const ok = await page.evaluate(async (sel) => {
-    const el = document.querySelector(sel);
+    const el = sel.startsWith('fig:') ? document.querySelectorAll('.fig')[Number(sel.slice(4)) - 1] : document.querySelector(sel);
     if (!el) return false;
     const y = el.getBoundingClientRect().top + window.scrollY - 90;
     // Step there so scroll-driven animations play as they would for a reader

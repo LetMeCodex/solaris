@@ -16,7 +16,7 @@ export const Sky: React.FC = () => (
     id="sky"
     n="03"
     kicker="Stars and the galaxy"
-    title="A real sky, in its real place"
+    title="A *real* sky, in its real place"
     intro="Chapter three: the sky. Every star behind the planets is a real one, at its real position and colour. Hover the map and I'll tell you who's who."
     mood="love"
   >

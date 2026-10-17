@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { globeSprite } from './Globe';
 
 /**
  * Why a floating origin: a little moon circles 2,000 km from a planet out at Neptune's distance.
@@ -27,6 +28,8 @@ export const PrecisionFig: React.FC = () => {
     const io = new IntersectionObserver(([e]) => { visible = e.isIntersecting; });
     io.observe(c);
     const trail: Array<[number, number, number, number]> = [];
+    const planet = globeSprite('2k_neptune.jpg', 128, 150);
+    const moon = globeSprite('moons/triton.jpg', 40, 150);
     const t0 = performance.now();
     const loop = () => {
       raf = requestAnimationFrame(loop);
@@ -54,10 +57,7 @@ export const PrecisionFig: React.FC = () => {
         ctx.arc(cx, cy, ORBIT * scale, 0, Math.PI * 2);
         ctx.stroke();
         ctx.setLineDash([]);
-        ctx.fillStyle = '#7fb6ff';
-        ctx.beginPath();
-        ctx.arc(cx, cy, 26, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.drawImage(planet, cx - 30, cy - 30, 60, 60);
         ctx.strokeStyle = colour;
         ctx.lineWidth = 2.4;
         ctx.beginPath();
@@ -68,16 +68,13 @@ export const PrecisionFig: React.FC = () => {
         });
         ctx.stroke();
         const p = trail[trail.length - 1];
-        ctx.fillStyle = '#fff';
-        ctx.beginPath();
-        ctx.arc(cx + p[idx] * scale, cy - p[idx + 1] * scale, 9, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.drawImage(moon, cx + p[idx] * scale - 11, cy - p[idx + 1] * scale - 11, 22, 22);
         ctx.fillStyle = colour;
-        ctx.font = '500 22px JetBrains Mono';
+        ctx.font = '500 22px Geist Mono';
         ctx.fillText(label, x0 + 30, 50);
       };
       panel(0, 0, 'MEASURED FROM THE SUN (float32)', '#ff8a6a');
-      panel(half, 2, 'MEASURED FROM THE CAMERA', '#6dfcc0');
+      panel(half, 2, 'MEASURED FROM THE CAMERA', '#8fa8ff');
       ctx.fillStyle = 'rgba(243,239,233,0.12)';
       ctx.fillRect(half - 1, 30, 2, h - 60);
     };

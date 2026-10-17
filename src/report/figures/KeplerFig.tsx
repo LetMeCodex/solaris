@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { KeplerSolver } from '../../astronomy/KeplerSolver';
+import { Globe } from './Globe';
 import { vela } from '../vela/bus';
 
 /**
@@ -92,40 +93,40 @@ export const KeplerFig: React.FC = () => {
     <div>
       <svg ref={ref} viewBox={`0 0 ${W} ${H}`} className="media" role="img" aria-label="Kepler's equation solved live">
         <circle cx={cx} cy={cy} r={A} fill="none" stroke="rgba(243,239,233,0.14)" strokeDasharray="3 5" />
-        <path d={sector} fill="rgba(220,171,118,0.14)" stroke="none" onPointerEnter={() => explain('area')} />
-        <ellipse cx={cx} cy={cy} rx={A} ry={b} fill="none" stroke="#dcab76" strokeWidth={1.6} />
+        <path d={sector} fill="rgba(224,145,106,0.14)" stroke="none" onPointerEnter={() => explain('area')} />
+        <ellipse cx={cx} cy={cy} rx={A} ry={b} fill="none" stroke="#e0916a" strokeWidth={1.6} />
         <line x1={cx - A - 20} y1={cy} x2={cx + A + 20} y2={cy} stroke="rgba(243,239,233,0.1)" />
-        <line x1={ex} y1={ey} x2={px} y2={py} stroke="rgba(109,252,192,0.5)" strokeDasharray="2 3" />
-        <line x1={cx} y1={cy} x2={ex} y2={ey} stroke="rgba(109,252,192,0.35)" />
-        <line x1={fx} y1={cy} x2={px} y2={py} stroke="rgba(255,217,166,0.6)" />
+        <line x1={ex} y1={ey} x2={px} y2={py} stroke="rgba(143,168,255,0.5)" strokeDasharray="2 3" />
+        <line x1={cx} y1={cy} x2={ex} y2={ey} stroke="rgba(143,168,255,0.35)" />
+        <line x1={fx} y1={cy} x2={px} y2={py} stroke="rgba(243,231,211,0.6)" />
         <g onPointerEnter={() => explain('sun')}>
-          <circle cx={fx} cy={cy} r={18} fill="rgba(255,190,110,0.18)" />
-          <circle cx={fx} cy={cy} r={8} fill="#ffd28a" />
+          <circle cx={fx} cy={cy} r={22} fill="transparent" />
+          <Globe cx={fx} cy={cy} r={12} map="2k_sun.jpg" emissive glow="#ffb35c" spin={60} />
         </g>
         <g onPointerEnter={() => explain('ghost')}>
           <circle cx={mx} cy={my} r={12} fill="transparent" />
           <circle cx={mx} cy={my} r={5} fill="none" stroke="#f3efe9" strokeOpacity={0.6} strokeDasharray="2 2" />
         </g>
-        <circle cx={ex} cy={ey} r={3.5} fill="#6dfcc0" />
+        <circle cx={ex} cy={ey} r={3.5} fill="#8fa8ff" />
         <g onPointerEnter={() => explain('planet')}>
           <circle cx={px} cy={py} r={14} fill="transparent" />
-          <circle cx={px} cy={py} r={8} fill="#7fb6ff" stroke="#fff" strokeWidth={1.2} />
+          <Globe cx={px} cy={py} r={10} map="2k_mars.jpg" light={(Math.atan2(py - cy, fx - px) * 180) / Math.PI} spin={30} />
         </g>
-        <text x={cx - A} y={34} fill="rgba(243,239,233,0.45)" fontFamily="JetBrains Mono" fontSize="11" letterSpacing="2">ELLIPSE e = {e.toFixed(2)} · HOVER THE PIECES</text>
+        <text x={cx - A} y={34} fill="rgba(243,239,233,0.45)" fontFamily="Geist Mono" fontSize="11" letterSpacing="2">ELLIPSE e = {e.toFixed(2)} · HOVER THE PIECES</text>
 
         {/* Newton's method, step by step */}
-        <g transform="translate(640, 60)">
-          <text x={0} y={0} fill="#6dfcc0" fontFamily="JetBrains Mono" fontSize="12" letterSpacing="3">SOLVING  M = E − e·sin E</text>
-          <text x={0} y={34} fill="#f3efe9" fontFamily="JetBrains Mono" fontSize="15">M = {M.toFixed(6)} rad   (time)</text>
+        <g transform="translate(600, 60)">
+          <text x={0} y={0} fill="#8fa8ff" fontFamily="Geist Mono" fontSize="12" letterSpacing="3">SOLVING  M = E − e·sin E</text>
+          <text x={0} y={34} fill="#f3efe9" fontFamily="Geist Mono" fontSize="15">M = {M.toFixed(6)} rad   (time)</text>
           {steps.map((s, i) => (
             <g key={i} transform={`translate(0, ${70 + i * 38})`}>
-              <text x={0} y={0} fill="rgba(243,239,233,0.5)" fontFamily="JetBrains Mono" fontSize="13">guess {i}</text>
-              <text x={90} y={0} fill="#ffd9a6" fontFamily="JetBrains Mono" fontSize="15">E = {s.E.toFixed(12)}</text>
-              <rect x={330} y={-11} width={Math.max(2, Math.min(120, 120 + Math.log10(Math.max(1e-16, s.err)) * 7.5))} height={12} fill={s.err < 1e-12 ? '#6dfcc0' : '#dcab76'} opacity={0.8} />
-              <text x={460} y={0} fill={s.err < 1e-12 ? '#6dfcc0' : 'rgba(243,239,233,0.6)'} fontFamily="JetBrains Mono" fontSize="12">{s.err < 1e-12 ? 'solved' : `error ${s.err.toExponential(1)}`}</text>
+              <text x={0} y={0} fill="rgba(243,239,233,0.5)" fontFamily="Geist Mono" fontSize="13">guess {i}</text>
+              <text x={90} y={0} fill="#f3e7d3" fontFamily="Geist Mono" fontSize="15">E = {s.E.toFixed(12)}</text>
+              <rect x={330} y={-11} width={Math.max(2, Math.min(120, 120 + Math.log10(Math.max(1e-16, s.err)) * 7.5))} height={12} fill={s.err < 1e-12 ? '#8fa8ff' : '#e0916a'} opacity={0.8} />
+              <text x={460} y={0} fill={s.err < 1e-12 ? '#8fa8ff' : 'rgba(243,239,233,0.6)'} fontFamily="Geist Mono" fontSize="12">{s.err < 1e-12 ? 'solved' : `error ${s.err.toExponential(1)}`}</text>
             </g>
           ))}
-          <text x={0} y={70 + steps.length * 38 + 16} fill="rgba(243,239,233,0.45)" fontFamily="JetBrains Mono" fontSize="12">
+          <text x={0} y={70 + steps.length * 38 + 16} fill="rgba(243,239,233,0.45)" fontFamily="Geist Mono" fontSize="12">
             {steps.length - 1} Newton steps to 12 decimal places
           </text>
         </g>

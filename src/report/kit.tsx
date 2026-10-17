@@ -75,10 +75,8 @@ export const Chapter: React.FC<{
       const h = el.querySelector('.ch-title') as HTMLElement;
       const split = SplitText.create(h, { type: 'chars,words', charsClass: 'ch-char' });
       const tl = gsap.timeline({ scrollTrigger: { trigger: el, start: 'top 72%' } });
-      tl.from(el.querySelector('.ch-num'), { opacity: 0, y: 80, duration: 1.4, ease: 'expo.out' })
-        .from(el.querySelector('.ch-kicker'), { opacity: 0, x: -30, duration: 0.8, ease: 'power3.out' }, 0.1)
-        .from(split.chars, { opacity: 0, yPercent: 110, rotateX: -80, filter: 'blur(8px)', stagger: 0.022, duration: 0.9, ease: 'expo.out' }, 0.15)
-        .from(el.querySelector('.ch-rule path'), { drawSVG: '0%', duration: 1.4, ease: 'power2.inOut' }, 0.3);
+      tl.from(el.querySelector('.ch-kicker'), { opacity: 0, x: -30, duration: 0.9, ease: 'power3.out' })
+        .from(split.chars, { opacity: 0, yPercent: 60, filter: 'blur(12px)', stagger: 0.018, duration: 1.2, ease: 'expo.out' }, 0.1);
       // Paragraphs rise line by line as they come in
       el.querySelectorAll<HTMLElement>('.prose > p').forEach((p) => {
         gsap.from(p, { opacity: 0, y: 26, duration: 1, ease: 'power3.out', scrollTrigger: { trigger: p, start: 'top 88%' } });
@@ -104,17 +102,18 @@ export const Chapter: React.FC<{
   return (
     <section id={id} ref={root} className="ch">
       <header className="ch-head">
-        <div className="ch-num" aria-hidden>{n}</div>
-        <div className="ch-kicker">§ {n} · {kicker}</div>
-        <h2 className="ch-title">{title}</h2>
-        <svg className="ch-rule" viewBox="0 0 600 4" preserveAspectRatio="none" aria-hidden>
-          <path d="M0 2 L600 2" />
-        </svg>
+        <div className="ch-kicker"><b>§{n}</b> {kicker}</div>
+        <h2 className="ch-title">{emphasise(title)}</h2>
       </header>
       {children}
     </section>
   );
 };
+
+/** Titles mark their emphasis with *asterisks*: those words are set in italic. */
+export function emphasise(s: string): React.ReactNode {
+  return s.split(/(\*[^*]+\*)/).map((part, i) => (part.startsWith('*') ? <em key={i}>{part.slice(1, -1)}</em> : part));
+}
 
 /** A figure frame: label, the live figure, a caption, and an "ask Vela" button. */
 export const Fig: React.FC<{ n: number; title: string; caption: React.ReactNode; vela: string; wide?: boolean; children: React.ReactNode }> = ({ n, title, caption, vela: line, wide = true, children }) => {
@@ -127,6 +126,7 @@ export const Fig: React.FC<{ n: number; title: string; caption: React.ReactNode;
   );
   return (
     <figure ref={ref} className={`fig ${wide ? 'is-wide' : ''}`}>
+      <div className="fig-plate">
       <div className="fig-bar">
         <span className="fig-n">Fig. {n}</span>
         <span className="fig-title">{title}</span>
@@ -135,6 +135,7 @@ export const Fig: React.FC<{ n: number; title: string; caption: React.ReactNode;
         </button>
       </div>
       <div className="fig-body">{children}</div>
+      </div>
       <figcaption className="fig-cap">{caption}</figcaption>
     </figure>
   );

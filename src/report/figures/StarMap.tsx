@@ -63,7 +63,7 @@ export const StarMap: React.FC = () => {
       }
       ctx.globalCompositeOperation = 'source-over';
       ctx.globalAlpha = 0.75;
-      ctx.strokeStyle = '#6dfcc0';
+      ctx.strokeStyle = '#8fa8ff';
       ctx.lineWidth = 1.4;
       const byHip = new Map(pts.map((p) => [p.hip, p]));
       for (const [a, b] of CONSTELLATION_EDGES) {
@@ -76,8 +76,8 @@ export const StarMap: React.FC = () => {
         ctx.stroke();
       }
       ctx.globalAlpha = 1;
-      ctx.font = '500 15px JetBrains Mono';
-      ctx.fillStyle = 'rgba(255,217,166,0.85)';
+      ctx.font = '500 15px Geist Mono';
+      ctx.fillStyle = 'rgba(243,231,211,0.85)';
       for (const p of pts) if (NAMES[p.hip] && p.m < 1.4) ctx.fillText(NAMES[p.hip].split(' ')[0], p.x + 7, p.y - 6);
     };
     img.onload = draw;

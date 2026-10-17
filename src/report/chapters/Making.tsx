@@ -22,8 +22,8 @@ const Clock: React.FC = () => {
   let v = 160;
   return (
     <svg ref={ref} viewBox="0 0 1180 250" className="media" role="img" aria-label="Real time versus the virtual clock">
-      <text x={20} y={78} fill="rgba(243,239,233,0.7)" fontFamily="JetBrains Mono" fontSize="13">REAL TIME</text>
-      <text x={20} y={168} fill="#6dfcc0" fontFamily="JetBrains Mono" fontSize="13">FILM TIME</text>
+      <text x={20} y={78} fill="rgba(243,239,233,0.7)" fontFamily="Geist Mono" fontSize="13">REAL TIME</text>
+      <text x={20} y={168} fill="#8fa8ff" fontFamily="Geist Mono" fontSize="13">FILM TIME</text>
       {frames.map((f, i) => {
         const w = f * 160;
         const el = <rect key={`r${i}`} className="vc-real" x={x} y={58} width={w - 4} height={30} rx={4} fill={`rgba(255,138,106,${0.35 + f * 0.6})`} />;
@@ -34,15 +34,15 @@ const Clock: React.FC = () => {
         const w = (1 / 30) * 160 * 9;
         const el = (
           <g key={`v${i}`}>
-            <rect className="vc-virt" x={v} y={148} width={w - 4} height={30} rx={4} fill="rgba(109,252,192,0.55)" />
-            <text x={v + w / 2 - 2} y={168} textAnchor="middle" fill="#0b0b0b" fontFamily="JetBrains Mono" fontSize="10">1/30 s</text>
+            <rect className="vc-virt" x={v} y={148} width={w - 4} height={30} rx={4} fill="rgba(143,168,255,0.55)" />
+            <text x={v + w / 2 - 2} y={168} textAnchor="middle" fill="#0b0b0b" fontFamily="Geist Mono" fontSize="10">1/30 s</text>
           </g>
         );
         v += w;
         return el;
       })}
-      <text x={160} y={118} fill="rgba(243,239,233,0.45)" fontFamily="JetBrains Mono" fontSize="11">each frame took 0.2–0.6 s to draw on the graphics card…</text>
-      <text x={160} y={212} fill="rgba(109,252,192,0.75)" fontFamily="JetBrains Mono" fontSize="11">…but the page was told exactly 1/30 s had passed, every time. Perfectly smooth footage.</text>
+      <text x={160} y={118} fill="rgba(243,239,233,0.45)" fontFamily="Geist Mono" fontSize="11">each frame took 0.2–0.6 s to draw on the graphics card…</text>
+      <text x={160} y={212} fill="rgba(143,168,255,0.75)" fontFamily="Geist Mono" fontSize="11">…but the page was told exactly 1/30 s had passed, every time. Perfectly smooth footage.</text>
     </svg>
   );
 };
@@ -54,7 +54,7 @@ export const Film: React.FC = () => {
       id="film"
       n="12"
       kicker="The launch film"
-      title="Filming a website, frame by frame"
+      title="Filming a website, *frame by frame*"
       intro="Chapter twelve: the launch film. Every shot in it is the real website. We just had to teach the browser to lie about the time."
       costume="scarf"
       mood="proud"
@@ -128,7 +128,7 @@ export const Bugs: React.FC = () => (
     id="bugs"
     n="13"
     kicker="What broke"
-    title="Everything that went wrong"
+    title="Everything that went *wrong*"
     intro="Chapter thirteen: everything that broke. Hard hat on. Honestly, this is my favourite chapter. Hover a card and I'll tell you what happened."
     costume="hardhat"
     mood="happy"
@@ -188,7 +188,7 @@ const Timeline: React.FC = () => {
 };
 
 export const Log: React.FC = () => (
-  <Chapter id="log" n="14" kicker="Build log" title="Five days, forty-six commits" intro="Chapter fourteen: the build log. Every dot is a commit. Big gold ones added something new, small ones fixed something. Hover them, I remember every one." mood="proud">
+  <Chapter id="log" n="14" kicker="Build log" title="Five days, *forty-six* commits" intro="Chapter fourteen: the build log. Every dot is a commit. Big gold ones added something new, small ones fixed something. Hover them, I remember every one." mood="proud">
     <div className="prose">
       <p className="lead">Solaris went from an empty folder to everything in this report in five days.</p>
       <p>The first commit landed at 1:38 in the morning on 13 October 2026; the guided briefing, Vela's voice, true scale, the Atlas, the soundtrack, the nebulae, the Gallery, the new Sun, the logo and the film followed. Every push ran the full test suite and type check before deploying.</p>
@@ -207,7 +207,7 @@ export const References: React.FC = () => {
   const [kind, setKind] = useState<(typeof KINDS)[number]>('All');
   const list = useMemo(() => REFS.map((r, i) => [r, i + 1] as const).filter(([r]) => kind === 'All' || r.kind === kind), [kind]);
   return (
-    <Chapter id="refs" n="15" kicker="References" title="Every source, credited" intro="Chapter fifteen: references! Glasses on. Every dataset, image and paper Solaris uses, and its licence. Hover one and I'll tell you what it's for." costume="glasses" mood="thinking">
+    <Chapter id="refs" n="15" kicker="References" title="Every source, *credited*" intro="Chapter fifteen: references! Glasses on. Every dataset, image and paper Solaris uses, and its licence. Hover one and I'll tell you what it's for." costume="glasses" mood="thinking">
       <div className="prose">
         <p className="lead">Solaris stands on decades of other people's work: spacecraft, surveys, catalogues and papers. Here is all of it.</p>
         <p>
@@ -264,7 +264,7 @@ const STACK: Array<[string, string]> = [
 ];
 
 export const Colophon: React.FC = () => (
-  <Chapter id="colophon" n="16" kicker="Honesty and colophon" title="What isn't real, and what built it" intro="Last chapter. Here's everything in Solaris that isn't exactly real. I think it's important to say so. Thank you for reading with me!" mood="love">
+  <Chapter id="colophon" n="16" kicker="Honesty and colophon" title="What *isn't* real, and what built it" intro="Last chapter. Here's everything in Solaris that isn't exactly real. I think it's important to say so. Thank you for reading with me!" mood="love">
     <div className="prose">
       <p className="lead">A model is only trustworthy if it tells you where it cheats. Here is every place Solaris does.</p>
     </div>

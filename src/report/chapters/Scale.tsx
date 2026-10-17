@@ -8,7 +8,7 @@ export const Scale: React.FC = () => (
     id="scale"
     n="02"
     kicker="Scale and precision"
-    title="Space is too big for a screen"
+    title="Space is too *big* for a screen"
     intro="Chapter two: the size problem. At true scale the Solar System is a black screen with a few specks. Here's how Solaris cheats, and how honestly."
     mood="thinking"
   >

@@ -2,6 +2,7 @@ import React, { useRef } from 'react';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { Chapter, Fig, T, Cite, VelaNote, Loop } from '../kit';
+import { Globe } from '../figures/Globe';
 import { SunLayers } from '../figures/SunLayers';
 import { TilePyramid } from '../figures/TilePyramid';
 import { NebulaLayers } from '../figures/NebulaLayers';
@@ -12,7 +13,7 @@ export const Sun: React.FC = () => (
     id="sun"
     n="04"
     kicker="The Sun"
-    title="A star with no picture"
+    title="A star with *no picture*"
     intro="Chapter four: the Sun. Sunglasses on! There's no photo here: every pixel of the Sun is maths, drawn sixty times a second."
     costume="shades"
     mood="happy"
@@ -51,7 +52,7 @@ export const Ground: React.FC = () => (
     id="ground"
     n="05"
     kicker="Surface imagery"
-    title="Down to the ground"
+    title="Down to the *ground*"
     intro="Chapter five: zooming into the ground. Keep scrolling in Solaris and a planet turns into a map, then into real spacecraft photos. Ten metres a pixel on Earth."
     mood="excited"
   >
@@ -100,22 +101,22 @@ const StandingPoint: React.FC = () => {
   );
   return (
     <svg ref={ref} viewBox="0 0 1180 420" className="media" role="img" aria-label="How the standing point is chosen">
-      <circle className="sp-pop" cx="300" cy="230" r="120" fill="#2a2a30" stroke="#8a8a96" />
-      <circle className="sp-pop" cx="900" cy="150" r="70" fill="#d8b98a" />
-      <circle className="sp-pop" cx="90" cy="60" r="26" fill="#ffd28a" />
-      <path className="sp-draw" d="M 300 230 L 380 140" stroke="#6dfcc0" strokeWidth="2" fill="none" />
+      <Globe className="sp-pop" cx={300} cy={230} r={120} map="moons/europa.jpg" light={141} spin={90} />
+      <Globe className="sp-pop" cx={900} cy={150} r={70} map="2k_jupiter.jpg" light={174} spin={50} />
+      <Globe className="sp-pop" cx={90} cy={60} r={26} map="2k_sun.jpg" emissive glow="#ffb35c" spin={80} />
+      <path className="sp-draw" d="M 300 230 L 380 140" stroke="#8fa8ff" strokeWidth="2" fill="none" />
       <path className="sp-draw" d="M 380 140 L 860 160" stroke="#d8b98a" strokeWidth="1.5" strokeDasharray="5 5" fill="none" />
       <path className="sp-draw" d="M 380 140 L 450 62" stroke="rgba(243,239,233,0.6)" strokeWidth="1.5" fill="none" />
       <path className="sp-draw" d="M 380 140 L 110 70" stroke="#ffd28a" strokeWidth="1.2" strokeDasharray="3 5" fill="none" />
-      <path className="sp-draw" d="M 432 82 A 70 70 0 0 1 449 143" stroke="#dcab76" strokeWidth="2" fill="none" />
+      <path className="sp-draw" d="M 432 82 A 70 70 0 0 1 449 143" stroke="#e0916a" strokeWidth="2" fill="none" />
       <circle className="sp-pop" cx="380" cy="140" r="7" fill="#fff" />
-      <g fontFamily="JetBrains Mono" fontSize="13" fill="rgba(243,239,233,0.75)">
-        <text className="sp-text" x="250" y="380">THE MOON YOU STAND ON</text>
-        <text className="sp-text" x="860" y="250">THE PLANET</text>
+      <g fontFamily="Geist Mono" fontSize="13" fill="rgba(243,239,233,0.75)">
+        <text className="sp-text" x="300" y="384" textAnchor="middle">THE MOON YOU STAND ON · HERE, EUROPA</text>
+        <text className="sp-text" x="900" y="252" textAnchor="middle">THE PLANET · JUPITER</text>
         <text className="sp-text" x="60" y="112">SUN</text>
         <text className="sp-text" x="398" y="132" fill="#fff">YOU</text>
         <text className="sp-text" x="456" y="56">ZENITH</text>
-        <text className="sp-text" x="470" y="104" fill="#dcab76">~40° ABOVE THE HORIZON</text>
+        <text className="sp-text" x="470" y="104" fill="#e0916a">~40° ABOVE THE HORIZON</text>
         <text className="sp-text" x="560" y="300" fill="rgba(243,239,233,0.5)">The spot is chosen on the moon's real, IAU-oriented globe so that</text>
         <text className="sp-text" x="560" y="322" fill="rgba(243,239,233,0.5)">the planet hangs about 40° up, on the side the Sun lights,</text>
         <text className="sp-text" x="560" y="344" fill="rgba(243,239,233,0.5)">from the true positions at that moment.</text>
@@ -129,7 +130,7 @@ export const Skies: React.FC = () => (
     id="skies"
     n="06"
     kicker="Standing on other worlds"
-    title="Stand anywhere, and look up"
+    title="Stand anywhere, and *look up*"
     intro="Chapter six, my favourite: standing on other worlds. Everything in these skies is where it really is, at that very moment."
     mood="love"
   >
@@ -172,7 +173,7 @@ export const Nebulae: React.FC = () => (
     id="nebulae"
     n="07"
     kicker="Nebulae"
-    title="Flying into a photograph"
+    title="Flying into a *photograph*"
     intro="Chapter seven: nebulae. Three of them are real photographs from Webb, Hubble and VISTA. The trick was turning a flat picture into something you can fly around."
     mood="excited"
   >
@@ -209,7 +210,7 @@ export const BlackHole: React.FC = () => (
     id="blackhole"
     n="08"
     kicker="Sagittarius A*"
-    title="The heart of the galaxy"
+    title="The *heart* of the galaxy"
     intro="Chapter eight. The black hole. I, um, don't love this one. Let's be brave together."
     mood="scared"
   >
