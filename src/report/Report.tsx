@@ -3,7 +3,8 @@ import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { ScrollSmoother } from 'gsap/ScrollSmoother';
 import { useGSAP } from '@gsap/react';
-import { Hero, Abstract } from './Hero';
+import { Abstract } from './Hero';
+import { ScrollHero } from './ScrollHero';
 import { Mascot } from './vela/Mascot';
 import { vela } from './vela/bus';
 import { CHAPTERS } from './chapters';
@@ -112,7 +113,7 @@ export const Report: React.FC = () => {
       <Mascot />
       <div id="smooth-wrapper">
         <div id="smooth-content">
-          <Hero />
+          <ScrollHero />
           <Abstract />
           <main className="chapters">
             {CHAPTERS.map((c) => (

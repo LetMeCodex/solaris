@@ -1,9 +1,7 @@
 import React, { useRef } from 'react';
 import gsap from 'gsap';
-import { SplitText } from 'gsap/SplitText';
 import { useGSAP } from '@gsap/react';
 import { INK, INNER, OUTER, STAR, STROKE, SUN, WORLD_IN, WORLD_OUT, orbitPath, starPoints, worldAt } from '../ui/brand/logo';
-import { StarSky } from './StarSky';
 import { Num } from './kit';
 
 /** The Solaris mark, drawn in: orbits trace themselves, the Sun swells, worlds drop on, the star flares. */
@@ -56,50 +54,6 @@ export const LiveMark: React.FC<{ size: number; delay?: number }> = ({ size, del
       </g>
       <ellipse className="lm-flare" cx={STAR.cx} cy={STAR.cy} rx={70} ry={0.5} fill="#ffe7c4" filter="url(#lm-bloom)" />
     </svg>
-  );
-};
-
-export const Hero: React.FC = () => {
-  const ref = useRef<HTMLElement>(null);
-  useGSAP(
-    () => {
-      const title = SplitText.create('.hero-title', { type: 'chars' });
-      const sub = SplitText.create('.hero-sub', { type: 'words' });
-      const tl = gsap.timeline({ delay: 0.3 });
-      tl.from('.hero-meta > *', { opacity: 0, y: -14, stagger: 0.08, duration: 0.8, ease: 'power3.out' })
-        .from(title.chars, { opacity: 0, letterSpacing: '1.4em', filter: 'blur(14px)', stagger: 0.06, duration: 1.4, ease: 'expo.out' }, 1.1)
-        .from(sub.words, { opacity: 0, yPercent: 100, stagger: 0.05, duration: 0.9, ease: 'expo.out' }, 1.8)
-        .from('.hero-lede, .hero-by, .hero-cue', { opacity: 0, y: 20, stagger: 0.12, duration: 1, ease: 'power3.out' }, 2.3);
-      // Leaving the hero: the sky sinks and the mark lifts away
-      gsap.to('.hero-inner', { yPercent: -22, opacity: 0, ease: 'none', scrollTrigger: { trigger: ref.current, start: 'top top', end: 'bottom top', scrub: true } });
-      gsap.to('.hero-sky', { scale: 1.25, opacity: 0.25, ease: 'none', scrollTrigger: { trigger: ref.current, start: 'top top', end: 'bottom top', scrub: true } });
-      return () => { title.revert(); sub.revert(); };
-    },
-    { scope: ref }
-  );
-  return (
-    <header ref={ref} className="hero">
-      <StarSky className="hero-sky" />
-      <div className="hero-vignette" />
-      <div className="hero-meta">
-        <span>SOLARIS · Technical report SOL-TR-01</span>
-        <span>17 October 2026</span>
-        <a href="../">Open Solaris ↗</a>
-      </div>
-      <div className="hero-inner">
-        <LiveMark size={210} delay={0.4} />
-        <h1 className="hero-title">SOLARIS</h1>
-        <p className="hero-sub">Putting the real Solar System in a browser</p>
-        <p className="hero-lede">
-          The data, the physics, the rendering, the companion and the film behind an explorable model of our Solar System, and everything that broke along the way.
-        </p>
-        <p className="hero-by">LetMeCodex · with Vela, who will be explaining everything</p>
-      </div>
-      <div className="hero-cue">
-        <span>Scroll</span>
-        <i />
-      </div>
-    </header>
   );
 };
 
