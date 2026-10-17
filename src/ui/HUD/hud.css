@@ -1407,3 +1407,72 @@
 @media (prefers-reduced-motion: reduce) {
   .sol-logo-orbit, .sol-logo-star, .sol-logo-glow, .sol-logo-sun { animation: none; }
 }
+
+/* ===================== Field report: a telescope eyepiece into the technical report ===================== */
+.frep {
+  position: relative; display: inline-flex; align-items: center; gap: 11px; width: fit-content; margin-top: 6px; padding: 4px 14px 4px 4px;
+  border-radius: 999px; color: #fff; text-decoration: none; cursor: pointer;
+  background: linear-gradient(90deg, rgba(224, 145, 106, 0.1), rgba(10, 8, 14, 0.35) 55%, transparent);
+  box-shadow: inset 0 0 0 1px rgba(224, 145, 106, 0.16);
+  transition: box-shadow 0.5s var(--sol-ease), background 0.5s var(--sol-ease);
+}
+.frep:hover, .frep:focus-visible { box-shadow: inset 0 0 0 1px rgba(224, 145, 106, 0.45), 0 0 26px rgba(224, 145, 106, 0.14); outline: none; }
+.frep-eye { position: relative; width: 38px; height: 38px; flex-shrink: 0; filter: drop-shadow(0 0 7px rgba(224, 145, 106, 0.25)); transition: transform 0.6s var(--sol-snap), filter 0.5s ease; }
+.frep-eye svg { width: 100%; height: 100%; overflow: visible; }
+.frep-limb { fill: rgba(8, 6, 12, 0.8); stroke: rgba(224, 145, 106, 0.75); stroke-width: 0.9; }
+.frep-ticks line { stroke: rgba(243, 231, 211, 0.38); stroke-width: 0.6; transition: stroke 0.4s; }
+.frep-ticks line.on { stroke: #f3e7d3; stroke-width: 0.9; filter: drop-shadow(0 0 1.5px #e0916a); }
+.frep-sky { animation: frep-slew 26s linear infinite; }
+.frep-star { fill: #f3e7d3; animation: frep-twinkle 3s ease-in-out infinite; }
+.frep-reticle path { fill: none; stroke: rgba(143, 168, 255, 0.85); stroke-width: 0.55; }
+.frep-reticle .frep-brk { stroke: #e0916a; stroke-width: 0.8; transform-origin: 20px 20px; transition: transform 0.55s var(--sol-snap); }
+@keyframes frep-slew { from { transform: translate(0, 0); } to { transform: translate(-40px, 0); } }
+@keyframes frep-twinkle { 50% { opacity: 0.35; } }
+.frep:hover .frep-eye { transform: scale(1.08); filter: drop-shadow(0 0 14px rgba(224, 145, 106, 0.5)); }
+.frep:hover .frep-sky { animation-duration: 7s; }
+.frep:hover .frep-brk { transform: scale(0.72); }
+
+.frep-text { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; line-height: 1; min-width: 0; }
+.frep-name { position: relative; font-family: Georgia, 'Times New Roman', serif; font-style: italic; font-size: 16px; letter-spacing: 0.01em; color: #f6efe0; text-shadow: 0 0 14px rgba(224, 145, 106, 0.3); }
+.frep-sub { display: flex; align-items: center; gap: 6px; width: 21ch; font-family: var(--sol-mono); font-size: 8.5px; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(236, 228, 210, 0.55); white-space: nowrap; overflow: hidden; }
+.frep-sub b { font-weight: 400; color: #e0916a; }
+.frep-caret { display: inline-block; width: 4px; height: 9px; margin-left: -3px; background: #e0916a; animation: frep-blink 1s steps(1) infinite; }
+@keyframes frep-blink { 50% { opacity: 0; } }
+
+.frep-card {
+  position: absolute; left: 0; top: calc(100% + 10px); z-index: 60; display: flex; flex-direction: column; gap: 10px; width: 290px; padding: 16px 16px 14px;
+  border-radius: 14px; background: rgba(9, 7, 13, 0.96); backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  box-shadow: inset 0 0 0 1px rgba(224, 145, 106, 0.28), 0 24px 60px rgba(0, 0, 0, 0.55);
+  opacity: 0; visibility: hidden; transform: translateY(-6px) scale(0.98); transform-origin: 20px 0;
+  transition: opacity 0.35s var(--sol-ease), transform 0.45s var(--sol-ease), visibility 0s linear 0.35s; pointer-events: none;
+}
+.frep.is-hover .frep-card { opacity: 1; visibility: visible; transform: none; transition-delay: 0.08s, 0.08s, 0s; }
+.frep-strip { display: grid; grid-template-columns: repeat(16, 1fr); gap: 3px; }
+.frep-strip i { height: 3px; border-radius: 2px; background: rgba(243, 231, 211, 0.12); transition: background 0.4s; }
+.frep-strip i.on { background: linear-gradient(90deg, #e0916a, #f3e7d3); }
+.frep-lede { font-family: Georgia, 'Times New Roman', serif; font-style: italic; font-size: 20px; color: #f6efe0; }
+.frep-body { font-family: 'Montserrat', ui-sans-serif, sans-serif; font-size: 11.5px; line-height: 1.6; color: rgba(236, 228, 210, 0.7); }
+.frep-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.frep-vela { width: 34px; height: 31px; image-rendering: pixelated; filter: drop-shadow(0 0 6px rgba(109, 252, 192, 0.45)); animation: frep-bob 2.4s ease-in-out infinite; }
+@keyframes frep-bob { 50% { transform: translateY(-2px); } }
+.frep-go { font-family: var(--sol-mono); font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: #e0916a; }
+.frep-go span { display: inline-block; transition: transform 0.4s var(--sol-snap); }
+.frep:hover .frep-go span { transform: translateX(4px); }
+
+/* the click: the eyepiece opens out to fill the screen */
+.frep-warp {
+  position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center; pointer-events: all;
+  background: radial-gradient(circle at var(--x) var(--y), #1a0f12 0%, #07060b 45%);
+  clip-path: circle(0px at var(--x) var(--y)); animation: frep-iris 0.85s cubic-bezier(0.7, 0, 0.2, 1) forwards;
+}
+.frep-warp::before { content: ''; position: absolute; inset: 0; background: radial-gradient(circle at var(--x) var(--y), rgba(224, 145, 106, 0.35), transparent 30%); animation: frep-flare 0.85s ease-out forwards; }
+@keyframes frep-iris { to { clip-path: circle(150vmax at var(--x) var(--y)); } }
+@keyframes frep-flare { from { opacity: 1; } to { opacity: 0.15; } }
+.frep-warp-in { position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px; opacity: 0; animation: frep-title 0.6s 0.35s var(--sol-ease) forwards; }
+.frep-warp-k { font-family: var(--sol-mono); font-size: 10px; letter-spacing: 0.4em; text-transform: uppercase; color: #e0916a; }
+.frep-warp-t { font-family: Georgia, 'Times New Roman', serif; font-style: italic; font-size: clamp(34px, 6vw, 72px); color: #f3e7d3; }
+@keyframes frep-title { from { opacity: 0; transform: translateY(12px); letter-spacing: 0.08em; } to { opacity: 1; transform: none; letter-spacing: 0; } }
+
+@media (max-width: 640px) { .frep-sub { width: 17ch; } .frep-name { font-size: 14px; } }
+@media (hover: none) { .frep-card { display: none; } }
+@media (prefers-reduced-motion: reduce) { .frep-sky, .frep-star, .frep-caret, .frep-vela { animation: none; } }

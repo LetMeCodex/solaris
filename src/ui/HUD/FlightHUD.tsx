@@ -4,6 +4,7 @@ import { CatalogueManager } from '../../data/CatalogueManager';
 import { getPlanetNarrative, PLANET_NARRATIVES } from '../../data/PlanetNarratives';
 import { LENS_ORDER, LENS_PROFILES, LensProfileName } from '../../rendering/LensPipeline';
 import { ExplorerPanel, type SlateTab } from './ExplorerPanel';
+import { ReportBeacon } from './ReportBeacon';
 import { SolarisLogo } from '../brand/SolarisLogo';
 import { SurfacePanel, SurfaceAction } from './SurfacePanel';
 import { AttitudeScope, DecodeText, TargetLock, ViewStateGetter } from './Instruments';
@@ -527,6 +528,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               )}
             </div>
           </div>
+          <ReportBeacon />
         </div>
 
         {/* Scale ladder */}
