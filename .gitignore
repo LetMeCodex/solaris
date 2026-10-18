@@ -35,3 +35,6 @@ tiles-cache/
 # Data-builder download caches
 scripts/.moon-cache/
 scripts/.sb-cache/
+
+# fonts fetched by the README art generator
+scripts/readme/.fonts/

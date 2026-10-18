@@ -1,213 +1,309 @@
-# SOLARIS — Solar System & Milky Way Explorer
+<p align="center">
+  <a href="https://solarises.vercel.app/"><img src="docs/readme/banner.svg" alt="SOLARIS: the real Solar System, in your browser, set to now" width="100%"></a>
+</p>
 
-[![Three.js](https://img.shields.io/badge/Three.js-r170-black?style=flat&logo=three.js)](https://threejs.org/)
-[![React](https://img.shields.io/badge/React-18-blue?style=flat&logo=react)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?style=flat&logo=typescript)](https://www.typescriptlang.org/)
-[![Vite](https://img.shields.io/badge/Vite-5-646CFF?style=flat&logo=vite)](https://vitejs.dev/)
-[![Tests](https://img.shields.io/badge/Tests-110%20passing-success?style=flat&logo=vitest)](https://vitest.dev/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+<p align="center">
+  <a href="https://solarises.vercel.app/"><img src="docs/readme/button-launch.svg" alt="Launch Solaris" height="52"></a>
+  &nbsp;
+  <a href="https://solarises.vercel.app/report/"><img src="docs/readme/button-read.svg" alt="Read the field report" height="52"></a>
+</p>
 
-**Live:** https://letmecodex.github.io/solaris/
+<p align="center">
+  <i>Every planet is where NASA says it is, this second. Every star is a real one.</i><br>
+  A real-time model of the Solar System and the Milky Way, from the surface of Mars to the shadow of Sagittarius A*.
+</p>
 
-SOLARIS is a real-time, interactive 3D model of the Solar System built with **Three.js (WebGL2)**, **React** and **TypeScript**. Bodies are placed from published NASA JPL orbital elements for the current date, oriented with IAU rotation models, and set against a correctly aligned sky; you can zoom out continuously to a stylised Milky Way and its central black hole.
+<p align="center">
+  <img alt="three.js r170" src="https://img.shields.io/badge/three.js-r170-f3e7d3?style=for-the-badge&logo=threedotjs&logoColor=f3e7d3&labelColor=05040a">
+  <img alt="React 18" src="https://img.shields.io/badge/React-18-8fa8ff?style=for-the-badge&logo=react&logoColor=8fa8ff&labelColor=05040a">
+  <img alt="TypeScript 5" src="https://img.shields.io/badge/TypeScript-5-cfd6e6?style=for-the-badge&logo=typescript&logoColor=cfd6e6&labelColor=05040a">
+  <img alt="Vite" src="https://img.shields.io/badge/Vite-5-f4cd72?style=for-the-badge&logo=vite&logoColor=f4cd72&labelColor=05040a">
+  <img alt="142 tests passing" src="https://img.shields.io/badge/tests-142%20passing-6dfcc0?style=for-the-badge&logo=vitest&logoColor=6dfcc0&labelColor=05040a">
+  <img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-e0916a?style=for-the-badge&labelColor=05040a">
+</p>
 
-It is an explorer, not a navigation-grade ephemeris: positions come from two-body Keplerian elements (accuracy figures below), and the default view compresses distances and enlarges bodies so that everything fits on one screen.
+<p align="center">
+  <img src="docs/readme/hero.webp" alt="Earth, Saturn, the Helix Nebula and Sagittarius A*, captured from the running site" width="100%">
+</p>
 
----
+<p align="center">
+  <sub>This README is one photon's journey. It leaves the Sun at the top of the page and reaches each world at its real light-time.</sub>
+</p>
 
-## What is modelled
-
-### Orbits (all in the J2000 ecliptic frame, time argument TDB)
-
-| Bodies | Element source | Accuracy (checked in `src/tests/ephemerisAccuracy.test.ts`) |
+| Light-time | Stop | Section |
 | :--- | :--- | :--- |
-| 8 planets | JPL SSD *Keplerian Elements for Approximate Positions of the Major Planets*, Table 1 (Standish), with linear secular rates; valid 1800–2050 | < 0.25° heliocentric direction vs. a VSOP87-based ephemeris in 2026 and 2040 (typically < 0.05°) |
-| Earth's Moon | JPL SSD satellite mean elements, with apsidal (6.0 yr) and nodal (18.6 yr) precession | < 2° vs. JPL Horizons (0.7° on 2026-10-14) |
-| 21 other moons | JPL Horizons osculating elements at 2026-10-14 TDB, advanced with each moon's mean sidereal period | exact at the epoch; Titan is within 5° when propagated back 26.8 years |
-| Pluto, Ceres, 9 asteroids | JPL Small-Body Database osculating elements at their published epochs | two-body; degrades slowly away from the element epoch |
+| `T+00:03:13` | Mercury | [Everything, all at once](#everything) |
+| `T+00:06:01` | Venus | [A tour, in motion](#tour) |
+| `T+00:08:19` | Earth | [What is real](#real) |
+| `T+00:12:40` | Mars | [How it works](#how) |
+| `T+00:43:16` | Jupiter | [Meet Vela](#vela) |
+| `T+01:19:28` | Saturn | [The field report](#report) |
+| `T+02:39:50` | Uranus | [Run it yourself](#run) |
+| `T+04:10:25` | Neptune | [Inside the code](#code) |
+| `T+27,000 years` | Sagittarius A* | [Credits, at the edge of the map](#credits) |
 
-- **Kepler solver:** Newton–Raphson on `M = E − e sin E` (tolerance 1e-12), with a high-eccentricity starter.
-- **Time:** the clock runs in UTC; ephemerides use TDB ≈ UTC + 69.184 s (TT − UTC since 2017). J2000.0 is 2000-01-01 11:58:55.816 UTC.
-- **Main belt:** 3,200 instanced rocks with synthetic elements (seeded Mulberry32, seed `19890825`), Kirkwood gaps at the 3:1, 5:2, 7:3 and 2:1 resonances. The rocks are statistical, not real asteroids.
+<br>
 
-### Orientation and rotation
+<a id="everything"></a>
+<p align="center"><img src="docs/readme/stop-01-mercury.svg" alt="T+00:03:13 · Mercury: Everything, all at once" width="100%"></p>
 
-- **Planets, Sun, Pluto, Ceres, Vesta, Eros, Gaspra, Ida:** IAU WGCCRE 2015 pole (α₀, δ₀) and prime meridian W(d). Earth's sub-solar point therefore matches the real time of day, and Saturn's rings are edge-on to Earth at the March 2025 ring-plane crossing (both are unit-tested).
-- **Bennu, Ryugu:** published spacecraft-derived poles and periods.
-- **Moons:** synchronous rotation — the pole follows the orbit normal and longitude 0 faces the parent. Hyperion (chaotic rotator) uses a simple spin.
+<p align="center"><img src="docs/readme/numbers.svg" alt="478 worlds, 12,596 real stars, 142 tests passing, 572 lines for Vela, 23 live figures, 30 sources credited" width="100%"></p>
 
-### Sky
+| | |
+| :--- | :--- |
+| **Set to now** | Every planet, moon and small body is placed from NASA JPL orbital elements for the current moment, on the TDB time scale, and turned by the IAU's rotation models. Earth's day and night match the real ones. |
+| **478 worlds** | The Sun, 8 planets, 22 major moons, 2 dwarf planets, 9 asteroids and 437 minor moons, every one in the Atlas. |
+| **A real sky** | 12,596 Hipparcos stars at their true positions and colours, inside the Gaia all-sky Milky Way, aligned to the galactic frame. |
+| **Down to the ground** | Keep scrolling and a planet becomes a web map, streaming the sharpest imagery NASA, JAXA, ESA and USGS publish: 9.5 m a pixel on Earth. |
+| **Stand and look up** | Stand on any world and see its own sky, with every planet and moon where it really is: Saturn's rings arching overhead, Earth hanging over the Moon. |
+| **Out to the galaxy** | Zoom out without a cut, past the nearest stars and through the galactic disk, to the black hole at the centre of the Milky Way. |
+| **A guide with a voice** | Vela comments, explains, jokes and worries, in about an hour of her own recorded voice. |
 
-- **Stars:** Hipparcos (ESA 1997) positions, rotated from ICRF into the ecliptic render frame. The shipped file holds 12,596 stars: all 1,016 stars with V ≤ 4.6 on the celestial sphere, plus 12,281 stars within 120 pc drawn in 3D when you zoom out past the Solar System. `scripts/build_star_subset.cjs` regenerates it from the full 41,394-star (V ≤ 8.0) catalogue in `data/source/`.
-- **Constellation figures:** stick figures for nine bright constellations and asterisms (Ursa Major, Orion, Cassiopeia, Crux, Cygnus, Leo, Scorpius, Canis Major, Lyra). This is not the full set of 88.
-- **Milky Way:** a 3D environment around the Solar System built from the ESA/Gaia all-sky map, aligned with the galactic frame (north galactic pole RA 192.859°, Dec +27.128°). The map's diffuse light is shared between three nested shells (≈ 3,200, 7,000 and 13,000 units across the plane), flattened along the galactic plane, and 54,000 stars in blue, white, yellow, orange and red sit at their own distances inside the same slab, denser along the band. From the Sun everything lines up into the Gaia sky (warm bulge, dust filaments, Magellanic Clouds); when the camera moves, the shells and stars slide past each other with parallax, so zooming in and out reads as depth.
-- **Galactic disk:** 140,000 stars, glow and dust are importance-sampled from the face-on galaxy map and lifted off the mid-plane with a sech² profile (scale height ≈ 0.16 kpc in the disk, ≈ 0.7 kpc in the bulge). Leaving the Solar System, the Gaia sky fades between 4,000 and 15,000 units from the Sun while the disk fades in, so the camera flies out through the disk until the whole spiral is seen from outside.
+<table>
+  <tr>
+    <td width="50%"><img src="docs/readme/clip-ui_overview.webp" alt="The overview: the Solar System, live"></td>
+    <td width="50%"><img src="docs/readme/clip-ui_vela.webp" alt="Vela, beside Mars"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>The overview, with every orbit from JPL's elements</sub></td>
+    <td align="center"><sub>Vela, keeping you company at Mars</sub></td>
+  </tr>
+</table>
 
-### Multiscale zoom
+<br>
 
-Each zoom tier is drawn at its own scale, and the HUD distance readout converts with the scale actually on screen:
+<a id="tour"></a>
+<p align="center"><img src="docs/readme/stop-02-venus.svg" alt="T+00:06:01 · Venus: A tour, in motion" width="100%"></p>
+
+Every clip below was captured from the running site, frame by frame. Positions, phases and sizes are true for the date on screen.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/readme/clip-sky_saturn.webp" alt="Sunset on Saturn's cloud tops"></td>
+    <td width="50%"><img src="docs/readme/clip-mars_dusk.webp" alt="Dusk on Mars, with Phobos and Deimos"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Sunset on Saturn's cloud tops.</b> The rings arch across the sky.</sub></td>
+    <td align="center"><sub><b>Dusk at Meridiani Planum.</b> Mars's blue sunset, Phobos and Deimos overhead.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/readme/clip-sky_io.webp" alt="Jupiter from Io"></td>
+    <td width="50%"><img src="docs/readme/clip-miranda_uranus.webp" alt="Uranus from Miranda"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Jupiter from Io,</b> at its true angular size.</sub></td>
+    <td align="center"><sub><b>Uranus from Miranda,</b> a crescent lit from where the Sun really is.</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/readme/clip-nebula.webp" alt="Flying into the Cosmic Cliffs"></td>
+    <td width="50%"><img src="docs/readme/clip-bh_sea.webp" alt="The shore of Sagittarius A*"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub><b>Into a photograph.</b> Webb's Cosmic Cliffs, split into seven depths you fly through.</sub></td>
+    <td align="center"><sub><b>The shore of Sagittarius A*.</b> The sea is imagined; the bending of light is not.</sub></td>
+  </tr>
+</table>
+
+<br>
+
+<a id="real"></a>
+<p align="center"><img src="docs/readme/stop-03-earth.svg" alt="T+00:08:19 · Earth: What is real" width="100%"></p>
+
+Solaris is an explorer, not a navigation-grade ephemeris. A spacecraft needs metres; a visitor needs to see Jupiter in the right part of the sky. Each of these numbers is enforced by a test: if an edit moves the planets further than this, the build fails.
+
+| Bodies | Elements | Checked accuracy |
+| :--- | :--- | :--- |
+| 8 planets | JPL secular-rate elements (Standish), valid 1800–2050 | under 0.25° against a VSOP87-based ephemeris in 2026 and 2040, typically under 0.05° |
+| Earth's Moon | JPL mean elements, with 6.0-year apsidal and 18.6-year nodal precession | under 2° against JPL Horizons (0.7° on 2026-10-14) |
+| 21 major moons | JPL Horizons osculating elements at 2026-10-14 TDB | exact at the epoch; Titan within 5° propagated back 26.8 years |
+| Pluto, Ceres, 9 asteroids | JPL Small-Body Database osculating elements | two-body; degrades slowly away from each epoch |
+
+For scale, the full Moon is about 0.5° across.
+
+<details>
+<summary><b>Time, orientation and the sky</b></summary>
+
+- **Kepler solver:** Newton–Raphson on `M = E − e sin E` to a tolerance of 1e-12, with a high-eccentricity starter.
+- **Time:** the clock runs in UTC; ephemerides use TDB ≈ UTC + 69.184 s. J2000.0 is 2000-01-01 11:58:55.816 UTC.
+- **Orientation:** the planets, the Sun, Pluto, Ceres, Vesta, Eros, Gaspra and Ida use the IAU WGCCRE 2015 pole and prime meridian, so Earth's sub-solar point matches the real time of day and Saturn's rings were edge-on to Earth at the March 2025 ring-plane crossing (both unit-tested). Moons rotate synchronously.
+- **Stars:** Hipparcos positions rotated from ICRF into the ecliptic frame: every star brighter than V 4.6 on the celestial sphere, plus 12,281 stars within 120 pc drawn in 3D when you zoom out. `npm run build:stars` regenerates the file from the full catalogue.
+- **Milky Way:** built from the ESA/Gaia all-sky map, aligned with the galactic frame (north galactic pole RA 192.859°, Dec +27.128°), with 140,000 disk stars importance-sampled from a face-on galaxy map and lifted off the mid-plane with a sech² profile.
+- **Main belt:** 3,200 instanced rocks with synthetic elements and Kirkwood gaps at the 3:1, 5:2, 7:3 and 2:1 resonances. They are statistical, not real asteroids.
+
+</details>
+
+<details>
+<summary><b>Imagery, and saying what it is</b></summary>
+
+| Body | Imagery | Endpoint | Finest |
+| :--- | :--- | :--- | :--- |
+| Earth | Sentinel-2 cloudless 2016 | EOX WMTS | ≈ 9.5 m/px |
+| Moon | SELENE/Kaguya Terrain Camera mosaic | NASA Moon Trek WMTS | ≈ 21 m/px |
+| Mars | MRO CTX global mosaic, tinted | Trek → Esri-hosted cache | ≈ 10 m/px |
+| Mercury | MESSENGER MDIS BDR | NASA Mercury Trek WMTS | ≈ 234 m/px |
+| Venus | Magellan SAR mosaic | USGS Astrogeology WMS | ≈ 290 m/px |
+| The giants | Solar System Scope 2k maps | bundled | global only |
+
+Tiles stream coarse to fine and nearest first, at most six at a time, chosen by screen-space error; requests the view no longer needs are cancelled, and a missing tile's nearest loaded ancestor stands in, so there are never holes. No server needs a key: every endpoint, its deepest level and its CORS headers were checked from GitHub Actions posing as the live site (`scripts/verify-tile-sources.mjs`, `docs/research/`).
+
+The labels are honest. Venus says *radar*, not visible light. The Moon and Mercury say *monochrome*. The giant planets say *cloud tops*, because they have no ground at all.
+
+</details>
+
+<details>
+<summary><b>Standing on other worlds</b></summary>
+
+- **Sky:** a single-scattering Rayleigh and Mie atmosphere: Earth blue by day and red at sunset, Mars butterscotch with a blue glow around the setting Sun, Venus a dim orange overcast. The Moon and Mercury have black skies with stars by day.
+- **What's up:** the Sun, planets and major moons from their real positions as seen from your spot, at true angular sizes, lit by the Sun so phases show, reddened near the horizon. Bodies too small for a disc are points of their real magnitude.
+- **Telescope:** zoom the lens from 100° to 0.2° to see Jupiter's moons and Saturn's rings from Earth.
+- **Time of day:** jump to the next local sunrise, noon, sunset or night on any body. A test checks Greenwich's 21 June sunrise to within 5 minutes.
+- **Look up from…:** one click stands you on a moon with its planet about 40° up on the sunlit side: Earth from the Moon, Saturn from Enceladus, Mimas or Iapetus, Jupiter from Europa or Io, Mars from Phobos, Uranus from Miranda, Neptune from Triton, Pluto from Charon.
+
+</details>
+
+<br>
+
+<a id="how"></a>
+<p align="center"><img src="docs/readme/stop-04-mars.svg" alt="T+00:12:40 · Mars: How it works" width="100%"></p>
+
+<p align="center"><img src="docs/readme/pipeline.svg" alt="NASA JPL elements, a TDB clock, a Kepler solver, IAU rotation, a floating origin and WebGL2" width="100%"></p>
+
+1. **Elements.** Each world starts as six numbers from NASA JPL: the size, shape and tilt of its orbit, and where it was at an epoch.
+2. **Time.** Your clock is UTC, which jumps with leap seconds. Planets follow TDB, a smooth scale 69.184 s ahead. Solaris converts every frame and counts days from J2000.
+3. **Position.** Kepler's equation has no algebraic solution, so Solaris guesses and corrects with Newton–Raphson until the error is below 10⁻¹²; for a near-circular orbit that takes two or three steps.
+4. **Orientation.** The IAU's rotation models give each world's pole and the longitude facing you, so its day and night are the real ones.
+5. **Precision.** A graphics card stores positions in 32-bit floats: near Neptune, neighbouring values are 512 km apart, and a moon would jitter. So every frame the whole universe is shifted so the camera sits at zero, and the distant stars absorb the error.
+6. **Drawing.** three.js on WebGL2, with each zoom level on its own scale, so the readout always converts with the scale actually on screen.
+
+<details>
+<summary><b>Scales, the camera and the lens</b></summary>
 
 | Tier | Render scale |
 | :--- | :--- |
 | Close-up of a body | that body's globe radius (km) |
 | Solar System | `D = 50 + 65 · r^0.58` units for heliocentric distance r in AU |
 | Local stars (< 120 pc) | 700 + 38 units per parsec, so the nearest stars sit beyond Pluto |
-| Milky Way | 1,320 units per kpc; Sun at R₀ = 8.277 kpc, 21 pc above the mid-plane |
+| Milky Way | 1,320 units per kpc; the Sun at R₀ = 8.277 kpc, 21 pc above the mid-plane |
 
-The galaxy is the 3D galactic disk above, joined from about 20,000 units out by an artist's face-on disk (NASA/JPL-Caltech/ESO, R. Hurt) and 14,000 procedurally placed stars, all oriented to the real galactic frame. The flat disk only fades in once the camera is well outside the local disk, so the transition is carried by the 3D particles. The LMC, SMC and Sagittarius dwarf are placed at their measured galactocentric positions. Sagittarius A* uses GRAVITY/EHT physical parameters for its readouts; the shader is an artistic ray-marched rendering with approximate light bending, not a general-relativistic ray tracer.
+- **Exploration** compresses distances and keeps true size ratios; **True Distances** is linear (1 unit = 1,000,000 km) with globes enlarged so they stay visible, and moons pushed out of their swollen parents with `scale · min(d, 4R) + max(0, d − 4R)`.
+- **Observation camera:** altitude scales with √R from a reference shot over Earth, so NASA radii keep their order on screen; the planet sits in the left third of a wide 55° lens, so its limb curves the way a real lens curves it; the vantage is chosen so the Milky Way crosses behind the planet.
+- **Lens profiles** (`L`): *Cinematic* (bloom, mild barrel distortion, chromatic aberration, grain, rotational motion blur), *Fisheye*, and *Clean* for inspection. Motion blur is off under `prefers-reduced-motion`.
+- **Sagittarius A*** uses GRAVITY and EHT parameters for its readouts; the shader is an artistic ray-march with approximate light bending, not a general-relativistic ray tracer.
 
-### Observation camera & lens
+</details>
 
-Selecting a body flies an *observation camera* to it, modelled on a real spacecraft camera:
+<br>
 
-- **Distance from real radii.** The camera holds an altitude that reproduces the reference shot over Earth (13,500 km ≈ 2.12 R⊕) and scales with √R, so NASA radii keep their ordering on screen. Jupiter overfills the frame (≈ 38° angular radius), Earth spans about two-thirds of it (≈ 19°), and the Moon is clearly smaller (≈ 11°). The HUD reports the altitude above the surface.
-- **Wide 55° lens, off-centre composition.** The vertical FOV is ≈ 87° horizontally on 16:9. The planet sits in the left third, so true rectilinear perspective stretches its limb towards the frame edge. That is where the spherical, "seen through a lens" curvature comes from — the geometry itself, not a fake warp.
-- **Milky Way-aware vantage.** Among sunlit three-quarter viewpoints (≈ 55° phase), the camera chooses the one whose open side of the frame looks along the real galactic plane, so the band crosses behind the planet. Saturn's view is lifted 30° out of the ring plane on the sunlit side.
-- **Free look.** Right-drag or the arrow keys turn the camera in place, like steering an observer's head. Double-click returns to the composed shot.
-- **Lens profiles** (`L` cycles):
-  - *Cinematic*: bloom from sources brighter than white, mild barrel distortion, off-axis softness, lateral chromatic aberration, natural vignetting, film grain, and rotational motion blur when the camera turns.
-  - *Fisheye*: a strong barrel lens with a circular image circle.
-  - *Clean*: no post-processing, for scientific inspection.
-  - Motion blur re-projects each pixel's view ray with the previous frame's orientation. It is exact for the sky, and a tracked planet that moves with the camera is not smeared. It is disabled under `prefers-reduced-motion`.
-- **Resolved Milky Way.** The sky's stars are importance-sampled from the Gaia map (∝ brightness^0.45), plus an isotropic field. Below one pixel a star keeps its flux (opacity ∝ area), so surface brightness does not change with distance, and stars close to the camera fade out instead of growing into blobs.
-- **Bloom control.** The Bloom slider in the toolbar scales the lens profile's glare from 0 to 300 % (the Clean lens has none).
+<a id="vela"></a>
+<p align="center"><img src="docs/readme/stop-05-jupiter.svg" alt="T+00:43:16 · Jupiter: Meet Vela" width="100%"></p>
 
-### Planetary Explorer
+<p align="center"><img src="docs/readme/vela.svg" alt="Vela: Hi! I'm Vela. I live inside Solaris." width="100%"></p>
 
-Select a body and keep scrolling: like Google Maps' space view, the globe turns into a map and then into the sharpest imagery that NASA, JAXA, ESA/Copernicus and USGS publish for it.
+Vela is Solaris's guide: a small glowing orb with a star on her antenna, drawn on a 23 × 21 pixel grid, with eight kinds of eyes, six mouths and five costumes. She has **572 lines**, about an hour of speech. She tells you a fact the first time you reach a world and a joke the second, notices when you speed up time or stare at Saturn for a while, keeps a memory of where you have been, and counts your exploration as a percentage. At 100% she says goodbye, and means it.
 
-- **Web-map controls.**
-  - The wheel or trackpad zooms (up = in), towards the point under the cursor.
-  - Dragging grabs the ground: the grabbed point stays under the cursor.
-  - Pinch zooms on touch screens.
-  - Close to the surface the lens effects, glow and editorial text step aside.
-- **Streaming tiles.** Below 2.5 body radii, equirectangular tiles stream onto the globe and fade in over the globe map between 2.4 and 1.6 radii. Tile choice uses screen-space error, so a source pixel is never drawn larger than about 1.3 screen pixels. Tiles behind the horizon or outside the view are skipped.
-- **Loading behaviour.**
-  - Requests go coarse-to-fine and nearest-first, at most 6 at a time.
-  - Requests the view no longer needs are aborted.
-  - A failed tile is retried up to 3 times with backoff.
-  - Up to 220 tiles are cached, with least-recently-used eviction.
-- **No holes.** Until a tile arrives, its nearest loaded ancestor is drawn, then the base globe map. If a source is unreachable (offline, blocked, or 8 tiles given up with none ever loaded), the layer switches off and says so. The globe stays usable.
-- **Zoom limit set by the data.** The closest approach allows 2× over-zoom of the finest level. On a 1000 px tall view that is about 4.6 km on Earth, 4.9 km on Mars, 10 km on the Moon, 112 km on Mercury and 139 km on Venus. The giants have only a global cloud map and keep the observation shot.
-- **Surface-following camera.** Below 1.5 radii the camera rotates with the body, so the ground stays put. Earth's clouds fade out between 1.0 and 0.3 radii.
-- **Lighting.** Near the ground the imagery is evenly lit, as in a web map. **Real sunlight** keeps the true day and night for the current simulation time. The panel shows the Sun's elevation below the camera.
-- **Colour for greyscale data.** The Mars CTX mosaic is greyscale. It is drawn with the hue of the global colour map: detail comes from CTX, colour from the map.
-- **Landmarks.**
-  - Earth: Everest, Grand Canyon, Richat Structure, Lake Baikal, Nile Delta.
-  - Moon: Tycho, Copernicus, Tranquility Base, Mare Imbrium, Shackleton.
-  - Mercury: Caloris, Hokusai, Rachmaninoff.
-  - Venus: Maxwell Montes, Maat Mons, Aphrodite Terra.
-  - Mars: Olympus Mons, Valles Marineris, Gale, Jezero, Hellas.
-  - Coordinates come from the Wikipedia coordinate records saved in `docs/research/landmark-coords.txt`.
-  - Search covers every body. A breadcrumb (Solar System › Body › Landmark) steps back out.
-- **Honest labels.**
-  - Venus is a Magellan **radar** mosaic, not a visible-light image.
-  - The Moon and Mercury mosaics are monochrome.
-  - Jupiter, Saturn, Uranus and Neptune show **cloud tops**: they have no solid surface, and no tiled high-resolution global map is published for them.
+Her voice was made line by line: Chatterbox text-to-speech (its Turbo model performs tags like `[laugh]` and `[sniff]`), voice conversion onto one reference recording so every line shares her timbre, pauses trimmed to a breath, loudness levelled to −17 LUFS, and any take far too long or short for its words re-recorded with another seed.
 
-| Body | Imagery | Endpoint | Levels | Finest |
-| :--- | :--- | :--- | :--- | :--- |
-| Earth | Sentinel-2 cloudless 2016 (10 m) | EOX WMTS, WGS84 grid | 0–13 | ≈ 9.5 m/px |
-| Moon | SELENE/Kaguya Terrain Camera ortho mosaic | NASA Moon Trek WMTS | 0–10 | ≈ 21 m/px |
-| Mars | MRO CTX global mosaic (Caltech Murray Lab), tinted | Trek → Esri-hosted cache | 0–12 | ≈ 10 m/px |
-| Mercury | MESSENGER MDIS BDR 166 m | NASA Mercury Trek WMTS | 0–7 | ≈ 234 m/px |
-| Venus | Magellan SAR mosaic | USGS Astrogeology WMS | 0–8 (resampled) | ≈ 290 m/px requested |
-| Giants | Solar System Scope 2k maps | bundled | — | global only |
+<br>
 
-The endpoints, deepest levels and CORS headers were checked from GitHub Actions with the deployed site's origin. See `docs/research/imagery-sources-probe.txt`, `docs/research/imagery-sources-probe-2.txt` and `scripts/verify-tile-sources.mjs`. No API keys are used.
+<a id="report"></a>
+<p align="center"><img src="docs/readme/stop-06-saturn.svg" alt="T+01:19:28 · Saturn: The field report" width="100%"></p>
 
-### Stand on the surface and look up
+<p align="center">
+  <a href="https://solarises.vercel.app/report/"><img src="docs/readme/report.svg" alt="The field report: how Solaris was made. 16 chapters, 23 live figures, explained by Vela." width="100%"></a>
+</p>
 
-**Stand here · look up** (in the explorer panel) puts you on the ground. It uses the landmark you flew to, or the point below the camera. You then see that world's own sky, with everything in it where it really is at the simulated time.
+Solaris comes with its own technical report, and the report is a website too. Its background is the live sky, from Solaris's own star data, and the telescope turns to a new target for every chapter. Its figures run: a 3D orrery on NASA's elements, the Earth and Moon from true size to 30×, Kepler's equation solving itself, real tiles streaming in from blurry to sharp. Vela explains every one of them.
 
-- **Sky.**
-  - A single-scattering Rayleigh + Mie atmosphere: Earth is blue by day and red at sunset. Mars is butterscotch by day with a blue glow around the setting Sun.
-  - Venus is a dim orange overcast; **Hide air** shows what its clouds hide.
-  - The Moon and Mercury have black skies with stars even by day.
-  - The giants' skies are rough models, labelled as approximate.
-- **What's up.**
-  - The Sun, the planets and the major moons are placed from their real positions (the orrery's ephemerides), as seen from your spot on the surface. They are shown at their true angular sizes.
-  - They are lit by the Sun, so phases show: Venus, and the Earth seen from the Moon.
-  - Near the horizon they are reddened and dimmed.
-  - Bodies too small to show a disc are drawn as star-like points with their real brightness (apparent magnitude from geometric albedo and phase).
-  - From Saturn's cloud tops the rings arch across the sky.
-- **Telescope.**
-  - Scroll to zoom the lens from 100° down to 0.2°. That shows Jupiter's moons and Saturn's rings from Earth, and fainter objects appear as you zoom.
-  - Drag to look around. Double-click resets the zoom.
-- **Poster.** Planet and moon sizes can be enlarged ×10, ×100 or ×1000 for an artistic, collage-like sky. The panel says so whenever sizes are not real. The Sun is never enlarged.
-- **Time of day.**
-  - Jumps to the next local sunrise, noon, sunset or night at your spot, on any body (Earth's 24 h day up to Mercury's 176-day solar day).
-  - Rise and set use the almanac altitude of −0.833°. A test checks Greenwich's 21 June sunrise to within 5 minutes.
-- **Ground.** The same streamed imagery, lit by the reddened sunlight plus sky light and fading into horizon haze. There is no terrain relief yet: the ground is a smooth sphere.
-- **Look up from…** One click stands you on a moon with its planet in the sky. The spot is computed so the planet hangs about 40° up on its sunlit side, from the real positions and the moon's IAU orientation:
-  - Earth from the Moon (about 2° across).
-  - Saturn from Enceladus or Mimas (about 28° and 37° across; the rings are edge-on, because these moons orbit in the ring plane).
-  - Saturn from Iapetus, whose tilted orbit shows the rings open.
-  - Jupiter from Europa or Io, Mars from Phobos, Uranus from Miranda, Neptune from Triton, Pluto from Charon.
-  - Titan's sky is a thick orange haze; Saturn is hidden from its ground, as it really is.
-  - Most moons have no real global map bundled; the panel labels their ground as illustrative.
+It also documents **Light Travel**, the launch film, in which a photon leaves the Sun and a light-clock counts its journey to each world. Every frame of the film is the live site, captured on a virtual clock so the browser could take as long as it needed per frame. [Watch the film](https://solarises.vercel.app/report/#film).
 
-### Scale modes
+<br>
 
-- **Exploration** (default): compressed distances; planet sizes keep true ratios to Earth (Sun shrunk to 48 units).
-- **True Distances:** linear distances, 1 unit = 1,000,000 km. Globes are enlarged 4× (minimum 15,000 km radius) so they stay visible, and moons that would land inside an enlarged parent are pushed just outside it.
+<a id="run"></a>
+<p align="center"><img src="docs/readme/stop-07-uranus.svg" alt="T+02:39:50 · Uranus: Run it yourself" width="100%"></p>
 
----
-
-## Interface
-
-- Planet selector, cinematic camera with a sunlit three-quarter vantage, and a planetary monograph.
-- Timeline: pause/play, 1× to 1 year/s, J2000 and Now shortcuts, and a date jump. The readout shows UTC and the UTC Julian Date.
-- Catalogue drawer with all 43 entries (42 Solar System bodies + Sgr A*), filters and search.
-- Scale jumps: Planet, Inner System, Outer System, Interstellar, Milky Way, Sgr A*.
-- The overlay is keyboard-accessible: toggles expose `aria-pressed`, icon-only buttons have labels, and focus rings are visible.
-
-| Key | Action |
-| :--- | :--- |
-| `Space` | Pause / play |
-| `H` | Hide / show HUD |
-| `O` | Orbit lines |
-| `C` | Constellation figures |
-| `B` | Asteroid belt |
-| `L` | Cycle lens: Cinematic / Fisheye / Clean |
-| Arrow keys / right-drag | Free look (turn the camera in place) |
-| Double-click | Return free look to the composed shot |
-| Left-drag / Shift-drag or middle-drag / wheel | Orbit / pan / zoom |
-| `Esc` | Close drawers / reset to overview |
-| Wheel / pinch near a body | Zoom towards the cursor, down to the imagery's limit |
-| Drag near a body | Grab and move the ground |
-| Explorer panel | Landmarks, search, breadcrumb, Real sunlight, Stand here · look up |
-| Surface view | Drag to look, scroll to zoom the lens, Esc to rise back to orbit |
-
----
-
-## Getting started
+You need Node.js 20 or newer.
 
 ```bash
 git clone https://github.com/LetMeCodex/solaris.git
-cd solaris
-npm install
-npm run dev          # http://localhost:5173/solaris/
 ```
+
+```bash
+cd solaris && npm install
+```
+
+```bash
+npm run dev
+```
+
+Then open http://localhost:5173/solaris/ for the explorer and http://localhost:5173/solaris/report/ for the report.
 
 | Script | What it does |
 | :--- | :--- |
-| `npm test` | 110 Vitest tests in 17 files: Kepler solver, ephemeris accuracy against JPL/VSOP87 references, IAU orientation, sky frames, scale model, catalogue integrity, texture cache, camera rig, observation framing and lens warp |
-| `npm run lint` | ESLint (TypeScript + React hooks rules) |
+| `npm test` | 142 Vitest tests in 23 files: the Kepler solver, ephemeris accuracy against JPL and VSOP87 references, IAU orientation, sky frames, the scale model, catalogue integrity, the texture cache, the camera rig and more |
+| `npm run lint` | ESLint, with the TypeScript and React hooks rules |
 | `npm run typecheck` | `tsc --noEmit` |
-| `npm run build` | type-check, then a Vite production build into `dist/` |
-| `npm run build:stars` | regenerate `public/data/stars.json` from the full catalogue |
+| `npm run build` | type-check, then a Vite build of the explorer and the report into `dist/` |
+| `npm run build:stars` | regenerate `public/data/stars.json` from the full Hipparcos catalogue |
 
-### Deployment
+**Deploying.** The live site is on Vercel, which builds `main` as it is pushed. `.github/workflows/deploy.yml` also runs lint, tests and the build on every push and pull request, and publishes to GitHub Pages under `/solaris/`.
 
-`.github/workflows/deploy.yml` runs lint, tests and the build on every push and pull request. Pushes to `main` then publish `dist/` to the `gh-pages` branch, which GitHub Pages serves.
+<details>
+<summary><b>Controls</b></summary>
 
----
+| Key or gesture | Action |
+| :--- | :--- |
+| `Space` | Pause / play |
+| `/` | Open the Atlas |
+| `P` | Take a picture |
+| `H` | Hide / show the interface |
+| `O` · `C` · `B` | Orbits · constellation figures · asteroid belt |
+| `L` | Cycle the lens: Cinematic, Fisheye, Clean |
+| `Esc` | Close drawers, back to the overview |
+| Drag · wheel | Orbit · approach |
+| Arrow keys or right-drag | Free look; double-click to return to the composed shot |
+| Wheel or pinch near a body | Zoom towards the cursor, down to the imagery's limit |
+| Drag near a body | Grab and move the ground |
+| Explorer panel | Landmarks, search, Real sunlight, Stand here · look up |
 
-## Data and asset credits
+</details>
 
-See [ASSETS.md](./ASSETS.md) for sources, licences and the attribution required for each dataset and texture. In short: orbital elements from NASA JPL (public domain), rotation models from the IAU WGCCRE, stars from ESA Hipparcos (CC BY-NC 3.0 IGO), sky map from ESA/Gaia/DPAC (CC BY-SA 3.0 IGO), galaxy art from NASA/JPL-Caltech/ESO/R. Hurt (CC BY 4.0), and planet textures from Solar System Scope (CC BY 4.0).
+<br>
 
-## License
+<a id="code"></a>
+<p align="center"><img src="docs/readme/stop-08-neptune.svg" alt="T+04:10:25 · Neptune: Inside the code" width="100%"></p>
 
-Code: [MIT](./LICENSE). Third-party data and textures keep their own licences (see ASSETS.md).
+```text
+src/
+├── astronomy/     Kepler solver, coordinate frames, IAU rotation models          904 lines
+├── data/          the catalogue: 479 bodies, orbits, physical constants        2,103 lines
+├── rendering/     planets, rings, sky, galaxy, black hole, lenses, shaders    10,652 lines
+├── explorer/      streaming surface tiles, landmarks, standing on the ground   3,093 lines
+├── navigation/    the camera rig, observation framing, scale tiers              1,635 lines
+├── ui/            the HUD: Atlas, Gallery, settings, the tour, the eyepiece    6,480 lines
+├── companion/     Vela: her lines, her memory, when to speak                      296 lines
+├── audio/         the soundtrack and effects                                       303 lines
+├── simulation/    the clock                                                        121 lines
+├── report/        the field report, its figures, and Vela in pixels           3,702 lines
+└── tests/         142 tests in 23 files
+```
+
+Everything is TypeScript. Heavy assets load only when they are needed, and the report is its own Vite entry, so the explorer never downloads it.
+
+The artwork in this README is generated too: `python scripts/readme/build_readme_art.py` draws every word as vector paths from open-licence fonts, wraps the planets in the site's own surface maps, and writes the animated SVGs into `docs/readme/`.
+
+<br>
+
+<a id="credits"></a>
+<p align="center"><img src="docs/readme/stop-09-sagittariusa.svg" alt="T+27,000 years · Sagittarius A*: Credits, at the edge of the map" width="100%"></p>
+
+Solaris stands on public science. Orbital elements come from **NASA JPL** (public domain) and rotation models from the **IAU WGCCRE**. The stars are **ESA Hipparcos** (CC BY-NC 3.0 IGO) and the sky map is **ESA/Gaia/DPAC** (CC BY-SA 3.0 IGO). The nebula photographs are from **NASA, ESA, CSA and STScI** (Webb and Hubble) and **ESO** (VISTA); the face-on galaxy is by **NASA/JPL-Caltech/ESO/R. Hurt** (CC BY 4.0); planet textures are from **Solar System Scope** (CC BY 4.0). Surface imagery streams from **EOX**, **NASA Trek**, **Esri** and **USGS Astrogeology**. The README's lettering is set in **Montserrat**, **Instrument Serif**, **JetBrains Mono** and **VT323** (SIL Open Font Licence).
+
+Every source, its licence and the attribution it asks for is listed in [ASSETS.md](./ASSETS.md), and in the report's references.
+
+**Licence.** The code is [MIT](./LICENSE). Third-party data, imagery and textures keep their own licences.
+
+<br>
+
+<p align="center">
+  <sub>The photon that left the Sun at the top of this page is still travelling. It will reach the galactic centre in about 27,000 years.<br>Solaris will be there when it does.</sub>
+</p>

@@ -1,0 +1,11 @@
+import { chromium } from 'playwright';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+const browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--allow-file-access-from-files'] });
+const page = await browser.newPage({ viewport: { width: Number(process.env.W || 1280), height: 900 } });
+await page.goto(pathToFileURL(path.resolve('out/readme/preview.html')).href, { waitUntil: 'load' });
+await page.waitForTimeout(6000);
+await page.screenshot({ path: `out/readme/page-${process.env.W || 1280}.png`, fullPage: true });
+const h = await page.evaluate(() => document.body.scrollHeight);
+console.log('height', h);
+await browser.close();
