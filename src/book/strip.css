@@ -1,0 +1,46 @@
+/* On a phone there is no fixed page to pin things to: lettering falls into the panel's flow. */
+.strip .band { font-size: clamp(20px, 6.6vw, 30px) !important; }
+.strip .cover { flex: none; }
+.strip .cover .band { font-size: 17.5vw !important; padding: 2px 10px 5px; }
+.strip .cv-top { font-size: 10px; gap: 8px; letter-spacing: 0.04em; }
+.strip .cv-sub { font-size: 46px; }
+.strip .cv-art { flex: none; height: 118vw; }
+.strip .cv-note { display: none; }
+.strip .cv-foot { font-size: 15px; }
+.strip .cv-art .say { position: absolute !important; left: 12px !important; right: 12px !important; bottom: 12px !important; top: auto !important; width: auto !important; margin: 0; }
+.strip .cv-art .vela { position: absolute !important; left: 6px !important; bottom: 92px !important; margin: 0; }
+.strip .sh-a, .strip .sh-b, .strip .sh-c { clip-path: none; background: none; }
+.strip .sh-a .p-in, .strip .sh-b .p-in, .strip .sh-c .p-in { clip-path: none; inset: 0; border: 3px solid var(--ink); }
+.strip .sh-a, .strip .sh-b, .strip .sh-c { position: relative; }
+
+.strip .p:has(.say), .strip .p:has(.cap), .strip .p.bare, .strip .p:has(.vela) { aspect-ratio: auto; min-height: 170px; }
+.strip .p:has(.say) .p-in, .strip .p:has(.cap) .p-in, .strip .p.bare .p-in, .strip .p:has(.vela) .p-in { position: relative; display: flex; flex-direction: column; justify-content: flex-end; gap: 8px; padding: 10px; min-height: 170px; }
+.strip .p:has(.ink) .p-in { min-height: 62vw; }
+.strip .p .say, .strip .p .cap, .strip .pg > .say { position: relative !important; left: auto !important; right: auto !important; top: auto !important; bottom: auto !important; width: auto !important; align-self: stretch; }
+.strip .p .say { margin-bottom: 6px; }
+.strip .p .say, .strip .pg > .say { border-radius: 26px; padding: 10px 16px; }
+.strip .p .vela, .strip .pg > .vela, .strip .opener .vela { position: relative !important; left: auto !important; right: auto !important; top: auto !important; bottom: auto !important; align-self: center; margin: 4px auto; max-width: 150px; height: auto; }
+.strip .sfx { font-size: 38px !important; }
+.strip .p.bare .op-t { position: static !important; font-size: 50px !important; }
+.strip .op-t { font-size: 48px !important; }
+.strip .key { position: static; }
+.strip .bigq { position: relative; left: auto; bottom: auto; font-size: 38px; margin-top: 50px; padding: 0 2px; }
+.strip .px-num { font-size: 27vw; }
+.strip .op-wide { height: 58vw !important; }
+.strip .take { grid-template-columns: 1fr; }
+.strip .board b { font-size: 16px; }
+.strip .txt { font-size: 17px; text-align: left; hyphens: manual; }
+.strip .txt[style*='absolute'] { position: static !important; width: auto !important; }
+.strip .op-ga { width: auto; }
+.strip .ga { margin: 0 auto; }
+.strip .list { columns: 1; }
+.strip .lines-t { grid-template-columns: 1fr; }
+.strip .tt-txt { padding: 0; font-size: 16.5px; }
+.strip .tt-imp { flex-direction: column; gap: 2px; }
+.strip .title .band { font-size: 15vw !important; }
+.strip .wc-b .band { font-size: 20px !important; }
+.strip .ct-row { padding: 8px 0; }
+.strip .ct-h h2 { font-size: 40px; }
+.strip .p:has(.bigq) { aspect-ratio: auto; }
+.strip .p:has(.bigq) .p-in { position: relative; padding: 58px 12px 12px; }
+.strip .p:has(.bigq) .bigq { margin: 0; }

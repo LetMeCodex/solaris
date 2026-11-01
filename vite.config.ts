@@ -20,10 +20,11 @@ export default defineConfig({
   },
   build: {
     rollupOptions: {
-      // The explorer, and the technical report about it
+      // The explorer, the technical report about it, and the illustrated book
       input: {
         main: path.resolve(__dirname, 'index.html'),
         report: path.resolve(__dirname, 'report/index.html'),
+        book: path.resolve(__dirname, 'book/index.html'),
       },
       output: {
         // Split the large, rarely-changing libraries into their own long-cacheable chunks
