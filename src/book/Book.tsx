@@ -169,6 +169,83 @@ const Spreads: React.FC<{ go: (fn: (id: string) => void) => void }> = ({ go }) =
 
   useEffect(() => { arrive(spread); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Scrolling turns the page by hand: the sheet follows the wheel, and settles whichever way it was going.
+  const scrub = useRef({ p: 0, dir: 0, on: false, timer: 0, target: 0 });
+  useEffect(() => {
+    const el = stage.current!;
+    const shade = (sheet: HTMLElement, deg: number) => {
+      const v = Math.sin((Math.abs(deg) * Math.PI) / 180) * 0.34;
+      sheet.querySelectorAll<HTMLElement>('.turnshade').forEach((s) => { s.style.opacity = String(v); });
+    };
+    const place = () => {
+      const s = scrub.current;
+      const i = s.dir > 0 ? pos.current : pos.current - 1;
+      const sheet = els.current[i];
+      if (!sheet) return;
+      const k = Math.abs(s.p);
+      const deg = s.dir > 0 ? -180 * k : -180 * (1 - k);
+      gsap.set(sheet, { rotationY: deg, zIndex: sheets.length + 20 });
+      gsap.set(bookEl.current, { x: shift(pos.current) + (shift(s.target) - shift(pos.current)) * k });
+      shade(sheet, deg);
+    };
+    const settle = () => {
+      const s = scrub.current;
+      if (!s.on) return;
+      window.clearTimeout(s.timer);
+      busy.current = true;
+      const done = Math.abs(s.p) > 0.34;
+      const o = { k: Math.abs(s.p) };
+      gsap.to(o, {
+        k: done ? 1 : 0,
+        duration: reduced ? 0.01 : 0.42,
+        ease: 'power2.out',
+        onUpdate: () => { s.p = o.k * s.dir; place(); },
+        onComplete: () => {
+          const t = done ? s.target : pos.current;
+          pos.current = t;
+          s.p = 0; s.dir = 0; s.on = false;
+          layout(t);
+          els.current.forEach((e) => e?.querySelectorAll<HTMLElement>('.turnshade').forEach((x) => { x.style.opacity = '0'; }));
+          setSpread(t);
+          setNear(t);
+          setTurning(false);
+          busy.current = false;
+          window.history.replaceState(null, '', `#p${Math.max(1, t * 2)}`);
+          arrive(t);
+        },
+      });
+    };
+    const wheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const s = scrub.current;
+      if (busy.current) return;
+      const unit = e.deltaMode === 1 ? 30 : 1;
+      const d = (e.deltaY + e.deltaX) * unit;
+      if (!s.on) {
+        const dir = Math.sign(d);
+        const target = pos.current + dir;
+        if (!dir || target < 0 || target > sheets.length) return;
+        s.on = true; s.dir = dir; s.target = target; s.p = 0;
+        setTurning(true);
+        setNear(target);
+        requestAnimationFrame(() => {
+          if (!reduced) for (const p of pagesOf(target)) {
+            const pg = stage.current?.querySelector<HTMLElement>(`[data-page="${p.id}"]`);
+            if (pg && !SEEN.has(p.id)) hide(pg);
+          }
+        });
+      }
+      s.p = Math.max(-1, Math.min(1, s.p + d / 640));
+      if (Math.sign(s.p) !== s.dir) s.p = 0;
+      place();
+      window.clearTimeout(s.timer);
+      if (Math.abs(s.p) >= 1) settle();
+      else s.timer = window.setTimeout(settle, 150);
+    };
+    el.addEventListener('wheel', wheel, { passive: false });
+    return () => el.removeEventListener('wheel', wheel);
+  }, [sheets.length, layout, arrive]);
+
   // a swipe turns the page on a tablet
   useEffect(() => {
     const el = stage.current!;
@@ -221,30 +298,42 @@ const Rail: React.FC<{ spread: number; total: number; to: (s: number) => void }>
   );
 };
 
-/** On a phone: one long strip, each page drawn as it comes near. */
-const Strip: React.FC = () => {
+/** One long scroll. On a phone the pages reflow into a strip; on a desk they keep their size. */
+const Strip: React.FC<{ fixed?: boolean }> = ({ fixed }) => {
   const [near, setNear] = useState<Set<string>>(() => new Set([PAGES[0].id, PAGES[1].id]));
   const [live, setLive] = useState<Set<string>>(() => new Set());
+  const [zoom, setZoom] = useState(1);
   const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!fixed) return;
+    const f = () => setZoom(Math.min(1.4, (window.innerWidth - 48) / PW));
+    f();
+    window.addEventListener('resize', f);
+    return () => window.removeEventListener('resize', f);
+  }, [fixed]);
   useEffect(() => {
     const load = new IntersectionObserver((es) => {
       setNear((s) => { const n = new Set(s); es.forEach((e) => { if (e.isIntersecting) n.add((e.target as HTMLElement).dataset.page!); }); return n; });
-    }, { rootMargin: '120% 0px' });
+    }, { root: fixed ? root.current : null, rootMargin: '120% 0px' });
     const seen = new IntersectionObserver((es) => {
       setLive((s) => {
         const n = new Set(s);
         es.forEach((e) => { const id = (e.target as HTMLElement).dataset.page!; if (e.isIntersecting) n.add(id); else n.delete(id); });
         return n;
       });
-    }, { threshold: 0.15 });
+    }, { root: fixed ? root.current : null, threshold: 0.15 });
     root.current?.querySelectorAll('.pg').forEach((e) => { load.observe(e); seen.observe(e); });
     return () => { load.disconnect(); seen.disconnect(); };
-  }, []);
+  }, [fixed]);
   const go = useCallback((id: string) => { root.current?.querySelector(`[data-page="${id}"]`)?.scrollIntoView({ behavior: 'smooth' }); }, []);
   return (
     <GoContext.Provider value={go}>
-      <div className="strip" ref={root}>
-        {PAGES.map((p) => <Sheet key={p.id} page={p} mounted={near.has(p.id)} live={live.has(p.id)} />)}
+      <div className={fixed ? 'scrollview' : 'strip'} ref={root}>
+        {PAGES.map((p) => (
+          <div key={p.id} style={fixed ? { zoom } : undefined}>
+            <Sheet page={p} mounted={near.has(p.id)} live={live.has(p.id)} />
+          </div>
+        ))}
       </div>
     </GoContext.Provider>
   );
@@ -252,18 +341,22 @@ const Strip: React.FC = () => {
 
 export const Book: React.FC = () => {
   const [phone, setPhone] = useState(() => window.innerWidth < 860 || window.innerWidth < window.innerHeight * 0.9);
+  const [scroll, setScroll] = useState(false);
   const goRef = useRef<(id: string) => void>(() => {});
   useEffect(() => {
     const f = () => setPhone(window.innerWidth < 860 || window.innerWidth < window.innerHeight * 0.9);
     window.addEventListener('resize', f);
-    return () => window.removeEventListener('resize', f);
+    const key = (e: KeyboardEvent) => { if (e.key === 's') setScroll((v) => !v); };
+    window.addEventListener('keydown', key);
+    return () => { window.removeEventListener('resize', f); window.removeEventListener('keydown', key); };
   }, []);
   const go = useCallback((id: string) => goRef.current(id), []);
   const set = useCallback((fn: (id: string) => void) => { goRef.current = fn; }, []);
   if (phone) return <Strip />;
   return (
     <GoContext.Provider value={go}>
-      <Spreads go={set} />
+      {scroll ? <Strip fixed /> : <Spreads go={set} />}
+      <button type="button" className="modebtn" onClick={() => setScroll((v) => !v)}>{scroll ? 'Book view' : 'Scroll view'}</button>
     </GoContext.Provider>
   );
 };

@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import LINES from '../../companion/vela-lines.json';
-import { Band, Cap, Clip, Grid, Ink, Lines, Opener, P, Plate, Ref, Roundel, Say, Sfx, Txt, Vela } from '../kit';
+import { Band, Cap, Clip, Grid, Ink, Lines, Note, Opener, P, Plate, Ref, Roundel, Say, Sfx, Txt, Vela } from '../kit';
 import { ClockPlate, CommitPlate, LineUnits, Take, VelaPlate } from '../plates2';
 import type { PageDef } from './registry';
 
@@ -10,9 +10,7 @@ const base = import.meta.env.BASE_URL;
 const C9: React.FC = () => (
   <Opener n="09" kicker="The companion" title={<>Meet Vela <em>(that’s me)</em></>}>
     <div className="op-ga">
-      <Plate n="XII" title="Vela, general arrangement. Eight kinds of eyes, six mouths, five costumes.">
-        <VelaPlate />
-      </Plate>
+      <Plate n="XII" title="Vela, general arrangement. Eight kinds of eyes, six mouths, five costumes."><VelaPlate /></Plate>
     </div>
     <Txt style={{ position: 'absolute', left: 0, bottom: 0, width: 262 }}>
       <p className="lead">Solaris has a guide who talks. She knows where you are, remembers where you have been, and has opinions about the black hole.</p>
@@ -26,7 +24,7 @@ const GROUPS: Array<[string, string]> = [
   ['react', 'Reacting to what you do'], ['noise', 'Little sounds'], ['music', 'The soundtrack'], ['farewell', 'The farewell at 100%'],
 ];
 const lines = LINES as Record<string, string>;
-const C9Lines: React.FC = () => {
+const VLines: React.FC = () => {
   const rows = useMemo(() => {
     const c: Record<string, number> = {};
     for (const k of Object.keys(lines)) c[k.split('.')[0]] = (c[k.split('.')[0]] ?? 0) + 1;
@@ -54,29 +52,26 @@ const STEPS: Array<[string, string]> = [
   ['Finishing', 'Long pauses trimmed to a breath, loudness levelled to −17 LUFS, soft fades.'],
   ['Checked', 'If a take is far too long or short for its words, it is re-recorded with another seed.'],
 ];
-const C9Voice: React.FC = () => (
+const Voice: React.FC = () => (
   <>
     <Band tone="orange" size={30}>HOW A LINE BECOMES HER VOICE</Band>
     <div className="metro a-f">
       {STEPS.map(([t, d], i) => (
-        <div key={t}>
-          <i>{i + 1}</i>
-          <b>{t}</b>
-          <span>{d}</span>
-        </div>
+        <div key={t}><i>{i + 1}</i><b>{t}</b><span>{d}</span></div>
       ))}
     </div>
     <Take />
     <Txt cols={2}>
-      <p>She speaks in a real person’s voice, recorded with that person’s consent. Every line was generated with Chatterbox<Ref n={28} />, an open-source speech model, conditioned on a short reference recording, then converted onto the same voice so all 572 lines match. Giggles and sobs are performed. Recording them all took hours on a laptop graphics card, from scripts/generate_vela_voice.py.</p>
+      <p>She speaks in a real person’s voice, recorded with that person’s consent. Every line was generated with Chatterbox<Ref n={28} />, an open-source speech model, conditioned on a short reference recording, then converted onto the same voice so all 572 lines match. Giggles and sobs are performed. Recording them all took hours on a laptop graphics card.</p>
     </Txt>
     <Grid cols="1fr 150px" rows="1fr" style={{ gap: 10 }}>
-      <P tone="ink" ar="16 / 7">
-        <Clip name="ui_vela" spot="orange" cell={4} gain={2.8} alt="Vela beside Mars in Solaris" />
-        <Say x={12} y={12} w={500} tail="none" shout>The hardest part of me wasn’t the voice. It was <b>knowing when to stay quiet.</b> Every line has a cooldown, every fact is said once, and if you’ve heard me say something recently, I find something else to say.</Say>
+      <P ar="16 / 7">
+        <Clip name="ui_vela" look="tone" spot="orange" cell={3.2} gain={1.5} neg alt="Vela beside Mars in Solaris, printed as a negative" />
+        <Say x={12} y={12} w={500} tail="none" shout>The hardest part of me wasn’t the voice. It was <b>knowing when to stay quiet.</b> Every line has a cooldown, and every fact is said once.</Say>
       </P>
       <P bare ar="1 / 1"><Vela eyes="closed" mouth="smile" arms="hold" size={140} x={4} b={4} /></P>
     </Grid>
+    <Note n="12" rot={0.6}>I am 572 sentences and one person’s yes. Somebody lent me their voice. I try to look after it.</Note>
   </>
 );
 
@@ -106,7 +101,7 @@ const Records: React.FC = () => {
     <div className="recs">
       {TRACKS.map(([s, t, w, d]) => (
         <button key={s} type="button" className={`rec a-f ${on === s ? 'on' : ''}`} onClick={(e) => toggle(e, s)} aria-label={`Play ${t}`}>
-          <span className="rec-d"><Ink src={{ kind: 'image', url: `${base}music/${s}.jpg` }} spot="orange" cell={3.4} gain={1.6} alt="" /><i /></span>
+          <span className="rec-d"><Ink src={{ kind: 'image', url: `${base}music/${s}.jpg` }} look="dots" spot="orange" cell={3.4} gain={1.3} drift={0} alt="" /><i /></span>
           <span className="rec-w">{w}</span>
           <b>{t}</b>
           <em>{d}</em>
@@ -147,8 +142,8 @@ const C11: React.FC = () => (
       ))}
     </div>
     <Grid cols="1fr 1fr" rows="1fr">
-      <P ar="16 / 10"><Clip name="ui_explorer" spot="green" cell={3.2} gain={2.2} neg alt="The world panel, printed as a negative" /><Cap x={8} b={8} tone="paper"><b>The world panel.</b> Stand here, look up.</Cap></P>
-      <P ar="16 / 10"><Clip name="ui_atlas" spot="orange" cell={3.2} gain={2.2} neg alt="The Atlas, printed as a negative" /><Cap x={8} b={8} tone="paper"><b>The Atlas.</b> 478 worlds.</Cap></P>
+      <P ar="16 / 10"><Clip name="ui_explorer" look="tone" spot="green" cell={3.2} gain={1.5} neg alt="The world panel, printed as a negative" /><Cap x={8} b={8} tone="paper"><b>The world panel.</b> Stand here, look up.</Cap></P>
+      <P ar="16 / 10"><Clip name="ui_atlas" look="tone" spot="orange" cell={3.2} gain={1.5} neg alt="The Atlas, printed as a negative" /><Cap x={8} b={8} tone="paper"><b>The Atlas.</b> 478 worlds.</Cap></P>
     </Grid>
     <Txt cols={2}>
       <p>The interface was designed like the instruments of an observatory: thin type, real readouts, and nothing that pretends.</p>
@@ -158,36 +153,36 @@ const C11: React.FC = () => (
 );
 
 // ------------------------------------------------------------------------------- 12 film
+const FILM: Array<[string, 'tone' | 'rays' | 'engrave' | 'dots' | 'hatch' | 'stipple', string, number]> = [['warp', 'rays', 'The warp', 1.1], ['saturn', 'engrave', 'Saturn', 1.25], ['jupiter', 'hatch', 'Jupiter', 1.7], ['venus', 'tone', 'Venus', 1.5], ['bh_sea', 'dots', 'The shore of Sgr A*', 1.3], ['earth', 'dots', 'Earth', 1.5]];
 const C12: React.FC = () => (
   <Opener n="12" tone="orange" kicker="The launch film" title={<>Filming a website, <em>frame by frame</em></>}>
-    <div className="op-wide a-p" style={{ height: 290 }}>
-      <Clip name="film" start={19} spot="orange" cell={5} gain={2.6} alt="The launch film, Light Travel" />
-      <Vela eyes="happy" mouth="grin" arms="wave2" costume="scarf" size={100} r={12} b={6} />
+    <div className="strip35 a-p">
+      {FILM.map(([n, look, l, gain]) => (
+        <div key={n}><Clip name={n} look={look} spot="both" cell={3.8} gain={gain} fx={0.5} fy={0.5} alt={`A frame from the launch film: ${l}`} /><span>{l}</span></div>
+      ))}
     </div>
     <p className="op-lead a-f" style={{ width: 'auto' }}>The launch film is 76.6 seconds long, and every shot in it is Solaris itself, running. <a href={`${base}report/media/film.mp4`} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>Watch it unprinted.</a></p>
   </Opener>
 );
-const C12Clock: React.FC = () => (
+const Clock: React.FC = () => (
   <>
     <Band size={25}>WE LIED TO THE BROWSER ABOUT THE TIME</Band>
-    <Plate n="XIII" title="The virtual clock. Timers, animation frames and CSS animations all ran on it during capture.">
-      <ClockPlate />
-    </Plate>
+    <Plate n="XIII" title="The virtual clock. Timers, animation frames and CSS animations all ran on it during capture."><ClockPlate /></Plate>
     <Txt cols={2}>
       <p>Screen-recording a 3D site gives stutters and dropped frames, so the film was not recorded, it was rendered. A script drove the site in Chrome on the laptop’s graphics card and replaced the page’s clocks with a virtual clock: before each frame the page was told exactly one thirtieth of a second had passed, and only then was the frame captured. A frame could take half a second to draw; on film it lasts 1/30 s.</p>
       <p>Twenty-eight shots were scripted this way: flights, slow orbits, postcard views and skies from other worlds, tracked so that labels could lock onto planets. The motion design, from the logo building itself to the light-clock and every title, was composed in Remotion, cut to the soundtrack’s beat with librosa, and mastered to −14 LUFS for social media.</p>
     </Txt>
     <Grid cols="1fr 1fr 1fr" rows="1fr">
-      <P tone="ink" ar="16 / 10"><Clip name="saturn" spot="orange" cell={4} gain={4} alt="Saturn" /></P>
-      <P tone="ink" ar="16 / 10"><Clip name="jupiter" spot="orange" cell={4} gain={4} alt="Jupiter" /></P>
-      <P tone="ink" ar="16 / 10"><Clip name="triton_neptune" spot="green" cell={4} gain={2.6} alt="Neptune from Triton" /></P>
+      <P ar="16 / 10"><Clip name="saturn" look="tone" spot="orange" cell={4} gain={1.1} alt="Saturn" /></P>
+      <P ar="16 / 10"><Clip name="jupiter" look="engrave" spot="orange" cell={4} gain={1.1} alt="Jupiter" /></P>
+      <P ar="16 / 10"><Clip name="triton_neptune" look="stipple" spot="green" cell={4} gain={1.1} alt="Neptune from Triton" /></P>
     </Grid>
-    <Cap b={52} r={44} w={300} tone="paper">Three of the twenty-eight shots.</Cap>
+    <Note n="13" rot={-0.6}>We lied to the browser about the time so that the truth would look smooth. Nobody here is perfect.</Note>
   </>
 );
 
 // ------------------------------------------------------------------------------- 13 bugs
-export const BUGS: Array<[string, string, string]> = [
+const BUGS: Array<[string, string, string]> = [
   ['The nebulae were invisible.', 'They were flat patches facing away from the camera, and graphics cards skip back faces by default.', 'Draw both sides.'],
   ['The nebulae never came back after daylight.', 'Once hidden under a blue sky, the update loop returned early and never faded them back in.', 'Check whether there is anything to draw, not whether it is hidden.'],
   ['The opening flew to 75 AU instead of 14.', 'The distance for the opening flight was hard-coded in the transition.', 'Pass the distance through.'],
@@ -237,6 +232,20 @@ const C13b: React.FC = () => (
   </>
 );
 
+/** Interlude: everything was wrong first. */
+const WrongFirst: React.FC = () => (
+  <div className="wrong">
+    <small className="a-f">Interlude · Error</small>
+    <p className="w-s a-f"><s>The Sun was tiled lava.</s></p>
+    <p className="w-s a-f"><s>The nebulae were invisible.</s></p>
+    <p className="w-s a-f"><s>Twilight was pitch black.</s></p>
+    <p className="w-s a-f"><s>Vela said everything twice.</s></p>
+    <h2 className="a-f">Every beautiful thing in this book was <em>wrong first.</em></h2>
+    <p className="w-b a-f">Newton’s method does not start from the answer. It starts from a guess, and from being honest about how far off the guess is. There is no other way in. There never was.</p>
+    <Vela eyes="happy" mouth="grin" arms="up" costume="hardhat" size={130} r={10} b={0} />
+  </div>
+);
+
 // ------------------------------------------------------------------------------- 14 build log
 const MILES: Array<[string, string]> = [
   ['13 Oct, 01:38', 'The first commit, at 1:38 in the morning. By that night: the cinematic interface, physical atmospheres, the Gaia Milky Way, Sagittarius A* and real ephemerides.'],
@@ -249,9 +258,7 @@ const C14: React.FC = () => (
   <>
     <div className="op-k a-f"><b>Chapter 14</b><span>Build log</span></div>
     <h2 className="op-t a-f" style={{ fontSize: 68, marginTop: 8 }}>Five days, <em>forty-six</em> commits</h2>
-    <Plate n="XIV" title="Every commit, 13 to 17 October 2026, India Standard Time. Orange dots added features; black dots fixed things.">
-      <CommitPlate />
-    </Plate>
+    <Plate n="XIV" title="Every commit, 13 to 17 October 2026, India Standard Time. Orange dots added features; black dots fixed things."><CommitPlate /></Plate>
     <Txt><p className="lead">Solaris went from an empty folder to everything in this book in five days.</p></Txt>
     <table className="spec a-f">
       <tbody>{MILES.map(([d, t]) => <tr key={d}><td style={{ width: 150 }}><b>{d}</b></td><td>{t}</td></tr>)}</tbody>
@@ -265,15 +272,16 @@ const C14: React.FC = () => (
   </>
 );
 
-export const CRAFT: PageDef[] = [
+export const ACT_THREE: PageDef[] = [
   { id: 'c9', node: <C9 />, tab: 'Vela', stop: '09 Vela' },
-  { id: 'c9-lines', node: <C9Lines />, tab: 'Vela' },
-  { id: 'c9-voice', node: <C9Voice />, tab: 'Vela' },
+  { id: 'c9-lines', node: <VLines />, tab: 'Vela' },
+  { id: 'c9-voice', node: <Voice />, tab: 'Vela' },
   { id: 'c10', node: <C10 />, tab: 'Soundtrack', stop: '10 The soundtrack' },
   { id: 'c11', node: <C11 />, tab: 'Interface', stop: '11 The interface' },
   { id: 'c12', node: <C12 />, tab: 'The Film', stop: '12 The launch film' },
-  { id: 'c12-clock', node: <C12Clock />, tab: 'The Film' },
+  { id: 'c12-clock', node: <Clock />, tab: 'The Film' },
   { id: 'c13', node: <C13 />, tab: 'What Broke', stop: '13 What broke' },
   { id: 'c13-b', node: <C13b />, tab: 'What Broke' },
+  { id: 'wrong', node: <WrongFirst />, ground: 'green', folio: false },
   { id: 'c14', node: <C14 />, tab: 'Build Log', stop: '14 Build log' },
 ];

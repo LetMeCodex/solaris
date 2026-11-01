@@ -2,7 +2,8 @@ import React from 'react';
 import { SOLAR_SYSTEM_BODIES } from '../../astronomy/SolarSystemData';
 import { REFS } from '../../report/refs';
 import { TERMS } from '../../report/terms';
-import { Arrow, Band, Ink, Opener, Ref, Roundel, Say, Sfx, Txt, Vela } from '../kit';
+import { Arrow, Band, Ink, Opener, Ref, Say, Txt, Vela } from '../kit';
+import { BackCover } from './BackCover';
 import type { PageDef } from './registry';
 
 // ------------------------------------------------------------------------------- the planets, as a catalogue
@@ -16,7 +17,7 @@ const period = (d: number) => (d < 700 ? `${d.toFixed(1)} days` : `${(d / 365.25
 const World: React.FC<{ b: (typeof PLANETS)[number]; i: number }> = ({ b, i }) => (
   <div className="wc">
     <div className="wc-art">
-      <Ink src={{ kind: 'globe', map: MAPS[b.name], spin: 0.5, tilt: ((b.physical.axialTiltDeg ?? 0) * Math.PI) / 180 * (Math.abs(b.physical.axialTiltDeg ?? 0) > 90 ? 0.4 : 1), ring: b.name === 'Saturn' }} spot={i % 2 ? 'green' : 'orange'} cell={4} gain={1.7} alt={`${b.name}, turning`} />
+      <Ink src={{ kind: 'globe', map: MAPS[b.name], spin: 0.5, tilt: ((b.physical.axialTiltDeg ?? 0) * Math.PI) / 180 * (Math.abs(b.physical.axialTiltDeg ?? 0) > 90 ? 0.4 : 1), ring: b.name === 'Saturn' }} look={(['engrave', 'hatch', 'dots', 'stipple'] as const)[i % 4]} spot={i % 2 ? 'green' : 'orange'} cell={4.5} gain={1.8} alt={`${b.name}, turning`} />
     </div>
     <div className="wc-b">
       <Band size={25}>{b.name.toUpperCase()}</Band>
@@ -200,26 +201,7 @@ const Colophon: React.FC = () => (
       <p>Set in Alfa Slab One, Bodoni Moda, Archivo, Newsreader, Shantell Sans and Dela Gothic One, all under the SIL Open Font Licence. Every plate is drawn from the real numbers; the Float32 plate does its own rounding.</p>
       <p>Solaris’s code is MIT licensed. Third-party data, imagery and textures keep their own licences, listed in the Bibliography and in ASSETS.md.</p>
     </Txt>
-    <div style={{ flex: 1 }} />
-    <div className="last a-f">
-      <Vela eyes="happy" mouth="grin" arms="wave1" size={120} />
-      <p>That’s everything. Go and open Solaris, stand somewhere nobody has ever stood, and look up. I’ll be there. I’ll be the one talking.</p>
-    </div>
   </>
-);
-
-const BackCover: React.FC = () => (
-  <div className="cover">
-    <div className="cv-art" style={{ flex: 1 }}>
-      <Ink src={{ kind: 'globe', map: '2k_sun.jpg', spin: 0.25 }} spot="orange" cell={7} gain={1.5} alt="The Sun, turning" style={{ inset: '40px 0 0 0', height: 'calc(100% - 40px)' }} />
-      <Sfx jp="ドーン" en="DŌN" x={8} y={8} size={82} rot={-6} tone="orange" />
-    </div>
-    <div style={{ textAlign: 'center' }}><Band size={92}>SOLARIS</Band></div>
-    <div className="cv-foot">
-      <Roundel dir={0} size={40} />
-      <span>Every light you see has already left. solarises.vercel.app</span>
-    </div>
-  </div>
 );
 
 export const WORLDS: PageDef[] = [
@@ -237,5 +219,6 @@ export const BACK: PageDef[] = [
   { id: 'gloss-a', node: <Glossary part={0} />, tab: 'Glossary', stop: 'Glossary' },
   { id: 'gloss-b', node: <Glossary part={1} />, tab: 'Glossary' },
   { id: 'colophon', node: <Colophon />, tab: 'Colophon', stop: 'Colophon' },
-  { id: 'back', node: <BackCover />, folio: false },
 ];
+
+export const LAST: PageDef[] = [{ id: 'back', node: <BackCover />, folio: false }];

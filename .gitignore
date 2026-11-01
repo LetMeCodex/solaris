@@ -29,6 +29,8 @@ Thumbs.db
 
 # Media & Scratch
 *.mp4
+!public/book/clips/*.mp4
+!public/report/media/*.mp4
 scratch/
 tiles-cache/
 

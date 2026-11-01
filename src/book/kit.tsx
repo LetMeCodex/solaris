@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef } from 'react';
 import { draw as drawVela, W as VW, H as VH, type Eyes, type Mouth, type Arms, type Costume } from '../report/vela/sprite';
-import { press, type InkSource, type PressJob, type Spot } from './ink';
+import { press, type InkSource, type Print, type PressJob } from './ink';
 
 /** A page tells its panels whether it is the one being read; only then do they move. */
 export const LiveContext = createContext(false);
@@ -8,7 +8,7 @@ export const LiveContext = createContext(false);
 export const GoContext = createContext<(id: string) => void>(() => {});
 
 // ---------------------------------------------------------------------------------- inked panels
-export const Ink: React.FC<{ src: InkSource; spot?: Spot; cell?: number; gain?: number; neg?: boolean; alt: string; className?: string; style?: React.CSSProperties }> = ({ src, spot = 'orange', cell = 5, gain = 1.5, neg, alt, className, style }) => {
+export const Ink: React.FC<{ src: InkSource; alt: string; className?: string; style?: React.CSSProperties } & Print> = ({ src, alt, className, style, ...print }) => {
   const ref = useRef<HTMLCanvasElement>(null);
   const job = useRef<PressJob | null>(null);
   const live = useContext(LiveContext);
@@ -21,7 +21,7 @@ export const Ink: React.FC<{ src: InkSource; spot?: Spot; cell?: number; gain?: 
       if (job.current) press.resize(job.current);
     };
     fit();
-    const j = press.add(c, src, spot, cell, gain, neg);
+    const j = press.add(c, src, print);
     job.current = j;
     const ro = new ResizeObserver(fit);
     ro.observe(c);
@@ -33,7 +33,7 @@ export const Ink: React.FC<{ src: InkSource; spot?: Spot; cell?: number; gain?: 
 };
 
 /** Footage, by the name of its clip. */
-export const Clip: React.FC<{ name: string; start?: number; spot?: Spot; cell?: number; gain?: number; neg?: boolean; alt: string }> = ({ name, start, ...r }) => <Ink src={{ kind: 'video', name, start }} {...r} />;
+export const Clip: React.FC<{ name: string; alt: string } & Print> = ({ name, ...r }) => <Ink src={{ kind: 'video', name }} {...r} />;
 
 // ---------------------------------------------------------------------------------- the page grid
 /** A manga page's layout: rows and columns of panels with a gutter. */
@@ -42,7 +42,7 @@ export const Grid: React.FC<{ cols?: string; rows?: string; gap?: number; style?
 );
 
 /** One panel. `shape` slants its edges; `tone` is its ground. */
-export const P: React.FC<{ c?: string; r?: string; shape?: 'a' | 'b' | 'c'; tone?: 'ink' | 'orange' | 'green' | 'paper'; bare?: boolean; ar?: string; style?: React.CSSProperties; className?: string; children?: React.ReactNode }> = ({ c, r, shape, tone, bare, ar, style, className, children }) => (
+export const P: React.FC<{ c?: string; r?: string; shape?: 'a' | 'b' | 'c' | 'd' | 'iris'; tone?: 'ink' | 'orange' | 'green' | 'paper'; bare?: boolean; ar?: string; style?: React.CSSProperties; className?: string; children?: React.ReactNode }> = ({ c, r, shape, tone, bare, ar, style, className, children }) => (
   <div className={`p a-p ${shape ? `sh-${shape}` : ''} ${tone ? `t-${tone}` : ''} ${bare ? 'bare' : ''} ${className ?? ''}`} style={{ gridColumn: c, gridRow: r, ['--ar' as string]: ar, ...style }}>
     <div className="p-in">{children}</div>
   </div>
@@ -130,12 +130,12 @@ const INKS: Record<string, string> = {
   '#dcab76': 'var(--ink)', '#5b6476': 'var(--ink)', '#7cc8ff': 'var(--paper)', '#ff7a59': 'var(--orange)', '#c9502f': 'var(--ink)',
 };
 
-export const Vela: React.FC<{ eyes?: Eyes; mouth?: Mouth; arms?: Arms; costume?: Costume; size?: number; x?: number | string; y?: number | string; r?: number | string; b?: number | string; flip?: boolean; cheeks?: boolean; sweat?: boolean; still?: boolean }> = ({ eyes = 'open', mouth = 'smile', arms = 'down', costume = 'none', size = 120, x, y, r, b, flip, cheeks = true, sweat = false, still }) => {
+export const Vela: React.FC<{ eyes?: Eyes; mouth?: Mouth; arms?: Arms; costume?: Costume; size?: number; x?: number | string; y?: number | string; r?: number | string; b?: number | string; flip?: boolean; cheeks?: boolean; sweat?: boolean; still?: boolean; sil?: boolean }> = ({ eyes = 'open', mouth = 'smile', arms = 'down', costume = 'none', size = 120, x, y, r, b, flip, cheeks = true, sweat = false, still, sil }) => {
   const a = useMemo(() => drawVela({ eyes, mouth, arms, costume, gaze: [0, 0], cheeks, sweat, star: 1 }), [eyes, mouth, arms, costume, cheeks, sweat]);
   const pinned = x !== undefined || y !== undefined || r !== undefined || b !== undefined;
   return (
     <svg className={`vela ${still ? '' : 'bob'} a-b`} viewBox={`0 0 ${VW} ${VH}`} width={size} height={(size * VH) / VW} shapeRendering="crispEdges" role="img" aria-label="Vela" style={{ position: pinned ? 'absolute' : undefined, left: x, top: y, right: r, bottom: b, ['--flip' as string]: flip ? -1 : 1 }}>
-      {a.map(([px, py, c]) => <rect key={`${px}.${py}`} x={px} y={py} width={1.03} height={1.03} fill={INKS[c] ?? c} />)}
+      {a.map(([px, py, c]) => <rect key={`${px}.${py}`} x={px} y={py} width={1.03} height={1.03} fill={sil ? (c === '#ffd28a' || c === '#fff6e0' ? 'var(--orange)' : 'var(--ink)') : INKS[c] ?? c} />)}
     </svg>
   );
 };
@@ -148,4 +148,23 @@ export const Opener: React.FC<{ n: string; kicker: string; title: React.ReactNod
     <h2 className="op-t a-f">{title}</h2>
     {children}
   </div>
+);
+
+/** Vertical type, as a manga title runs down the page. */
+export const Tate: React.FC<{ x?: number | string; y?: number | string; r?: number | string; b?: number | string; size?: number; color?: string; children: React.ReactNode }> = ({ x, y, r, b, size = 60, color = 'var(--ink)', children }) => (
+  <div className="tate a-f" style={{ left: x, top: y, right: r, bottom: b, fontSize: size, color }}>{children}</div>
+);
+
+/** A carved seal, stamped in red. */
+export const Hanko: React.FC<{ text: string; size?: number; x?: number | string; y?: number | string; r?: number | string; b?: number | string; rot?: number }> = ({ text, size = 90, x, y, r, b, rot = -4 }) => (
+  <div className="hanko a-s" style={{ left: x, top: y, right: r, bottom: b, width: size, height: size, fontSize: size * 0.62, ['--rot' as string]: `${rot}deg` }}>{text}</div>
+);
+
+/** A slip from Vela's notebook, taped into the page. */
+export const Note: React.FC<{ n: string; rot?: number; style?: React.CSSProperties; children: React.ReactNode }> = ({ n, rot = -0.8, style, children }) => (
+  <aside className="note a-f" style={{ ['--rot' as string]: `${rot}deg`, ...style }}>
+    <i className="tape" />
+    <small>Vela’s notebook · {n}</small>
+    <p>{children}</p>
+  </aside>
 );

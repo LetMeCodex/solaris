@@ -91,7 +91,7 @@ export const SunPlate: React.FC<{ layers: string[] }> = ({ layers }) => {
   const cx = 214;
   const cy = 205;
   return (
-    <svg viewBox="0 0 680 410" role="img" aria-label="Cutaway of the Sun's six shader layers">
+    <svg viewBox="0 18 680 374" role="img" aria-label="Cutaway of the Sun's six shader layers">
       <circle className="d a-d" cx={cx} cy={cy} r={r} />
       {[0.8, 0.86, 0.92].map((k) => <circle key={k} className="d2 a-d" cx={cx} cy={cy} r={r * k} />)}
       <circle className="dd a-d" cx={cx} cy={cy} r={r * 1.1} />
