@@ -20,7 +20,7 @@ import { SUN_SCALE, UNITS_PER_KM } from '../../rendering/Scale';
 
 /** Closer than this to the Sun's centre and Vela gets nervous (about 2.2 solar radii). */
 const SUN_CLOSE_UNITS = 695700 * UNITS_PER_KM * SUN_SCALE * 2.2;
-import { Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle, Camera, Settings2 } from 'lucide-react';
+import { Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle, Camera, Settings2, Plane } from 'lucide-react';
 import { SettingsPanel } from './SettingsPanel';
 import { useSettings } from '../settings';
 import type { Postcard } from '../../data/Postcards';
@@ -62,6 +62,8 @@ interface FlightHUDProps {
   onCapture?: () => Promise<boolean>;
   /** Fly out to a nebula; false while its picture is still loading. */
   onNebula?: (name: string) => boolean;
+  /** Take off in the SX-1 (jet mode). */
+  onLaunchJet?: () => void;
 }
 
 // Reference navigation order: Sagittarius A* at top, then Pluto down to Mercury, plus Sun
@@ -132,6 +134,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   onPostcard,
   onCapture,
   onNebula,
+  onLaunchJet,
 }) => {
   const target = telemetry?.activeTarget;
   const isPaused = telemetry?.isPaused ?? false;
@@ -276,6 +279,9 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         e.preventDefault();
         setAtlasTab('worlds');
         setIsCatalogueOpen(true);
+      } else if ((e.key === 'j' || e.key === 'J') && !e.ctrlKey && !e.metaKey && !e.altKey && onLaunchJet) {
+        e.preventDefault();
+        onLaunchJet();
       } else if ((e.key === 'p' || e.key === 'P') && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
         void takeShotRef.current();
@@ -320,7 +326,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
     isReadMoreOpen,
     isCatalogueOpen,
     isOpticsOpen,
-    tourOpen
+    tourOpen,
+    onLaunchJet
   ]);
 
   // Announce state changes, whichever control (key, button, menu) made them
@@ -472,7 +479,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
       {/* ========================================================
           HEADER — wordmark & chronometer · scale ladder · systems
           ======================================================== */}
-      <header className="hud-dim absolute top-0 left-0 right-0 flex items-start justify-between gap-4 px-4 md:px-7 pt-4 md:pt-5 z-40 hud-parallax-far">
+      <header className="hud-dim absolute top-0 left-0 right-0 flex flex-wrap sm:flex-nowrap items-start justify-between gap-x-4 gap-y-2 px-3 sm:px-4 md:px-7 pt-3 sm:pt-4 md:pt-5 z-40 hud-parallax-far">
         {/* Wordmark & chronometer */}
         <div className="flex flex-col gap-2 pointer-events-auto min-w-0 shrink-0 hud-boot" style={{ ['--d' as string]: '80ms' }}>
           <div
@@ -551,7 +558,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         </div>
 
         {/* Systems */}
-        <div className="relative flex items-center gap-1.5 md:gap-2 pointer-events-auto shrink-0 hud-boot" style={{ ['--d' as string]: '420ms' }}>
+        {/* On phones the instrument buttons take their own row at the top, above the title */}
+        <div className="relative flex items-center gap-1.5 md:gap-2 pointer-events-auto shrink-0 hud-boot z-10 max-sm:order-first max-sm:w-full max-sm:justify-end" style={{ ['--d' as string]: '420ms' }}>
           <div data-tour="layers" className="hidden lg:flex items-center">{layerSwitches}</div>
           <span className="hidden lg:block w-px h-4 bg-white/10 mx-1" />
           {prefs.showRecord ? <VinylDeck current={activeTargetName} /> : <VinylFollower current={activeTargetName} />}
@@ -570,6 +578,22 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             <SlidersHorizontal size={11} />
             <span className="hidden sm:inline">Optics</span>
           </button>
+          {onLaunchJet && (
+            <button
+              type="button"
+              data-tour="jet"
+              onClick={(e) => {
+                e.stopPropagation();
+                onLaunchJet();
+              }}
+              className="hud-btn"
+              style={{ color: 'var(--sol-mint)' }}
+              title="Fly the SX-1 through the real Solar System (J)"
+            >
+              <Plane size={11} />
+              <span className="hidden sm:inline">Fly</span>
+            </button>
+          )}
           <AtlasLauncher stats={explored} onOpen={() => { setAtlasTab('worlds'); setIsCatalogueOpen(true); }} />
           <button
             type="button"
@@ -1011,6 +1035,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           onDaylight={(on) => onExplorerDaylight?.(on)}
           onStandHere={() => onSurface?.({ type: 'enter' })}
           onSkyFrom={(body, facing) => onSurface?.({ type: 'skyFrom', body, facing })}
+          onDeepTime={(id) => onSurface?.({ type: 'deepTime', id })}
           onSelectBody={onSelectPlanet}
           onResetView={onResetView}
         />

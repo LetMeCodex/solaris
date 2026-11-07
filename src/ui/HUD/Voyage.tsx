@@ -199,12 +199,17 @@ export const VoyageConsole: React.FC<{ getView?: ViewStateGetter; route: FlightR
               <div className="relative flex-1 h-5">
                 <span className="absolute left-0 right-0 top-1/2 h-px bg-white/15" />
                 <span ref={fill} className="absolute left-0 right-0 top-1/2 h-px origin-left bg-gradient-to-r from-[rgba(109,252,192,0.15)] to-[color:var(--sol-mint)] shadow-[0_0_8px_var(--sol-mint)]" style={{ transform: 'scaleX(0)' }} />
-                {ticks.map((t) => (
-                  <span key={`${t.name}${t.t}`} className="absolute top-0 flex flex-col items-center -translate-x-1/2" style={{ left: `${t.t * 100}%` }}>
-                    <span className="w-px h-2.5 bg-[color:var(--sol-ice)] opacity-70 mt-[5px]" />
-                    <span className="text-[7.5px] tracking-[0.2em] uppercase text-[color:var(--sol-ice)] opacity-70 mt-0.5">{t.name}</span>
-                  </span>
-                ))}
+                {ticks.map((t, i) => {
+                  // Orbits close together (Mercury and Venus): their names alternate above and below
+                  // the rail instead of running into each other
+                  const above = i > 0 && t.t - ticks[i - 1].t < 0.16 && i % 2 === 1;
+                  return (
+                    <span key={`${t.name}${t.t}`} className={`absolute flex items-center -translate-x-1/2 ${above ? 'bottom-0 flex-col-reverse' : 'top-0 flex-col'}`} style={{ left: `${t.t * 100}%` }}>
+                      <span className={`w-px h-2.5 bg-[color:var(--sol-ice)] opacity-70 ${above ? 'mb-[5px]' : 'mt-[5px]'}`} />
+                      <span className={`text-[7.5px] tracking-[0.2em] uppercase text-[color:var(--sol-ice)] opacity-70 whitespace-nowrap ${above ? 'mb-0.5' : 'mt-0.5'}`}>{t.name}</span>
+                    </span>
+                  );
+                })}
                 <span ref={ship} className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 border border-[color:var(--sol-mint)] bg-[#05040a] shadow-[0_0_10px_var(--sol-mint)]" style={{ left: '0%' }} />
               </div>
               <div className="min-w-[90px]">

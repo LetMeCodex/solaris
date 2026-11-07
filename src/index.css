@@ -10,7 +10,16 @@ html, body, #root {
   padding: 0;
   overflow: hidden;
   position: relative;
+  /* Phones: no rubber-band scroll or pull-to-refresh behind the 3D view */
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
 }
+/* The visible height on phones (the address bar comes and goes) */
+@supports (height: 100dvh) {
+  html, body, #root { min-height: 100dvh; }
+}
+/* Drags and pinches on the 3D view steer the camera; they must not scroll or zoom the page */
+canvas { touch-action: none; }
 
 @layer base {
   body {

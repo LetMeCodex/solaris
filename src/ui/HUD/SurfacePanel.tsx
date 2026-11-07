@@ -11,7 +11,9 @@ export type SurfaceAction =
   | { type: 'time'; what: TimeOfDay }
   | { type: 'lookAt'; name: string }
   | { type: 'resetZoom' }
-  | { type: 'skyFrom'; body: string; facing?: string };
+  | { type: 'skyFrom'; body: string; facing?: string }
+  | { type: 'deepTime'; id: string }
+  | { type: 'deepTimeOff' };
 
 interface SurfacePanelProps {
   status: SurfaceStatus;
@@ -53,7 +55,7 @@ export const SurfacePanel: React.FC<SurfacePanelProps> = ({ status, onAction }) 
   return (
     <section
       aria-label="Surface view"
-      className="hud-frame hud-slide-in hud-scroll absolute right-3 md:right-7 top-[76px] md:top-[92px] w-[310px] max-w-[calc(100vw-24px)] max-h-[calc(100vh-200px)] overflow-y-auto pointer-events-auto z-30 text-white/80 font-light"
+      className="hud-frame hud-slide-in hud-scroll absolute right-3 md:right-7 top-[204px] sm:top-[76px] md:top-[92px] w-[310px] max-w-[calc(100vw-24px)] max-h-[calc(100vh-330px)] sm:max-h-[calc(100vh-200px)] overflow-y-auto pointer-events-auto z-30 text-white/80 font-light"
     >
       <div className="flex items-center justify-between px-4 pt-3 pb-2 text-[10px] uppercase tracking-[0.18em]">
         <div className="min-w-0 truncate">
@@ -78,6 +80,20 @@ export const SurfacePanel: React.FC<SurfacePanelProps> = ({ status, onAction }) 
           </button>
         </div>
       </div>
+
+      {s.deepTime && (
+        <div className="mx-4 mb-2 rounded-lg border border-[color:var(--sol-mint)]/30 bg-black/30 px-3 py-2.5" aria-live="polite">
+          <div className="text-[9px] uppercase tracking-[0.22em] text-[color:var(--sol-mint)]">{s.deepTime.when}</div>
+          <div className="mt-1 text-[13px] text-white/95">{s.deepTime.title}</div>
+          <p className="mt-1 text-[10.5px] leading-snug text-white/60">{s.deepTime.blurb}</p>
+          <button
+            onClick={() => onAction({ type: 'deepTimeOff' })}
+            className="mt-2 text-[10px] px-2 py-0.5 rounded-full border border-white/20 text-white/80 hover:text-white hover:border-white/50"
+          >
+            Back to today's sky
+          </button>
+        </div>
+      )}
 
       {open && (
         <div className="px-4 pb-3 flex flex-col gap-2.5 text-[11px]">
@@ -180,7 +196,12 @@ export const SurfacePanel: React.FC<SurfacePanelProps> = ({ status, onAction }) 
               ))}
             </ul>
           </div>
-          <SkyDestinations current={s.body} onGo={(body, facing) => onAction({ type: 'skyFrom', body, facing })} />
+          <SkyDestinations
+            current={s.body}
+            onGo={(body, facing) => onAction({ type: 'skyFrom', body, facing })}
+            onDeepTime={(id) => onAction({ type: 'deepTime', id })}
+            deepCurrent={s.deepTime?.id ?? null}
+          />
           <div className="text-[9px] text-white/35 leading-snug">
             Drag to look around · scroll to zoom like a telescope · double-click to reset · Esc to leave
           </div>

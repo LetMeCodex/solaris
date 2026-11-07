@@ -390,6 +390,68 @@ export class TexturePipeline {
   }
 
   /**
+   * Sharper maps (Solar System Scope, CC BY 4.0; see ASSETS.md), swapped in place of the 2K ones
+   * when you come close to a world: the same Texture objects get the bigger image, so every
+   * material using them sharpens without a rebuild. Only the worlds you visit pay the memory.
+   */
+  private static readonly HIRES: Record<string, Array<[string, string]>> = {
+    Sun: [['/textures/2k_sun.jpg', '/textures/hires/sun_4k.webp']],
+    Mercury: [['/textures/2k_mercury.jpg', '/textures/hires/mercury_8k.webp']],
+    Earth: [
+      ['/textures/2k_earth_daymap.jpg', '/textures/hires/earth_day_8k.webp'],
+      ['/textures/2k_earth_nightmap.jpg', '/textures/hires/earth_night_4k.webp'],
+      ['/textures/2k_earth_clouds.jpg', '/textures/hires/earth_clouds_4k.webp'],
+    ],
+    Moon: [['/textures/2k_moon.jpg', '/textures/hires/moon_8k.webp']],
+    Mars: [['/textures/2k_mars.jpg', '/textures/hires/mars_8k.webp']],
+    Jupiter: [['/textures/2k_jupiter.jpg', '/textures/hires/jupiter_4k.webp']],
+    Saturn: [
+      ['/textures/2k_saturn.jpg', '/textures/hires/saturn_4k.webp'],
+      ['/textures/2k_saturn_ring_alpha.png', '/textures/hires/saturn_ring_alpha_8k.png'],
+    ],
+  };
+  private upgraded = new Set<string>();
+  private maxTextureSize = 4096;
+
+  /** The GPU's limit: 8K maps are only used where they fit. */
+  public setMaxTextureSize(size: number): void {
+    this.maxTextureSize = size;
+  }
+
+  /** Whether a world has sharper maps to swap in. */
+  public hasHiRes(bodyName: string): boolean {
+    return bodyName in TexturePipeline.HIRES;
+  }
+
+  /** Swap a world's maps for the sharper ones (once; later calls do nothing). */
+  public upgradeToHiRes(bodyName: string): void {
+    const pairs = TexturePipeline.HIRES[bodyName];
+    if (!pairs || this.upgraded.has(bodyName) || typeof document === 'undefined') return;
+    this.upgraded.add(bodyName);
+    for (const [low, high] of pairs) {
+      const tex = this.cache.get(this.resolveUrl(low));
+      if (!tex) continue;
+      const wants8k = high.includes('_8k');
+      if (wants8k && this.maxTextureSize < 8192) continue;
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.decoding = 'async';
+      img.src = this.resolveUrl(high);
+      img
+        .decode()
+        .then(() => {
+          // The GPU copy was allocated at the old size and is immutable (texStorage2D): free it
+          // first, so the next draw allocates fresh storage at the new size. Writing the bigger
+          // image into the old storage fails and leaves the map garbled.
+          tex.dispose();
+          tex.image = img;
+          tex.needsUpdate = true;
+        })
+        .catch((err) => console.warn(`[TexturePipeline] Sharper map unavailable for ${bodyName}: ${high}`, err));
+    }
+  }
+
+  /**
    * Face-on Milky Way disk artwork (NASA/JPL-Caltech/ESO/R. Hurt), with alpha.
    * The GPU texture is only created once the galaxy view is reached (see MilkyWayGalaxy); the image
    * itself is already in the HTTP cache, because MilkyWayVolume samples it at startup.

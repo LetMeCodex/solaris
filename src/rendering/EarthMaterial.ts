@@ -141,12 +141,45 @@ export class EarthMaterial {
    * - Directional sunlight shading
    * - Soft daytime translucency
    */
+  /**
+   * Tropical cyclones in season, by basin (climatology: where and when they form), drifting west
+   * and polewards through the month as real storms track. Up to four at once.
+   */
+  public static updateCyclones(mat: THREE.ShaderMaterial, utcMs: number, timeSec: number): void {
+    const u = mat.uniforms;
+    if (!u.uStorms) return;
+    const d = new Date(utcMs);
+    const month = d.getUTCMonth() + 1;
+    const day = d.getUTCDate() + d.getUTCHours() / 24;
+    const basins: Array<{ lon: number; lat: number; months: number[]; r: number }> = [
+      { lon: -62, lat: 21, months: [8, 9, 10], r: 4.5 },          // North Atlantic hurricanes
+      { lon: -112, lat: 15, months: [7, 8, 9], r: 3.8 },          // eastern North Pacific
+      { lon: 132, lat: 17, months: [7, 8, 9, 10, 11], r: 5.2 },   // western North Pacific typhoons
+      { lon: 88, lat: 15, months: [5, 10, 11], r: 4.0 },          // Bay of Bengal cyclones
+      { lon: 68, lat: -16, months: [1, 2, 3], r: 4.4 },           // south Indian Ocean
+      { lon: 122, lat: -15, months: [1, 2, 3], r: 4.0 },          // Australian region
+      { lon: 175, lat: -17, months: [1, 2, 3], r: 4.2 },          // South Pacific
+    ];
+    let n = 0;
+    for (const b of basins) {
+      if (n >= 4 || !b.months.includes(month)) continue;
+      const v = (u.uStorms.value as THREE.Vector4[])[n++];
+      const pole = b.lat >= 0 ? 1 : -1;
+      v.set(b.lon - day * 0.55, b.lat + pole * day * 0.12, b.r, 0.9);
+    }
+    u.uStormCount.value = n;
+    u.uTime.value = timeSec;
+  }
+
   public static createCloudMaterial(cloudsMap: THREE.Texture): THREE.ShaderMaterial {
     return new THREE.ShaderMaterial({
       uniforms: {
         uSunWorld: SUN_WORLD,
         cloudsMap: { value: cloudsMap },
         uFade: { value: 1.0 },
+        uTime: { value: 0 },
+        uStorms: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
+        uStormCount: { value: 0 },
       },
       vertexShader: `
         varying vec2 vUv;
@@ -165,13 +198,39 @@ export class EarthMaterial {
         uniform vec3 uSunWorld;
         uniform sampler2D cloudsMap;
         uniform float uFade;
+        uniform float uTime;
+        uniform vec4 uStorms[4];   // (lon deg, lat deg, radius deg, strength)
+        uniform int uStormCount;
         varying vec2 vUv;
         varying vec3 vWorldNormal;
         varying vec3 vWorldPosition;
 
+        // A tropical cyclone: spiral rain bands wound into a dense core around a clear eye,
+        // turning anticlockwise in the north and clockwise in the south
+        float cyclone(vec2 lonLat, vec4 s) {
+          vec2 d = vec2((lonLat.x - s.x) * cos(radians(lonLat.y)), lonLat.y - s.y);
+          if (abs(d.x) > 180.0) d.x -= sign(d.x) * 360.0;
+          float r = length(d) / s.z;
+          if (r > 1.8) return 0.0;
+          float hemi = s.y >= 0.0 ? 1.0 : -1.0;
+          float th = atan(d.y, d.x);
+          float bands = 0.5 + 0.5 * sin(hemi * th * 2.0 - log(r + 0.04) * 6.5 + uTime * 0.12 * hemi);
+          // Ragged convection: the bands break up into cells, borrowed from the cloud map's own detail
+          float cells = texture2D(cloudsMap, vec2(th * 0.9 + r * 1.7, r * 2.3 - uTime * 0.01)).r;
+          float core = smoothstep(0.5, 0.1, r) * (0.8 + 0.2 * cells);
+          float body = smoothstep(1.7, 0.35, r) * mix(0.25, 1.0, bands) * (0.45 + 0.75 * cells);
+          float eye = smoothstep(0.035, 0.085, r);
+          return clamp(max(body, core) * eye, 0.0, 1.0) * s.w;
+        }
+
         void main() {
           vec4 cloudTex = texture2D(cloudsMap, vUv);
           float cloudDensity = cloudTex.r * 0.92;
+          vec2 lonLat = vec2(vUv.x * 360.0 - 180.0, vUv.y * 180.0 - 90.0);
+          for (int i = 0; i < 4; i++) {
+            if (i >= uStormCount) break;
+            cloudDensity = max(cloudDensity, cyclone(lonLat, uStorms[i]) * 0.95);
+          }
           if (cloudDensity < 0.025) discard;
 
           vec3 normal = normalize(vWorldNormal);

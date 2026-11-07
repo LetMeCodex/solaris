@@ -10,9 +10,12 @@ import {
   tileExists,
   tileCap,
   wmsBbox,
+  tileId,
+  parentTile,
 } from '../explorer/TileMath';
 import { BODY_IMAGERY, metresPerPixel, minimumAltitudeKm } from '../explorer/ImageryRegistry';
-import { LANDMARKS, searchLandmarks } from '../explorer/Landmarks';
+import { LANDMARKS, angularDistanceDeg, bearingDeg, getLandmark, searchLandmarks } from '../explorer/Landmarks';
+import { ALL_CELESTIAL_BODIES } from '../data/CatalogueData';
 import { SurfaceTileLayer, TileImageLoader } from '../explorer/SurfaceTileLayer';
 
 const trek = BODY_IMAGERY.Moon.provider!;
@@ -131,6 +134,69 @@ describe('Imagery registry', () => {
   });
 });
 
+describe('Landmark catalogue', () => {
+  const bodyNames = new Set(ALL_CELESTIAL_BODIES.map((b) => b.name));
+
+  it('is a large catalogue across many worlds', () => {
+    expect(LANDMARKS.length).toBeGreaterThanOrEqual(80);
+    expect(new Set(LANDMARKS.map((l) => l.body)).size).toBeGreaterThanOrEqual(15);
+  });
+
+  it('has unique ids, each prefixed with its body', () => {
+    const ids = LANDMARKS.map((l) => l.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const l of LANDMARKS) expect(l.id.startsWith(`${l.body.toLowerCase()}-`), l.id).toBe(true);
+  });
+
+  it('places every landmark on a real catalogue body', () => {
+    for (const l of LANDMARKS) expect(bodyNames.has(l.body), `${l.id}: ${l.body}`).toBe(true);
+  });
+
+  it('keeps coordinates, altitudes and headings in range', () => {
+    for (const l of LANDMARKS) {
+      expect(Number.isFinite(l.lat) && l.lat >= -90 && l.lat <= 90, l.id).toBe(true);
+      expect(Number.isFinite(l.lon) && l.lon >= -180 && l.lon <= 180, l.id).toBe(true);
+      expect(l.viewAltitudeKm, l.id).toBeGreaterThan(0);
+      expect(l.viewAltitudeKm, l.id).toBeLessThanOrEqual(10_000);
+      if (l.viewHeadingDeg !== undefined) {
+        expect(l.viewHeadingDeg, l.id).toBeGreaterThanOrEqual(0);
+        expect(l.viewHeadingDeg, l.id).toBeLessThan(360);
+      }
+    }
+  });
+
+  it('cites a source and keeps the text short', () => {
+    for (const l of LANDMARKS) {
+      expect(/Gazetteer|Wikipedia/.test(l.source), `${l.id}: ${l.source}`).toBe(true);
+      expect(l.description.length, l.id).toBeGreaterThan(10);
+      expect(l.description.length, l.id).toBeLessThanOrEqual(160);
+      if (l.scene !== undefined) expect(l.scene.length, l.id).toBeLessThanOrEqual(160);
+    }
+    expect(LANDMARKS.filter((l) => l.scene).length).toBe(LANDMARKS.length);
+  });
+
+  it('measures bearings clockwise from north', () => {
+    expect(bearingDeg(0, 0, 10, 0)).toBeCloseTo(0, 6);
+    expect(bearingDeg(0, 0, 0, 10)).toBeCloseTo(90, 6);
+    expect(bearingDeg(10, 0, 0, 0)).toBeCloseTo(180, 6);
+    expect(bearingDeg(0, 10, 0, 0)).toBeCloseTo(270, 6);
+    expect(angularDistanceDeg(0, 0, 0, 90)).toBeCloseTo(90, 6);
+  });
+
+  it('looks towards Earth, high in the west, from Tranquility Base', () => {
+    const t = getLandmark('moon-tranquility')!;
+    expect(t.viewHeadingDeg).toBeCloseTo(bearingDeg(t.lat, t.lon, 0, 0), 0);
+    expect(t.viewHeadingDeg!).toBeGreaterThan(260);
+    expect(t.viewHeadingDeg!).toBeLessThan(280);
+    expect(90 - angularDistanceDeg(t.lat, t.lon, 0, 0)).toBeGreaterThan(60);
+  });
+
+  it('uses east-positive longitudes on Mercury (the Gazetteer lists them west-positive)', () => {
+    expect(getLandmark('mercury-hokusai')!.lon).toBeCloseTo(16.65, 1);
+    expect(getLandmark('mercury-caloris')!.lon).toBeCloseTo(162.0, 0);
+  });
+});
+
 describe('SurfaceTileLayer streaming', () => {
   class FakeLoader implements TileImageLoader {
     requested: string[] = [];
@@ -149,13 +215,42 @@ describe('SurfaceTileLayer streaming', () => {
     const loader = new FakeLoader();
     const layer = new SurfaceTileLayer(trek, loader);
     layer.update(cam);
-    expect(loader.requested.length).toBeLessThanOrEqual(6);
+    expect(loader.requested.length).toBeLessThanOrEqual(10);
     const firstBatch = [...loader.requested];
     loader.pending.splice(0).forEach((p) => p.ok());
     layer.update(cam);
     expect(new Set(loader.requested).size).toBe(loader.requested.length);
     expect(loader.requested.slice(0, firstBatch.length)).toEqual(firstBatch);
     expect(layer.getStatus().cached).toBeGreaterThan(0);
+    layer.dispose();
+  });
+
+  it('leaves no holes while some tiles are still loading', () => {
+    const loader = new FakeLoader();
+    const layer = new SurfaceTileLayer(trek, loader);
+    const wanted = selectTiles(trek, cam);
+    const deepest = Math.max(...wanted.map((k) => k.z));
+    // Every tile arrives except half of the deepest ones, which stay in flight
+    for (let round = 0; round < 40; round++) {
+      layer.update(cam);
+      let skip = false;
+      for (const p of loader.pending.splice(0)) {
+        const z = Number(p.url.split('/').slice(-3)[0]);
+        if (z === deepest && (skip = !skip)) continue;
+        p.ok();
+      }
+    }
+    layer.update(cam);
+    const visible = new Set(layer.group.children.filter((m) => m.visible).map((m) => m.name.replace('tile_', '')));
+    for (const k of wanted) {
+      let cur: { z: number; x: number; y: number } | null = k;
+      let covered = false;
+      while (cur && !covered) {
+        covered = visible.has(tileId(cur));
+        cur = parentTile(cur);
+      }
+      expect(covered).toBe(true);
+    }
     layer.dispose();
   });
 

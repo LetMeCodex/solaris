@@ -1,5 +1,7 @@
 import { emitVela } from '../companion/events';
 import * as THREE from 'three';
+import { perf } from './Performance';
+import { PhotorealEarth } from './PhotorealEarth';
 import type { Postcard } from '../data/Postcards';
 import { settings, Settings } from '../ui/settings';
 import { CatalogueManager } from '../data/CatalogueManager';
@@ -10,7 +12,12 @@ import { SimulationClock } from '../simulation/SimulationClock';
 import { KeplerSolver, StateVector } from '../astronomy/KeplerSolver';
 import { RenderSpaceTransform } from './RenderSpaceTransform';
 import { SUN_WORLD } from './RenderOrigin';
-import { COSMIC_SCALE, UNITS_PER_AU } from './Scale';
+import { COSMIC_SCALE, KM_PER_UNIT, UNITS_PER_AU } from './Scale';
+import { NEBULAE } from './NebulaSky';
+import { TexturePipeline } from './TexturePipeline';
+import { JET_RESUME_KEY } from '../flight/worlds';
+import { COMETS, Comet3D } from '../flight/Comets3D';
+import { DEEP_TIME_SCENES, DeepTimeSky, type DeepTimeScene, type SkyLook } from '../explorer/DeepTime';
 import { OrbitalTrails } from './OrbitalTrails';
 import { Starfield } from './Starfield';
 import { SmallBodies } from './SmallBodies';
@@ -28,6 +35,8 @@ import { Landmark } from '../explorer/Landmarks';
 import { localToLatLon } from '../explorer/TileMath';
 import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 import { BodyFrame, getBodyFrame, getSynchronousFrame } from '../astronomy/BodyOrientation';
+import { JetController } from '../flight/JetController';
+import { EarthMaterial } from './EarthMaterial';
 
 export interface TelemetryData {
   speedKmS: number;
@@ -109,15 +118,28 @@ export class SolarSystemScene {
 
   // Celestial Bodies, Moons & Minor Bodies
   private planetBundles: Map<string, PlanetMeshBundle> = new Map();
+  private hiResCheckMs = 0;
+  private hiResTmp = new THREE.Vector3();
   private orbitLinesGroup: THREE.Group = new THREE.Group();
   private moonOrbitLines: Map<string, THREE.Line> = new Map();
   private latestPhysicalStates: Map<string, StateVector> = new Map();
   /** A surface view requested for a body that is not focused yet (entered once the explorer has it). */
   private pendingSkyView: { body: string; lat: number; lon: number; place: string } | null = null;
+  /** A deep-time scene to show once standing on its world (src/explorer/DeepTime). */
+  private pendingDeepTime: DeepTimeScene | null = null;
+  /** The star field and Milky Way as the deep-time scene wants them, or null. */
+  private deepLook: SkyLook | null = null;
+  /** The deep-time sky while flying the jet (its era), and which era it shows. */
+  private jetDeep = new DeepTimeSky();
+  private jetDeepId: string | null = null;
+  /** Comets to fly to (jet mode only), built the first time the jet flies. */
+  private comets: Comet3D[] = [];
+  private jetFrame = { east: new THREE.Vector3(), north: new THREE.Vector3(), up: new THREE.Vector3() };
   private pendingPostcard: Postcard | null = null;
   private pendingHorizonPostcard = false;
   private unsubscribeSettings: (() => void) | null = null;
   private nebulaStages = new Map<string, NebulaStage>();
+  private jetNebulaShown = false;
   private visiting: NebulaStage | null = null;
   /** How far out the nebulae you can visit stand (the same size to the eye as on the sky). */
   public static readonly NEBULA_DISTANCE = 4000 * COSMIC_SCALE;
@@ -145,7 +167,13 @@ export class SolarSystemScene {
 
   // Google Maps–style surface imagery streaming and landmark navigation
   public explorer: PlanetaryExplorer;
+  /** Google Photorealistic 3D Tiles on Earth (when a Maps key is configured). */
+  private photoreal: PhotorealEarth | null = null;
   public surface: SurfaceObserver;
+  /** Jet mode: fly the SX-1 through the system (src/flight). */
+  public jet: JetController = new JetController();
+  private jetSaved: { rate: number; paused: boolean; fov: number; orbits: boolean; constellations: boolean } | null = null;
+  private jetLastCam = new THREE.Vector3();
   private labels: ScreenLabels;
   /** Rings and names for worlds too small to see at true scale. */
   private markers: BodyMarkers;
@@ -220,16 +248,26 @@ export class SolarSystemScene {
       this.textureFraction = total > 0 ? loaded / total : 0;
     };
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      // Edge smoothing of the canvas itself: costly on weak GPUs (the picture is drawn through the
+      // lens pipeline's own targets anyway)
+      antialias: perf.tier === 'high',
       powerPreference: 'high-performance',
     });
     const initialWidth = container.clientWidth || window.innerWidth;
     const initialHeight = container.clientHeight || window.innerHeight;
     this.renderer.setSize(initialWidth, initialHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2.0));
+    this.renderer.setPixelRatio(perf.pixelRatio(2));
+    // A lost GPU context leaves the canvas black while the HUD runs on: say so in the console
+    // (three.js restores the context and re-uploads everything when the browser allows it)
+    this.renderer.domElement.addEventListener('webglcontextlost', () => console.warn('[Solaris] WebGL context lost: the GPU reset or ran out of memory'));
+    this.renderer.domElement.addEventListener('webglcontextrestored', () => console.warn('[Solaris] WebGL context restored'));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
+    // Only the jet's sunlight casts shadows (its own scene); on from the start so every shader
+    // is compiled once, in the warm-up, with the same settings
+    this.renderer.shadowMap.enabled = perf.settings.shadowMap > 0;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     this.renderer.domElement.style.position = 'absolute';
     this.renderer.domElement.style.top = '0';
@@ -266,6 +304,7 @@ export class SolarSystemScene {
         bodyGroup: b.bodyGroup,
         surfaceMesh: b.surfaceMesh,
         cloudMesh: b.cloudMesh,
+        atmosphereMesh: b.atmosphereMesh,
         baseMap: (() => {
           const u = (b.surfaceMesh.material as THREE.ShaderMaterial).uniforms;
           return (u?.map?.value ?? u?.dayMap?.value ?? null) as THREE.Texture | null;
@@ -275,7 +314,21 @@ export class SolarSystemScene {
       };
     });
     this.explorer.setMaxAnisotropy(this.renderer.capabilities.getMaxAnisotropy());
+    // 8K maps only on capable GPUs (each is ~170 MB of video memory and a long upload)
+    TexturePipeline.getInstance().setMaxTextureSize(perf.settings.hiRes8k ? this.renderer.capabilities.maxTextureSize : 4096);
+    // The adaptive resolution: redraw the targets at the new size when the governor steps
+    perf.onChange(() => {
+      this.renderer.setPixelRatio(perf.pixelRatio(2));
+      this.lens.refreshResolution();
+    });
     this.planetBundles.get('Sun')?.bodyGroup.add(this.sunGlint);
+    // Real 3D Earth: Google's photorealistic tiles, where a key is configured (.env.local)
+    const mapsKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined;
+    const earthBundle = this.planetBundles.get('Earth');
+    if (mapsKey && earthBundle) {
+      this.photoreal = new PhotorealEarth(mapsKey, this.container);
+      this.photoreal.attach(earthBundle.surfaceMesh, 1 - (earthBundle.definition.physical.flattening ?? 0));
+    }
     this.markers = new BodyMarkers(container, (name) => this.selectBody(name));
     for (const b of this.planetBundles.values()) {
       this.markerBodies.push({ definition: b.definition, object: b.bodyGroup, radius: b.visualRadius });
@@ -284,6 +337,7 @@ export class SolarSystemScene {
       if (id.startsWith('sky:')) this.surface.lookAt(id.slice(4));
       else this.flyToLandmark(id);
     });
+    this.scene.add(this.jetDeep.group);
     this.surface = new SurfaceObserver({
       camera: this.cameraRig.camera,
       dom: container,
@@ -315,6 +369,13 @@ export class SolarSystemScene {
       setGround: (light, haze) => {
         this.explorer.groundLight = light;
         this.explorer.groundHaze = haze;
+      },
+      setLandscape: (on) => {
+        this.explorer.hideGround = on;
+      },
+      setSkyLook: (look) => {
+        this.deepLook = look;
+        this.starfield.milkyWay.group.visible = look ? look.milkyWay : true;
       },
     });
     this.orbitLinesEpochDays = this.clock.getJulianDateTDB() - SimulationClock.J2000_JD;
@@ -513,6 +574,18 @@ export class SolarSystemScene {
    * Fly out to a nebula: the 3D version standing where its picture hangs on the sky. Returns false
    * until its picture has loaded.
    */
+  /** The 3D stage of a nebula, built the first time it is wanted (null until its picture loads). */
+  private nebulaStage(name: string): NebulaStage | null {
+    let stage = this.nebulaStages.get(name);
+    if (stage) return stage;
+    const pic = this.starfield.nebulae.picture(name);
+    if (!pic) return null;
+    stage = new NebulaStage(name, pic.tex, pic.aspect, SolarSystemScene.NEBULA_DISTANCE);
+    this.scene.add(stage.group);
+    this.nebulaStages.set(name, stage);
+    return stage;
+  }
+
   public visitNebula(name: string): boolean {
     const pic = this.starfield.nebulae.picture(name);
     if (!pic) return false;
@@ -541,6 +614,73 @@ export class SolarSystemScene {
     this.visiting = null;
     emitVela('nebula', null);
     this.starfield.nebulae.hide(null);
+  }
+
+  /** Stand under the sky of a future era (src/explorer/DeepTime): fly to its world, then show it. */
+  public enterDeepTime(id: string): boolean {
+    const d = DEEP_TIME_SCENES.find((x) => x.id === id);
+    if (!d) return false;
+    // The last scene is the black hole: stand on the shore of the world beside it
+    if (d.body === 'Sagittarius A*') {
+      if (this.surface.isActive()) this.exitSurface(false);
+      if (this.showcase.active) this.stopShowcase();
+      if (this.horizon?.active) return true;
+      if (this.selectedBody.name !== 'Sagittarius A*') this.jumpToScale('sgr_a');
+      this.pendingHorizonPostcard = true;
+      return true;
+    }
+    const b = this.planetBundles.get(d.body);
+    if (!b) return false;
+    this.endNebulaVisit();
+    if (this.horizon?.active) this.exitHorizonView(false);
+    if (this.showcase.active) this.stopShowcase();
+    // Already standing on that world: change the sky in place
+    if (this.surface.isActive() && this.surface.getLocation()?.body === d.body && !d.facing && d.lat !== undefined) {
+      this.exitSurface(false);
+    } else if (this.surface.isActive()) {
+      this.exitSurface(false);
+    }
+    const spot = d.facing ? this.standingPointFacing(d.body, d.facing) ?? { lat: 0, lon: 0 } : { lat: d.lat ?? 0, lon: d.lon ?? 0 };
+    this.selectedBody = b.definition;
+    this.explorer.clearLandmark();
+    this.cameraRig.surfaceMinAltitude = null;
+    this.cameraRig.focusCinematic(b.bodyGroup, b.visualRadius, d.body, 150, undefined, b.definition.physical.meanRadiusKm);
+    this.pendingSkyView = { body: d.body, lat: spot.lat, lon: spot.lon, place: d.place };
+    this.pendingDeepTime = d;
+    return true;
+  }
+
+  /** Flying under another era's sky: its phenomena around the jet, the star field and Sun to match. */
+  private updateJetEra(dt: number): void {
+    const id = this.jet.active ? this.jet.era : null;
+    if (id !== this.jetDeepId) {
+      this.jetDeepId = id;
+      // An era is a view from the ground of one world (the look-up view), not a sky over open
+      // space: in flight it is a destination; landing there shows it (see onLookUp)
+      this.jetDeep.setScene(null);
+      const look = this.jetDeep.look();
+      this.deepLook = look;
+      this.starfield.milkyWay.group.visible = look ? look.milkyWay : true;
+      const sun = this.planetBundles.get('Sun');
+      if (sun) sun.bodyGroup.visible = !(look?.hideSun);
+      const saturn = this.planetBundles.get('Saturn');
+      if (saturn?.ringMesh) saturn.ringMesh.visible = !(look?.hideRings);
+      this.jet.setCometStorm(false);
+    }
+    if (!id) return;
+    const cam = this.cameraRig.camera;
+    const f = this.jetFrame;
+    const sunDir = cam.position.clone().negate().normalize();
+    // Far beyond the world you fly at, well inside the camera's far plane: planets in front cover it
+    this.jetDeep.update(dt, cam, f, sunDir, 1.1e6);
+  }
+
+  /** Back to today's sky where you stand. */
+  public exitDeepTime(): void {
+    if (!this.surface.deepTimeScene()) return;
+    this.surface.setDeepTime(null);
+    this.surface.setAtmosphere(true);
+    this.clock.setUtcMs(Date.now());
   }
 
   /** Go into a postcard: the same world, place, moment and framing as its picture. */
@@ -624,6 +764,10 @@ export class SolarSystemScene {
   /** Leave the surface and rise back above it. */
   public exitSurface(fly: boolean = true): void {
     if (!this.surface.isActive()) return;
+    if (this.landedFrom) {
+      this.landedFrom = null;
+      this.onJetLanding?.(null);
+    }
     const loc = this.surface.getLocation();
     this.surface.exit();
     this.lens.setBloomThreshold(null);
@@ -764,7 +908,7 @@ export class SolarSystemScene {
   private onCanvasClick = (e: MouseEvent): void => {
     // Only handle clicks directly on the WebGL canvas
     if (e.target !== this.renderer.domElement) return;
-    if (this.surface.isActive() || this.horizon?.active || this.showcase.active) return;
+    if (this.surface.isActive() || this.horizon?.active || this.showcase.active || this.jet.active) return;
 
     // Ignore drags
     const dist = Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y);
@@ -1070,6 +1214,7 @@ export class SolarSystemScene {
 
     const now = performance.now();
     const deltaSec = Math.min(Math.max((now - this.lastFrameTime) * 0.001, 0.001), 0.1);
+    if (!document.hidden) perf.frame(now - this.lastFrameTime);
     this.lastFrameTime = now;
     this.clock.update(now);
 
@@ -1077,6 +1222,10 @@ export class SolarSystemScene {
     const elapsedDaysSinceJ2000 = this.clock.getJulianDateTDB() - SimulationClock.J2000_JD;
 
     this.propagateAll(elapsedDaysSinceJ2000);
+
+    // Hurricanes and typhoons in season on Earth's cloud layer
+    const earthClouds = this.planetBundles.get('Earth')?.cloudMesh;
+    if (earthClouds) EarthMaterial.updateCyclones(earthClouds.material as THREE.ShaderMaterial, this.clock.getUtcMs(), now * 0.001);
 
     // Dynamic solar shader time propagation (photosphere convection, corona streamers, magnetic loops)
     const sunBundle = this.planetBundles.get('Sun');
@@ -1106,13 +1255,43 @@ export class SolarSystemScene {
       }
     }
 
-    this.cameraRig.update();
+    if (this.jet.active) {
+      const w = this.container.clientWidth;
+      const h = this.container.clientHeight;
+      this.jet.update(deltaSec, now * 0.001, this.cameraRig.camera, w, h, this.jetToScreen);
+      this.updateJetEra(deltaSec);
+      for (const c of this.comets) {
+        c.group.visible = true;
+        c.update(deltaSec, this.cameraRig.camera);
+      }
+      const jt = this.jet.telemetry;
+      const [bx, by] = this.lens.sceneToOutputNdc(jt.blurNdc.x, jt.blurNdc.y, w / Math.max(1, h));
+      this.lens.setSpeedBlur(jt.blur, bx, by);
+      // A GoPro brings its own glass: a wide fisheye with a dark image circle at the corners
+      this.lens.setLensOverride(jt.lens === 'gopro' ? { distortion: 0, fisheyeMask: 0, chromatic: 0.003, edgeBlur: 1.2, vignette: 0.55, grain: 0.006 } : null);
+      this.lens.setActionCam(jt.lens === 'gopro', jt.vibration, now * 0.001);
+      const cam = this.cameraRig.camera;
+      this.lens.setProjection(jt.lens === 'gopro', cam.aspect, cam.fov / 2);
+      this.lens.setCanopySun(jt.canopySun.x, jt.canopySun.y, jt.canopySun.k);
+      this.lens.setGrey(jt.greyOut);
+      // Auto-exposure: facing the Sun the camera stops down (the cockpit falls into silhouette)
+      // Under a daylit sky the action cam meters for the sky, as a real one does: the blue keeps its depth
+      const gopBase = jt.airDensity > 0 ? 0.9 : 1.15;
+      const wantExposure = jt.lens === 'gopro' ? gopBase - 0.45 * jt.sunInView : 1.05 - 0.25 * jt.sunInView;
+      this.renderer.toneMappingExposure += (wantExposure - this.renderer.toneMappingExposure) * Math.min(1, deltaSec * 2.5);
+    } else {
+      this.cameraRig.update();
+    }
     if (this.showcase.active) {
       const bodies: ShowcaseBody[] = [];
       for (const b of this.planetBundles.values()) bodies.push({ name: b.definition.name, object: b.bodyGroup, radius: b.visualRadius });
       this.showcase.update(this.cameraRig.camera, now * 0.001, bodies);
     }
     this.surface.update();
+    if (this.jet.active || this.jetNebulaShown) {
+      this.updateJetNebula();
+      this.jetNebulaShown = this.jet.active;
+    }
     for (const st of this.nebulaStages.values()) st.update(deltaSec, this.starfield.nebulae.userBrightness || 0.6);
     if (this.pendingHorizonPostcard && this.selectedBody.name === 'Sagittarius A*' && !this.cameraRig.getTransit()) {
       this.pendingHorizonPostcard = false;
@@ -1127,12 +1306,23 @@ export class SolarSystemScene {
     if (this.horizon?.active) this.horizon.update(this.cameraRig.camera, now * 0.001);
 
     const isBlackHole = this.selectedBody.name === 'Sagittarius A*';
-    const focusedName = this.cameraRig.focusedObject && !isBlackHole && !this.showcase.active ? this.selectedBody.name : null;
+    // In the jet, the world under it streams its real surface imagery
+    const jetWorld = this.jet.active && this.jet.telemetry.nearest && this.jet.telemetry.nearest !== 'Sun' ? this.jet.telemetry.nearest : null;
+    const focusedName = this.jet.active ? jetWorld : this.cameraRig.focusedObject && !isBlackHole && !this.showcase.active ? this.selectedBody.name : null;
     this.explorer.update(focusedName, this.cameraRig.camera, this.renderer.domElement.height);
     if (this.pendingSkyView && this.explorer.getStatus().body === this.pendingSkyView.body) {
       const p = this.pendingSkyView;
       this.pendingSkyView = null;
-      if (this.enterSurface(p.lat, p.lon, p.place) && this.pendingPostcard) {
+      const entered = this.enterSurface(p.lat, p.lon, p.place);
+      if (entered && this.pendingDeepTime) {
+        // The future sky: the time of day it is built for, then its phenomena
+        const d = this.pendingDeepTime;
+        this.pendingDeepTime = null;
+        this.surface.setTimeOfDay(d.time);
+        if (d.hours) this.clock.setUtcMs(this.clock.getUtcMs() + d.hours * 3600000);
+        this.surface.setDeepTime(d);
+      }
+      if (entered && this.pendingPostcard) {
         const c = this.pendingPostcard;
         this.pendingPostcard = null;
         this.surface.setView(c.heading, c.pitch, c.fov);
@@ -1142,12 +1332,14 @@ export class SolarSystemScene {
     }
 
     // Over a map the lens character steps aside (clean, web-map look); it returns in space
-    if (!this.surface.isActive()) {
+    if (this.jet.active) {
+      this.lens.setEffectScale(1);
+    } else if (!this.surface.isActive()) {
       const alt = this.cameraRig.altitudeInRadii();
       this.lens.setEffectScale(isFinite(alt) ? THREE.MathUtils.smoothstep(alt, 0.3, 1.5) : 1);
     }
     this.labels.update(
-      this.surface.isActive() ? this.surface.labelItems() : this.explorer.featureLabels(this.cameraRig.camera),
+      this.jet.active ? [] : this.surface.isActive() ? this.surface.labelItems() : this.explorer.featureLabels(this.cameraRig.camera),
       this.cameraRig.camera,
       this.container.clientWidth,
       this.container.clientHeight
@@ -1165,7 +1357,7 @@ export class SolarSystemScene {
     }
 
     // Markers for worlds too small to see (hidden on surfaces, at the black hole and in the galaxy)
-    const markersOn = this.userMarkers && !this.surface.isActive() && !this.horizon?.active && !isBlackHole && !this.showcase.active &&
+    const markersOn = this.userMarkers && !this.jet.active && !this.surface.isActive() && !this.horizon?.active && !isBlackHole && !this.showcase.active &&
       this.cameraRig.camera.position.length() < 3500.0 * COSMIC_SCALE;
     this.markers.setVisible(markersOn);
     if (markersOn) {
@@ -1184,7 +1376,9 @@ export class SolarSystemScene {
     }
 
     // Exposure: a sunlit world filling the frame washes the faint stars out, as on a real camera
-    if (this.starfield.catalogueStars) {
+    if (this.deepLook) {
+      this.starfield.catalogueStars?.setExposure(this.deepLook.stars);
+    } else if (this.starfield.catalogueStars && !this.jet.active) {
       const rig = this.cameraRig;
       let fill = 0;
       if (rig.focusedObject && !this.surface.isActive()) {
@@ -1197,8 +1391,21 @@ export class SolarSystemScene {
     }
     // Speed as the eye judges it: relative to the scale of the view. A slow drift around the whole
     // system covers 20,000 units a second; crossing it in a flight close to a planet reads as fast
-    const viewR = Math.max(40, this.cameraRig.camera.position.distanceTo(this.cameraRig.orbitPivot));
-    this.perceivedVelocity.copy(this.cameraRig.getVelocity()).multiplyScalar(40 / viewR);
+    if (this.jet.active) {
+      // The jet draws its own speed field (src/flight/SpeedEffects); the observatory's travel
+      // streaks around the camera read as a swirling tunnel from the cockpit, so they rest
+      // In open space the observatory's travel motes streak with the jet's speed (in air the jet's
+      // own speed field takes over)
+      const jt0 = this.jet.telemetry;
+      // Out of the air the sky opens up: a dark-adapted eye sees more stars than the observatory shows
+      this.starfield.catalogueStars?.setExposure(jt0.airDensity > 0 ? 1 : 1.35);
+      if (jt0.airDensity > 0) this.perceivedVelocity.set(0, 0, 0);
+      else this.jet.perceivedVelocity(this.perceivedVelocity);
+      this.jetLastCam.copy(this.cameraRig.camera.position);
+    } else {
+      const viewR = Math.max(40, this.cameraRig.camera.position.distanceTo(this.cameraRig.orbitPivot));
+      this.perceivedVelocity.copy(this.cameraRig.getVelocity()).multiplyScalar(40 / viewR);
+    }
     this.starfield.update(
       this.cameraRig.camera.position,
       deltaSec,
@@ -1208,6 +1415,17 @@ export class SolarSystemScene {
       this.renderer.domElement.height
     );
 
+    // Sharper maps for the worlds you come close to (swapped in place; see TexturePipeline.HIRES)
+    if (now - this.hiResCheckMs > 1000) {
+      this.hiResCheckMs = now;
+      const pipeline = TexturePipeline.getInstance();
+      const cam = this.cameraRig.camera.position;
+      for (const [name, b] of this.planetBundles) {
+        if (!pipeline.hasHiRes(name)) continue;
+        if (b.bodyGroup.getWorldPosition(this.hiResTmp).distanceTo(cam) < b.visualRadius * 25) pipeline.upgradeToHiRes(name);
+      }
+    }
+    this.updatePhotoreal();
     this.renderFrame(now * 0.001);
 
     // React only needs ~10 updates/s for the HUD readouts; re-rendering the HUD every few frames
@@ -1303,6 +1521,172 @@ export class SolarSystemScene {
     return this.showcase.active;
   }
 
+  // --- Jet mode ---
+
+  /** Scene NDC → screen pixels through the lens, for the jet's HUD. */
+  private jetToScreen = (x: number, y: number): { x: number; y: number } | null => {
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    const aspect = w / Math.max(1, h);
+    const [ox, oy] = this.lens.sceneToOutputNdc(x, y, aspect);
+    if (this.lens.isMasked(ox, oy, aspect)) return null;
+    return { x: (ox * 0.5 + 0.5) * w, y: (-oy * 0.5 + 0.5) * h };
+  };
+
+  /**
+   * Take off: the jet starts over the selected world (Earth if none, or the Sun/black hole is
+   * selected) and the Solar System runs in real time, so every world is where it really is.
+   */
+  public enterJet(takeOffFrom?: Landmark): void {
+    if (this.jet.active) return;
+    this.landedFrom = null;
+    this.onJetLanding?.(null);
+    if (this.surface.isActive()) this.exitSurface(false);
+    if (this.showcase.active) this.stopShowcase();
+    this.exitHorizonView(false);
+    if (this.visiting) this.endNebulaVisit();
+    const cam = this.cameraRig.camera;
+    this.jetSaved = {
+      rate: this.clock.timeMultiplier, paused: this.clock.isPaused, fov: cam.fov,
+      orbits: this.orbitLinesGroup.visible, constellations: this.starfield.areConstellationsVisible(),
+    };
+    // A clear sky from the cockpit: no orbit lines or constellation figures drawn across it
+    this.orbitLinesGroup.visible = false;
+    this.starfield.setConstellationsVisible(false);
+    this.clock.timeMultiplier = 1;
+    this.clock.isPaused = false;
+    this.cameraRig.suspended = true;
+    this.lens.setOverlay(this.jet.overlayScene, this.jet.overlayCamera);
+    // The landing cutscene waits for the ground at the landmark to stream in
+    this.jet.groundReady = () => {
+      const st = this.explorer.getStatus();
+      return !st.layer || (st.layer.inFlight === 0 && st.layer.queued === 0);
+    };
+    // Arrived at an era's world: land and stand under that era's sky
+    this.jet.onLookUp = (id) => {
+      this.exitJet(false);
+      this.enterDeepTime(id);
+    };
+    this.jetLastCam.copy(cam.position);
+    this.jet.enter(cam, this.planetBundles, takeOffFrom?.body ?? this.selectedBody.name, this.container, () => this.exitJet(), (n) => this.bodyPositionKm(n), {
+      onLand: (lm) => this.landJetAt(lm),
+      takeOffFrom,
+      extraTargets: this.jetExtraTargets(),
+      shiftHours: (h) => this.clock.setUtcMs(this.clock.getUtcMs() + h * 3600000),
+      // Clicks in the cockpit go through the lens: map screen NDC back to the scene's
+      toSceneNdc: (x, y) => this.lens.outputToSceneNdc(x, y, this.container.clientWidth / Math.max(1, this.container.clientHeight)),
+    });
+    this.jetLastCam.copy(cam.position);
+  }
+
+  /** Land back in the observatory, looking at the world the jet was nearest (or, after a landing, nowhere: the surface view takes over). */
+  public exitJet(flyToWorld = true): void {
+    if (!this.jet.active) return;
+    const world = this.jet.nearestWorld();
+    this.jet.exit();
+    for (const c of this.comets) c.group.visible = false;
+    // Back under today's sky
+    this.jet.era = null;
+    this.updateJetEra(0);
+    this.lens.setOverlay(null, null);
+    this.lens.setLensOverride(null);
+    this.lens.setActionCam(false, 0, 0);
+    this.renderer.toneMappingExposure = 1.05;
+    const cam = this.cameraRig.camera;
+    const saved = this.jetSaved;
+    this.jetSaved = null;
+    if (saved) {
+      this.clock.timeMultiplier = saved.rate;
+      this.clock.isPaused = saved.paused;
+      cam.fov = saved.fov;
+      cam.updateProjectionMatrix();
+      this.orbitLinesGroup.visible = saved.orbits;
+      this.starfield.setConstellationsVisible(saved.constellations);
+    }
+    this.cameraRig.suspended = false;
+    this.cameraRig.syncFromCamera();
+    if (flyToWorld) this.selectBody(world, 1600);
+  }
+
+  /** Sgr A* as a jet target: it lives in the galaxy, not among the planet bundles. */
+  private jetExtraTargets(): PlanetMeshBundle[] {
+    const out: PlanetMeshBundle[] = [];
+    const def = CatalogueManager.getSagittariusAStar();
+    const group = this.starfield.externalGalaxy?.sagittariusAStar?.group;
+    if (def && group) out.push({ definition: def, bodyGroup: group, surfaceMesh: group as unknown as THREE.Mesh, visualRadius: 180 });
+    // Comets: real 3D objects (nucleus, coma, ion and dust tails) to fly to and through
+    if (def) {
+      if (!this.comets.length) {
+        this.comets = COMETS.map((c) => new Comet3D(c));
+        for (const c of this.comets) this.scene.add(c.group);
+      }
+      for (const c of this.comets) {
+        out.push({
+          definition: { ...def, id: `comet:${c.spec.name}`, name: c.spec.name, physical: { ...def.physical, meanRadiusKm: c.radius * KM_PER_UNIT, colorHex: '#bff7ea' } },
+          bodyGroup: c.group, surfaceMesh: c.group as unknown as THREE.Mesh, visualRadius: c.radius,
+        });
+      }
+    }
+    // The nebulae: their 3D stages, where their pictures hang on the sky, to fly out to and into
+    if (def) {
+      for (const spec of NEBULAE) {
+        const stage = this.nebulaStage(spec.name);
+        if (!stage) continue;
+        out.push({
+          definition: { ...def, id: `nebula:${spec.name}`, name: spec.title, description: spec.blurb, physical: { ...def.physical, meanRadiusKm: stage.radius * KM_PER_UNIT, colorHex: '#c89cff' } },
+          bodyGroup: stage.group, surfaceMesh: stage.group as unknown as THREE.Mesh, visualRadius: stage.radius,
+        });
+      }
+    }
+    return out;
+  }
+
+  /** In the jet the nebula you are heading for (or are inside) stands in 3D in place of its picture. */
+  private updateJetNebula(): void {
+    const target = this.jet.target;
+    let shown: string | null = null;
+    for (const [name, stage] of this.nebulaStages) {
+      const on = this.jet.active && stage.spec.title === target;
+      if (stage === this.visiting) continue;
+      stage.setVisible(on);
+      if (on) shown = name;
+    }
+    if (!this.visiting) this.starfield.nebulae.hide(shown);
+  }
+
+  /** The landmark the jet landed at (shown with a Take off button), or null. */
+  public landedFrom: Landmark | null = null;
+  /** The UI hears about landings and take-offs here. */
+  public onJetLanding: ((lm: Landmark | null) => void) | null = null;
+
+  /**
+   * Touchdown: leave the jet and stand at the landmark, in the surface view with the real sky,
+   * facing the landmark's view. Falls back to the explorer's fly-to where a surface view can't open.
+   */
+  private landJetAt(lm: Landmark): void {
+    this.exitJet(false);
+    this.selectBody(lm.body, 1);
+    const ok = this.enterSurface(lm.lat, lm.lon, lm.name);
+    if (!ok) {
+      this.flyToLandmark(lm.id);
+      return;
+    }
+    this.surface.setView(lm.viewHeadingDeg ?? 0, 4);
+    this.landedFrom = lm;
+    this.onJetLanding?.(lm);
+  }
+
+  /** Back into the jet from where it landed, climbing away towards the landmark's view. */
+  public takeOffFromLanding(): void {
+    const lm = this.landedFrom;
+    if (!lm) return;
+    this.enterJet(lm);
+  }
+
+  public isJetActive(): boolean {
+    return this.jet.active;
+  }
+
   /**
    * Draw with a floating origin (see RenderOrigin.ts): the camera is moved to (0, 0, 0) and the
    * scene shifted the other way for the duration of the draw, then everything is put back.
@@ -1315,6 +1699,8 @@ export class SolarSystemScene {
     cam.position.set(0, 0, 0);
     cam.updateMatrixWorld();
     try {
+      // The jet's reflections: a cube of the real scene from where it is (every few frames)
+      if (this.jet.active) this.jet.captureEnvironment(this.renderer, this.scene);
       this.lens.render(timeSec);
     } finally {
       this.scene.position.set(0, 0, 0);
@@ -1416,6 +1802,22 @@ export class SolarSystemScene {
     onProgress(1, 'Ready');
     // The nebulae are not needed for the first frame: they load now, in the background, and fade in
     this.starfield.nebulae.load(this.renderer);
+    // The jet's airframe (9.7 MB) loads now too, so it is ready the moment the pilot takes off
+    this.jet.preload();
+    // Back in the cockpit after a reload for a new world scale (the jet HUD's Scale button)
+    let resume: string | null = null;
+    try {
+      resume = sessionStorage.getItem(JET_RESUME_KEY);
+      sessionStorage.removeItem(JET_RESUME_KEY);
+    } catch {
+      resume = null;
+    }
+    if (resume !== null) {
+      window.setTimeout(() => {
+        this.enterJet();
+        if (resume) this.jet.setTarget(resume);
+      }, 1500);
+    }
   }
 
   private textureFraction = 0;
@@ -1583,9 +1985,28 @@ export class SolarSystemScene {
     });
   }
 
+  /**
+   * Google's 3D Earth comes in below 1,500 km, standing on the ground, flying the jet, or close in
+   * orbit (not in a deep-time landscape, which brings its own ground); the imagery tiles step aside.
+   */
+  private updatePhotoreal(): void {
+    const p = this.photoreal;
+    const earth = this.planetBundles.get('Earth');
+    if (!p || !earth) return;
+    const cam = this.cameraRig.camera;
+    const centre = earth.bodyGroup.getWorldPosition(this.hiResTmp);
+    const kmPerUnit = earth.definition.physical.meanRadiusKm / earth.visualRadius;
+    const altKm = (cam.position.distanceTo(centre) - earth.visualRadius) * kmPerUnit;
+    const deepLand = this.surface.isActive() && !!this.surface.getStatus()?.deepTime;
+    p.update(cam, this.renderer, altKm < 1500 && !deepLand && !this.explorer.hideGround);
+    this.explorer.photorealEarth = p.showing;
+  }
+
   public dispose(): void {
+    this.photoreal?.dispose();
     this.isRunning = false;
     this.horizon?.dispose();
+    this.jet.dispose();
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
     }

@@ -2,6 +2,7 @@ import { SurfaceAction } from './ui/HUD/SurfacePanel';
 import React, { useMemo, useEffect, useRef, useState, useCallback } from 'react';
 import { SolarSystemScene, TelemetryData } from './rendering/SolarSystemScene';
 import { FlightHUD } from './ui/HUD/FlightHUD';
+import { JetHUD } from './flight/JetHUD';
 import { LensProfileName } from './rendering/LensPipeline';
 import { Preloader } from './ui/Preloader';
 import { voice, chime } from './companion/voice';
@@ -19,6 +20,8 @@ export const App: React.FC = () => {
   const [load, setLoad] = useState<{ progress: number; stage: string; done: boolean }>({ progress: 0, stage: 'Waking the observatory', done: false });
   const [revealed, setRevealed] = useState(false);      // iris opening: HUD powers on with it
   const [introFinished, setIntroFinished] = useState(false); // iris fully open
+  const [jetActive, setJetActive] = useState(false);     // flying the jet (src/flight)
+  const [landedAt, setLandedAt] = useState<string | null>(null); // landed at a landmark from the jet
   const handleReveal = useCallback(() => setRevealed(true), []);
   const handleBegin = useCallback((withVoice: boolean) => {
     voice.enabled = withVoice;
@@ -41,6 +44,15 @@ export const App: React.FC = () => {
       setTelemetry(data);
     });
     sceneRef.current = scene;
+    // The jet reports every frame; React only needs to know when it takes off or lands
+    let jetWas = false;
+    scene.onJetLanding = (lm) => setLandedAt(lm ? lm.name : null);
+    const unsubJet = scene.jet.subscribe((t) => {
+      if (t.active !== jetWas) {
+        jetWas = t.active;
+        setJetActive(t.active);
+      }
+    });
     // Load every texture and compile every shader up front (no first-use stalls later)
     scene
       .warmUp((progress, stage) => setLoad({ progress, stage, done: false }))
@@ -52,6 +64,7 @@ export const App: React.FC = () => {
 
     return () => {
       delete (window as unknown as { __solaris_scene?: SolarSystemScene }).__solaris_scene;
+      unsubJet();
       scene.dispose();
       sceneRef.current = null;
     };
@@ -132,6 +145,8 @@ export const App: React.FC = () => {
       case 'lookAt': sc.surfaceLookAt(a.name); break;
       case 'resetZoom': sc.resetSurfaceZoom(); break;
       case 'skyFrom': sc.enterSkyView(a.body, a.facing); break;
+      case 'deepTime': sc.enterDeepTime(a.id); break;
+      case 'deepTimeOff': sc.exitDeepTime(); break;
     }
   }, []);
 
@@ -176,13 +191,25 @@ export const App: React.FC = () => {
     sceneRef.current?.jumpToScale(domain);
   }, []);
 
+  const handleLaunchJet = useCallback(() => {
+    sceneRef.current?.enterJet();
+  }, []);
+
+  const handleTakeOff = useCallback(() => {
+    sceneRef.current?.takeOffFromLanding();
+  }, []);
+
+  const handleExitJet = useCallback(() => {
+    sceneRef.current?.exitJet();
+  }, []);
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#030206]" style={{ width: '100vw', height: '100vh', position: 'relative', overflow: 'hidden' }}>
       {/* 3D WebGL Canvas Viewport */}
       <div ref={containerRef} className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
 
       {/* Flight HUD Overlay (powers on once the opening sequence has revealed the scene) */}
-      {revealed && <FlightHUD
+      {revealed && !jetActive && <FlightHUD
         telemetry={telemetry}
         getView={getView}
         onSelectPlanet={handleSelectPlanet}
@@ -208,7 +235,23 @@ export const App: React.FC = () => {
         onPostcard={handlePostcard}
         onCapture={handleCapture}
         onNebula={handleNebula}
+        onLaunchJet={handleLaunchJet}
       />}
+
+      {/* Jet mode: the SX-1's own HUD replaces the observatory's */}
+      {revealed && jetActive && sceneRef.current && <JetHUD controller={sceneRef.current.jet} onExit={handleExitJet} />}
+
+      {/* Landed from the jet: stand and look, then take off again from the same spot */}
+      {revealed && !jetActive && landedAt && (
+        <div style={{ position: 'absolute', left: '50%', bottom: 92, transform: 'translateX(-50%)', zIndex: 40, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, pointerEvents: 'auto' }}>
+          <span style={{ fontFamily: 'Montserrat, system-ui, sans-serif', fontSize: 9, letterSpacing: '0.35em', color: 'rgba(255,255,255,0.6)', textTransform: 'uppercase' }}>
+            Landed · {landedAt}
+          </span>
+          <button type="button" className="hud-btn is-on" style={{ color: 'var(--sol-mint)', padding: '8px 18px' }} onClick={handleTakeOff}>
+            Take off
+          </button>
+        </div>
+      )}
 
       <Preloader progress={load.progress} stage={load.stage} done={load.done} onReveal={handleReveal} onBegin={handleBegin} onFinished={handleRevealed} />
     </div>

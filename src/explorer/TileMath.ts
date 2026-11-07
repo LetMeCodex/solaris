@@ -95,6 +95,23 @@ export function latLonToLocal(latDeg: number, lonDeg: number): [number, number, 
   return [Math.cos(lat) * Math.cos(lon), Math.sin(lat), -Math.cos(lat) * Math.sin(lon)];
 }
 
+/** Earth's flattening (WGS84). */
+export const EARTH_FLATTENING = 1 / 298.257223563;
+
+/**
+ * A point on a body's surface in its mesh's local frame, for a geodetic latitude. Earth is drawn
+ * as a unit sphere squashed at the poles by its flattening f, so a point placed at angle beta on
+ * the sphere lands, after the squash, at geodetic latitude phi where tan(beta) = (1 - f) tan(phi)
+ * (the parametric latitude). Earth's maps, heights, landmarks and Google's 3D tiles all use
+ * geodetic latitude; placing by it directly put things up to ~10 km (0.1 degree) off. Other
+ * bodies keep the plain mapping (their data use planetocentric latitude).
+ */
+export function bodyLatLonToLocal(body: string, latDeg: number, lonDeg: number): [number, number, number] {
+  if (body !== 'Earth') return latLonToLocal(latDeg, lonDeg);
+  const beta = Math.atan((1 - EARTH_FLATTENING) * Math.tan(latDeg * DEG)) / DEG;
+  return latLonToLocal(Math.abs(latDeg) >= 90 ? latDeg : beta, lonDeg);
+}
+
 export function localToLatLon(x: number, y: number, z: number): { lat: number; lon: number } {
   const r = Math.hypot(x, y, z) || 1;
   return { lat: Math.asin(Math.max(-1, Math.min(1, y / r))) / DEG, lon: Math.atan2(-z, x) / DEG };
@@ -135,6 +152,12 @@ export interface SelectionCamera {
   pixelsPerRadian: number;
   /** Optional extra culling (e.g. frustum) on a tile cap in local coordinates. */
   isCapVisible?: (centre: [number, number, number], radius: number) => boolean;
+  /**
+   * Height of the real ground around the camera, in body radii (raised terrain). Detail is chosen
+   * by the distance to that ground, not to the sea-level sphere; the horizon stays the sea-level
+   * one, so distant peaks are still drawn.
+   */
+  groundLift?: number;
 }
 
 /**
@@ -166,7 +189,8 @@ export function selectTiles(
 
     // Distance from the camera to the nearest point of the tile on the sphere
     const nearest = Math.max(0, angle - radius);
-    const dist = Math.sqrt(Math.max(1e-12, d * d + 1 - 2 * d * Math.cos(nearest)));
+    const g = 1 + (cam.groundLift ?? 0);
+    const dist = Math.sqrt(Math.max(1e-12, d * d + g * g - 2 * d * g * Math.cos(nearest)));
     const pxPerTexel = (texelAngle(grid, k.z) / dist) * cam.pixelsPerRadian;
 
     const children = k.z < grid.maxLevel ? childTiles(grid, k) : [];

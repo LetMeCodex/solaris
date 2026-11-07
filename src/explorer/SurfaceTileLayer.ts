@@ -1,11 +1,12 @@
 import * as THREE from 'three';
+import { EarthElevation } from './Elevation';
 import { SUN_WORLD } from '../rendering/RenderOrigin';
 import { TileProvider } from './ImageryRegistry';
 import {
   TileKey,
   tileId,
   tileBounds,
-  latLonToLocal,
+  bodyLatLonToLocal,
   selectTiles,
   parentTile,
   wmsBbox,
@@ -32,6 +33,10 @@ interface TileEntry {
   texture?: THREE.Texture;
   mesh?: THREE.Mesh;
   image?: HTMLImageElement;
+  /** Ground heights at this tile's vertices (km), sampled once when they arrived (raised ground). */
+  heights?: Float32Array;
+  /** Raised ground: where finer tiles are drawn over this one (it is cut away there). */
+  cover?: THREE.DataTexture;
   lastWanted: number;
   lastDrawn: number;
 }
@@ -55,8 +60,15 @@ const defaultLoader: TileImageLoader = {
 
 /** Shell radius of streamed tiles above the base globe (1e-4 R ≈ 0.6 km on Earth). */
 export const TILE_SHELL = 1.0001;
+/**
+ * Extra shell height per zoom level (2e-6 R ≈ 3.5 m on the Moon, 13 m on Earth): a finer tile
+ * always lies just above the coarser one it replaces, so the two never fight for depth.
+ */
+export const TILE_LEVEL_LIFT = 2e-6;
 
-const MAX_CONCURRENT = 6;
+const MAX_CONCURRENT = 10;
+/** Resolution of a tile's cover mask: exact for descendants up to six levels finer. */
+const COVER = 64;
 const MAX_CACHED = 220;
 const MAX_ATTEMPTS = 3;
 const PROVIDER_FAILURE_LIMIT = 8;
@@ -90,6 +102,8 @@ const fragmentShader = /* glsl */ `
   uniform vec3 uSunWorld;     // the Sun in the frame being drawn (floating origin)
   uniform vec3 uHazeColor;
   uniform float uHazeDensity; // per view-space unit; aerial perspective near the ground
+  uniform sampler2D uCover;   // raised ground: 1 where a finer tile is drawn over this one
+  uniform float uHasCover;
   varying vec2 vUv;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
@@ -98,6 +112,7 @@ const fragmentShader = /* glsl */ `
   float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
   void main() {
+    if (uHasCover > 0.5 && texture2D(uCover, vUv).r > 0.5) discard;
     vec4 tex = texture2D(map, vUv);
     vec3 col = tex.rgb;
     if (uColorize > 0.5) {
@@ -151,6 +166,13 @@ export class SurfaceTileLayer {
   private anisotropy = 8;
   private frame = 0;
   private status: LayerStatus = { state: 'idle', inFlight: 0, queued: 0, cached: 0, drawn: 0, deepestLevel: -1, failures: 0 };
+
+  /** Real ground heights (Earth): tiles are raised into 3D relief. Null: flat imagery. */
+  public elevation: EarthElevation | null = null;
+  /** The body these tiles cover (Earth places them by geodetic latitude: see bodyLatLonToLocal). */
+  public bodyName = '';
+  /** The body's true radius, km (heights are a fraction of it, so they scale with the drawn globe). */
+  public radiusKm = 1;
 
   constructor(provider: TileProvider, loader: TileImageLoader = defaultLoader) {
     this.provider = provider;
@@ -233,20 +255,27 @@ export class SurfaceTileLayer {
       entry.lastWanted = this.frame;
       if (entry.state === 'queued') leafQueue.push(entry);
     }
+    // Grandparents, then parents: a coarse but complete stand-in arrives within a few requests
+    // even when flying fast enough to outrun the detail
+    const ancestorQueues: TileEntry[][] = [[], []];
     for (const k of wanted) {
-      const pk = parentTile(k);
-      if (!pk) continue;
-      const pid = tileId(pk);
-      if (wantedIds.has(pid)) continue;
-      wantedIds.add(pid);
-      let entry = this.tiles.get(pid);
-      if (!entry) {
-        entry = { key: pk, id: pid, state: 'queued', attempts: 0, lastWanted: this.frame, lastDrawn: 0 };
-        this.tiles.set(pid, entry);
+      let ak: TileKey | null = k;
+      for (let up = 0; up < 2; up++) {
+        ak = ak ? parentTile(ak) : null;
+        if (!ak) break;
+        const aid = tileId(ak);
+        if (wantedIds.has(aid)) continue;
+        wantedIds.add(aid);
+        let entry = this.tiles.get(aid);
+        if (!entry) {
+          entry = { key: ak, id: aid, state: 'queued', attempts: 0, lastWanted: this.frame, lastDrawn: 0 };
+          this.tiles.set(aid, entry);
+        }
+        entry.lastWanted = this.frame;
+        if (entry.state === 'queued') ancestorQueues[up].push(entry);
       }
-      entry.lastWanted = this.frame;
-      if (entry.state === 'queued') this.queue.push(entry);
     }
+    this.queue.push(...ancestorQueues[1], ...ancestorQueues[0]);
     this.queue.push(...leafQueue);
 
     // Abort requests that are no longer useful (fast scrolling / body switch)
@@ -262,13 +291,32 @@ export class SurfaceTileLayer {
     }
     this.pump();
 
-    // Draw: each wanted tile, or its nearest loaded ancestor
+    // Draw: each wanted tile, or its nearest loaded ancestor. On raised ground a family of tiles
+    // replaces its parent only once all of its wanted members are in: a parent and some of its
+    // children drawn together would put two different reliefs on the same ground (ghost ridges)
+    const relief = !!this.elevation && !this.elevation.disabled;
+    const families = new Map<string, TileKey[]>();
+    if (relief) {
+      for (const k of wanted) {
+        const pk = parentTile(k);
+        if (!pk) continue;
+        const pid = tileId(pk);
+        const list = families.get(pid) ?? [];
+        list.push(k);
+        families.set(pid, list);
+      }
+    }
+    const familyReady = (k: TileKey): boolean => {
+      const pk = parentTile(k);
+      const fam = pk ? families.get(tileId(pk)) : undefined;
+      return !fam || fam.every((m) => this.tiles.get(tileId(m))?.state === 'loaded');
+    };
     const drawIds = new Set<string>();
     for (const k of wanted) {
       let cur: TileKey | null = k;
       while (cur) {
         const e = this.tiles.get(tileId(cur));
-        if (e && e.state === 'loaded') {
+        if (e && e.state === 'loaded' && (!relief || cur !== k || familyReady(cur))) {
           drawIds.add(e.id);
           deepest = Math.max(deepest, cur.z);
           break;
@@ -276,20 +324,17 @@ export class SurfaceTileLayer {
         cur = parentTile(cur);
       }
     }
-    // Do not draw an ancestor and its descendant together (overlap) — keep the descendants
-    for (const id of [...drawIds]) {
-      let cur = parentTile(this.tiles.get(id)!.key);
-      while (cur) {
-        drawIds.delete(tileId(cur));
-        cur = parentTile(cur);
-      }
-    }
+    // An ancestor standing in for unloaded tiles stays drawn even once some of its descendants have
+    // arrived: removing it uncovered the quarters still loading (L-, U- and diamond-shaped holes
+    // down to the base globe). Deeper levels sit on a slightly higher shell (see createMesh), so
+    // finer tiles cleanly cover coarser ones where both are drawn.
     for (const entry of this.tiles.values()) {
       const visible = drawIds.has(entry.id);
       if (visible && !entry.mesh && entry.texture) entry.mesh = this.createMesh(entry);
       if (entry.mesh) entry.mesh.visible = visible;
       if (visible) entry.lastDrawn = this.frame;
     }
+    if (relief) this.cutCovered(drawIds);
 
     this.evict();
 
@@ -339,9 +384,32 @@ export class SurfaceTileLayer {
         tex.anisotropy = this.anisotropy;
         tex.needsUpdate = true;
         entry.texture = tex;
-        entry.state = 'loaded';
         this.everLoaded = true;
         this.consecutiveFailures = 0;
+        if (this.elevation && !this.elevation.disabled) {
+          // Raised ground: the tile counts as loaded only once its heights are in, so it never
+          // appears flat and then jumps (its parent stands in until then)
+          const b = tileBounds(this.provider, entry.key);
+          const z = EarthElevation.zoomFor(Math.max(b.clipEast - b.clipWest, b.clipNorth - b.clipSouth));
+          const elevation = this.elevation;
+          void elevation.ensure(b.clipSouth, b.clipWest, b.clipNorth, b.clipEast, z).then(() => {
+            if (entry.state !== 'loading') return;
+            // Sample this tile's whole height grid now, while its height tiles are certainly cached
+            const { nx, ny } = this.grid(entry.key);
+            const h = new Float32Array((nx + 1) * (ny + 1));
+            for (let j = 0; j <= ny; j++) {
+              const lat = b.clipNorth + (b.clipSouth - b.clipNorth) * (j / ny);
+              for (let i = 0; i <= nx; i++) {
+                const lon = b.clipWest + (b.clipEast - b.clipWest) * (i / nx);
+                h[j * (nx + 1) + i] = elevation.heightKm(lat, lon, z);
+              }
+            }
+            entry.heights = h;
+            entry.state = 'loaded';
+          });
+        } else {
+          entry.state = 'loaded';
+        }
         this.pump();
       },
       () => {
@@ -390,13 +458,24 @@ export class SurfaceTileLayer {
     this.status = { ...this.status, state: 'unavailable', inFlight: 0, queued: 0 };
   }
 
+  /** Vertex grid of a tile: a fixed fine grid for raised ground, else by its size. */
+  private grid(k: TileKey): { nx: number; ny: number } {
+    const b = tileBounds(this.provider, k);
+    const spanDeg = Math.max(b.clipEast - b.clipWest, b.clipNorth - b.clipSouth);
+    const relief = !!this.elevation && !this.elevation.disabled;
+    const segs = relief ? 32 : Math.max(4, Math.min(48, Math.ceil(spanDeg / 1.5)));
+    const ny = Math.max(2, Math.ceil(segs * ((b.clipNorth - b.clipSouth) / Math.max(1e-6, b.clipEast - b.clipWest))));
+    return { nx: segs, ny: Math.min(48, ny) };
+  }
+
   private createMesh(entry: TileEntry): THREE.Mesh {
     const b = tileBounds(this.provider, entry.key);
     const spanDeg = Math.max(b.clipEast - b.clipWest, b.clipNorth - b.clipSouth);
-    const segs = Math.max(4, Math.min(48, Math.ceil(spanDeg / 1.5)));
-    const nx = segs;
-    const ny = Math.max(2, Math.ceil(segs * ((b.clipNorth - b.clipSouth) / Math.max(1e-6, b.clipEast - b.clipWest))));
-    const nyc = Math.min(48, ny);
+    const heights = entry.heights;
+    const relief = !!heights;
+    // (Finer tiles already sit a little higher: TILE_LEVEL_LIFT; skirts close the edges)
+    const sinkKm = 0;
+    const { nx, ny: nyc } = this.grid(entry.key);
 
     const positions: number[] = [];
     const normals: number[] = [];
@@ -406,8 +485,12 @@ export class SurfaceTileLayer {
       const lat = b.clipNorth + (b.clipSouth - b.clipNorth) * (j / nyc);
       for (let i = 0; i <= nx; i++) {
         const lon = b.clipWest + (b.clipEast - b.clipWest) * (i / nx);
-        const [x, y, z] = latLonToLocal(lat, lon);
-        positions.push(x * TILE_SHELL, y * TILE_SHELL, z * TILE_SHELL);
+        const [x, y, z] = bodyLatLonToLocal(this.bodyName, lat, lon);
+        // Coarser tiles sink a little under finer ones (by ~1% of their size), so where both are
+        // drawn during loading the coarse relief never pokes up through the fine
+        const lift = heights ? (heights[j * (nx + 1) + i] - sinkKm) / this.radiusKm : 0;
+        const shell = TILE_SHELL + entry.key.z * TILE_LEVEL_LIFT + lift;
+        positions.push(x * shell, y * shell, z * shell);
         normals.push(x, y, z);
         // UV within the full nominal tile image (v = 1 at the tile's north edge)
         uvs.push((lon - b.west) / (b.east - b.west), (lat - b.south) / (b.north - b.south));
@@ -420,11 +503,68 @@ export class SurfaceTileLayer {
         indices.push(a, c, a + 1, a + 1, c, c + 1);
       }
     }
+    // Skirts on raised ground: a short wall hanging down from every edge, so where a finer tile meets
+    // a coarser one (their edges at slightly different heights) no crack shows the sky through
+    let skirtInfo: { ring: number[]; top: number; start: number } | null = null;
+    if (relief) {
+      // Deep enough to reach under a coarser neighbour's edge in steep country (it can sit a large
+      // part of the local relief lower)
+      let hMin = Infinity, hMax = -Infinity;
+      for (const h of heights!) {
+        hMin = Math.min(hMin, h);
+        hMax = Math.max(hMax, h);
+      }
+      const skirtKm = Math.max(0.15, spanDeg * 111 * 0.008, (hMax - hMin) * 0.35);
+      const ring: number[] = [];
+      for (let i = 0; i <= nx; i++) ring.push(i);
+      for (let j = 1; j <= nyc; j++) ring.push(j * (nx + 1) + nx);
+      for (let i = nx - 1; i >= 0; i--) ring.push(nyc * (nx + 1) + i);
+      for (let j = nyc - 1; j >= 1; j--) ring.push(j * (nx + 1));
+      // Own copies of the edge (top) and the hanging edge (bottom): the walls must not bend the
+      // shading of the ground's own edge vertices
+      const top = positions.length / 3;
+      skirtInfo = { ring, top, start: top + ring.length };
+      for (const k of ring) {
+        positions.push(positions[k * 3], positions[k * 3 + 1], positions[k * 3 + 2]);
+        normals.push(normals[k * 3], normals[k * 3 + 1], normals[k * 3 + 2]);
+        uvs.push(uvs[k * 2], uvs[k * 2 + 1]);
+      }
+      const start = positions.length / 3;
+      for (const k of ring) {
+        const x = positions[k * 3], y = positions[k * 3 + 1], z = positions[k * 3 + 2];
+        const len = Math.hypot(x, y, z);
+        const down = (len - skirtKm / this.radiusKm) / len;
+        positions.push(x * down, y * down, z * down);
+        normals.push(normals[k * 3], normals[k * 3 + 1], normals[k * 3 + 2]);
+        uvs.push(uvs[k * 2], uvs[k * 2 + 1]);
+      }
+      for (let n = 0; n < ring.length; n++) {
+        const a = top + n;
+        const b = top + ((n + 1) % ring.length);
+        const a2 = start + n;
+        const b2 = start + ((n + 1) % ring.length);
+        // Both windings: the wall is seen from either side
+        indices.push(a, a2, b, b, a2, b2, a, b, a2, b, b2, a2);
+      }
+    }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     geo.setIndex(indices);
+    // Slopes catch the light: normals from the raised surface itself
+    if (relief) {
+      geo.computeVertexNormals();
+      // Skirts take the normal of the ground at their top edge: lit as a continuation of the
+      // slope, not as a dark vertical wall where a coarser neighbour sits lower
+      if (skirtInfo) {
+        const n = geo.attributes.normal as THREE.BufferAttribute;
+        skirtInfo.ring.forEach((k, i) => {
+          for (const at of [skirtInfo.top + i, skirtInfo.start + i]) n.setXYZ(at, n.getX(k), n.getY(k), n.getZ(k));
+        });
+        n.needsUpdate = true;
+      }
+    }
     geo.computeBoundingSphere();
 
     const mat = new THREE.ShaderMaterial({
@@ -433,6 +573,8 @@ export class SurfaceTileLayer {
         uSunWorld: SUN_WORLD,
         map: { value: entry.texture },
         uBounds: { value: new THREE.Vector4(b.west, b.south, b.east, b.north) },
+        uCover: { value: null },
+        uHasCover: { value: 0 },
       },
       vertexShader,
       fragmentShader,
@@ -445,6 +587,62 @@ export class SurfaceTileLayer {
     mesh.renderOrder = 1 + entry.key.z * 0.01;
     this.group.add(mesh);
     return mesh;
+  }
+
+  /**
+   * On raised ground two levels of detail must never overlap: each has its own relief (a coarse
+   * tile flattens a peak by kilometres), so where both are drawn they cut through each other and
+   * the eye can end up inside or under the mountains. A coarse tile standing in for unloaded
+   * neighbours stays drawn, but is cut away (discarded in its shader) wherever finer tiles are.
+   */
+  private cutCovered(drawIds: Set<string>): void {
+    const masks = new Map<string, Uint8Array>();
+    for (const id of drawIds) {
+      const k = this.tiles.get(id)?.key;
+      if (!k) continue;
+      let pk = parentTile(k);
+      while (pk) {
+        const pid = tileId(pk);
+        if (drawIds.has(pid)) {
+          const dz = k.z - pk.z;
+          const n = 2 ** dz;
+          const ix = k.x - pk.x * n;
+          const iy = k.y - pk.y * n;
+          let m = masks.get(pid);
+          if (!m) masks.set(pid, (m = new Uint8Array(COVER * COVER)));
+          // Texels whose centres lie inside the finer tile (v = 1 at the coarse tile's north edge)
+          const x0 = Math.round((ix / n) * COVER), x1 = Math.round(((ix + 1) / n) * COVER);
+          const y0 = Math.round((1 - (iy + 1) / n) * COVER), y1 = Math.round((1 - iy / n) * COVER);
+          for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) m[y * COVER + x] = 255;
+        }
+        pk = parentTile(pk);
+      }
+    }
+    for (const entry of this.tiles.values()) {
+      const mat = entry.mesh?.material as THREE.ShaderMaterial | undefined;
+      if (!mat) continue;
+      const m = drawIds.has(entry.id) ? masks.get(entry.id) : undefined;
+      if (m) {
+        if (!entry.cover) {
+          entry.cover = new THREE.DataTexture(new Uint8Array(COVER * COVER), COVER, COVER, THREE.RedFormat, THREE.UnsignedByteType);
+          entry.cover.magFilter = entry.cover.minFilter = THREE.NearestFilter;
+        }
+        const data = entry.cover.image.data as Uint8Array;
+        let changed = false;
+        for (let i = 0; i < data.length; i++) {
+          if (data[i] !== m[i]) {
+            data[i] = m[i];
+            changed = true;
+          }
+        }
+        if (changed) entry.cover.needsUpdate = true;
+        mat.uniforms.uCover.value = entry.cover;
+        mat.uniforms.uHasCover.value = 1;
+      } else {
+        mat.uniforms.uHasCover.value = 0;
+      }
+      entry.mesh!.userData.covered = !!m;
+    }
   }
 
   private evict(): void {
@@ -473,6 +671,8 @@ export class SurfaceTileLayer {
     }
     entry.texture?.dispose();
     entry.texture = undefined;
+    entry.cover?.dispose();
+    entry.cover = undefined;
   }
 
   public dispose(): void {

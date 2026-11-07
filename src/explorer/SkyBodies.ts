@@ -150,6 +150,8 @@ const MAX_DISPLAY_RADIUS = 0.13; // rad (≈7.5°) — the largest a magnified b
  */
 export class SkyBodies {
   public readonly group = new THREE.Group();
+  /** Deep-time skies: the Sun's own disc hidden (a red giant or white dwarf drawn instead), Saturn without rings. */
+  public overrides = { hideSun: false, hideRings: false };
   private sphereGeo = new THREE.SphereGeometry(1, 64, 32);
   private ringGeo: THREE.RingGeometry;
   private entries = new Map<string, Entry>();
@@ -313,7 +315,8 @@ export class SkyBodies {
       // Resolved disc
       if (discVisible || isSun) {
         const e = this.entryFor(s);
-        e.mesh.visible = !p.hideAll && aboveHorizon;
+        e.mesh.visible = !p.hideAll && aboveHorizon && !(isSun && this.overrides.hideSun);
+        if (e.ring) e.ring.visible = !this.overrides.hideRings;
         if (e.mesh.visible) {
           seen.add(s.name);
           e.mesh.position.copy(centre);
@@ -333,7 +336,7 @@ export class SkyBodies {
           // Label beside the disc (rings reach 2.65 radii)
           info.labelWorld = centre.clone().addScaledVector(right, shell * Math.tan(shownR) * (e.ring ? 2.75 : 1.2) + shell * 0.004);
           if (isSun) {
-            this.sunGlow.visible = true;
+            this.sunGlow.visible = !this.overrides.hideSun;
             this.sunGlow.position.copy(centre);
             const glowR = shell * Math.tan(Math.max(shownR * 9, 0.06));
             this.sunGlow.scale.setScalar(glowR * 2);

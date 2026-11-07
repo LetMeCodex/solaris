@@ -1,7 +1,8 @@
 import * as THREE from 'three';
+import { earthElevation } from './Elevation';
 import { BodyImagery, getBodyImagery, minimumAltitudeKm } from './ImageryRegistry';
 import { SurfaceTileLayer, LayerStatus, TileImageLoader } from './SurfaceTileLayer';
-import { latLonToLocal, localToLatLon } from './TileMath';
+import { bodyLatLonToLocal, localToLatLon } from './TileMath';
 import { getLandmark, Landmark, landmarksFor } from './Landmarks';
 import { ScreenLabelItem } from './ScreenLabels';
 import { TILE_SHELL } from './SurfaceTileLayer';
@@ -13,6 +14,8 @@ export interface ExplorerBody {
   bodyGroup: THREE.Object3D;
   surfaceMesh: THREE.Mesh;
   cloudMesh?: THREE.Mesh;
+  /** The orbit-scale atmosphere shell (drawn without depth: it knows nothing of the terrain). */
+  atmosphereMesh?: THREE.Mesh;
   /** The bundled global colour map (used to tint greyscale imagery). */
   baseMap?: THREE.Texture | null;
   visualRadius: number;
@@ -81,6 +84,10 @@ export class PlanetaryExplorer {
   private daylightFactor = 0;
   /** Extra hooks while the surface observer is active. */
   public groundHaze: { color: THREE.Color; density: number } | null = null;
+  /** Hide the surface imagery (a deep-time scene draws its own landscape). */
+  public hideGround = false;
+  /** Google's photorealistic 3D Earth is on screen: Earth's imagery tiles step aside for it. */
+  public photorealEarth = false;
   /** Surface view: real sunlight with this tint and sky ambient (null in space). */
   public groundLight: { sunTint: [number, number, number]; ambient: number } | null = null;
   private maxAnisotropy = 8;
@@ -160,7 +167,17 @@ export class PlanetaryExplorer {
     if (imagery.provider) {
       const layer = this.ensureLayer(body, imagery);
       layer.setDaylight(this.daylightFactor);
-      layer.setOpacity(1 - THREE.MathUtils.smoothstep(altitudeRadii, FADE_IN_TO, FADE_IN_FROM));
+      // A deep-time scene brings its own 3D landscape: the imagery steps aside
+      const photoreal = this.photorealEarth && body.name === 'Earth';
+      layer.setOpacity(this.hideGround || photoreal ? 0 : 1 - THREE.MathUtils.smoothstep(altitudeRadii, FADE_IN_TO, FADE_IN_FROM));
+      // Raised terrain close by: the atmosphere shell (no depth test) would lay the haze of the whole
+      // path to the sea-level horizon over ground a few hundred metres away, a white-out. Drawn
+      // before the tiles instead, it is the sky behind the mountains; the tiles' own distance haze
+      // gives their aerial perspective
+      if (body.atmosphereMesh) {
+        const relief = ((!!layer.elevation && !layer.elevation.disabled) || photoreal) && !this.hideGround && altitudeKm < 60;
+        body.atmosphereMesh.renderOrder = relief ? 0.95 : 3;
+      }
       if (this.groundHaze) layer.setHaze(this.groundHaze.color, this.groundHaze.density);
       else layer.setHaze(this.tmpColor, 0);
       if (this.groundLight) layer.setLighting(this.groundLight.sunTint, this.groundLight.ambient);
@@ -171,16 +188,21 @@ export class PlanetaryExplorer {
           this.projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
           this.frustum.setFromProjectionMatrix(this.projView);
           const surface = body.surfaceMesh;
-          const scale = body.visualRadius;
+          // Raised ground: tiles are tested where they are actually drawn (lifted to the local
+          // ground height), so the ground under a mountaintop is in view and gets full detail
+          const lift = layer.elevation && !layer.elevation.disabled ? Math.max(0, layer.elevation.heightKm(sub.lat, sub.lon, 11)) / body.radiusKm : 0;
+          const scale = body.visualRadius * (1 + lift);
           layer.update({
             position: [camLocal.x, camLocal.y, camLocal.z],
+            groundLift: lift,
             pixelsPerRadian: viewportHeightPx / (2 * Math.tan((camera.fov * Math.PI) / 360)),
             isCapVisible: (centre, radius) => {
               // Tight bounding sphere of a spherical cap: centred on the cap's base plane below
               // 90°, otherwise the whole globe (a small chord sphere would miss parts of big caps).
               if (radius < Math.PI / 2) {
                 const k = Math.cos(radius);
-                surface.localToWorld(this.tmpS.center.set(centre[0] * k, centre[1] * k, centre[2] * k));
+                const kl = k * (1 + lift);
+                surface.localToWorld(this.tmpS.center.set(centre[0] * kl, centre[1] * kl, centre[2] * kl));
                 this.tmpS.radius = Math.sin(radius) * scale * 1.02 + (1 - k) * scale;
               } else {
                 surface.localToWorld(this.tmpS.center.set(0, 0, 0));
@@ -244,7 +266,7 @@ export class PlanetaryExplorer {
     const centre = body.bodyGroup.getWorldPosition(new THREE.Vector3());
     const out: ScreenLabelItem[] = [];
     for (const lm of landmarksFor(s.body)) {
-      const [x, y, z] = latLonToLocal(lm.lat, lm.lon);
+      const [x, y, z] = bodyLatLonToLocal(s.body, lm.lat, lm.lon);
       const p = body.surfaceMesh.localToWorld(new THREE.Vector3(x * TILE_SHELL, y * TILE_SHELL, z * TILE_SHELL));
       const n = p.clone().sub(centre).normalize();
       const toCam = camera.position.clone().sub(p).normalize();
@@ -258,7 +280,7 @@ export class PlanetaryExplorer {
   public surfaceDirection(body: ExplorerBody, latDeg: number, lonDeg: number): THREE.Vector3 {
     body.surfaceMesh.updateWorldMatrix(true, false);
     const centre = body.bodyGroup.getWorldPosition(new THREE.Vector3());
-    const [x, y, z] = latLonToLocal(latDeg, lonDeg);
+    const [x, y, z] = bodyLatLonToLocal(body.name, latDeg, lonDeg);
     const p = body.surfaceMesh.localToWorld(new THREE.Vector3(x, y, z));
     return p.sub(centre).normalize();
   }
@@ -306,6 +328,12 @@ export class PlanetaryExplorer {
       layer = new SurfaceTileLayer(imagery.provider!, this.loader);
       layer.setMaxAnisotropy(this.maxAnisotropy);
       layer.setBaseMap(body.baseMap ?? null);
+      // Earth's ground in real 3D: mountains, canyons and coasts from global elevation data
+      if (body.name === 'Earth') {
+        layer.elevation = earthElevation;
+        layer.bodyName = 'Earth';
+        layer.radiusKm = body.radiusKm;
+      }
       body.surfaceMesh.add(layer.group);
       this.layers.set(body.name, layer);
     }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import { SolarShader } from '../rendering/SolarShader';
-import { AtmosphereShader, ATMOSPHERE_CONFIGS } from '../rendering/AtmosphereShader';
+import { AtmosphereShader, ATMOSPHERE_CONFIGS, atmosphereShellScale } from '../rendering/AtmosphereShader';
 import { EarthMaterial } from '../rendering/EarthMaterial';
 import { PlanetMaterial } from '../rendering/PlanetMaterial';
 import { PlanetFactory } from '../rendering/PlanetFactory';
@@ -44,15 +44,24 @@ describe('Astrophysical Shaders & Materials Suite', () => {
     expect(ATMOSPHERE_CONFIGS['Uranus']).toBeDefined();
     expect(ATMOSPHERE_CONFIGS['Neptune']).toBeDefined();
 
-    // Material generation
-    const earthAtmo = AtmosphereShader.createAtmosphereMaterial('Earth');
+    // Material generation: real scattering coefficients, composited over the world (ONE, SRC_ALPHA)
+    const earthAtmo = AtmosphereShader.createAtmosphereMaterial('Earth', 6371);
     expect(earthAtmo).toBeInstanceOf(THREE.ShaderMaterial);
-    expect(earthAtmo?.uniforms.rayleighColor).toBeDefined();
-    expect(earthAtmo?.uniforms.twilightColor).toBeDefined();
+    expect(earthAtmo?.uniforms.uBetaR.value.z).toBeGreaterThan(earthAtmo?.uniforms.uBetaR.value.x); // blue scatters most
+    expect(earthAtmo?.uniforms.uRadius.value).toBe(6371);
+    expect(earthAtmo?.uniforms.uTop.value).toBe(100);
     expect(earthAtmo?.transparent).toBe(true);
+    expect(earthAtmo?.blending).toBe(THREE.CustomBlending);
+    expect(earthAtmo?.blendDst).toBe(THREE.SrcAlphaFactor);
 
-    const marsAtmo = AtmosphereShader.createAtmosphereMaterial('Mars');
+    // The shell reaches the top of the air on the world's own scale
+    expect(atmosphereShellScale('Earth', 6371)).toBeCloseTo(1 + 100 / 6371, 9);
+    expect(atmosphereShellScale('Moon', 1737)).toBe(1);
+
+    const marsAtmo = AtmosphereShader.createAtmosphereMaterial('Mars', 3389.5);
     expect(marsAtmo).toBeInstanceOf(THREE.ShaderMaterial);
+    // Worlds whose air was missing before: Titan and the gas giants
+    for (const w of ['Titan', 'Jupiter', 'Saturn']) expect(AtmosphereShader.createAtmosphereMaterial(w, 2000)).toBeInstanceOf(THREE.ShaderMaterial);
 
     // Airless worlds return null
     expect(AtmosphereShader.createAtmosphereMaterial('Mercury')).toBeNull();

@@ -49,6 +49,7 @@ The main-belt "asteroid belt" (3,200 rocks) is **synthetic**: seeded Mulberry32 
 | Files | Source & licence |
 | :--- | :--- |
 | `2k_sun.jpg`, `2k_mercury.jpg`, `2k_venus_atmosphere.jpg`, `2k_earth_daymap.jpg`, `2k_earth_nightmap.jpg`, `2k_earth_clouds.jpg`, `2k_moon.jpg`, `2k_mars.jpg`, `2k_jupiter.jpg`, `2k_saturn.jpg`, `2k_saturn_ring_alpha.png`, `2k_uranus.jpg`, `2k_neptune.jpg` | **Solar System Scope** (INOVE), https://www.solarsystemscope.com/textures/ — CC BY 4.0, derived from NASA imagery. Credit: "Textures: Solar System Scope (CC BY 4.0)". |
+| `hires/earth_day_8k.webp`, `hires/earth_night_4k.webp`, `hires/earth_clouds_4k.webp`, `hires/moon_8k.webp`, `hires/mars_8k.webp`, `hires/mercury_8k.webp`, `hires/jupiter_4k.webp`, `hires/saturn_4k.webp`, `hires/sun_4k.webp`, `hires/saturn_ring_alpha_8k.png` | **Solar System Scope** (INOVE), https://www.solarsystemscope.com/textures/ — CC BY 4.0, derived from NASA imagery. The 8K/4K maps, re-encoded as WebP (night lights and clouds downsized to 4K); swapped in for the 2K maps as you approach a world. |
 | `earth_normal_2048.jpg`, `earth_lights_2048.png` | three.js example textures (`examples/textures/planets/`), MIT licence; byte-identical to three.js r170. |
 
 Bodies without a texture (most moons and asteroids) use procedural canvas textures generated at runtime (`TextureGenerator.ts`). The same generator provides offline fallbacks if a texture fails to load.
@@ -109,3 +110,27 @@ M. Livio and the Hubble 20th Anniversary Team; heic1007a) and the Helix Nebula f
 
 `public/music/` — "Solaris — Slowed + Reverb (Lofi Edition)", the site's own soundtrack, with its
 cover art. Loudness-matched to −18 LUFS for background play.
+
+## Jet model (added)
+
+`public/models/su30mkk.glb`, flown in jet mode (`src/flight/`):
+
+- **"Su-30MKK with Kh-59M"** by **Jeyhun1985**, https://sketchfab.com/3d-models/su-30mkk-with-kh-59m-da768c092b0f49b6b8bcb9e917e1e6a0
+- **Licence:** Creative Commons Attribution 4.0 (CC BY 4.0), http://creativecommons.org/licenses/by/4.0/
+- **Changes:** optimised for the web. Meshes were simplified (about 670k to 352k triangles), normals quantised, geometry meshopt-compressed and textures re-encoded (8.7 MB to 2.6 MB). The original is 47 MB.
+
+`public/models/gripen.glb`, the default aircraft in jet mode (`src/flight/`), chosen for its detailed cockpit:
+
+- **"SAAB Jas 39A Gripen (Detailed Cockpit)"** by **ngkoret**, https://sketchfab.com/3d-models/saab-jas-39a-gripen-detailed-cockpit-f4646ccf489341c28c4118de38feface
+- **Licence:** Creative Commons Attribution 4.0 (CC BY 4.0), http://creativecommons.org/licenses/by/4.0/
+- **Changes:** optimised for the web. The outer airframe was simplified (about 767k to 601k triangles in all) while the cockpit, seat and instruments were kept at full detail; normals quantised, geometry meshopt-compressed, textures re-encoded at up to 4096 px (29 MB to 6.3 MB), and the specular-glossiness materials converted to metallic-roughness. The original is 58 MB. At runtime the battle-damage overlays and the baked exhaust flame are hidden, and the materials the model ships untextured (mirrors, displays, glass, rails) are given plain colours and finishes.
+
+## Terrain heights (added)
+
+Earth's ground relief near the surface (`src/explorer/Elevation.ts`) comes from **Terrain Tiles** on the Registry of Open Data on AWS (`s3.amazonaws.com/elevation-tiles-prod`, terrarium encoding), fetched on demand. Sources include SRTM and GMTED2010 (USGS), ETOPO1 (NOAA), and others; see https://github.com/tilezen/joerd/blob/master/docs/attribution.md for the full attribution, which applies here. Depths below sea level are not drawn (the sea surface stays flat).
+
+## Photorealistic 3D Earth (added)
+
+Close to Earth (below 1,500 km, on the ground, and flying low), `src/rendering/PhotorealEarth.ts` streams **Google Photorealistic 3D Tiles** from the Google Maps Platform Map Tiles API (`tile.googleapis.com/v1/3dtiles`). It needs your own API key with the Map Tiles API enabled, set as `VITE_GOOGLE_MAPS_API_KEY` in `.env.local` (gitignored; never commit it). Without a key, Earth falls back to the streamed imagery and Terrain Tiles above. Use is under the Google Maps Platform Terms of Service: the data attributions Google returns are shown on screen while tiles are visible (bottom right), the tiles are not cached beyond the session, and Google's terms also ask for the Google Maps logo alongside them. Restrict the key to your site's domain (HTTP referrer) in Google Cloud Console, since a browser app's key is visible to its users.
+
+Rendering uses **3d-tiles-renderer** 0.4.28 (NASA-AMMOS, Apache-2.0), with the Draco decoder from three.js (`public/draco/`, Apache-2.0).

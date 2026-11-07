@@ -10,6 +10,8 @@ interface ExplorerPanelProps {
   onDaylight: (on: boolean) => void;
   onStandHere: () => void;
   onSkyFrom: (body: string, facing?: string) => void;
+  /** Stand under the sky of a future era (deep time). */
+  onDeepTime?: (id: string) => void;
   onSelectBody: (name: string) => void;
   onResetView: () => void;
   /** Open by itself when the camera is down near the surface. */
@@ -86,7 +88,7 @@ const SlateTabs: React.FC<{ tab: SlateTab; onTab: (t: SlateTab) => void; counts:
  * Compact Planetary Explorer panel: breadcrumb, imagery source and honesty labels, live streaming
  * state, and landmark navigation/search. Kept small so the globe stays the focus.
  */
-export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLandmark, onDaylight, onStandHere, onSkyFrom, onSelectBody, onResetView, autoOpen = false, tourTab = null }) => {
+export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLandmark, onDaylight, onStandHere, onSkyFrom, onDeepTime, onSelectBody, onResetView, autoOpen = false, tourTab = null }) => {
   // Collapsed to a slim altimeter until the camera is near the ground (or the user opens it);
   // phones stay collapsed so the globe keeps the screen
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
@@ -131,7 +133,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
     <section
       aria-label="Planetary explorer"
       data-tour="explorer"
-      className={`hud-frame hud-slide-in absolute right-3 md:right-7 top-[76px] md:top-[92px] ${open ? 'w-[300px]' : 'w-auto'} max-w-[calc(100vw-24px)] max-h-[calc(100vh-200px)] md:max-h-[calc(100vh-480px)] [@media(max-height:620px)]:max-h-[calc(100vh-200px)] overflow-y-auto overflow-x-hidden hud-scroll pointer-events-auto z-30 text-white/80 font-light`}
+      className={`hud-frame hud-slide-in absolute right-3 md:right-7 top-[204px] sm:top-[76px] md:top-[92px] ${open ? 'w-[300px]' : 'w-auto'} max-w-[calc(100vw-24px)] max-h-[calc(100vh-330px)] sm:max-h-[calc(100vh-200px)] md:max-h-[calc(100vh-480px)] [@media(max-height:620px)]:max-h-[calc(100vh-200px)] overflow-y-auto overflow-x-hidden hud-scroll pointer-events-auto z-30 text-white/80 font-light`}
     >
       {/* Breadcrumb */}
       <div className={`flex items-center justify-between gap-3 px-4 ${open ? 'pt-3 pb-2' : 'py-2'} text-[10px] uppercase tracking-[0.18em]`}>
@@ -346,7 +348,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
 
           {tab === 'skies' && (
             <div key="skies" className="px-3 py-3 hud-rise">
-              <SkyDestinations current={null} onGo={onSkyFrom} />
+              <SkyDestinations current={null} onGo={onSkyFrom} onDeepTime={onDeepTime} />
             </div>
           )}
         </div>

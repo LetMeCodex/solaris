@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { CelestialBodyDefinition } from '../types/catalogue';
 import { TexturePipeline } from './TexturePipeline';
 import { SolarShader } from './SolarShader';
-import { AtmosphereShader, ATMOSPHERE_CONFIGS } from './AtmosphereShader';
+import { AtmosphereShader, atmosphereShellScale } from './AtmosphereShader';
 import { EarthMaterial } from './EarthMaterial';
 import { PlanetMaterial } from './PlanetMaterial';
 import { drawnRadius } from './Scale';
@@ -22,6 +22,20 @@ export interface PlanetMeshBundle {
 }
 
 export class PlanetFactory {
+  /** The air shell for a world with an atmosphere (null otherwise), reaching to the top of its air. */
+  private static createAtmosphere(body: CelestialBodyDefinition, visualRadius: number, wSeg: number, hSeg: number): THREE.Mesh | undefined {
+    const radiusKm = body.physical.meanRadiusKm;
+    const mat = AtmosphereShader.createAtmosphereMaterial(body.name, radiusKm);
+    if (!mat) return undefined;
+    const shell = atmosphereShellScale(body.name, radiusKm);
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(shell, wSeg, hSeg), mat);
+    mesh.name = `${body.name.toLowerCase()}_atmosphere`;
+    mesh.renderOrder = 3;
+    mesh.scale.set(visualRadius, visualRadius, visualRadius);
+    AtmosphereShader.attach(mesh, visualRadius, radiusKm, shell, 1 - (body.physical.flattening ?? 0));
+    return mesh;
+  }
+
   /** True globe radius in render units (see Scale.ts). */
   public static getVisualRadius(body: CelestialBodyDefinition): number {
     return drawnRadius(body);
@@ -179,16 +193,8 @@ export class PlanetFactory {
         bodyGroup.add(cloudMesh);
       }
 
-      // Physically Grounded Rayleigh & Mie Scattering Atmosphere (Exosphere shell at 1.012 encompassing clouds)
-      const atmoMat = AtmosphereShader.createAtmosphereMaterial('Earth');
-      if (atmoMat) {
-        const atmoGeo = new THREE.SphereGeometry(1.012, 96, 64);
-        atmosphereMesh = new THREE.Mesh(atmoGeo, atmoMat);
-        atmosphereMesh.name = 'earth_atmosphere';
-        atmosphereMesh.renderOrder = 3;
-        atmosphereMesh.scale.set(visualRadius, visualRadius, visualRadius);
-        bodyGroup.add(atmosphereMesh);
-      }
+      atmosphereMesh = PlanetFactory.createAtmosphere(body, visualRadius, 128, 96);
+      if (atmosphereMesh) bodyGroup.add(atmosphereMesh);
     } else {
       // All other celestial bodies (Jupiter, Saturn, Uranus, Neptune, Mars, Venus, Mercury, Moons, Asteroids)
       surfaceMaterial = PlanetMaterial.createMaterial({
@@ -198,17 +204,9 @@ export class PlanetFactory {
         normalMap: textures.normalMap,
       });
 
-      // Atmospheric limb scattering for worlds with substantial atmospheres (Venus, Mars, Uranus, Neptune)
-      const atmoMat = AtmosphereShader.createAtmosphereMaterial(body.name);
-      if (atmoMat) {
-        const rScale = ATMOSPHERE_CONFIGS[body.name]?.radiusScale || 1.012;
-        const atmoGeo = new THREE.SphereGeometry(rScale, 48, 36);
-        atmosphereMesh = new THREE.Mesh(atmoGeo, atmoMat);
-        atmosphereMesh.name = `${body.name.toLowerCase()}_atmosphere`;
-        atmosphereMesh.renderOrder = 3;
-        atmosphereMesh.scale.set(visualRadius, visualRadius, visualRadius);
-        bodyGroup.add(atmosphereMesh);
-      }
+      // Real air (Venus, Mars, Titan, the giants): see AtmosphereShader
+      atmosphereMesh = PlanetFactory.createAtmosphere(body, visualRadius, 96, 64);
+      if (atmosphereMesh) bodyGroup.add(atmosphereMesh);
     }
 
     const surfaceMesh = new THREE.Mesh(sphereGeo, surfaceMaterial);

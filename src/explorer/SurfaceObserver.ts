@@ -1,9 +1,13 @@
 import { emitVela } from '../companion/events';
+import { earthElevation } from './Elevation';
+import { DeepTimeSky, type DeepTimeScene, type SkyLook } from './DeepTime';
+import { DeepTimeLand } from './DeepTimeLand';
 import * as THREE from 'three';
+import { PhotorealEarth } from '../rendering/PhotorealEarth';
 import { SkyAtmosphere, atmosphereFor, AtmosphereModel, transmittance } from './SkyAtmosphere';
 import { SkyBodies, SkyBodySource, SkyObjectInfo } from './SkyBodies';
 import { TILE_SHELL } from './SurfaceTileLayer';
-import { latLonToLocal } from './TileMath';
+import { bodyLatLonToLocal } from './TileMath';
 import { findTimeOfDay, TimeOfDay } from './SkyAstronomy';
 import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 import { ScreenLabelItem } from './ScreenLabels';
@@ -47,6 +51,8 @@ export interface SurfaceStatus {
   objects: SurfaceSkyObject[];
   /** Left alone for a while: the sky turns on its own, like a time-lapse. */
   timelapse: boolean;
+  /** A deep-time scene shown here (the sky of a future era), or null. */
+  deepTime: { id: string; title: string; when: string; blurb: string; place: string } | null;
 }
 
 export interface SurfaceObserverDeps {
@@ -65,6 +71,10 @@ export interface SurfaceObserverDeps {
   setSceneMode: (on: boolean, body: string, skyRadius: number) => void;
   /** Ground imagery lighting & haze hooks. */
   setGround: (light: { sunTint: Vec3; ambient: number } | null, haze: { color: THREE.Color; density: number } | null) => void;
+  /** Deep-time skies: the star field and the Milky Way as the scene wants them (null: as normal). */
+  setSkyLook?: (look: SkyLook | null) => void;
+  /** A deep-time landscape is shown: hide the surface imagery (true) or bring it back. */
+  setLandscape?: (on: boolean) => void;
 }
 
 const DEG = Math.PI / 180;
@@ -146,6 +156,12 @@ export class SurfaceObserver {
   private d: SurfaceObserverDeps;
   private atmosphere = new SkyAtmosphere();
   private sky = new SkyBodies();
+  /** The sky of the future (src/explorer/DeepTime), when a deep-time scene is on. */
+  private deep = new DeepTimeSky();
+  /** Its 3D landscape (dunes, hills, peaks, the sea), in place of the flat imagery. */
+  private land = new DeepTimeLand();
+  private skyTmp = new THREE.Color();
+  private pendingDeepView = false;
   private active = false;
   private body: SurfaceBody | null = null;
   private lat = 0;
@@ -180,6 +196,46 @@ export class SurfaceObserver {
     this.d = deps;
     deps.scene.add(this.atmosphere.mesh);
     deps.scene.add(this.sky.group);
+    deps.scene.add(this.deep.group);
+    deps.scene.add(this.land.group);
+  }
+
+  /** Show the sky of a future era here (null: today's sky). Frames the scene's view on the next frame. */
+  public setDeepTime(scene: DeepTimeScene | null): void {
+    this.deep.setScene(scene);
+    this.land.setLand(scene?.land ?? null);
+    // The scene's own landscape replaces the imagery and the globe's ground under it
+    this.d.setLandscape?.(!!scene?.land);
+    if (this.cap) this.cap.visible = !scene?.land;
+    this.sky.overrides.hideSun = !!scene?.hideSun;
+    this.sky.overrides.hideRings = !!scene?.hideRings;
+    this.d.setSkyLook?.(this.deep.look());
+    if (scene) {
+      this.atmosphereOn = scene.atmosphere ?? true;
+      this.pendingDeepView = true;
+      this.pendingAim = null;
+      // A still frame: the time-lapse would carry the Sun away from what the scene is built round
+      this.lastInput = performance.now() + 60_000;
+    }
+  }
+
+  /** Height of the real ground under you (km, Earth), for the air above and the eye. */
+  private groundKm = 0;
+  private groundFix = 0;
+  private groundProbe = 0;
+  private ray = new THREE.Raycaster();
+
+  /**
+   * Eye height above the ground: on Earth's real 3D ground you stand on it (about 2 m, a person's
+   * eye); elsewhere (flat imagery) and in the deep-time landscapes, a hill-top view.
+   */
+  private eye(b: SurfaceBody): number {
+    if (b.name === 'Earth' && !this.deep.scene?.land && !earthElevation.disabled) return 0.0018;
+    return eyeHeightKm(b);
+  }
+
+  public deepTimeScene(): DeepTimeScene | null {
+    return this.deep.scene;
   }
 
   public isActive(): boolean {
@@ -198,6 +254,8 @@ export class SurfaceObserver {
     this.lat = lat;
     this.lon = lon;
     this.place = place;
+    // Fetch the ground height here now (the eye stands on it; see computeFrame)
+    if (bodyName === 'Earth') void earthElevation.ensure(lat - 0.02, lon - 0.02, lat + 0.02, lon + 0.02, 13);
     this.model = atmosphereFor(bodyName);
     this.atmosphere.setModel(this.model);
     this.atmosphereOn = true;
@@ -222,6 +280,7 @@ export class SurfaceObserver {
     this.removeGroundCap();
     this.atmosphere.mesh.visible = false;
     this.sky.group.visible = false;
+    if (this.deep.scene) this.setDeepTime(null);
     this.d.camera.up.set(0, 1, 0);
     this.d.camera.fov = 55;
     this.d.camera.updateProjectionMatrix();
@@ -241,8 +300,8 @@ export class SurfaceObserver {
         t.needsUpdate = true;
       }
     }
-    const horizon = Math.sqrt((2 * eyeHeightKm(body)) / body.radiusKm);
-    this.cap = new THREE.Mesh(groundCap(new THREE.Vector3(...latLonToLocal(lat, lon)), horizon), mat);
+    const horizon = Math.sqrt((2 * this.eye(body)) / body.radiusKm);
+    this.cap = new THREE.Mesh(groundCap(new THREE.Vector3(...bodyLatLonToLocal(body.name, lat, lon)), horizon), mat);
     this.cap.name = 'surface_ground_cap';
     this.cap.renderOrder = body.surfaceMesh.renderOrder;
     body.surfaceMesh.add(this.cap);
@@ -324,7 +383,8 @@ export class SurfaceObserver {
 
   /** Labels for the sky objects worth naming. */
   public labelItems(): ScreenLabelItem[] {
-    if (!this.active) return [];
+    // Deep-time skies are a scene to look at, not a chart: no labels over them
+    if (!this.active || this.deep.scene) return [];
     return this.objects
       .filter((o) => o.visible && o.altDeg > -1 && (o.magnitude < 3.5 || o.name === 'Sun'))
       // Brightest first: they keep their place when labels crowd together
@@ -344,7 +404,7 @@ export class SurfaceObserver {
   private skyRadii(): { dome: number; shell: number; stars: number; far: number; near: number; eyeUnits: number } {
     const b = this.body!;
     const kmPerUnit = b.radiusKm / b.visualRadius;
-    const eyeKm = eyeHeightKm(b);
+    const eyeKm = this.eye(b);
     const horizonUnits = Math.sqrt(2 * b.radiusKm * eyeKm) / kmPerUnit;
     const dome = Math.max(0.5, horizonUnits * 3);
     const shell = dome * 2;
@@ -357,9 +417,12 @@ export class SurfaceObserver {
   private computeFrame(): THREE.Vector3 {
     const b = this.body!;
     b.surfaceMesh.updateWorldMatrix(true, false);
-    const eyeKm = eyeHeightKm(b);
-    const r = TILE_SHELL + eyeKm / b.radiusKm;
-    const [x, y, z] = latLonToLocal(this.lat, this.lon);
+    const eyeKm = this.eye(b);
+    // On Earth the ground is raised to its real height (src/explorer/Elevation): stand on it
+    const groundKm = b.name === 'Earth' && !this.deep.scene?.land ? earthElevation.heightKm(this.lat, this.lon, 13) : 0;
+    this.groundKm = groundKm;
+    const r = TILE_SHELL + (eyeKm + groundKm) / b.radiusKm;
+    const [x, y, z] = bodyLatLonToLocal(b.name, this.lat, this.lon);
     const pos = b.surfaceMesh.localToWorld(new THREE.Vector3(x * r, y * r, z * r));
     const centre = b.bodyGroup.getWorldPosition(new THREE.Vector3());
     const up = this.frame.up.copy(pos).sub(centre).normalize();
@@ -368,6 +431,50 @@ export class SurfaceObserver {
     if (north.lengthSq() < 1e-10) north.set(1, 0, 0).addScaledVector(up, -up.x);
     north.normalize();
     this.frame.east.crossVectors(north, up).normalize();
+    // Standing on Earth's real ground: put the eye just above the ground as it is actually drawn
+    // (finer tiles sit a little higher, and the mesh between height samples is not the data
+    // exactly), found by a ray straight down onto the tiles a few times a second
+    if (b.name === 'Earth' && !this.deep.scene?.land && !earthElevation.disabled) {
+      if (this.groundProbe++ % 6 === 0) {
+        const kmPerUnit = b.radiusKm / b.visualRadius;
+        const groundPoint = pos.clone().addScaledVector(up, -eyeKm / kmPerUnit);
+        this.ray.set(groundPoint.clone().addScaledVector(up, 30 / kmPerUnit), up.clone().negate());
+        this.ray.far = 60 / kmPerUnit;
+        // Google's 3D Earth when it is on (one target: its renderer walks its own tile tree),
+        // else the imagery tiles
+        const photo = b.name === 'Earth' ? PhotorealEarth.current?.raycastTarget() ?? null : null;
+        const tiles: THREE.Object3D[] = photo ? [photo] : [];
+        if (!photo) {
+          b.surfaceMesh.traverse((o) => {
+            if (o.name.startsWith('tile_') && o.visible && o.parent?.visible !== false) tiles.push(o);
+          });
+        }
+        // The ground under the eye and in a ring ~120 m round it: stand on the highest of them. The
+        // drawn relief is a grid of height samples, so a summit's top can sit a sample away from
+        // the named point; standing just below it, the slope would fill the view like a wall.
+        let best: number | null = null;
+        for (let k = -1; k < 24; k++) {
+          const at = groundPoint.clone();
+          if (k >= 0) {
+            const ringKm = [0.012, 0.04, 0.12][Math.floor(k / 8)];
+            const a = ((k % 8) / 8 + Math.floor(k / 8) / 16) * Math.PI * 2;
+            at.addScaledVector(this.frame.north, (Math.cos(a) * ringKm) / kmPerUnit).addScaledVector(this.frame.east, (Math.sin(a) * ringKm) / kmPerUnit);
+          }
+          this.ray.set(at.addScaledVector(up, 30 / kmPerUnit), up.clone().negate());
+          // The finest tile hit is the one drawn there (a coarser one under it is cut away)
+          const zOf = (o: THREE.Object3D): number => Number(o.name.slice(5).split('/')[0]);
+          const hit = this.ray.intersectObjects(tiles, !!photo).sort((p, q) => zOf(q.object) - zOf(p.object))[0];
+          if (!hit) continue;
+          const h = hit.point.sub(groundPoint).dot(up);
+          best = best === null ? h : Math.max(best, h);
+        }
+        // No tile under the eye yet: stand on the height data itself, never on a stale reading
+        this.groundFix = best ?? 0;
+      }
+      pos.addScaledVector(up, this.groundFix);
+    } else {
+      this.groundFix = 0;
+    }
     return pos;
   }
 
@@ -422,7 +529,7 @@ export class SurfaceObserver {
 
     // Observer position in heliocentric ecliptic km (topocentric parallax matters for moons)
     const bodyKm = this.d.getPositionKm(b.name) ?? [0, 0, 0];
-    const eyeR = b.radiusKm + eyeHeightKm(b);
+    const eyeR = b.radiusKm + this.eye(b) + this.groundKm;
     const upEcl = CoordinateFrames.threeToEcliptic([up.x, up.y, up.z]);
     const observerKm: Vec3 = [bodyKm[0] + upEcl[0] * eyeR, bodyKm[1] + upEcl[1] * eyeR, bodyKm[2] + upEcl[2] * eyeR];
 
@@ -435,7 +542,7 @@ export class SurfaceObserver {
     if (sunAz < 0) sunAz += 360;
 
     const atmo = this.atmosphereOn && this.model.kind !== 'none' ? this.model : null;
-    this.atmosphere.update(pos, radii.dome, this.frame, sunDir, eyeHeightKm(b) * 1000, !!atmo);
+    this.atmosphere.update(pos, radii.dome, this.frame, sunDir, (this.eye(b) + this.groundKm) * 1000, !!atmo);
 
     // How much daylight drowns faint objects
     const dayK = atmo
@@ -470,14 +577,37 @@ export class SurfaceObserver {
         ? 0.03 + 0.35 * THREE.MathUtils.smoothstep(sunAlt, -10, 20)
         : 0.03 + 0.22 * sunUp
       : 0.015;
-    const tint: Vec3 = atmo && atmo.kind === 'overcast' ? [0.05, 0.03, 0.01] : [ext[0], ext[1], ext[2]];
+    let tint: Vec3 = atmo && atmo.kind === 'overcast' ? [0.05, 0.03, 0.01] : [ext[0], ext[1], ext[2]];
+    let ambientOut = ambient;
+    // The future sky: its phenomena on the shell, and the light they (or the changed Sun) cast
+    if (this.deep.scene) {
+      this.deep.update(dt, cam, this.frame, sunDir, radii.shell);
+      const ls = this.deep.scene.land;
+      if (ls) {
+        this.skyTmp.setRGB(ls.fog[0] * 1.3 + 0.01, ls.fog[1] * 1.3 + 0.015, ls.fog[2] * 1.3 + 0.025);
+        this.land.update(dt, cam, this.frame, eyeHeightKm(b), b.radiusKm / b.visualRadius, this.deep.light, this.skyTmp);
+      }
+      const g = this.deep.ground;
+      if (g) {
+        tint = [tint[0] * g.sun[0], tint[1] * g.sun[1], tint[2] * g.sun[2]];
+        ambientOut = Math.max(0.002, ambient + g.ambient);
+      }
+      if (this.pendingDeepView) {
+        this.pendingDeepView = false;
+        const v = this.deep.scene.view;
+        const h = typeof v.heading === 'number' ? v.heading : sunAz + v.heading.sun;
+        const pch = typeof v.pitch === 'number' ? v.pitch : sunAlt + v.pitch.sun;
+        this.setView(h, pch, v.fov);
+        this.lastInput = performance.now() + 60_000;
+      }
+    }
     let haze: { color: THREE.Color; density: number } | null = null;
     if (atmo) {
       const base = atmo.kind === 'overcast' ? new THREE.Color(0.32, 0.2, 0.09) : this.horizonColor(atmo, sunUp, ext);
       const kmPerUnit = b.radiusKm / b.visualRadius;
       haze = { color: base, density: (1 / Math.max(1, atmo.visibilityKm)) * kmPerUnit };
     }
-    this.d.setGround({ sunTint: tint, ambient }, haze);
+    this.d.setGround({ sunTint: tint, ambient: ambientOut }, haze);
 
     if (this.pendingAim) {
       this.pendingAim = null;
@@ -490,7 +620,7 @@ export class SurfaceObserver {
       lat: this.lat,
       lon: this.lon,
       place: this.place,
-      eyeHeightKm: eyeHeightKm(b),
+      eyeHeightKm: this.eye(b),
       headingDeg: ((this.heading / DEG) % 360 + 360) % 360,
       pitchDeg: this.pitch / DEG,
       fovDeg: this.fov,
@@ -501,6 +631,7 @@ export class SurfaceObserver {
       sunAltDeg: sunAlt,
       sunAzDeg: sunAz,
       timelapse: this.timelapseOn(),
+      deepTime: this.deep.scene ? { id: this.deep.scene.id, title: this.deep.scene.title, when: this.deep.scene.when, blurb: this.deep.scene.blurb, place: this.deep.scene.place } : null,
       objects: this.objects
         .filter((o) => o.altDeg > 0 && o.name !== b.name && (o.magnitude < 6.5 || o.diameterArcsec > 60))
         .sort((a, c) => a.magnitude - c.magnitude)
