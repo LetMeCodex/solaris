@@ -9,6 +9,8 @@ import { exploredStats, fmtPct } from './explored';
 import { Gallery } from './Gallery';
 import { NEBULAE } from '../../rendering/NebulaSky';
 import type { Postcard } from '../../data/Postcards';
+import type { ComparisonPropKind } from '../../rendering/SpacecraftFactory';
+import { Rocket, Search } from 'lucide-react';
 
 export interface ShowcaseControls {
   start: (name: string | null, hero?: string | null) => void;
@@ -27,12 +29,20 @@ interface Props {
   initialTab?: Tab;
   /** Fly out to a nebula (the Atlas closes). */
   onNebula?: (name: string) => void;
+  /** Focus a NASA spacecraft in 3D (and optionally seek to its signature epoch). */
+  onSelectSpacecraft?: (nameOrId: string, featuredEpochUtc?: string | null) => void;
+  /** Enter Jet Mode in close formation beside a NASA spacecraft. */
+  onFlyJetSpacecraft?: (nameOrId: string, featuredEpochUtc?: string | null) => void;
+  comparisonKind?: ComparisonPropKind;
+  onSetComparison?: (kind: ComparisonPropKind) => void;
+  scienceOverlaysOn?: boolean;
+  onToggleScienceOverlays?: () => void;
 }
 
 const WORLDS = ['Sun', 'Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto'];
 const ORDINAL = ['', '1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th', '9th'];
 
-export type Tab = 'worlds' | 'all' | 'gallery' | 'nebulae';
+export type Tab = 'worlds' | 'all' | 'spacecraft' | 'gallery' | 'nebulae';
 type Filter = 'all' | 'planet' | 'moon' | 'minor';
 
 const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
@@ -92,8 +102,48 @@ const Globe: React.FC<{ name: string; size: number; color?: string }> = ({ name,
  * a world's page gives its story and numbers on the left and every moon on the right (the ones
  * you have visited glowing), and picking a moon swings the camera to it.
  */
-export const CatalogueScreen: React.FC<Props> = ({ visited, current, showcase, onClose, onPostcard, initialTab = 'worlds', onNebula }) => {
+export const CatalogueScreen: React.FC<Props> = ({
+  visited,
+  current,
+  showcase,
+  onClose,
+  onPostcard,
+  initialTab = 'worlds',
+  onNebula,
+  onSelectSpacecraft,
+  onFlyJetSpacecraft,
+  comparisonKind = 'none',
+  onSetComparison,
+  scienceOverlaysOn = false,
+  onToggleScienceOverlays,
+}) => {
   const [tab, setTab] = useState<Tab>(initialTab);
+  const spacecraftList = useMemo(() => CatalogueManager.getSpacecraftCatalog(), []);
+  const [scGroup, setScGroup] = useState<string>('All');
+  const [scQuery, setScQuery] = useState<string>('');
+  const scGroups = useMemo(() => {
+    const seen = new Set<string>();
+    for (const sc of spacecraftList) {
+      if (sc.missionGroup) seen.add(sc.missionGroup);
+    }
+    return ['All', ...Array.from(seen).sort()];
+  }, [spacecraftList]);
+  const filteredSpacecraft = useMemo(() => {
+    const q = scQuery.trim().toLowerCase();
+    return spacecraftList.filter((sc) => {
+      if (scGroup !== 'All' && sc.missionGroup !== scGroup) return false;
+      if (!q) return true;
+      return (
+        sc.name.toLowerCase().includes(q) ||
+        sc.shortName.toLowerCase().includes(q) ||
+        sc.hostBody.toLowerCase().includes(q) ||
+        sc.role.toLowerCase().includes(q) ||
+        sc.agency.toLowerCase().includes(q) ||
+        sc.subcategory.toLowerCase().includes(q) ||
+        sc.description.toLowerCase().includes(q)
+      );
+    });
+  }, [spacecraftList, scGroup, scQuery]);
   // Asked for another tab while open (the briefing walks through them)
   useEffect(() => {
     setTab(initialTab);
@@ -176,6 +226,7 @@ export const CatalogueScreen: React.FC<Props> = ({ visited, current, showcase, o
         <nav className="cat-tabs" role="tablist" data-tour="atlas-tabs">
           <button role="tab" aria-selected={tab === 'worlds' && !system} onClick={() => { setTab('worlds'); setSystem(null); setMoon(null); }}>Worlds</button>
           <button role="tab" aria-selected={tab === 'all' && !system} onClick={() => { setTab('all'); setSystem(null); setMoon(null); }}>Index · {CatalogueManager.getAllBodies().length}</button>
+          <button role="tab" aria-selected={tab === 'spacecraft' && !system} onClick={() => { setTab('spacecraft'); setSystem(null); setMoon(null); }}>Spacecraft · {spacecraftList.length}</button>
           <button role="tab" aria-selected={tab === 'nebulae' && !system} onClick={() => { setTab('nebulae'); setSystem(null); setMoon(null); }}>Nebulae</button>
           <button role="tab" aria-selected={tab === 'gallery' && !system} onClick={() => { setTab('gallery'); setSystem(null); setMoon(null); }}>Gallery</button>
         </nav>
@@ -260,6 +311,145 @@ export const CatalogueScreen: React.FC<Props> = ({ visited, current, showcase, o
       )}
 
       {/* Index of everything */}
+      {!system && tab === 'spacecraft' && (
+        <div className="sc-stage">
+          <div className="sc-bar">
+            <div className="sc-pills">
+              {scGroups.map((g) => (
+                <button
+                  key={g}
+                  type="button"
+                  onClick={() => setScGroup(g)}
+                  className={`sc-pill ${scGroup === g ? 'is-on' : ''}`}
+                >
+                  {g}
+                </button>
+              ))}
+            </div>
+            <div className="sc-tools">
+              <div className="sc-pills" aria-label="Spacecraft scale comparison">
+                {(
+                  [
+                    { k: 'none', label: 'Scale: Off' },
+                    { k: 'scientist', label: 'Scientist 1.8m' },
+                    { k: 'school_bus', label: 'School Bus 11m' },
+                    { k: 'rose_bowl', label: 'Rose Bowl 280m' },
+                  ] as const
+                ).map((p) => (
+                  <button
+                    key={p.k}
+                    type="button"
+                    onClick={() => onSetComparison?.(p.k)}
+                    className={`sc-pill ${comparisonKind === p.k ? 'is-on' : ''}`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => onToggleScienceOverlays?.()}
+                className={`sc-pill is-amber ${scienceOverlaysOn ? 'is-on' : ''}`}
+                title="Toggle Voyager Heliosphere & Saturn Magnetosphere envelopes"
+              >
+                Science Envelopes
+              </button>
+              <label className="sc-search">
+                <Search size={12} className="text-white/45" />
+                <input
+                  type="search"
+                  value={scQuery}
+                  onChange={(e) => setScQuery(e.target.value)}
+                  placeholder={`Filter ${spacecraftList.length} NASA craft...`}
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="sc-grid">
+            {filteredSpacecraft.map((sc) => {
+              const isCur = current.toLowerCase() === sc.name.toLowerCase();
+              const isAct = /active|operational|en route/i.test(sc.status);
+              const isUp = /upcoming|planned/i.test(sc.status);
+              const telBadge = sc.dynSegments.length > 0
+                ? `.dyn ×${sc.dynSegments.length}`
+                : sc.surfaceSite
+                  ? 'Surface'
+                  : sc.lagrangeHalo
+                    ? sc.lagrangeHalo.point
+                    : 'Kepler';
+              return (
+                <article key={sc.id} className={`sc-card ${isCur ? 'is-current' : ''}`}>
+                  <div className="sc-card-head">
+                    <div>
+                      <div className="sc-name">{sc.name}</div>
+                      <div className="sc-role">{sc.role}</div>
+                    </div>
+                    <span className={`sc-status ${isAct ? 'is-active' : isUp ? 'is-upcoming' : ''}`}>
+                      {sc.status}
+                    </span>
+                  </div>
+                  <div className="sc-meta">
+                    <span>Host <b>{sc.hostBody}</b></span>
+                    <span>Agency <b>{sc.agency}</b></span>
+                    <span>Span <b>{sc.physicalSpanM >= 1 ? `${sc.physicalSpanM.toFixed(1)} m` : `${sc.physicalSpanM.toFixed(2)} m`}</b></span>
+                    <span>{sc.activeSpan}</span>
+                    <span><b>{telBadge}</b></span>
+                  </div>
+                  <p className="sc-desc">{sc.description}</p>
+                  {sc.highlights.length > 0 && (
+                    <div className="sc-highlights">
+                      {sc.highlights.slice(0, 2).map((h, i) => (
+                        <span key={i}>· {h}</span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="sc-actions">
+                    <button
+                      type="button"
+                      className="sc-btn"
+                      onClick={() => {
+                        onSelectSpacecraft?.(sc.name);
+                        onClose();
+                      }}
+                    >
+                      <Rocket size={11} />
+                      Focus 3D
+                    </button>
+                    {onFlyJetSpacecraft && (
+                      <button
+                        type="button"
+                        className="sc-btn"
+                        style={{ color: 'var(--sol-mint)', borderColor: 'rgba(109, 252, 192, 0.38)' }}
+                        title="Launch Falcon jet directly into sunlit formation beside this spacecraft"
+                        onClick={() => {
+                          onFlyJetSpacecraft(sc.name);
+                          onClose();
+                        }}
+                      >
+                        Fly Jet
+                      </button>
+                    )}
+                    {sc.featuredEpochUtc && (
+                      <button
+                        type="button"
+                        className="sc-btn is-epoch"
+                        onClick={() => {
+                          onSelectSpacecraft?.(sc.name, sc.featuredEpochUtc);
+                          onClose();
+                        }}
+                      >
+                        Epoch {sc.featuredEpochUtc.slice(0, 10)}
+                      </button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {!system && tab === 'all' && (
         <aside className="cat-panel cat-panel-all">
           <input autoFocus className="cat-search" placeholder={`Search ${CatalogueManager.getAllBodies().length} worlds, moons and small bodies`} value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search the Atlas" />

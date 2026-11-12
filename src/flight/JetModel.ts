@@ -351,6 +351,23 @@ export interface AirframeAnchors {
   modelScale?: number;
   /** Materials (name prefixes) not drawn: battle damage and baked effects the jet does itself. */
   hideMaterials?: string[];
+  /** Parts (mesh names in the file) left out, e.g. a canopy bow that blocks the pilot's view. */
+  hideMeshes?: string[];
+  /**
+   * From inside (cockpit and GoPro views) the canopy is one clear sweep of glass: these frame and
+   * rim meshes are hidden, and `insideClip` cuts the canopy frame out of the fuselage mesh it is
+   * merged into (a box in the airframe's frame, metres, nose -Z). Outside they are all there.
+   */
+  insideHideMeshes?: string[];
+  insideClip?: Array<{ material: string; min: [number, number, number]; max: [number, number, number] }>;
+  /** The canopy's glass bubble (mesh name): from inside it is drawn as real glass (see insideGlass). */
+  insideGlassMesh?: string;
+  /**
+   * The canopy's shape, measured from the model's glass, for one seamless bubble drawn from inside
+   * (the model's own glass is two pieces with a gap where the bow was). Stations along the jet:
+   * z (m, nose -Z), the sill height, the crown height and the half-width.
+   */
+  canopyProfile?: Array<[number, number, number, number]>;
   /** Fixes for materials the model ships untextured (plain white): colour, finish, glass. */
   materialTweaks?: Record<string, { color?: number; roughness?: number; metalness?: number; opacity?: number; emissive?: number }>;
   lengthM: number;
@@ -421,6 +438,37 @@ export const GRIPEN_ANCHORS: AirframeAnchors = {
   // The export is 1.093x its source; the real aircraft is 14.1 m nose to pitot
   modelScale: 0.8533,
   hideMaterials: ['bullet_glass_holes', 'bulletholes', 'damaged_gauges', 'gunfire', 'jet_flame_diamonds'],
+  // The canopy bow with its three rear-view mirrors and their housings, and the thick inner rim:
+  // they arched across the top of the view. The canopy is one clear sweep of glass instead
+  hideMeshes: ['Object_17', 'Object_65', 'Object_66', 'Object_72'],
+  // The rest of the frame: its outer skin, the inner rails and the rear bow
+  // and the glass layers themselves (their edges cut across the view): the glass is drawn in
+  // screen space instead (LensPipeline's CanopyShader)
+  insideHideMeshes: ['Object_11', 'Object_43', 'Object_75', 'Object_78', 'Object_13', 'Object_15', 'Object_18'],
+  canopyProfile: [
+    [-5.22, 0.238, 0.26, 0.335],
+    [-5.15, 0.24, 0.52, 0.35],
+    [-5.08, 0.241, 0.69, 0.358],
+    [-4.87, 0.256, 0.776, 0.367],
+    [-4.66, 0.309, 0.804, 0.372],
+    [-4.45, 0.322, 0.81, 0.371],
+    [-4.23, 0.342, 0.813, 0.367],
+    [-4.02, 0.361, 0.809, 0.36],
+    [-3.81, 0.386, 0.794, 0.346],
+    [-3.59, 0.409, 0.772, 0.33],
+    [-3.38, 0.422, 0.757, 0.318],
+  ],
+  // The windscreen arch and canopy rails, part of the fuselage mesh: above the sill, pilot's bay
+  insideClip: [
+    { material: 'saab_jas39a_aircraft_normal_detail', min: [-0.66, 0.4, -5.38], max: [0.66, 1.6, -2.85] },
+    // The canopy's clips and the mirror mount, in the cockpit mesh (the panel and HUD sit lower)
+    { material: 'saab_jas39a_cockpit', min: [-0.7, 0.62, -5.38], max: [0.7, 1.6, -2.85] },
+    // The canopy's front supports (two rods left standing in the air once the bow was gone)
+    { material: 'saab_jas39a_cockpit', min: [-0.42, 0.345, -5.32], max: [-0.14, 0.62, -4.82] },
+    { material: 'saab_jas39a_cockpit', min: [0.14, 0.345, -5.32], max: [0.42, 0.62, -4.82] },
+    // The HUD's two bare posts above the up-front panel (the combiner glass and its symbols stay)
+    { material: 'sw_sight_saab_39c', min: [-0.3, 0.36, -5.3], max: [0.3, 1.2, -4.7] },
+  ],
   materialTweaks: {
     // The canopy's reflection layer: a whisper of glass, not a white veil
     dynamic_glass_chrome: { opacity: 0.035, roughness: 0.04 },
@@ -469,6 +517,60 @@ export function chosenAirframe(): AirframeId {
   }
 }
 
+/** The canopy bubble's cross-section at `z` (jet frame): [sill height, crown height, half-width]. */
+function bubbleStation(profile: Array<[number, number, number, number]>, z: number): [number, number, number] {
+  if (z <= profile[0][0]) return [profile[0][1], profile[0][2], profile[0][3]];
+  for (let i = 1; i < profile.length; i++) {
+    const [z1, s1, c1, w1] = profile[i];
+    const [z0, s0, c0, w0] = profile[i - 1];
+    if (z <= z1) {
+      const f = (z - z0) / (z1 - z0);
+      const e = f * f * (3 - 2 * f);
+      return [s0 + (s1 - s0) * f, c0 + (c1 - c0) * e, w0 + (w1 - w0) * f];
+    }
+  }
+  const last = profile[profile.length - 1];
+  return [last[1], last[2], last[3]];
+}
+
+/** A point on the bubble's arch at angle t (0 left sill .. pi right sill): superellipse, exponent 2.6. */
+function archPoint(sill: number, crown: number, half: number, t: number, z: number, out: THREE.Vector3): THREE.Vector3 {
+  const c = Math.cos(t);
+  const sn = Math.sin(t);
+  return out.set(-Math.sign(c) * Math.pow(Math.abs(c), 2 / 2.6) * half * 1.012, sill + Math.pow(sn, 2 / 2.6) * (crown - sill) * 1.008 + 0.004, z);
+}
+
+/**
+ * Sweeps a closed cross-section along a path: at each station the section's (a, b) map to
+ * point + a * across + b * up. Each edge of the section is its own strip, so the faces keep hard
+ * edges across the profile while staying smooth along the path.
+ */
+function sweep(stations: Array<{ p: THREE.Vector3; across: THREE.Vector3; up: THREE.Vector3 }>, section: Array<[number, number]>): THREE.BufferGeometry {
+  const pos: number[] = [];
+  const idx: number[] = [];
+  const v = new THREE.Vector3();
+  for (let k = 0; k < section.length; k++) {
+    const s0 = section[k];
+    const s1 = section[(k + 1) % section.length];
+    const base = pos.length / 3;
+    for (const st of stations) {
+      for (const [a, b] of [s0, s1]) {
+        v.copy(st.p).addScaledVector(st.across, a).addScaledVector(st.up, b);
+        pos.push(v.x, v.y, v.z);
+      }
+    }
+    for (let i = 0; i < stations.length - 1; i++) {
+      const q = base + i * 2;
+      idx.push(q, q + 2, q + 1, q + 1, q + 2, q + 3);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
 export class JetModel {
   public readonly root = new THREE.Group();
   public readonly eye = new THREE.Vector3(0, 0.98, -4.55);
@@ -484,6 +586,382 @@ export class JetModel {
   private body = new THREE.Group();
   /** A loaded airframe model (see loadAirframe), or null. */
   public airframe: THREE.Object3D | null = null;
+  private insideMeshes: THREE.Object3D[] = [];
+  private readonly clipU = {
+    uClipOn: { value: 0 },
+    uRootInv: { value: new THREE.Matrix4() },
+  };
+  private insideOn = false;
+  private glassInside: THREE.MeshStandardMaterial | null = null;
+  /** The Sun's direction in view space, and how much it lights the canopy (0 shade .. 1). */
+  private glassSun = { value: new THREE.Vector3(0, 0, -1) };
+  private glassSunK = { value: 0 };
+  /** The eye in the jet's frame (metres), and the jet frame's rotation to world: for the pilot's reflection. */
+  private glassEye = { value: new THREE.Vector3(0, 0.6, -4.6) };
+  private glassToWorld = { value: new THREE.Matrix3() };
+  private glassTmp = new THREE.Vector3();
+  private glassMat4 = new THREE.Matrix4();
+
+  /** Where the eye is (world position, in the scene the cockpit is drawn in): the canopy mirrors the pilot. */
+  public setGlassEye(eyeWorld: THREE.Vector3): void {
+    this.root.updateMatrixWorld();
+    this.glassEye.value.copy(this.root.worldToLocal(this.glassTmp.copy(eyeWorld)));
+    this.glassToWorld.value.setFromMatrix4(this.glassMat4.extractRotation(this.root.matrixWorld));
+  }
+
+  /** The Sun on the canopy glass: its direction in the overlay camera's view, and strength. */
+  public setGlassSun(viewDir: THREE.Vector3, k: number): void {
+    this.glassSun.value.copy(viewDir).normalize();
+    this.glassSunK.value = k;
+  }
+
+  /**
+   * The canopy reflects this: the lit cockpit captured from the pilot's eye, with the world outside
+   * round it. Sampled as it is, sharp, by the glass's own shader: near-mirror glass needs no
+   * prefiltered (blurred) copy, whose making every few frames cost the GPU 40-60 ms
+   */
+  public setGlassReflection(map: THREE.CubeTexture | THREE.Texture | null): void {
+    this.glassEnv.value = map;
+    this.glassEnvK.value = map ? 1 : 0;
+  }
+  private glassEnv: { value: THREE.Texture | null } = { value: null };
+  private glassEnvK = { value: 0 };
+
+  /** The canopy bubble (hidden while the cockpit is captured for its own reflection). */
+  public get canopyBubble(): THREE.Mesh | null {
+    return this.bubble;
+  }
+  private bubble: THREE.Mesh | null = null;
+
+  /**
+   * One continuous canopy bubble through the measured stations: at each, an arch from sill to sill
+   * over the crown (a superellipse, flatter at the top as real canopies are), drawn a few mm
+   * outside the model's own glass. No pieces, no seams, so the glass reads as one sweep round you.
+   */
+  private buildBubble(profile: Array<[number, number, number, number]>): THREE.Mesh {
+    const nz = 64;
+    const na = 56;
+    const pos: number[] = [];
+    const uvs: number[] = [];
+    const idx: number[] = [];
+    const at = (z: number): [number, number, number] => {
+      if (z <= profile[0][0]) return [profile[0][1], profile[0][2], profile[0][3]];
+      for (let i = 1; i < profile.length; i++) {
+        const [z1, s1, c1, w1] = profile[i];
+        const [z0, s0, c0, w0] = profile[i - 1];
+        if (z <= z1) {
+          const f = (z - z0) / (z1 - z0);
+          const e = f * f * (3 - 2 * f);
+          return [s0 + (s1 - s0) * f, c0 + (c1 - c0) * e, w0 + (w1 - w0) * f];
+        }
+      }
+      const last = profile[profile.length - 1];
+      return [last[1], last[2], last[3]];
+    };
+    const z0 = profile[0][0];
+    const z1 = profile[profile.length - 1][0];
+    for (let i = 0; i <= nz; i++) {
+      const z = z0 + ((z1 - z0) * i) / nz;
+      const [sill, crown, half] = at(z);
+      for (let j = 0; j <= na; j++) {
+        const t = (j / na) * Math.PI;
+        const c = Math.cos(t);
+        const sn = Math.sin(t);
+        // Superellipse arch (exponent 2.6): sides near vertical, a broad rounded top
+        const x = -Math.sign(c) * Math.pow(Math.abs(c), 2 / 2.6) * half * 1.012;
+        const y = sill + Math.pow(sn, 2 / 2.6) * (crown - sill) * 1.008 + 0.004;
+        pos.push(x, y, z);
+        uvs.push(j / na, i / nz);
+      }
+    }
+    for (let i = 0; i < nz; i++) {
+      for (let j = 0; j < na; j++) {
+        const a = i * (na + 1) + j;
+        const b = a + na + 1;
+        idx.push(a, b, a + 1, b, b + 1, a + 1);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    // Round the arch (0 left sill .. 1 right sill) and along it (0 nose .. 1 rear bow)
+    g.setAttribute('aGlassUv', new THREE.Float32BufferAttribute(uvs, 2));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    this.disposables.push(g);
+    const mesh = new THREE.Mesh(g, this.insideGlass());
+    mesh.name = 'canopy_bubble';
+    mesh.renderOrder = 30;
+    mesh.frustumCulled = false;
+    mesh.userData.noAO = true;
+    mesh.visible = false;
+    return mesh;
+  }
+
+  /** The canopy's frame seen from inside: the sill rails with their seals, and the rear bow. */
+  private canopyFrame: THREE.Group | null = null;
+
+  /**
+   * The frame the bubble sits in, built on the bubble's own shape so glass and frame meet exactly:
+   * along each side a sill rail (a painted, chamfered extrusion with the glass seated in a black
+   * rubber seal, bolt heads along its top), and behind the head the rear bow, an arch of the same
+   * section. No bow in front: the canopy is one long oval of clear acrylic from the nose back, as
+   * in a single-piece bubble canopy. It is what makes the glass's shape legible from inside.
+   */
+  private buildCanopyFrame(profile: Array<[number, number, number, number]>): THREE.Group {
+    const group = new THREE.Group();
+    group.name = 'canopy_frame';
+    // The cockpit's own grey (the Gripen's interior), a little worn; flush fasteners, not studs
+    const paint = new THREE.MeshStandardMaterial({ color: 0x3b4148, roughness: 0.62, metalness: 0.25 });
+    const seal = new THREE.MeshStandardMaterial({ color: 0x08090a, roughness: 0.88, metalness: 0 });
+    const steel = new THREE.MeshStandardMaterial({ color: 0x4d535a, roughness: 0.5, metalness: 0.6 });
+    this.disposables.push(paint, seal, steel);
+    const z0 = profile[0][0];
+    const z1 = profile[profile.length - 1][0];
+    // Rail and seal sections: a = towards the cockpit's middle (m), b = up (m), glass edge at 0,0
+    const rail: Array<[number, number]> = [[-0.014, -0.034], [0.062, -0.034], [0.074, -0.012], [0.068, 0.006], [0.03, 0.016], [-0.014, 0.016]];
+    const bead: Array<[number, number]> = [[0.001, 0.015], [0.018, 0.015], [0.016, 0.026], [0.009, 0.031], [0.003, 0.027]];
+    const tmp = new THREE.Vector3();
+    const n = 72;
+    for (const side of [-1, 1]) {
+      const st: Array<{ p: THREE.Vector3; across: THREE.Vector3; up: THREE.Vector3 }> = [];
+      // The rails start a little behind the nose, where the bubble is tall enough to have a side
+      const za = z0 + (z1 - z0) * 0.06;
+      for (let i = 0; i <= n; i++) {
+        const z = za + ((z1 + 0.03 - za) * i) / n;
+        const [sill, crown, half] = bubbleStation(profile, Math.min(z, z1));
+        archPoint(sill, crown, half, side < 0 ? 0 : Math.PI, z, tmp);
+        st.push({ p: tmp.clone(), across: new THREE.Vector3(-Math.sign(tmp.x), 0, 0), up: new THREE.Vector3(0, 1, 0) });
+      }
+      for (const [sec, mat] of [[rail, paint], [bead, seal]] as const) {
+        const g = sweep(st, sec as Array<[number, number]>);
+        this.disposables.push(g);
+        const m = new THREE.Mesh(g, mat);
+        m.renderOrder = 29;
+        group.add(m);
+      }
+      // Bolt heads along the rail's top
+      const boltGeo = new THREE.CylinderGeometry(0.0035, 0.004, 0.0015, 10);
+      this.disposables.push(boltGeo);
+      const count = Math.floor((z1 - za) / 0.11);
+      const bolts = new THREE.InstancedMesh(boltGeo, steel, count);
+      const mtx = new THREE.Matrix4();
+      for (let i = 0; i < count; i++) {
+        const z = za + 0.06 + i * 0.11;
+        const [sill, crown, half] = bubbleStation(profile, z);
+        archPoint(sill, crown, half, side < 0 ? 0 : Math.PI, z, tmp);
+        mtx.makeTranslation(tmp.x - Math.sign(tmp.x) * 0.045, tmp.y + 0.013, z);
+        bolts.setMatrixAt(i, mtx);
+      }
+      group.add(bolts);
+    }
+    // The rear bow: the arch of the last station, the same section turned to face forward
+    {
+      const [sill, crown, half] = bubbleStation(profile, z1);
+      const st: Array<{ p: THREE.Vector3; across: THREE.Vector3; up: THREE.Vector3 }> = [];
+      const centre = new THREE.Vector3(0, sill, z1);
+      const na = 64;
+      for (let j = 0; j <= na; j++) {
+        const t = (j / na) * Math.PI;
+        const p = archPoint(sill, crown, half, t, z1 + 0.012, new THREE.Vector3());
+        // Inward: towards the arch's middle, in the arch's plane
+        const across = new THREE.Vector3(centre.x - p.x, (centre.y + (crown - sill) * 0.25) - p.y, 0).normalize();
+        st.push({ p, across, up: new THREE.Vector3(0, 0, 1) });
+      }
+      const bow: Array<[number, number]> = [[-0.012, -0.02], [0.05, -0.02], [0.06, 0.0], [0.055, 0.055], [-0.012, 0.065]];
+      const bowSeal: Array<[number, number]> = [[0.0, -0.032], [0.016, -0.032], [0.014, -0.02], [0.002, -0.02]];
+      for (const [sec, mat] of [[bow, paint], [bowSeal, seal]] as const) {
+        const g = sweep(st, sec as Array<[number, number]>);
+        this.disposables.push(g);
+        const m = new THREE.Mesh(g, mat);
+        m.renderOrder = 29;
+        group.add(m);
+      }
+    }
+    group.visible = false;
+    return group;
+  }
+
+  /**
+   * The canopy from inside, as glass: almost clear looking straight through, a mirror of the sky
+   * at grazing angles (Fresnel), so the bubble is felt all round you, with the Sun's glint on it.
+   * No diffuse colour (glass does not scatter), only reflection of the environment cube (the real
+   * scene from where the jet is) and the Sun; the opacity follows the Fresnel term, so the
+   * reflection shows where real glass reflects and nowhere else.
+   */
+  private insideGlass(): THREE.MeshStandardMaterial {
+    if (this.glassInside) return this.glassInside;
+    const m = new THREE.MeshStandardMaterial({ color: 0x000000, metalness: 0, roughness: 0.03, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      // Glass adds its reflection to what is seen through it and takes away only a little (its tint,
+      // its dust): colour + background x (1 - alpha), the colour already weighted by the Fresnel term
+      blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor });
+    m.onBeforeCompile = (shader) => {
+      shader.uniforms.uGlassSun = this.glassSun;
+      shader.uniforms.uGlassSunK = this.glassSunK;
+      shader.uniforms.uGlassEnv = this.glassEnv;
+      shader.uniforms.uGlassEnvK = this.glassEnvK;
+      shader.uniforms.uGlassEye = this.glassEye;
+      shader.uniforms.uGlassToWorld = this.glassToWorld;
+      // Dust and wiped smears fixed to the glass itself (they shift with the head, as on a real canopy)
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vGlassLocal;\nattribute vec2 aGlassUv;\nvarying vec2 vGlassUv;\nvarying vec3 vGlassNrm;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlassLocal = position;\nvGlassUv = aGlassUv;\nvGlassNrm = objectNormal;');
+      // Only the environment is reflected (the real scene from the jet, the Sun in it once, where
+      // it is): the cockpit's own lamps made a row of false highlights slide across the bubble
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <lights_fragment_end>',
+        `#include <lights_fragment_end>
+reflectedLight.directSpecular = vec3(0.0);
+reflectedLight.directDiffuse = vec3(0.0);
+// The scene's blurred environment too: the glass reflects its own sharp capture (uGlassEnv)
+reflectedLight.indirectSpecular = vec3(0.0);
+reflectedLight.indirectDiffuse = vec3(0.0);`,
+      );
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+uniform vec3 uGlassSun;
+uniform float uGlassSunK;
+uniform samplerCube uGlassEnv;
+uniform float uGlassEnvK;
+varying vec3 vGlassLocal;
+varying vec2 vGlassUv;
+varying vec3 vGlassNrm;
+uniform vec3 uGlassEye;
+uniform mat3 uGlassToWorld;
+// Ray against an ellipsoid (centre c, radii r): distance along the ray, or -1
+float gEllipsoid(vec3 o, vec3 d, vec3 c, vec3 r) {
+  vec3 oc = (o - c) / r;
+  vec3 dd = d / r;
+  float a = dot(dd, dd);
+  float b = dot(oc, dd);
+  float h = b * b - a * (dot(oc, oc) - 1.0);
+  if (h < 0.0) return -1.0;
+  float t = (-b - sqrt(h)) / a;
+  return t > 0.0 ? t : -1.0;
+}
+float gH(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
+float gSpecks(vec3 p, float scale) {
+  vec3 q = p * scale;
+  vec3 c = floor(q);
+  vec3 f = fract(q) - 0.5;
+  float r = 0.06 + 0.16 * gH(c + 3.1);
+  return step(0.82, gH(c)) * smoothstep(r, r * 0.3, length(f));
+}`)
+        .replace(
+        '#include <opaque_fragment>',
+        `{
+  vec3 V = normalize(vViewPosition);
+  float nv = abs(dot(normalize(normal), V));
+  float fres = pow(1.0 - nv, 3.5);
+  // The glass: a faint film everywhere (a cool coating) and the reflection of the cockpit and the
+  // world round it, ~4% head-on per surface (Schlick), rising towards grazing angles; a canopy
+  // shows ~8% from its two faces, so the bright things, the displays, the sky, the Sun, are seen
+  // in it from any angle
+  vec3 reflDir = inverseTransformDirection(reflect(-V, normalize(normal)), viewMatrix);
+  // ~8% head-on (two faces at ~4%), rising to ~45% at grazing angles (a coated canopy reflects
+  // less than bare glass's mirror at the edge)
+  float reflK = mix(0.08, 0.45, pow(1.0 - nv, 4.0));
+  vec3 mirrored = textureCube(uGlassEnv, reflDir).rgb;
+  // The pilot in the glass: the cube is captured from the eye, inside the helmet, so it can never
+  // see the pilot; the helmet and the shoulders are traced here instead, as the glass mirrors
+  // them back (looking sideways you see your own helmet faintly in the canopy, as in real footage)
+  {
+    vec3 Vl = normalize(vGlassLocal - uGlassEye);
+    vec3 Rl = reflect(Vl, normalize(vGlassNrm));
+    vec3 headC = uGlassEye + vec3(0.0, 0.025, 0.075);
+    float tHead = gEllipsoid(vGlassLocal, Rl, headC, vec3(0.145, 0.16, 0.16));
+    vec3 shC = uGlassEye + vec3(0.0, -0.31, 0.13);
+    float tSh = gEllipsoid(vGlassLocal, Rl, shC, vec3(0.27, 0.11, 0.14));
+    if (tHead > 0.0 || tSh > 0.0) {
+      bool head = tHead > 0.0 && (tSh < 0.0 || tHead < tSh);
+      vec3 H = vGlassLocal + Rl * (head ? tHead : tSh);
+      vec3 hn = normalize(head ? (H - headC) / vec3(0.145, 0.16, 0.16) : (H - shC) / vec3(0.27, 0.11, 0.14));
+      vec3 nW = normalize(uGlassToWorld * hn);
+      // Lit by the world round it: the environment in the surface's own direction and from above
+      vec3 upW = normalize(uGlassToWorld * vec3(0.0, 1.0, 0.0));
+      vec3 amb = (textureCube(uGlassEnv, nW).rgb + textureCube(uGlassEnv, upW).rgb) * 0.5;
+      vec3 obj;
+      if (head) {
+        // The visor across the face: dark, gold-coated, a mirror itself; the shell a light grey
+        bool visor = hn.z < -0.2 && hn.y > -0.45 && hn.y < 0.38;
+        vec3 vr = textureCube(uGlassEnv, reflect(nW, upW)).rgb;
+        obj = visor ? vec3(0.05, 0.04, 0.022) + vr * vec3(0.32, 0.26, 0.14) : vec3(0.58, 0.6, 0.62) * amb * (0.65 + 0.35 * max(hn.y, 0.0));
+      } else {
+        // Shoulders: olive flight suit under the harness straps
+        float strap = step(abs(abs(hn.x) - 0.45), 0.08);
+        obj = mix(vec3(0.21, 0.22, 0.16), vec3(0.06, 0.06, 0.055), strap) * amb;
+      }
+      mirrored = obj;
+    }
+  }
+  outgoingLight = mirrored * reflK * uGlassEnvK;
+  float a = 0.035 + 0.22 * fres;
+  outgoingLight += vec3(0.006, 0.009, 0.014);
+  // Near the frame the acrylic is thick and seen edge-on: a green-blue tint deepening into the
+  // seal and a brighter mirror (this is what makes the bubble's outline readable from inside)
+  float toSill = min(vGlassUv.x, 1.0 - vGlassUv.x);
+  float toEnd = min(vGlassUv.y * 1.6, 1.0 - vGlassUv.y);
+  float rim = 1.0 - smoothstep(0.0, 0.07, min(toSill, toEnd * 0.6));
+  outgoingLight += vec3(0.010, 0.032, 0.030) * rim + textureCube(uGlassEnv, reflDir).rgb * 0.18 * rim * rim * uGlassEnvK;
+  a += 0.10 * rim + 0.18 * rim * rim * rim;
+  // The Sun on the curved glass: a sharp glint drawn out along the curve, and its soft sheen
+  vec3 sunV = normalize(uGlassSun);
+  float sAlign = max(dot(reflect(-V, normalize(normal)), sunV), 0.0);
+  float glint = pow(sAlign, 900.0) * 6.0 + pow(sAlign, 60.0) * 0.12;
+  outgoingLight += vec3(1.0, 0.96, 0.88) * glint * uGlassSunK;
+  a += min(0.5, glint * 0.2) * uGlassSunK;
+  // Dust and smears: dull in shade, lit up when the Sun is behind them
+  float dust = gSpecks(vGlassLocal, 140.0) + 0.7 * gSpecks(vGlassLocal + 3.7, 310.0);
+  float smear = 0.0;
+  float toward = pow(max(dot(-V, uGlassSun), 0.0), 6.0) * uGlassSunK;
+  outgoingLight += vec3(1.0, 0.95, 0.85) * (dust * (0.04 + 2.4 * toward) + smear * 0.12 * toward);
+  a += dust * (0.05 + 0.4 * toward) + smear * 0.05 * toward;
+  diffuseColor.a = clamp(a, 0.0, 0.9);
+}
+#include <opaque_fragment>`,
+      );
+    };
+    m.customProgramCacheKey = () => 'solaris-canopy-glass';
+    this.glassInside = m;
+    this.disposables.push(m);
+    return m;
+  }
+
+  /** Cockpit or GoPro view: hide the canopy frame (see AirframeAnchors.insideHideMeshes). */
+  public setInsideView(on: boolean): void {
+    if (on) this.clipU.uRootInv.value.copy(this.root.matrixWorld).invert();
+    if (on === this.insideOn) return;
+    this.insideOn = on;
+    for (const m of this.insideMeshes) m.visible = !on;
+    this.clipU.uClipOn.value = on ? 1 : 0;
+    if (this.bubble) this.bubble.visible = on;
+    if (this.canopyFrame) this.canopyFrame.visible = on;
+  }
+
+  private addInsideClip(m: THREE.MeshStandardMaterial, min: [number, number, number], max: [number, number, number]): void {
+    const prev = m.onBeforeCompile;
+    const box = { uClipMin: { value: new THREE.Vector3(...min) }, uClipMax: { value: new THREE.Vector3(...max) } };
+    m.onBeforeCompile = (shader, renderer) => {
+      prev?.call(m, shader, renderer);
+      Object.assign(shader.uniforms, this.clipU, box);
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+uniform mat4 uRootInv;
+varying vec3 vRootPos;`)
+        .replace('#include <project_vertex>', `#include <project_vertex>
+vRootPos = (uRootInv * modelMatrix * vec4(transformed, 1.0)).xyz;`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+uniform float uClipOn;
+uniform vec3 uClipMin;
+uniform vec3 uClipMax;
+varying vec3 vRootPos;`)
+        .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
+if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootPos, uClipMax))) discard;`);
+    };
+    m.customProgramCacheKey = () => 'solaris-canopy-clip';
+    m.needsUpdate = true;
+  }
+
   /** True when the loaded model has its own cockpit interior. */
   public hasInterior = false;
   /** The canopy glass of the loaded model (for scratch glints), if found. */
@@ -763,6 +1241,16 @@ export class JetModel {
       mesh.frustumCulled = false;
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       if (hidden.some((h) => mats[0]?.name?.startsWith(h))) mesh.visible = false;
+      if (anchors.hideMeshes?.includes(mesh.name)) mesh.visible = false;
+      if (anchors.insideHideMeshes?.includes(mesh.name)) this.insideMeshes.push(mesh);
+
+      for (const clip of anchors.insideClip ?? []) {
+        for (const mat of mats) {
+          if (mat.name !== clip.material || mat.userData.canopyClip) continue;
+          mat.userData.canopyClip = true;
+          this.addInsideClip(mat as THREE.MeshStandardMaterial, clip.min, clip.max);
+        }
+      }
       if (mats[0]?.name?.startsWith(anchors.canopyMaterial)) this.canopyMesh = mesh;
       for (const m of mats) {
         const sm = m as THREE.MeshStandardMaterial;
@@ -802,6 +1290,12 @@ export class JetModel {
     });
     this.root.add(model);
     this.airframe = model;
+    if (anchors.canopyProfile) {
+      this.bubble = this.buildBubble(anchors.canopyProfile);
+      this.root.add(this.bubble);
+      this.canopyFrame = this.buildCanopyFrame(anchors.canopyProfile);
+      this.root.add(this.canopyFrame);
+    }
     this.body.visible = false;
     this.root.visible = true;
     this.hasInterior = anchors.hasInterior;

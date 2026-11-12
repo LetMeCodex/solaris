@@ -119,6 +119,38 @@ export class PerformanceGovernor {
     this.settings = TIERS[this.tier];
     // Low-end devices start a step down and climb if there is room
     this.scale = this.tier === 'low' ? 0.8 : 1;
+    this.measureRefresh();
+  }
+
+  /**
+   * The display's own frame time: a 120 Hz phone should be held at 120 fps, not at 60. Measured
+   * from the browser's frame callbacks at start (the quickest quarter of 40 frames), rounded to
+   * the usual rates, and capped at 120 Hz.
+   */
+  public targetMs = 1000 / 60;
+  public refreshHz = 60;
+  private measureRefresh(): void {
+    if (typeof requestAnimationFrame === 'undefined') return;
+    const deltas: number[] = [];
+    let last = 0;
+    const step = (t: number): void => {
+      if (last > 0) deltas.push(t - last);
+      last = t;
+      if (deltas.length < 40) {
+        requestAnimationFrame(step);
+        return;
+      }
+      deltas.sort((a, b) => a - b);
+      const ms = deltas[Math.floor(deltas.length * 0.25)];
+      if (!(ms > 2)) return;
+      const hz = 1000 / ms;
+      const rates = [60, 75, 90, 120, 144, 165, 240];
+      const nearest = rates.reduce((best, r) => (Math.abs(r - hz) < Math.abs(best - hz) ? r : best), 60);
+      this.refreshHz = nearest;
+      this.targetMs = 1000 / Math.min(120, nearest);
+      this.avgMs = this.targetMs;
+    };
+    requestAnimationFrame(step);
   }
 
   /** The pixel ratio to draw at, for a mode that would like at most `cap`. */
@@ -145,13 +177,13 @@ export class PerformanceGovernor {
     // A drop sets a ceiling for a while: the scale that was too slow is not retried for 30 s
     if (this.sinceDrop > 30000) this.ceiling = 1;
     let next = this.scale;
-    // Frame times come from the display's refresh (16.7 ms at 60 Hz), so "headroom" means holding
-    // about 60 fps; below ~42 fps the picture steps down
-    if (this.avgMs > 24 && this.sinceChange > 1500) {
+    // Frame times come from the display's refresh (16.7 ms at 60 Hz, 8.3 at 120), so "headroom"
+    // means holding the display's rate (up to 120 fps); ~30% under it, the picture steps down
+    if (this.avgMs > this.targetMs * 1.4 && this.sinceChange > 1500) {
       next = Math.max(this.settings.minScale, this.scale * 0.85);
       this.ceiling = this.scale;
       this.sinceDrop = 0;
-    } else if (this.avgMs < 18 && this.sinceChange > 5000) {
+    } else if (this.avgMs < this.targetMs * 1.07 && this.sinceChange > 5000) {
       next = Math.min(1, this.ceiling * 0.999, this.scale * 1.1);
     }
     if (Math.abs(next - this.scale) > 0.01) {

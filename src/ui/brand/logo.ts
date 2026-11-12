@@ -130,7 +130,9 @@ export function startAnimatedFavicon(): () => void {
   const canvas = document.createElement('canvas');
   const size = 64;
   canvas.width = canvas.height = size;
-  const ctx = canvas.getContext('2d');
+  // Kept in main memory, not on the GPU: reading a GPU canvas back (toDataURL) waits for the GPU
+  // to finish everything queued, which in flight held every frame it fell on for 70-90 ms
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx || typeof ctx.roundRect !== 'function') return () => {};
 
   // One icon link we own; the static ones stay for browsers that ignore the swap

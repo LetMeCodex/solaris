@@ -1,6 +1,15 @@
 import { CelestialBodyDefinition, BodyCategory } from '../types/catalogue';
 import { ALL_CELESTIAL_BODIES as CORE_BODIES, SAGITTARIUS_A_STAR_DEF } from './CatalogueData';
 import { buildMinorMoons } from './MinorMoons';
+import {
+  NASA_SPACECRAFT_CATALOG,
+  NASA_EXTRA_CELESTIAL_BODIES,
+  NASA_SMALL_BODY_MODELS,
+  NASA_MISSION_EVENTS,
+  NasaSpacecraftEntry,
+  NasaMissionEvent,
+  spacecraftToCelestialDef,
+} from './NasaEyesCatalog';
 
 /** The hand-written catalogue plus every other known moon (see MinorMoons.ts). */
 const ALL_CELESTIAL_BODIES = [...CORE_BODIES, ...buildMinorMoons(CORE_BODIES)];
@@ -96,5 +105,89 @@ export class CatalogueManager {
       dwarfPlanets: this.getDwarfPlanets().length,
       asteroids: this.getAsteroids().length,
     };
+  }
+
+  // ---- NASA Eyes Spacecraft & Small-Body Extensions ----
+
+  private static spacecraftDefs: CelestialBodyDefinition[] = NASA_SPACECRAFT_CATALOG.map(spacecraftToCelestialDef);
+  private static nasaExtraById: Map<string, CelestialBodyDefinition> = new Map(
+    NASA_EXTRA_CELESTIAL_BODIES.map((b) => [b.id.toLowerCase(), b] as [string, CelestialBodyDefinition])
+  );
+  private static nasaExtraByName: Map<string, CelestialBodyDefinition> = new Map(
+    NASA_EXTRA_CELESTIAL_BODIES.map((b) => [b.name.toLowerCase(), b] as [string, CelestialBodyDefinition])
+  );
+  private static spacecraftByKey: Map<string, NasaSpacecraftEntry> = (() => {
+    const map = new Map<string, NasaSpacecraftEntry>();
+    for (const sc of NASA_SPACECRAFT_CATALOG) {
+      map.set(sc.id.toLowerCase(), sc);
+      map.set(sc.name.toLowerCase(), sc);
+      if (!map.has(sc.shortName.toLowerCase())) {
+        map.set(sc.shortName.toLowerCase(), sc);
+      }
+    }
+    return map;
+  })();
+  private static spacecraftDefByKey: Map<string, CelestialBodyDefinition> = (() => {
+    const map = new Map<string, CelestialBodyDefinition>();
+    for (const def of CatalogueManager.spacecraftDefs) {
+      map.set(def.id.toLowerCase(), def);
+      map.set(def.name.toLowerCase(), def);
+    }
+    return map;
+  })();
+  private static smallBodyModelByKey: Map<string, string> = (() => {
+    const map = new Map<string, string>();
+    for (const [k, v] of Object.entries(NASA_SMALL_BODY_MODELS)) {
+      map.set(k.toLowerCase(), v);
+    }
+    return map;
+  })();
+
+  public static getSpacecraftCatalog(): NasaSpacecraftEntry[] {
+    return NASA_SPACECRAFT_CATALOG;
+  }
+
+  public static getSpacecraftDefs(): CelestialBodyDefinition[] {
+    return this.spacecraftDefs;
+  }
+
+  public static getSpacecraftEntry(idOrName: string): NasaSpacecraftEntry | undefined {
+    return this.spacecraftByKey.get(idOrName.toLowerCase());
+  }
+
+  public static getSpacecraftByTarget(hostName: string): NasaSpacecraftEntry[] {
+    const h = hostName.toLowerCase();
+    return NASA_SPACECRAFT_CATALOG.filter(
+      (sc) =>
+        sc.hostBody.toLowerCase() === h ||
+        sc.hostBody.toLowerCase().includes(h) ||
+        sc.fallbackOrbit?.parentBody.toLowerCase() === h ||
+        sc.surfaceSite?.body.toLowerCase() === h
+    );
+  }
+
+  public static getNasaCelestialBodies(): CelestialBodyDefinition[] {
+    return NASA_EXTRA_CELESTIAL_BODIES;
+  }
+
+  /** Core catalog bodies plus NASA Eyes extra named asteroids & Kuiper objects rendered in 3D. */
+  public static getSceneBodies(): CelestialBodyDefinition[] {
+    return [...this.bodies, ...NASA_EXTRA_CELESTIAL_BODIES];
+  }
+
+  public static getSmallBodyModelPath(bodyNameOrId: string): string | undefined {
+    return this.smallBodyModelByKey.get(bodyNameOrId.toLowerCase());
+  }
+
+  public static getMissionEvents(): NasaMissionEvent[] {
+    return NASA_MISSION_EVENTS;
+  }
+
+  /** Resolves core bodies first, then NASA extra small bodies, then NASA spacecraft definitions. */
+  public static resolveAnyBody(idOrName: string): CelestialBodyDefinition | undefined {
+    const core = this.getBody(idOrName);
+    if (core) return core;
+    const key = idOrName.toLowerCase();
+    return this.nasaExtraById.get(key) || this.nasaExtraByName.get(key) || this.spacecraftDefByKey.get(key);
   }
 }

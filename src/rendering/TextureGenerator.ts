@@ -1136,84 +1136,21 @@ export class TextureGenerator {
       const a = at(xi, yi), b = at(xi + 1, yi), c = at(xi, yi + 1), d = at(xi + 1, yi + 1);
       return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
     };
-    const H = new Float32Array(w * h);
-    const albedo = new Float32Array(w * h);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        let n = 0, amp = 0.5, f = 1 / 16;
-        for (let o = 0; o < 5; o++) {
-          n += amp * noise(x * f, y * f);
-          amp *= 0.5;
-          f *= 2;
-        }
-        H[y * w + x] = (n - 0.5) * 0.6;
-        albedo[y * w + x] = 0.84 + 0.32 * noise(x / 90 + 7, y / 90 + 3);
-      }
-    }
-    // Craters: depth/diameter ~0.2 for small ones, shallower and with central peaks for big ones
-    for (let c = 0; c < 1500; c++) {
-      const r = 1.5 + Math.pow(rnd(), 3.6) * 40;
-      const cx = rnd() * w;
-      const cy = h * 0.04 + rnd() * h * 0.92;
-      const coslat = Math.max(0.2, Math.cos((cy / h - 0.5) * Math.PI));
-      const depth = r * (r > 15 ? 0.12 : 0.2);
-      const fresh = rnd() < 0.12;
-      const ry = Math.ceil(r * 1.6);
-      const rx = Math.ceil((r * 1.6) / coslat);
-      for (let dy = -ry; dy <= ry; dy++) {
-        const y = Math.round(cy + dy);
-        if (y < 0 || y >= h) continue;
-        for (let dx = -rx; dx <= rx; dx++) {
-          const d = Math.hypot(dx * coslat, dy) / r;
-          if (d > 1.6) continue;
-          const x = ((Math.round(cx + dx) % w) + w) % w;
-          const i = y * w + x;
-          let dh = 0;
-          if (d < 1) dh = -depth * (1 - d * d) + depth * 0.25;
-          dh += depth * 0.35 * Math.exp(-((d - 1) * (d - 1)) / 0.02);
-          if (r > 15 && d < 0.18) dh += depth * 0.4 * (1 - d / 0.18);
-          H[i] += dh;
-          // Slightly darker floors and bright fresh ejecta, both with soft edges
-          albedo[i] *= 1 - 0.06 * Math.max(0, 1 - d * d);
-          if (fresh && d < 1.5) albedo[i] *= 1 + 0.16 * (1 - d / 1.5) * (1 - d / 1.5);
-        }
-      }
-    }
-    // Colour
+    // The canvases now, flat (the base colour, a level surface), so nothing waits for them; the
+    // craters are painted in after, a few milliseconds at a time (made in one go, the four kinds
+    // held up the page's start by ~0.3 s)
     const cc = document.createElement('canvas');
     cc.width = w;
     cc.height = h;
     const cx2 = cc.getContext('2d')!;
-    const img = cx2.createImageData(w, h);
-    for (let i = 0; i < w * h; i++) {
-      const k = albedo[i];
-      img.data[i * 4] = Math.min(255, br * k);
-      img.data[i * 4 + 1] = Math.min(255, bg * k);
-      img.data[i * 4 + 2] = Math.min(255, bb * k);
-      img.data[i * 4 + 3] = 255;
-    }
-    cx2.putImageData(img, 0, 0);
-    // Relief: slopes of the height field (heights in pixels, so the slope is the real one)
+    cx2.fillStyle = `rgb(${br},${bg},${bb})`;
+    cx2.fillRect(0, 0, w, h);
     const rc = document.createElement('canvas');
     rc.width = w;
     rc.height = h;
     const rx2 = rc.getContext('2d')!;
-    const nimg = rx2.createImageData(w, h);
-    for (let y = 0; y < h; y++) {
-      const coslat = Math.max(0.2, Math.cos((y / h - 0.5) * Math.PI));
-      for (let x = 0; x < w; x++) {
-        // Slopes softened: real crater walls are ~30° at most, and the globe is far coarser than this map
-        const hx = (H[y * w + ((x + 1) % w)] - H[y * w + ((x - 1 + w) % w)]) * 0.5 * coslat * 0.4;
-        const hy = (H[Math.min(h - 1, y + 1) * w + x] - H[Math.max(0, y - 1) * w + x]) * 0.5 * 0.4;
-        const l = Math.hypot(hx, hy, 1);
-        const i = (y * w + x) * 4;
-        nimg.data[i] = (-hx / l * 0.5 + 0.5) * 255;
-        nimg.data[i + 1] = (hy / l * 0.5 + 0.5) * 255;
-        nimg.data[i + 2] = (1 / l * 0.5 + 0.5) * 255;
-        nimg.data[i + 3] = 255;
-      }
-    }
-    rx2.putImageData(nimg, 0, 0);
+    rx2.fillStyle = 'rgb(128,128,255)';
+    rx2.fillRect(0, 0, w, h);
     const colour = new THREE.CanvasTexture(cc);
     colour.colorSpace = THREE.SRGBColorSpace;
     colour.wrapS = THREE.RepeatWrapping;
@@ -1222,7 +1159,97 @@ export class TextureGenerator {
     relief.wrapS = THREE.RepeatWrapping;
     const out = { colour, relief };
     this.regolithCache.set(kind, out);
+    function* paint(): Generator<void> {
+      const H = new Float32Array(w * h);
+      const albedo = new Float32Array(w * h);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          let n = 0, amp = 0.5, f = 1 / 16;
+          for (let o = 0; o < 5; o++) {
+            n += amp * noise(x * f, y * f);
+            amp *= 0.5;
+            f *= 2;
+          }
+          H[y * w + x] = (n - 0.5) * 0.6;
+          albedo[y * w + x] = 0.84 + 0.32 * noise(x / 90 + 7, y / 90 + 3);
+        }
+        yield;
+      }
+      // Craters: depth/diameter ~0.2 for small ones, shallower and with central peaks for big ones
+      for (let c = 0; c < 1500; c++) {
+        const r = 1.5 + Math.pow(rnd(), 3.6) * 40;
+        const cx = rnd() * w;
+        const cy = h * 0.04 + rnd() * h * 0.92;
+        const coslat = Math.max(0.2, Math.cos((cy / h - 0.5) * Math.PI));
+        const depth = r * (r > 15 ? 0.12 : 0.2);
+        const fresh = rnd() < 0.12;
+        const ry = Math.ceil(r * 1.6);
+        const rx = Math.ceil((r * 1.6) / coslat);
+        for (let dy = -ry; dy <= ry; dy++) {
+          const y = Math.round(cy + dy);
+          if (y < 0 || y >= h) continue;
+          for (let dx = -rx; dx <= rx; dx++) {
+            const d = Math.hypot(dx * coslat, dy) / r;
+            if (d > 1.6) continue;
+            const x = ((Math.round(cx + dx) % w) + w) % w;
+            const i = y * w + x;
+            let dh = 0;
+            if (d < 1) dh = -depth * (1 - d * d) + depth * 0.25;
+            dh += depth * 0.35 * Math.exp(-((d - 1) * (d - 1)) / 0.02);
+            if (r > 15 && d < 0.18) dh += depth * 0.4 * (1 - d / 0.18);
+            H[i] += dh;
+            // Slightly darker floors and bright fresh ejecta, both with soft edges
+            albedo[i] *= 1 - 0.06 * Math.max(0, 1 - d * d);
+            if (fresh && d < 1.5) albedo[i] *= 1 + 0.16 * (1 - d / 1.5) * (1 - d / 1.5);
+          }
+        }
+        yield;
+      }
+      // Colour
+      const img = cx2.createImageData(w, h);
+      for (let i = 0; i < w * h; i++) {
+        const k = albedo[i];
+        img.data[i * 4] = Math.min(255, br * k);
+        img.data[i * 4 + 1] = Math.min(255, bg * k);
+        img.data[i * 4 + 2] = Math.min(255, bb * k);
+        img.data[i * 4 + 3] = 255;
+      }
+      cx2.putImageData(img, 0, 0);
+      // Relief: slopes of the height field (heights in pixels, so the slope is the real one)
+      const nimg = rx2.createImageData(w, h);
+      for (let y = 0; y < h; y++) {
+        const coslat = Math.max(0.2, Math.cos((y / h - 0.5) * Math.PI));
+        for (let x = 0; x < w; x++) {
+          // Slopes softened: real crater walls are ~30° at most, and the globe is far coarser than this map
+          const hx = (H[y * w + ((x + 1) % w)] - H[y * w + ((x - 1 + w) % w)]) * 0.5 * coslat * 0.4;
+          const hy = (H[Math.min(h - 1, y + 1) * w + x] - H[Math.max(0, y - 1) * w + x]) * 0.5 * 0.4;
+          const l = Math.hypot(hx, hy, 1);
+          const i = (y * w + x) * 4;
+          nimg.data[i] = (-hx / l * 0.5 + 0.5) * 255;
+          nimg.data[i + 1] = (hy / l * 0.5 + 0.5) * 255;
+          nimg.data[i + 2] = (1 / l * 0.5 + 0.5) * 255;
+          nimg.data[i + 3] = 255;
+        }
+        yield;
+      }
+      rx2.putImageData(nimg, 0, 0);
+      colour.needsUpdate = true;
+      relief.needsUpdate = true;
+    }
+    TextureGenerator.runSliced(paint());
     return out;
+  }
+
+  /** Run a generator a few milliseconds at a time between frames until it is done. */
+  private static runSliced(job: Generator<void>, budgetMs = 4): void {
+    const step = (): void => {
+      const start = performance.now();
+      while (performance.now() - start < budgetMs) {
+        if (job.next().done) return;
+      }
+      setTimeout(step, 0);
+    };
+    setTimeout(step, 0);
   }
 
   public static createGenericTexture(colorHex: string): THREE.CanvasTexture {

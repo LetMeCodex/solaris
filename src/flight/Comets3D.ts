@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { KM_PER_UNIT, UNITS_PER_AU } from '../rendering/Scale';
 import { rockGeometry } from './Asteroids';
+import { CatalogueManager } from '../data/CatalogueManager';
+import { GltfModelBank } from '../rendering/SpacecraftFactory';
 
 /**
  * Comets as real objects in the Solar System, to fly to and through (jet mode).
@@ -26,11 +28,45 @@ export interface CometSpec {
   latDeg: number;
   /** Nucleus radius, km. */
   nucleusKm: number;
+  /** Optional NASA Eyes 3D GLTF model path under public/nasa/models/. */
+  modelPath?: string;
 }
 
 export const COMETS: CometSpec[] = [
   { name: 'Comet C/2026 S1', rAu: 1.15, lonDeg: 40, latDeg: 6, nucleusKm: 5 },
   { name: 'Comet C/2026 T2', rAu: 1.7, lonDeg: 215, latDeg: -9, nucleusKm: 3 },
+  {
+    name: '67P/Churyumov-Gerasimenko',
+    rAu: 1.243,
+    lonDeg: 78,
+    latDeg: 4.5,
+    nucleusKm: 2.1,
+    modelPath: '67p_churyumov_gerasimenko/comet_67p.gltf',
+  },
+  {
+    name: '103P/Hartley 2',
+    rAu: 1.059,
+    lonDeg: 142,
+    latDeg: -6.2,
+    nucleusKm: 1.1,
+    modelPath: '103p_hartley_2/hartley_2.gltf',
+  },
+  {
+    name: '19P/Borrelly',
+    rAu: 1.358,
+    lonDeg: 288,
+    latDeg: 11.4,
+    nucleusKm: 4.0,
+    modelPath: '19p_borrelly/borrelly.gltf',
+  },
+  {
+    name: '9P/Tempel 1',
+    rAu: 1.506,
+    lonDeg: 325,
+    latDeg: -5.3,
+    nucleusKm: 3.0,
+    modelPath: '9p_tempel_1/9p_tempel.gltf',
+  },
 ];
 
 const tailMaterial = (color: THREE.Color, streaky: number, curve: number): THREE.ShaderMaterial =>
@@ -96,7 +132,7 @@ export class Comet3D {
   public readonly spec: CometSpec;
   /** Coma radius, render units (what the jet's targeting treats as the comet's size). */
   public readonly radius: number;
-  private nucleus: THREE.Mesh;
+  private nucleus: THREE.Object3D;
   private coma: THREE.Sprite;
   private core: THREE.Sprite;
   private jets: THREE.Sprite[] = [];
@@ -117,9 +153,26 @@ export class Comet3D {
     const kmU = 1 / KM_PER_UNIT;
     const geo = rockGeometry(97 + Math.floor(spec.rAu * 10));
     const nmat = new THREE.MeshStandardMaterial({ color: 0x1c1a19, roughness: 1, metalness: 0 });
-    this.nucleus = new THREE.Mesh(geo, nmat);
-    this.nucleus.scale.set(spec.nucleusKm * kmU * 1.3, spec.nucleusKm * kmU * 0.8, spec.nucleusKm * kmU);
+    const fallbackMesh = new THREE.Mesh(geo, nmat);
+    fallbackMesh.scale.set(spec.nucleusKm * kmU * 1.3, spec.nucleusKm * kmU * 0.8, spec.nucleusKm * kmU);
+    const nucleusPivot = new THREE.Group();
+    nucleusPivot.name = `nucleus_${spec.name}`;
+    nucleusPivot.add(fallbackMesh);
+    this.nucleus = nucleusPivot;
     this.group.add(this.nucleus);
+
+    const resolvedModel = spec.modelPath ?? CatalogueManager.getSmallBodyModelPath(spec.name);
+    if (resolvedModel && GltfModelBank.isReady()) {
+      void GltfModelBank.loadNormalized(resolvedModel, 'natural').then((asset) => {
+        if (!asset) return;
+        const nasaComet = GltfModelBank.instantiate(asset);
+        nasaComet.scale.setScalar(spec.nucleusKm * kmU);
+        nucleusPivot.remove(fallbackMesh);
+        geo.dispose();
+        nmat.dispose();
+        nucleusPivot.add(nasaComet);
+      });
+    }
 
     const comaTex = glowTexture('rgba(235,255,250,1)', 'rgba(120,230,200,0.35)');
     const coreTex = glowTexture('rgba(255,255,255,1)', 'rgba(255,250,235,0.4)');

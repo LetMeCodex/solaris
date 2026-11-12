@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { SUN_WORLD } from './RenderOrigin';
+import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR } from './AerialPerspective';
 
 /**
  * Photorealistic Earth Surface Shader Material
@@ -20,6 +21,19 @@ export class EarthMaterial {
     return new THREE.ShaderMaterial({
       uniforms: {
         uSunWorld: SUN_WORLD,
+        // Fraction of the radius the globe is drawn below sea level (see SolarSystemScene's
+        // updatePhotoreal: it steps under Google's 3D tiles as their fallback)
+        uSink: { value: 0 },
+        // Low over Earth, under Google's tiles: the same aerial perspective and water as the tiles
+        // (PhotorealEarth), so where the globe shows past them (the open sea to the horizon) it
+        // does not stand out as a flat saturated blue. 0 from space: the globe as it always was
+        uNearAir: { value: 0 },
+        uAirKmPerUnit: { value: 1 },
+        uAirCamAltKm: { value: 0 },
+        uAirHaze: { value: 1 },
+        uNightAir: NIGHT_AIR,
+        uMoonLight: MOON_LIGHT,
+        uMoonDir: MOON_DIR,
         dayMap: { value: dayMap },
         normalMap: { value: normalMap || null },
         nightMap: { value: nightMap || null },
@@ -32,11 +46,12 @@ export class EarthMaterial {
         varying vec2 vUv;
         varying vec3 vWorldNormal;
         varying vec3 vWorldPosition;
+        uniform float uSink;
 
         void main() {
           vUv = uv;
           vWorldNormal = normalize(mat3(modelMatrix) * normal);
-          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vec4 worldPos = modelMatrix * vec4(position * (1.0 - uSink), 1.0);
           vWorldPosition = worldPos.xyz;
           gl_Position = projectionMatrix * viewMatrix * worldPos;
         }
@@ -50,6 +65,11 @@ export class EarthMaterial {
         uniform float hasNormalMap;
         uniform float hasNightMap;
         uniform float hasCloudsMap;
+        uniform float uNearAir;
+        uniform float uAirKmPerUnit;
+        uniform float uAirCamAltKm;
+        uniform float uAirHaze;
+        ${AERIAL_PERSPECTIVE_GLSL}
 
         varying vec2 vUv;
         varying vec3 vWorldNormal;
@@ -125,6 +145,22 @@ export class EarthMaterial {
 
           surfaceColor += vec3(0.95, 0.98, 1.0) * oceanSpecular; // Crisp specular glint
           surfaceColor += cityLights; // Night cities
+
+          // 8. Low over Earth: the tiles' water and aerial perspective (see PhotorealEarth)
+          if (uNearAir > 0.001) {
+            vec3 toEye = cameraPosition - vWorldPosition;
+            float distKm = length(toEye) * uAirKmPerUnit;
+            float sunUp = dot(geomNormal, normalize(uSunWorld - vWorldPosition));
+            float dayK = smoothstep(-0.10, 0.16, sunUp);
+            vec3 skyCol = apSky(sunUp);
+            // The sea reflects the sky (Fresnel), as the tiles' water does
+            float nv = max(dot(geomNormal, viewDir), 0.0);
+            float fres = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
+            vec3 sea = mix(surfaceColor * 0.85, skyCol * (0.25 + 0.75 * dayK), fres);
+            vec3 col = mix(surfaceColor, sea, waterMask);
+            col = aerialPerspective(col, distKm, max(0.0, uAirCamAltKm * 0.5), uAirHaze, viewDir, sunDir, sunUp);
+            surfaceColor = mix(surfaceColor, col, uNearAir);
+          }
 
           gl_FragColor = vec4(surfaceColor, 1.0);
 

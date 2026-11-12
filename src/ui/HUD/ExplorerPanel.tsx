@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ExplorerStatus } from '../../explorer/PlanetaryExplorer';
-import { landmarksFor, searchLandmarks } from '../../explorer/Landmarks';
+import { Landmark, landmarksFor, searchLandmarks } from '../../explorer/Landmarks';
+import { searchEarthPlaces } from '../../explorer/EarthSearch';
 import { SkyDestinations } from './SkyDestinations';
 import { systemMoons } from './moonGroups';
 
@@ -22,6 +23,7 @@ interface ExplorerPanelProps {
 
 const KIND_LABEL: Record<string, string> = {
   visible: 'Visible light',
+  'true-color': '3D Photogrammetry',
   monochrome: 'Monochrome mosaic',
   radar: 'Radar (not visible light)',
   atmosphere: 'Cloud tops',
@@ -30,10 +32,12 @@ const KIND_LABEL: Record<string, string> = {
 function fmtDistance(km: number): string {
   if (km >= 10000) return `${Math.round(km).toLocaleString('en-US')} km`;
   if (km >= 10) return `${km.toFixed(0)} km`;
-  return `${km.toFixed(1)} km`;
+  if (km >= 1) return `${km.toFixed(2)} km`;
+  return `${Math.max(1, Math.round(km * 1000))} m`;
 }
 
 function fmtResolution(m: number): string {
+  if (m < 1) return `${Math.round(m * 100)} cm`;
   return m >= 1000 ? `${(m / 1000).toFixed(m >= 10000 ? 0 : 1)} km/px` : `${Math.round(m)} m/px`;
 }
 
@@ -102,7 +106,47 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
   const bodyLandmarks = useMemo(() => (body ? landmarksFor(body) : []), [body]);
   const moons = useMemo(() => (body ? systemMoons(body) : null), [body]);
   const [moonQuery, setMoonQuery] = useState('');
-  const results = useMemo(() => searchLandmarks(query).slice(0, 8), [query]);
+  const [earthResults, setEarthResults] = useState<Landmark[]>([]);
+  const [searchingEarth, setSearchingEarth] = useState(false);
+  const catalogueResults = useMemo(() => searchLandmarks(query).slice(0, 6), [query]);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setEarthResults([]);
+      setSearchingEarth(false);
+      return;
+    }
+    const ctrl = new AbortController();
+    setSearchingEarth(true);
+    const timer = window.setTimeout(() => {
+      searchEarthPlaces(q, ctrl.signal)
+        .then((hits) => {
+          if (!ctrl.signal.aborted) {
+            setEarthResults(hits);
+            setSearchingEarth(false);
+          }
+        })
+        .catch(() => {
+          if (!ctrl.signal.aborted) setSearchingEarth(false);
+        });
+    }, 260);
+    return () => {
+      ctrl.abort();
+      window.clearTimeout(timer);
+    };
+  }, [query]);
+
+  const results = useMemo(() => {
+    const seen = new Set<string>();
+    const combined: Landmark[] = [];
+    for (const l of [...catalogueResults, ...earthResults]) {
+      if (seen.has(l.id)) continue;
+      seen.add(l.id);
+      combined.push(l);
+    }
+    return combined.slice(0, 10);
+  }, [catalogueResults, earthResults]);
   // A new world starts from the automatic behaviour again
   useEffect(() => setUserOpen(null), [body]);
   useEffect(() => {
@@ -116,9 +160,12 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
   const img = status.imagery;
   const layer = status.layer;
 
+  const isPhotoreal3D = img.bestMetresPerPixel < 1;
   let state: string;
   if (!status.streaming) {
-    state = img.note && !layer ? 'Global map only' : 'Zoom in to stream detail';
+    state = img.note && !layer && !isPhotoreal3D ? 'Global map only' : 'Zoom in to stream 3D detail';
+  } else if (isPhotoreal3D) {
+    state = 'Streaming Google 3D cities, buildings & terrain';
   } else if (layer?.state === 'unavailable') {
     state = 'Imagery server unreachable — showing globe map';
   } else if (layer && (layer.inFlight > 0 || layer.queued > 0)) {
@@ -192,6 +239,40 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
                 <span aria-hidden className="transition-transform duration-300 group-hover:-translate-y-0.5">↑</span>
               </button>
 
+              {body === 'Earth' && (
+                <div>
+                  <input
+                    type="search"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Search any city or place on Earth (3D)…"
+                    aria-label="Search any place on Earth"
+                    className="hud-input"
+                  />
+                  {searchingEarth && results.length === 0 && (
+                    <div className="mt-1 text-[9.5px] text-white/40 px-1">Searching Earth locations…</div>
+                  )}
+                  {results.length > 0 && (
+                    <ul className="mt-1.5 flex flex-col gap-0.5 max-h-40 overflow-y-auto hud-scroll" role="list">
+                      {results.map((l) => (
+                        <li key={l.id}>
+                          <button
+                            onClick={() => {
+                              onFlyToLandmark(l.id);
+                              setQuery('');
+                            }}
+                            className="hud-row w-full text-left flex justify-between items-center gap-2 px-2 py-1"
+                          >
+                            <span className="text-white/85 truncate">{l.name}</span>
+                            <span className="hud-num text-[8.5px] text-[color:var(--sol-amber)] shrink-0">3D FLY →</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+
               {status.streaming && status.sunElevationDeg !== null && (
                 <div className="flex items-center justify-between text-[10px] text-white/50">
                   <span>
@@ -239,6 +320,37 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
 
           {tab === 'waypoints' && (
             <div key="waypoints" className="px-3 py-3 flex flex-col gap-2 hud-rise">
+              <div>
+                <input
+                  type="search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search any place on Earth or Solar System…"
+                  aria-label="Search landmarks"
+                  className="hud-input"
+                />
+                {searchingEarth && results.length === 0 && (
+                  <div className="mt-1 text-[9.5px] text-white/40 px-1">Searching Earth locations…</div>
+                )}
+                {results.length > 0 && (
+                  <ul className="mt-1.5 flex flex-col gap-0.5 max-h-44 overflow-y-auto hud-scroll border-b border-white/10 pb-1.5" role="list">
+                    {results.map((l) => (
+                      <li key={l.id}>
+                        <button
+                          onClick={() => {
+                            onFlyToLandmark(l.id);
+                            setQuery('');
+                          }}
+                          className="hud-row w-full text-left flex justify-between items-center gap-2 px-2 py-1"
+                        >
+                          <span className="text-white/85 truncate">{l.name}</span>
+                          <span className="text-white/40 shrink-0 text-[9.5px]">{l.body}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
               {bodyLandmarks.length === 0 && <p className="text-[10px] text-white/40 px-1">No surveyed waypoints on {body} yet.</p>}
               <ol className="flex flex-col gap-0.5">
                 {bodyLandmarks.map((l, i) => (
@@ -260,34 +372,6 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
               {status.landmark && (
                 <p className="text-[10px] text-white/55 leading-snug px-1 border-l border-[color:var(--sol-amber)] ml-1 pl-2">{status.landmark.description}</p>
               )}
-              <div className="pt-1">
-                <input
-                  type="search"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search waypoints on any world"
-                  aria-label="Search landmarks"
-                  className="hud-input"
-                />
-                {results.length > 0 && (
-                  <ul className="mt-1.5 flex flex-col gap-0.5" role="list">
-                    {results.map((l) => (
-                      <li key={l.id}>
-                        <button
-                          onClick={() => {
-                            onFlyToLandmark(l.id);
-                            setQuery('');
-                          }}
-                          className="hud-row w-full text-left flex justify-between px-2 py-1"
-                        >
-                          <span className="text-white/80">{l.name}</span>
-                          <span className="text-white/35">{l.body}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
             </div>
           )}
 

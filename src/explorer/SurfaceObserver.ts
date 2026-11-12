@@ -1,5 +1,7 @@
 import { emitVela } from '../companion/events';
-import { earthElevation } from './Elevation';
+import { elevationFor } from './PlanetElevation';
+import { getBodyImagery, imageryEyeKm } from './ImageryRegistry';
+import { getLandmarkSolidElevationKm } from '../flight/LandmarkColliders';
 import { DeepTimeSky, type DeepTimeScene, type SkyLook } from './DeepTime';
 import { DeepTimeLand } from './DeepTimeLand';
 import * as THREE from 'three';
@@ -78,7 +80,9 @@ export interface SurfaceObserverDeps {
 }
 
 const DEG = Math.PI / 180;
-const DEFAULT_FOV = 70;
+// About what an eye takes in on a screen at arm's length: at 70 the same mountain looked half its
+// size, a wide-angle shot, and nothing felt as big as it is (scroll still zooms out to 100)
+const DEFAULT_FOV = 50;
 const MIN_FOV = 0.2;
 const MAX_FOV = 100;
 /** Seconds without input before the time-lapse begins. */
@@ -189,6 +193,7 @@ export class SurfaceObserver {
   private lastInput = performance.now();
   private idle = 0;
   private cap: THREE.Mesh | null = null;
+  private customEyeKm: number | null = null;
   /** From Settings: the idle time-lapse may run. */
   public idleEnabled = true;
 
@@ -223,6 +228,8 @@ export class SurfaceObserver {
   private groundKm = 0;
   private groundFix = 0;
   private groundProbe = 0;
+  /** The photoreal ground has been found under the current standing point. */
+  private groundLocked = false;
   private ray = new THREE.Raycaster();
 
   /**
@@ -230,7 +237,15 @@ export class SurfaceObserver {
    * eye); elsewhere (flat imagery) and in the deep-time landscapes, a hill-top view.
    */
   private eye(b: SurfaceBody): number {
-    if (b.name === 'Earth' && !this.deep.scene?.land && !earthElevation.disabled) return 0.0018;
+    if (this.customEyeKm !== null && this.customEyeKm !== undefined) return this.customEyeKm;
+    if (b.name === 'Earth' && !this.deep.scene?.land && PhotorealEarth.current) return 0.045;
+    if (b.name === 'Earth' && !this.deep.scene?.land && !elevationFor('Earth')!.disabled) return 0.0018;
+    // Other worlds' streamed imagery is 10–1000 m per pixel: from a person's height it is a grey
+    // smear of a few pixels and any rise a kilometre off hides the view, so stand high enough for the
+    // map to stay sharp (imageryEyeKm: an overlook on the Moon and Mars, a low pass elsewhere).
+    // Landmarks set their own height (vantageAltKm)
+    const img = getBodyImagery(b.name, b.radiusKm);
+    if (b.name !== 'Earth' && img?.provider) return Math.max(imageryEyeKm(img, !!elevationFor(b.name)), 0.0018);
     return eyeHeightKm(b);
   }
 
@@ -246,16 +261,31 @@ export class SurfaceObserver {
     return this.status;
   }
 
-  /** Stand at (lat, lon) on `bodyName` and look at the most interesting thing in the sky. */
-  public enter(bodyName: string, lat: number, lon: number, place: string | null = null): boolean {
+  /** Stand at (lat, lon) on `bodyName` and look at the most interesting thing in the sky (or specific landmark heading/pitch). */
+  public enter(
+    bodyName: string,
+    lat: number,
+    lon: number,
+    place: string | null = null,
+    customEyeKm: number | null = null,
+    headingDeg?: number,
+    pitchDeg?: number
+  ): boolean {
     const body = this.d.getBody(bodyName);
     if (!body) return false;
     this.body = body;
     this.lat = lat;
     this.lon = lon;
     this.place = place;
+    this.customEyeKm = customEyeKm;
+    this.groundFix = 0;
+    this.groundLocked = false;
     // Fetch the ground height here now (the eye stands on it; see computeFrame)
-    if (bodyName === 'Earth') void earthElevation.ensure(lat - 0.02, lon - 0.02, lat + 0.02, lon + 0.02, 13);
+    if (bodyName === 'Earth') {
+      const solid = getLandmarkSolidElevationKm(lat, lon);
+      if (solid > 0) this.groundKm = solid;
+    }
+    void elevationFor(bodyName)?.ensure(lat - 0.02, lon - 0.02, lat + 0.02, lon + 0.02, 13);
     this.model = atmosphereFor(bodyName);
     this.atmosphere.setModel(this.model);
     this.atmosphereOn = true;
@@ -265,10 +295,16 @@ export class SurfaceObserver {
     this.addGroundCap(body, lat, lon);
     this.computeFrame();
     this.d.setSceneMode(true, bodyName, this.skyRadii().stars);
-    // Aim after the first sky update so we know what is above the horizon
-    this.pendingAim = 'auto';
-    this.heading = this.targetHeading = 180 * DEG;
-    this.pitch = this.targetPitch = 25 * DEG;
+    if (headingDeg !== undefined) {
+      this.pendingAim = null;
+      this.heading = this.targetHeading = headingDeg * DEG;
+      this.pitch = this.targetPitch = (pitchDeg ?? 10) * DEG;
+    } else {
+      // Aim after the first sky update so we know what is above the horizon
+      this.pendingAim = 'auto';
+      this.heading = this.targetHeading = 180 * DEG;
+      this.pitch = this.targetPitch = 25 * DEG;
+    }
     this.touch();
     return true;
   }
@@ -291,6 +327,8 @@ export class SurfaceObserver {
 
   private addGroundCap(body: SurfaceBody, lat: number, lon: number): void {
     this.removeGroundCap();
+    // On Earth with Google Photorealistic 3D Tiles, real 3D buildings and photogrammetric terrain are drawn
+    if (body.name === 'Earth' && PhotorealEarth.current) return;
     const mat = body.surfaceMesh.material as THREE.Material & { uniforms?: Record<string, { value: unknown }> };
     // The cap may cross the map's date line: let the textures repeat instead of clamping there
     for (const key of ['map', 'normalMap']) {
@@ -409,19 +447,30 @@ export class SurfaceObserver {
     const dome = Math.max(0.5, horizonUnits * 3);
     const shell = dome * 2;
     const stars = shell * 2.5;
-    const far = Math.max(stars * 1.6, b.name === 'Saturn' ? b.visualRadius * 5 : 0);
+    const isPhoto = b.name === 'Earth' && !!PhotorealEarth.current;
+    // On Earth with 3D tiles, clamp near and far planes for optimal 24-bit depth precision to prevent z-fighting
+    const far = isPhoto ? Math.max(stars * 1.8, 15.0) : Math.max(stars * 1.6, b.name === 'Saturn' ? b.visualRadius * 5 : 0);
     const eyeUnits = eyeKm / kmPerUnit;
-    return { dome, shell, stars, far, near: Math.max(eyeUnits * 0.15, 1e-7), eyeUnits };
+    const near = isPhoto ? Math.max(0.000008, eyeUnits * 0.4) : Math.max(eyeUnits * 0.15, 1e-7);
+    return { dome, shell, stars, far, near, eyeUnits };
   }
 
   private computeFrame(): THREE.Vector3 {
     const b = this.body!;
-    b.surfaceMesh.updateWorldMatrix(true, false);
+    b.surfaceMesh.updateWorldMatrix(true, true);
+    const isPhoto = b.name === 'Earth' && !!PhotorealEarth.current;
     const eyeKm = this.eye(b);
     // On Earth the ground is raised to its real height (src/explorer/Elevation): stand on it
-    const groundKm = b.name === 'Earth' && !this.deep.scene?.land ? earthElevation.heightKm(this.lat, this.lon, 13) : 0;
+    const relief = this.deep.scene?.land ? null : elevationFor(b.name);
+    const demKm = relief && !relief.disabled ? Math.max(0, relief.heightKm(this.lat, this.lon, 13)) : 0;
+    const solidKm = b.name === 'Earth' ? getLandmarkSolidElevationKm(this.lat, this.lon) : 0;
+    const groundKm = Math.max(demKm, solidKm);
+    if (groundKm > this.groundKm) this.groundKm = groundKm;
     this.groundKm = groundKm;
-    const r = TILE_SHELL + (eyeKm + groundKm) / b.radiusKm;
+    // For Google Photorealistic 3D Tiles, surface coordinates are exact WGS84 ECEF (radius 1.0 at sea level).
+    // TILE_SHELL was only for the old 2D tile mesh to prevent z-fighting with the base globe.
+    const baseShell = isPhoto ? 1.0 : TILE_SHELL;
+    const r = baseShell + (eyeKm + groundKm) / b.radiusKm;
     const [x, y, z] = bodyLatLonToLocal(b.name, this.lat, this.lon);
     const pos = b.surfaceMesh.localToWorld(new THREE.Vector3(x * r, y * r, z * r));
     const centre = b.bodyGroup.getWorldPosition(new THREE.Vector3());
@@ -431,27 +480,65 @@ export class SurfaceObserver {
     if (north.lengthSq() < 1e-10) north.set(1, 0, 0).addScaledVector(up, -up.x);
     north.normalize();
     this.frame.east.crossVectors(north, up).normalize();
-    // Standing on Earth's real ground: put the eye just above the ground as it is actually drawn
-    // (finer tiles sit a little higher, and the mesh between height samples is not the data
-    // exactly), found by a ray straight down onto the tiles a few times a second
-    if (b.name === 'Earth' && !this.deep.scene?.land && !earthElevation.disabled) {
-      if (this.groundProbe++ % 6 === 0) {
+    // Standing on Earth's real ground:
+    // For Google Photorealistic 3D Tiles, surface coordinates are exact WGS84 ECEF.
+    // Raycasting down onto dynamic 3D tiles caused violent 300m camera altitude jumping and LOD cycling.
+    if (relief && !relief.disabled) {
+      if (isPhoto) {
+        // Lock onto the local photogrammetric surface once a fine tile (<= 350 m radius) loads.
+        // Coarse root/regional tiles cut chords hundreds of metres below the curved ellipsoid and
+        // must be ignored; once locked on a fine local tile, groundFix stays constant for this spot.
+        if (!this.groundLocked && this.groundProbe++ % 6 === 0) {
+          const kmPerUnit = b.radiusKm / b.visualRadius;
+          const maxTileRadiusUnits = 0.35 / kmPerUnit;
+          const maxHorizUnits = 0.18 / kmPerUnit;
+          const target = PhotorealEarth.current?.raycastTarget();
+          if (target) {
+            const localMeshes: THREE.Mesh[] = [];
+            let nearestCenter: THREE.Vector3 | null = null;
+            let nearestDist = Infinity;
+            target.traverse((o) => {
+              const m = o as THREE.Mesh;
+              if (!m.isMesh || !m.geometry) return;
+              if (!m.geometry.boundingSphere) m.geometry.computeBoundingSphere();
+              const bs = m.geometry.boundingSphere!;
+              const rUnits = bs.radius * m.matrixWorld.getMaxScaleOnAxis();
+              if (rUnits > maxTileRadiusUnits) return;
+              const c = bs.center.clone().applyMatrix4(m.matrixWorld);
+              const d = c.distanceTo(pos);
+              if (d <= rUnits + maxHorizUnits) {
+                localMeshes.push(m);
+                if (d < nearestDist) {
+                  nearestDist = d;
+                  nearestCenter = c;
+                }
+              }
+            });
+            if (localMeshes.length > 0) {
+              const probeUnits = 12 / kmPerUnit;
+              this.ray.set(pos.clone().addScaledVector(up, probeUnits), up.clone().negate());
+              this.ray.far = probeUnits * 2;
+              let hit = this.ray.intersectObjects(localMeshes, false)[0];
+              if (!hit && nearestCenter) {
+                this.ray.set((nearestCenter as THREE.Vector3).clone().addScaledVector(up, probeUnits), up.clone().negate());
+                hit = this.ray.intersectObjects(localMeshes, false)[0];
+              }
+              if (hit) {
+                this.groundFix = hit.point.clone().sub(pos).dot(up) + eyeKm / kmPerUnit;
+                this.groundLocked = true;
+              }
+            }
+          }
+        }
+      } else if (this.groundProbe++ % 6 === 0) {
         const kmPerUnit = b.radiusKm / b.visualRadius;
         const groundPoint = pos.clone().addScaledVector(up, -eyeKm / kmPerUnit);
         this.ray.set(groundPoint.clone().addScaledVector(up, 30 / kmPerUnit), up.clone().negate());
         this.ray.far = 60 / kmPerUnit;
-        // Google's 3D Earth when it is on (one target: its renderer walks its own tile tree),
-        // else the imagery tiles
-        const photo = b.name === 'Earth' ? PhotorealEarth.current?.raycastTarget() ?? null : null;
-        const tiles: THREE.Object3D[] = photo ? [photo] : [];
-        if (!photo) {
-          b.surfaceMesh.traverse((o) => {
-            if (o.name.startsWith('tile_') && o.visible && o.parent?.visible !== false) tiles.push(o);
-          });
-        }
-        // The ground under the eye and in a ring ~120 m round it: stand on the highest of them. The
-        // drawn relief is a grid of height samples, so a summit's top can sit a sample away from
-        // the named point; standing just below it, the slope would fill the view like a wall.
+        const tiles: THREE.Object3D[] = [];
+        b.surfaceMesh.traverse((o) => {
+          if (o.name.startsWith('tile_') && o.visible && o.parent?.visible !== false) tiles.push(o);
+        });
         let best: number | null = null;
         for (let k = -1; k < 24; k++) {
           const at = groundPoint.clone();
@@ -461,14 +548,12 @@ export class SurfaceObserver {
             at.addScaledVector(this.frame.north, (Math.cos(a) * ringKm) / kmPerUnit).addScaledVector(this.frame.east, (Math.sin(a) * ringKm) / kmPerUnit);
           }
           this.ray.set(at.addScaledVector(up, 30 / kmPerUnit), up.clone().negate());
-          // The finest tile hit is the one drawn there (a coarser one under it is cut away)
           const zOf = (o: THREE.Object3D): number => Number(o.name.slice(5).split('/')[0]);
-          const hit = this.ray.intersectObjects(tiles, !!photo).sort((p, q) => zOf(q.object) - zOf(p.object))[0];
+          const hit = this.ray.intersectObjects(tiles, false).sort((p, q) => zOf(q.object) - zOf(p.object))[0];
           if (!hit) continue;
-          const h = hit.point.sub(groundPoint).dot(up);
+          const h = hit.point.clone().sub(groundPoint).dot(up);
           best = best === null ? h : Math.max(best, h);
         }
-        // No tile under the eye yet: stand on the height data itself, never on a stale reading
         this.groundFix = best ?? 0;
       }
       pos.addScaledVector(up, this.groundFix);
@@ -496,7 +581,8 @@ export class SurfaceObserver {
     this.targetPitch = THREE.MathUtils.clamp(this.targetPitch, -80 * DEG, 89.5 * DEG);
     // Idle: after a quiet spell the view drifts slowly and the sky turns (a time-lapse); any input
     // hands control straight back
-    const quiet = this.idleEnabled && (now - this.lastInput) / 1000 > IDLE_AFTER && !this.dragging && this.keys.size === 0;
+    const isPhoto = b.name === 'Earth' && !!PhotorealEarth.current && !this.deep.scene;
+    const quiet = this.idleEnabled && !isPhoto && (now - this.lastInput) / 1000 > IDLE_AFTER && !this.dragging && this.keys.size === 0;
     this.idle = THREE.MathUtils.clamp(this.idle + (quiet ? dt / 4 : -dt * 3), 0, 1);
     if (this.idle > 0) {
       const e = this.idle * this.idle * (3 - 2 * this.idle);

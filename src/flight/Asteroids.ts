@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { KM_PER_UNIT, UNITS_PER_AU } from '../rendering/Scale';
 import { perf } from '../rendering/Performance';
+import { GltfModelBank } from '../rendering/SpacecraftFactory';
 
 /**
  * Asteroid fields around the jet: real 3D rocks when it is inside a belt.
@@ -218,6 +219,7 @@ export class AsteroidField {
       this.meshes.push(mesh);
       this.group.add(mesh);
     }
+    this.upgradeVariantsWithNasaGltfs();
     // Fine debris: gravel and dust grains drifting between the boulders
     const dg = new THREE.BufferGeometry();
     this.debrisPos = new Float32Array(DEBRIS * 3);
@@ -373,7 +375,45 @@ export class AsteroidField {
     }
   }
 
+  private disposed = false;
+
+  private upgradeVariantsWithNasaGltfs(): void {
+    if (!GltfModelBank.isReady()) return;
+    const nasaRockPaths = [
+      'asteroid/generic_asteroid_1/generic_asteroid_1.gltf',
+      'asteroid/generic_asteroid_2/generic_asteroid_2.gltf',
+      'asteroid/generic_asteroid_3/generic_asteroid_3.gltf',
+      '243_ida/ida.gltf',
+      '951_gaspra/gaspra.gltf',
+      '25143_itokawa/itokawa.gltf',
+    ];
+    nasaRockPaths.forEach((modelPath, idx) => {
+      if (idx >= this.meshes.length) return;
+      void GltfModelBank.loadNormalized(modelPath, 'natural').then((asset) => {
+        if (!asset || this.disposed) return;
+        const geo = GltfModelBank.extractFirstGeometry(asset);
+        if (!geo) return;
+        if (!geo.attributes.uv && geo.attributes.position) {
+          const pos = geo.attributes.position;
+          const uvs = new Float32Array(pos.count * 2);
+          for (let i = 0; i < pos.count; i++) {
+            const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+            uvs[i * 2] = 0.5 + Math.atan2(z, x) / (Math.PI * 2);
+            uvs[i * 2 + 1] = 0.5 - Math.asin(Math.max(-1, Math.min(1, y))) / Math.PI;
+          }
+          geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+        }
+        const mesh = this.meshes[idx];
+        const old = this.geometries[idx];
+        mesh.geometry = geo;
+        this.geometries[idx] = geo;
+        old?.dispose();
+      });
+    });
+  }
+
   public dispose(): void {
+    this.disposed = true;
     for (const g of this.geometries) g.dispose();
     this.material.dispose();
     this.texture.dispose();

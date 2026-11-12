@@ -149,7 +149,7 @@ export class CatalogueStars {
           if (r > 0.5) discard;
           // Airy-like core with a faint first ring for the brighter stars
           float core = exp(-r * r * mix(60.0, 140.0, vSpikes));
-          float ring = exp(-pow((r - 0.17) / 0.035, 2.0)) * 0.09 * vHalo;
+          float ring = exp(-(((r - 0.17) / 0.035) * ((r - 0.17) / 0.035))) * 0.09 * vHalo;
           float halo = exp(-r * r * 9.0) * 0.22 * vHalo;
           // Four diffraction spikes (the classic secondary-mirror vanes), only on the brightest
           float spikes = 0.0;

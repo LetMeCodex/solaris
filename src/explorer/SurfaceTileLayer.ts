@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { EarthElevation } from './Elevation';
+import type { ElevationSource } from './PlanetElevation';
 import { SUN_WORLD } from '../rendering/RenderOrigin';
 import { TileProvider } from './ImageryRegistry';
 import {
@@ -167,8 +167,8 @@ export class SurfaceTileLayer {
   private frame = 0;
   private status: LayerStatus = { state: 'idle', inFlight: 0, queued: 0, cached: 0, drawn: 0, deepestLevel: -1, failures: 0 };
 
-  /** Real ground heights (Earth): tiles are raised into 3D relief. Null: flat imagery. */
-  public elevation: EarthElevation | null = null;
+  /** Real ground heights (Earth, Moon, Mars): tiles are raised into 3D relief. Null: flat imagery. */
+  public elevation: ElevationSource | null = null;
   /** The body these tiles cover (Earth places them by geodetic latitude: see bodyLatLonToLocal). */
   public bodyName = '';
   /** The body's true radius, km (heights are a fraction of it, so they scale with the drawn globe). */
@@ -194,7 +194,7 @@ export class SurfaceTileLayer {
   /** Global colour map used to tint greyscale sources (`colorize` providers). */
   public setBaseMap(tex: THREE.Texture | null): void {
     this.shared.uBaseMap.value = tex;
-    this.shared.uColorize.value = tex && this.provider.kind === 'wmts' && this.provider.colorize ? 1 : 0;
+    this.shared.uColorize.value = tex && this.provider.colorize ? 1 : 0;
   }
 
   /** Aerial perspective: fade ground imagery to `color` with view distance (0 disables). */
@@ -358,7 +358,10 @@ export class SurfaceTileLayer {
   }
 
   private pump(): void {
-    while (this.inFlight < MAX_CONCURRENT && this.queue.length > 0) {
+    // A WMS renders every tile on request (USGS: ~3 s each); more than a few at once only queue at
+    // the server, and each answer then takes 25 s or times out
+    const limit = this.provider.kind === 'wms' ? 4 : MAX_CONCURRENT;
+    while (this.inFlight < limit && this.queue.length > 0) {
       const entry = this.queue.shift()!;
       if (entry.state !== 'queued') continue;
       this.request(entry);
@@ -390,8 +393,8 @@ export class SurfaceTileLayer {
           // Raised ground: the tile counts as loaded only once its heights are in, so it never
           // appears flat and then jumps (its parent stands in until then)
           const b = tileBounds(this.provider, entry.key);
-          const z = EarthElevation.zoomFor(Math.max(b.clipEast - b.clipWest, b.clipNorth - b.clipSouth));
           const elevation = this.elevation;
+          const z = elevation.zoomFor(Math.max(b.clipEast - b.clipWest, b.clipNorth - b.clipSouth));
           void elevation.ensure(b.clipSouth, b.clipWest, b.clipNorth, b.clipEast, z).then(() => {
             if (entry.state !== 'loading') return;
             // Sample this tile's whole height grid now, while its height tiles are certainly cached
@@ -463,7 +466,10 @@ export class SurfaceTileLayer {
     const b = tileBounds(this.provider, k);
     const spanDeg = Math.max(b.clipEast - b.clipWest, b.clipNorth - b.clipSouth);
     const relief = !!this.elevation && !this.elevation.disabled;
-    const segs = relief ? 32 : Math.max(4, Math.min(48, Math.ceil(spanDeg / 1.5)));
+    // Flat tiles: cells of at most ~0.5° so their chords sag less than the shell lift (TILE_SHELL)
+    // below the true curve; with 1.5° cells the surface view's finely curved ground cap poked up
+    // through the middle of every cell (a lattice of discs on Io, Europa, Pluto…)
+    const segs = relief ? 32 : Math.max(8, Math.min(48, Math.ceil(spanDeg / 0.5)));
     const ny = Math.max(2, Math.ceil(segs * ((b.clipNorth - b.clipSouth) / Math.max(1e-6, b.clipEast - b.clipWest))));
     return { nx: segs, ny: Math.min(48, ny) };
   }
@@ -514,7 +520,8 @@ export class SurfaceTileLayer {
         hMin = Math.min(hMin, h);
         hMax = Math.max(hMax, h);
       }
-      const skirtKm = Math.max(0.15, spanDeg * 111 * 0.008, (hMax - hMin) * 0.35);
+      // (km per degree of this body: 111 on Earth, 30 on the Moon)
+      const skirtKm = Math.max(0.15, spanDeg * ((Math.PI * this.radiusKm) / 180) * 0.008, (hMax - hMin) * 0.35);
       const ring: number[] = [];
       for (let i = 0; i <= nx; i++) ring.push(i);
       for (let j = 1; j <= nyc; j++) ring.push(j * (nx + 1) + nx);

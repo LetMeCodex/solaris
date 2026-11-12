@@ -67,6 +67,22 @@ The browser streams these tiles at runtime; they are not stored in the repositor
 | Mercury | MESSENGER MDIS Basemap BDR Mosaic 166 m | `trek.nasa.gov/tiles/Mercury/EQ/Mercury_MESSENGER_MDIS_Basemap_BDR_Mosaic_Global_166m` | NASA/JHUAPL/Carnegie Institution of Washington via NASA Solar System Treks |
 | Mars | MRO CTX Global Mosaic beta01 (Caltech Murray Lab, 5 m source, served to level 12 ≈ 10 m/px), greyscale tinted with the bundled colour map | Trek layer `CTX_beta01_uncontrolled_5m_Caltech`, whose capabilities point at `astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer` | NASA/JPL/MSSS; Caltech Murray Lab mosaic (Dickson et al.); served via NASA Solar System Treks / Esri |
 | Venus | Magellan SAR mosaic (layer `MAGELLAN`) | `planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/venus/venus_simp_cyl.map` (WMS 1.1.1) | NASA/JPL Magellan; USGS Astrogeology Science Center |
+| Io | Galileo SSI + Voyager colour mosaic (~1 km), to level 5 | `planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/jupiter/io_simp_cyl.map`, layer `SSI_VGR_color` (WMS 1.1.1) | NASA/JPL/USGS (Galileo SSI, Voyager) via USGS Astrogeology, public domain |
+| Europa | Galileo + Voyager mosaic (500 m), greyscale tinted with the bundled colour map, to level 5 | `planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/jupiter/europa_simp_cyl.map`, layer `GALILEO_VOYAGER` (WMS 1.1.1) | NASA/JPL/USGS via USGS Astrogeology, public domain |
+| Ganymede | Galileo + Voyager mosaic (1 km), tinted, to level 5 | `planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/jupiter/ganymede_simp_cyl.map`, layer `GALILEO_VOYAGER` (WMS 1.1.1) | NASA/JPL/USGS via USGS Astrogeology, public domain |
+| Callisto | Galileo + Voyager mosaic (1 km), tinted, to level 5 | `planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/jupiter/callisto_simp_cyl.map`, layer `GALILEO_VOYAGER` (WMS 1.1.1) | NASA/JPL/USGS via USGS Astrogeology, public domain |
+| Titan | Cassini ISS controlled mosaic at 938 nm (450 m, 65°S–45°N), to level 6 | `trek.nasa.gov/tiles/Titan/EQ/Titan_ISS_Globe_65Sto45N_450M_AvgMos` | NASA/JPL-Caltech/SSI/USGS via NASA Solar System Treks |
+| Enceladus | Cassini ISS global mosaic 100 m, to level 5 | `trek.nasa.gov/tiles/Enceladus/EQ/Enceladus_Cassini_ISS_Global_Mosaic_100m_HPF` | NASA/JPL-Caltech/SSI/LPI via NASA Solar System Treks |
+| Mimas | Cassini ISS global basemap (DLR), to level 4 | `trek.nasa.gov/tiles/Mimas/EQ/MI_170630_DLR_basemap` | NASA/JPL-Caltech/SSI/DLR via NASA Solar System Treks |
+| Tethys | Cassini global mosaic 293 m, to level 4 | `trek.nasa.gov/tiles/Tethys/EQ/Tethys_Cassini_mosaic_global_293m` | NASA/JPL-Caltech/SSI/LPI via NASA Solar System Treks |
+| Iapetus | Cassini + Voyager global mosaic 783 m, to level 3 | `trek.nasa.gov/tiles/Iapetus/EQ/Iapetus_Cassini_Voyager_mosaic_global_783m` | NASA/JPL-Caltech/SSI/LPI via NASA Solar System Treks |
+| Triton | Voyager 2 mosaic (600 m, southern hemisphere), to level 5 | `planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/neptune/triton_simp_cyl.map`, layer `TRITON_VOYAGER2` (WMS 1.1.1) | NASA/JPL/USGS (Voyager 2) via USGS Astrogeology, public domain |
+| Pluto | New Horizons LORRI + MVIC mosaic (to 300 m on the encounter hemisphere), tinted, to level 6 | `planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/pluto/pluto_simp_cyl.map`, layer `NEWHORIZONS_PLUTO_MOSAIC` (WMS 1.1.1) | NASA/JHUAPL/SwRI/LPI (New Horizons) via USGS Astrogeology, public domain |
+| Charon | New Horizons LORRI + MVIC mosaic, tinted, to level 5 | `planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/pluto/charon_simp_cyl.map`, layer `NEWHORIZONS_CHARON_MOSAIC` (WMS 1.1.1) | NASA/JHUAPL/SwRI/LPI (New Horizons) via USGS Astrogeology, public domain |
+| Ceres | Dawn Framing Camera global mosaic, to level 6 | `planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/asteroid_belt/ceres_simp_cyl.map`, layer `Ceres_FC_global` (WMS 1.1.1) | NASA/JPL-Caltech/UCLA/MPS/DLR/IDA (Dawn) via USGS Astrogeology, public domain |
+| Vesta | Dawn FC HAMO mosaic (64 m) in the IAU (4) Vesta frame, to level 6 | `trek.nasa.gov/tiles/Vesta/EQ/Vesta_Dawn_HAMO_Photo_DLR_global_74ppd_IAU` | NASA/JPL-Caltech/UCLA/MPS/DLR/IDA (Dawn) via NASA Solar System Treks |
+
+**Moons and dwarf planets (added).** Each map's registration (east-positive, centred on 0°) was checked in the browser against the bundled global maps: Io, Europa, Ganymede, Callisto, Iapetus, Triton and Pluto correlate at 0.5–0.8 with no shift or mirror; Mimas and Tethys were compared by eye across the USGS, Trek and bundled maps. The USGS WMS renders each tile on request (about 3 s each), so the explorer asks for at most 4 at a time; those worlds sharpen slowly. Miranda has no streamable map (the USGS service lists none) and keeps its bundled map.
 
 **Provenance.**
 - `docs/research/imagery-sources-probe.txt` is written by `scripts/verify-tile-sources.mjs`, run in GitHub Actions on 2026-10-14 with `Origin: https://letmecodex.github.io`. It records:
@@ -129,8 +145,31 @@ cover art. Loudness-matched to −18 LUFS for background play.
 
 Earth's ground relief near the surface (`src/explorer/Elevation.ts`) comes from **Terrain Tiles** on the Registry of Open Data on AWS (`s3.amazonaws.com/elevation-tiles-prod`, terrarium encoding), fetched on demand. Sources include SRTM and GMTED2010 (USGS), ETOPO1 (NOAA), and others; see https://github.com/tilezen/joerd/blob/master/docs/attribution.md for the full attribution, which applies here. Depths below sea level are not drawn (the sea surface stays flat).
 
+## Terrain heights: the Moon and Mars (added)
+
+Real relief on the Moon and Mars (`src/explorer/PlanetElevation.ts`), streamed at runtime, nothing stored in the repository:
+
+| Body | Product | Endpoint | Credit |
+| :--- | :--- | :--- | :--- |
+| Moon (±60°) | SLDEM2015, LRO LOLA + SELENE/Kaguya TC merged DEM, 512 px/° (~59 m), to level 8 | `trek.nasa.gov/tiles/Moon/EQ/LRO_LOLAKaguya_DEM_60N60S_512ppd` | NASA LRO LOLA team and JAXA SELENE TC team (Barker et al. 2016) via NASA Moon Trek |
+| Moon (poleward) | LRO LOLA global DEM v04, 128 px/°, to level 5 | `trek.nasa.gov/tiles/Moon/EQ/LRO_LOLA_DEM_Global_128ppd_v04` | NASA LRO LOLA team via NASA Moon Trek |
+| Mars | HRSC + MOLA blended DEM, 200 m, float32 LERC tiles, to level 7 | `astro.arcgis.com/arcgis/rest/services/OnMars/MDEM200M/ImageServer/tile` | Source: USGS, NASA, ESA, HRSC (ESA/DLR/FU Berlin; MGS MOLA); served by Esri Astro, under the Esri terms of use |
+
+- Trek serves its DEMs as 8-bit greyscale tiles on a linear stretch. It was calibrated here: the global LOLA layer reads 0 at Antoniadi's floor and 255 at the far-side summit near Engel'gardt (the LOLA extremes, −9.15 and +10.76 km about 1737.4 km), and −1.89 km at Tranquility Base (published ≈ −1.9 km). The SLDEM layer was regressed on it over 36,894 pixels (height = −8.819 km + 77.16 m × value; mean residual under half a step). Heights are smoothed after decoding to remove the 77 m steps.
+- Esri's Mars tiles are LERC version 1 rasters, decoded by `src/explorer/Lerc1.ts`, a port of the Lerc1 part of Esri's open-source LercDecode.js (Apache-2.0, github.com/Esri/lerc). Spot checks: Jezero floor −2.64 km, Hellas floor −6.0 km, Olympus Mons summit area +20 km.
+- Esri's Moon DEM service (`OnMoon/LOLA_Kaguya`) lists float tiles but closed every tile request when probed (2026-11-10); Trek is used instead.
+- Removed from the landmarks, with reasons in comments in `src/explorer/Landmarks.ts`: Shackleton (Moon) and Planum Boreum (Mars), where polar tiles break down; Verona Rupes (Miranda), with no map or elevation data; and all five Titan and five Venus sites, whose landings showed only haze over a blurred map. Titan's and Venus's streamed maps still show from orbit.
+
 ## Photorealistic 3D Earth (added)
 
 Close to Earth (below 1,500 km, on the ground, and flying low), `src/rendering/PhotorealEarth.ts` streams **Google Photorealistic 3D Tiles** from the Google Maps Platform Map Tiles API (`tile.googleapis.com/v1/3dtiles`). It needs your own API key with the Map Tiles API enabled, set as `VITE_GOOGLE_MAPS_API_KEY` in `.env.local` (gitignored; never commit it). Without a key, Earth falls back to the streamed imagery and Terrain Tiles above. Use is under the Google Maps Platform Terms of Service: the data attributions Google returns are shown on screen while tiles are visible (bottom right), the tiles are not cached beyond the session, and Google's terms also ask for the Google Maps logo alongside them. Restrict the key to your site's domain (HTTP referrer) in Google Cloud Console, since a browser app's key is visible to its users.
 
 Rendering uses **3d-tiles-renderer** 0.4.28 (NASA-AMMOS, Apache-2.0), with the Draco decoder from three.js (`public/draco/`, Apache-2.0).
+
+## Earth flight data (added)
+
+- **Live weather**: [Open-Meteo](https://open-meteo.com/) forecast API (current cloud cover, weather code, precipitation, wind, visibility), free, no key, CC BY 4.0. Asked again after 10 minutes or 80 km (`src/flight/EarthClouds.ts`).
+- **Place names**: OpenStreetMap Nominatim reverse geocoder (`src/explorer/ReverseGeocode.ts`) and search (`src/explorer/EarthSearch.ts`), © OpenStreetMap contributors, ODbL; within Nominatim's usage policy (at most one request a second, cached by area).
+- **Procedural buildings (experimental, off by default)**: building outlines and heights from [OpenFreeMap](https://openfreemap.org/) vector tiles (OpenMapTiles schema), © OpenMapTiles, data © OpenStreetMap contributors (`src/explorer/ProceduralCity.ts`). Google's Map Tiles policies should be checked before showing these together with Google's tiles publicly.
+- **Vector tile decoding**: `@mapbox/vector-tile` 2.0.5 (BSD-3-Clause) and `pbf` 4.0.2 (BSD-3-Clause), already part of `3d-tiles-renderer`'s dependencies.
+

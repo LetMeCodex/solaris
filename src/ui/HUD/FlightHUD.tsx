@@ -21,6 +21,7 @@ import { SUN_SCALE, UNITS_PER_KM } from '../../rendering/Scale';
 /** Closer than this to the Sun's centre and Vela gets nervous (about 2.2 solar radii). */
 const SUN_CLOSE_UNITS = 695700 * UNITS_PER_KM * SUN_SCALE * 2.2;
 import { Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle, Camera, Settings2, Plane } from 'lucide-react';
+import type { ComparisonPropKind } from '../../rendering/SpacecraftFactory';
 import { SettingsPanel } from './SettingsPanel';
 import { useSettings } from '../settings';
 import type { Postcard } from '../../data/Postcards';
@@ -64,6 +65,16 @@ interface FlightHUDProps {
   onNebula?: (name: string) => boolean;
   /** Take off in the SX-1 (jet mode). */
   onLaunchJet?: () => void;
+  /** Focus a NASA spacecraft in 3D and optionally jump to its signature epoch. */
+  onSelectSpacecraft?: (nameOrId: string, featuredEpochUtc?: string | null) => void;
+  /** Enter Jet Mode in close formation beside a NASA spacecraft. */
+  onFlyJetSpacecraft?: (nameOrId: string, featuredEpochUtc?: string | null) => void;
+  /** Jump to a NASA mission milestone epoch and target body. */
+  onMissionEvent?: (dateUtc: string | null, target: string) => void;
+  comparisonKind?: ComparisonPropKind;
+  onSetComparison?: (kind: ComparisonPropKind) => void;
+  scienceOverlaysOn?: boolean;
+  onToggleScienceOverlays?: () => void;
 }
 
 // Reference navigation order: Sagittarius A* at top, then Pluto down to Mercury, plus Sun
@@ -135,6 +146,13 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   onCapture,
   onNebula,
   onLaunchJet,
+  onSelectSpacecraft,
+  onFlyJetSpacecraft,
+  onMissionEvent,
+  comparisonKind = 'none',
+  onSetComparison,
+  scienceOverlaysOn = false,
+  onToggleScienceOverlays,
 }) => {
   const target = telemetry?.activeTarget;
   const isPaused = telemetry?.isPaused ?? false;
@@ -348,12 +366,35 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   }, [telemetry, orbitsOn, constellationsOn, asteroidBeltOn, lensProfile, isPaused, showToast]);
 
   const activeTargetName = target?.name || 'Mercury';
-  const narrative = useMemo(() => getPlanetNarrative(activeTargetName), [activeTargetName]);
+  const scEntry = useMemo(() => CatalogueManager.getSpacecraftEntry(activeTargetName), [activeTargetName]);
+  const narrative = useMemo(() => {
+    const baseNarr = getPlanetNarrative(activeTargetName);
+    if (!scEntry) return baseNarr;
+    const accent = scEntry.colorHex || '#6ee7ff';
+    return {
+      ...baseNarr,
+      name: scEntry.name,
+      eyebrow: `${scEntry.agency} · ${scEntry.subcategory.toUpperCase()}`,
+      accentColor: accent,
+      eyebrowColor: accent,
+      monographText: `${scEntry.role.toUpperCase()}. ${scEntry.description}`,
+      extendedLore:
+        scEntry.highlights.length > 0
+          ? `${scEntry.description} Key milestones: ${scEntry.highlights.join(' · ')}.`
+          : scEntry.description,
+      missions: scEntry.highlights.map((h) => ({
+        name: h,
+        year: scEntry.activeSpan,
+        agency: scEntry.agency,
+        role: scEntry.role,
+      })),
+    };
+  }, [activeTargetName, scEntry]);
   const fullTargetDef = useMemo(() => {
     if (activeTargetName === 'Sagittarius A*' || activeTargetName === 'Sgr A*' || activeTargetName === 'sagittarius_a_star') {
       return CatalogueManager.getSagittariusAStar();
     }
-    return CatalogueManager.getBody(activeTargetName);
+    return CatalogueManager.resolveAnyBody(activeTargetName);
   }, [activeTargetName]);
   const isBlackHole = activeTargetName === 'Sagittarius A*' || target?.category === 'black_hole';
 
@@ -406,6 +447,12 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   const monoStats: Array<{ k: string; v: React.ReactNode }> = [];
   if (isBlackHole) {
     monoStats.push({ k: 'Distance', v: '26,990 ly' }, { k: 'Mass', v: '4.30 × 10⁶ M☉' }, { k: 'Shadow', v: '51.8 µas' });
+  } else if (scEntry) {
+    if (target) monoStats.push({ k: 'From Sun', v: fmtKm(target.distanceKm) });
+    monoStats.push({ k: 'Host', v: scEntry.hostBody });
+    monoStats.push({ k: 'Span', v: `${scEntry.physicalSpanM.toFixed(1)} m` });
+    monoStats.push({ k: 'Era', v: scEntry.activeSpan });
+    if (telemetry?.lightFromEarthSec != null) monoStats.push({ k: 'Signal from Earth', v: fmtDuration(telemetry.lightFromEarthSec) });
   } else if (fullTargetDef) {
     if (target) monoStats.push({ k: 'From Sun', v: fmtKm(target.distanceKm) });
     monoStats.push({ k: 'Radius', v: `${Math.round(fullTargetDef.physical.meanRadiusKm).toLocaleString('en-US')} km` });
@@ -434,13 +481,14 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         { label: 'Orbits', on: orbitsOn, fn: onToggleOrbits, key: 'O' },
         { label: 'Stars', on: constellationsOn, fn: onToggleConstellations, key: 'C', title: 'Constellation figures' },
         { label: 'Belt', on: asteroidBeltOn, fn: onToggleAsteroidBelt, key: 'B', title: 'Asteroid belt' },
+        { label: 'Fields', on: scienceOverlaysOn, fn: onToggleScienceOverlays, key: '', title: 'Heliosphere & magnetosphere envelopes' },
       ].map((s) => (
         <button
           key={s.label}
           type="button"
           className="hud-switch"
           aria-pressed={s.on}
-          title={`${s.title ?? s.label} (${s.key})`}
+          title={s.key ? `${s.title ?? s.label} (${s.key})` : s.title ?? s.label}
           onClick={(e) => {
             e.stopPropagation();
             s.fn?.();
@@ -977,16 +1025,31 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               </dl>
             )}
 
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsReadMoreOpen(true);
-              }}
-              className="hud-link outline-none focus-visible:ring-1 focus-visible:ring-white/60"
-              style={{ color: narrative.accentColor }}
-            >
-              Read more <span className="arrow">→</span>
-            </button>
+            <div className="flex flex-wrap items-center justify-center gap-5">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsReadMoreOpen(true);
+                }}
+                className="hud-link outline-none focus-visible:ring-1 focus-visible:ring-white/60"
+                style={{ color: narrative.accentColor }}
+              >
+                Read more <span className="arrow">→</span>
+              </button>
+              {scEntry && onFlyJetSpacecraft && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onFlyJetSpacecraft(scEntry.name);
+                  }}
+                  className="hud-link outline-none focus-visible:ring-1 focus-visible:ring-white/60"
+                  style={{ color: 'var(--sol-mint)' }}
+                  title="Enter Falcon jet in close sunlit formation around this spacecraft"
+                >
+                  Fly jet beside <span className="arrow">→</span>
+                </button>
+              )}
+            </div>
           </div>
         </section>
       )}
@@ -1075,6 +1138,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           onJ2000={onResetToJ2000}
           onNow={onResetToNow}
           onSeek={onSeekDate}
+          onMissionEvent={onMissionEvent}
         />
       </footer>
 
@@ -1309,6 +1373,12 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           onNebula={(n) => {
             if (!onNebula?.(n)) showToast('That nebula is still arriving, try again in a moment');
           }}
+          onSelectSpacecraft={onSelectSpacecraft}
+          onFlyJetSpacecraft={onFlyJetSpacecraft}
+          comparisonKind={comparisonKind}
+          onSetComparison={onSetComparison}
+          scienceOverlaysOn={scienceOverlaysOn}
+          onToggleScienceOverlays={onToggleScienceOverlays}
           onClose={() => setIsCatalogueOpen(false)}
         />
       )}

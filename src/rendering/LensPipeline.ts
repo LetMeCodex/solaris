@@ -9,6 +9,10 @@ import { Pass } from 'three/examples/jsm/postprocessing/Pass.js';
 import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
+import { VolumetricCloudPass } from './VolumetricClouds';
+import { AutoExposurePass, ColorGradeShader } from './AutoExposure';
+import { HelmetShader } from './HelmetVisor';
+import { DepthTapPass, GodRaysPass } from './GodRays';
 
 /**
  * Ground-truth ambient occlusion for the overlay (the jet and its cockpit): soft darkening where
@@ -407,12 +411,21 @@ const ActionCamShader = {
  * smudges scatter forward too: a soft warm haze around the Sun. Runs on the world before the
  * cockpit overlay, so the panel, the frame and the pilot are in front of the glass, as they are.
  */
+/**
+ * The canopy glass, seen from inside (cockpit and GoPro views). Drawn over the world and under the
+ * cockpit (which the overlay draws after), in screen space, so the glass has no mesh edges cutting
+ * across the view. Modelled on cockpit footage: a cool tint and a curved sheen at the edges where
+ * the canopy bends, and when the Sun is in front: veiling glare, a starburst, the fine arcs of
+ * polishing scratches, dust and dried droplets lit from behind, ghost reflections along the line
+ * through the centre (orange, teal, violet) and a wide halo ring.
+ */
 const CanopyShader = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
     uSun: { value: new THREE.Vector3(0.5, 0.5, 0) }, // uv, strength
     uAspect: { value: 1 },
     uSeed: { value: 0 },
+    uInside: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -423,32 +436,85 @@ const CanopyShader = {
     uniform vec3 uSun;
     uniform float uAspect;
     uniform float uSeed;
+    uniform float uInside;
     varying vec2 vUv;
     float h1(float n) { return fract(sin(n * 127.1 + uSeed) * 43758.5453); }
+    float h2(vec2 q) { return fract(sin(dot(q, vec2(127.1, 311.7)) + uSeed) * 43758.5453); }
+    // Soft specks on a grid: dust and dried droplets (one per cell, some cells empty)
+    float specks(vec2 q, float scale, float fill) {
+      vec2 g = q * scale;
+      vec2 cell = floor(g);
+      vec2 f = fract(g) - 0.5;
+      vec2 o = vec2(h2(cell), h2(cell + 3.1)) - 0.5;
+      float rad = 0.03 + 0.07 * h2(cell + 7.7);
+      float on = step(1.0 - fill, h2(cell + 11.3));
+      float dist = length(f - o * 0.55);
+      float disc = smoothstep(rad, rad * 0.35, dist);
+      float rim = smoothstep(rad * 0.55, rad * 0.8, dist) * disc;
+      return on * (disc * 0.45 + rim * 0.9);
+    }
     void main() {
       vec4 c = texture2D(tDiffuse, vUv);
-      if (uSun.z < 0.002) { gl_FragColor = c; return; }
-      vec2 d = (vUv - uSun.xy) * vec2(uAspect, 1.0);
-      float r = length(d);
-      float ang = atan(d.y, d.x);
-      float arcs = 0.0;
-      // Two families of grooves at different spacings
-      for (int k = 0; k < 2; k++) {
-        float freq = k == 0 ? 140.0 : 61.0;
-        float band = floor(r * freq);
-        float f = fract(r * freq);
-        float line = 1.0 - smoothstep(0.0, 0.11, abs(f - 0.5));
-        float on = step(0.72, h1(band + float(k) * 91.0));
-        float centre = h1(band * 3.7 + 11.0 + float(k)) * 6.2831;
-        float halfLen = 0.15 + 0.55 * h1(band * 7.1 + 5.0);
-        float da = abs(mod(ang - centre + 3.14159, 6.28318) - 3.14159);
-        float seg = 1.0 - smoothstep(halfLen * 0.7, halfLen, da);
-        arcs += line * on * seg * (0.55 + 0.45 * h1(band + 3.0));
+      vec3 col = c.rgb;
+      vec2 asp = vec2(uAspect, 1.0);
+      vec2 p = (vUv - 0.5) * asp;
+      float k = uSun.z;
+      // The glass itself: a cool tint, a sheen where it curves away at the edges
+      float edge = smoothstep(0.35, 1.0, length(p * vec2(0.78, 1.18)));
+      col *= mix(vec3(1.0), vec3(0.94, 0.975, 1.02), uInside);
+      col += uInside * edge * vec3(0.045, 0.07, 0.11) * (0.5 + 0.5 * k);
+      float arcR = length((p - vec2(0.0, -0.62)) * vec2(0.82, 1.0));
+      col += uInside * exp(-(((arcR - 1.02) / 0.06) * ((arcR - 1.02) / 0.06))) * vec3(0.22, 0.32, 0.46) * 0.05;
+      // A faint layer of dust everywhere
+      float dust = specks(p + 0.13, 34.0, 0.32) + 0.6 * specks(p * 1.7 + 0.71, 61.0, 0.22);
+      col += uInside * dust * vec3(0.55, 0.62, 0.7) * 0.012;
+      if (k > 0.002) {
+        vec3 sunCol = vec3(1.0, 0.93, 0.82);
+        vec2 sp = (uSun.xy - 0.5) * asp;
+        vec2 d = p - sp;
+        float r = length(d);
+        float ang = atan(d.y, d.x);
+        // Veiling glare: the glass scatters a little of the Sun over everything near it
+        col += sunCol * k * (exp(-r * 6.0) * 0.3 + exp(-r * 1.8) * 0.05);
+        // Starburst: long rays and fine streaks
+        float rays = pow(abs(cos(ang * 6.0 + 0.3)), 70.0) * 0.9 + pow(abs(cos(ang * 17.0 + 1.1)), 140.0) * 0.6;
+        rays *= exp(-r * 4.2) * (0.55 + 0.45 * h2(vec2(floor(ang * 36.0), 2.0)));
+        col += sunCol * k * rays * 0.15;
+        // Polishing scratches: short concentric arcs round the Sun
+        float arcs = 0.0;
+        for (int i = 0; i < 2; i++) {
+          float freq = i == 0 ? 140.0 : 61.0;
+          float band = floor(r * freq);
+          float f = fract(r * freq);
+          float line = 1.0 - smoothstep(0.0, 0.11, abs(f - 0.5));
+          float on = step(0.72, h1(band + float(i) * 91.0));
+          float centre = h1(band * 3.7 + 11.0 + float(i)) * 6.2831;
+          float halfLen = 0.15 + 0.55 * h1(band * 7.1 + 5.0);
+          float da = abs(mod(ang - centre + 3.14159, 6.28318) - 3.14159);
+          float seg = 1.0 - smoothstep(halfLen * 0.7, halfLen, da);
+          arcs += line * on * seg * (0.55 + 0.45 * h1(band + 3.0));
+        }
+        col += sunCol * k * arcs * (exp(-r * 6.0) + 0.25 * exp(-r * 2.0)) * 0.08;
+        // Dust and droplets lit from behind by the Sun
+        col += sunCol * k * dust * exp(-r * 2.4) * 0.3;
+        // Ghosts: reflections between the glass layers, along the line through the centre
+        vec2 axis = -sp;
+        for (int i = 0; i < 5; i++) {
+          float fi = float(i);
+          float t = 0.55 + fi * 0.42 + 0.15 * h1(fi + 2.0);
+          float sz = 0.025 + 0.06 * h1(fi + 9.0);
+          vec2 gp = sp + axis * t * 1.15;
+          float gd = length(p - gp);
+          float disc = smoothstep(sz, sz * 0.7, gd);
+          float ring = exp(-(((gd - sz) / (sz * 0.12)) * ((gd - sz) / (sz * 0.12))));
+          vec3 gc = i == 0 ? vec3(1.0, 0.55, 0.2) : i == 1 ? vec3(0.3, 0.85, 0.95) : i == 2 ? vec3(0.75, 0.45, 1.0) : i == 3 ? vec3(1.0, 0.75, 0.35) : vec3(0.4, 1.0, 0.7);
+          col += gc * k * (disc * 0.025 + ring * 0.04);
+        }
+        // A wide halo ring round the Sun, faintly coloured at its edge
+        float halo = exp(-(((r - 0.46) / 0.03) * ((r - 0.46) / 0.03)));
+        col += mix(vec3(0.5, 0.75, 1.0), vec3(1.0, 0.7, 0.45), smoothstep(0.43, 0.49, r)) * halo * k * 0.02;
       }
-      float near = exp(-r * 7.0) + 0.25 * exp(-r * 2.2);
-      float haze = exp(-r * 4.0) * 0.06 + exp(-r * 14.0) * 0.12;
-      vec3 add = vec3(1.0, 0.96, 0.9) * (arcs * near * 0.18 + haze) * uSun.z;
-      gl_FragColor = vec4(c.rgb + add, c.a);
+      gl_FragColor = vec4(col, c.a);
     }
   `,
 };
@@ -494,6 +560,15 @@ export class LensPipeline {
   private actionCamPass = new ShaderPass(ActionCamShader);
   private speedBlurPass = new ShaderPass(SpeedBlurShader);
   private canopyPass = new ShaderPass(CanopyShader);
+  /** The pilot's helmet and visor (GoPro view): after the lens, the closest thing to the eye. */
+  private helmetPass = new ShaderPass(HelmetShader);
+  /** Volumetric clouds over Earth in jet mode (off elsewhere): reads the scene's depth. */
+  /** Flight: the world metered like an action camera, and the film grade (see AutoExposure.ts). */
+  public readonly exposure = new AutoExposurePass();
+  private depthTap = new DepthTapPass();
+  private godRays = new GodRaysPass();
+  private gradePass = new ShaderPass(ColorGradeShader);
+  public readonly clouds = new VolumetricCloudPass(perf.tier === 'high' ? 0.5 : perf.tier === 'medium' ? 0.42 : 0.33);
 
   private prevViewProj = new THREE.Matrix4();
   private hasPrev = false;
@@ -508,10 +583,19 @@ export class LensPipeline {
 
     const size = renderer.getSize(new THREE.Vector2());
     const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType });
+    // The scene's depth, for the volumetric clouds (each composer buffer gets its own copy)
+    target.depthTexture = new THREE.DepthTexture(size.x, size.y, THREE.FloatType);
     this.composer = new EffectComposer(renderer, target);
     this.composer.setPixelRatio(perf.pixelRatio(1.5));
 
     this.composer.addPass(new RenderPass(scene, camera));
+    this.composer.addPass(this.depthTap);
+    this.composer.addPass(this.clouds);
+    // Metering sees the world and its clouds, never the cockpit (the overlay comes later)
+    this.exposure.depthSource = () => this.depthTap.depth;
+    this.composer.addPass(this.exposure);
+    this.godRays.depthSource = () => this.depthTap.depth;
+    this.composer.addPass(this.godRays);
     // Speed blur smears the world only: it runs before the overlay (the jet stays sharp)
     this.speedBlurPass.enabled = false;
     this.composer.addPass(this.speedBlurPass);
@@ -522,6 +606,8 @@ export class LensPipeline {
     this.bloomPass = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.4, 0.5, 0.85);
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(new OutputPass());
+    this.gradePass.enabled = false;
+    this.composer.addPass(this.gradePass);
     this.actionCamPass.enabled = false;
     this.composer.addPass(this.actionCamPass);
     this.fxaaPass.enabled = false;
@@ -531,6 +617,8 @@ export class LensPipeline {
     this.composer.addPass(this.smaaPass);
     this.lensPass = new ShaderPass(LensShader);
     this.composer.addPass(this.lensPass);
+    this.helmetPass.enabled = false;
+    this.composer.addPass(this.helmetPass);
 
     if (typeof window !== 'undefined' && window.matchMedia) {
       this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -596,7 +684,7 @@ export class LensPipeline {
     if (this.overlayPass.enabled && this.profile.name === 'clean') {
       this.bloomPass.strength = 0.2 * this.bloomGain;
       this.bloomPass.radius = 0.35;
-      this.bloomPass.threshold = 1.0;
+      this.bloomPass.threshold = 2.2; // only the Sun and flames glow, not sunlit cloud or paint
     }
   }
 
@@ -649,7 +737,23 @@ export class LensPipeline {
 
   /** Resolution of the composer's targets: the full screen while flying, a little less otherwise. */
   private composerRatio(): number {
-    return this.overlayPass.enabled ? perf.pixelRatio(2) : perf.pixelRatio(1.5);
+    const base = this.overlayPass.enabled ? perf.pixelRatio(2) : perf.pixelRatio(1.5);
+    return base * this.supersample;
+  }
+
+  /**
+   * Render the scene at more pixels than the screen has (k > 1). The GoPro needs it: its lens
+   * folds a ~100 degree render into a fisheye that magnifies the centre about 1.6x, so at screen
+   * resolution every pixel in the middle was stretched (soft, blocky). Supersampled, the fold
+   * samples real detail.
+   */
+  private supersample = 1;
+
+  public setSupersample(k: number): void {
+    const v = THREE.MathUtils.clamp(k, 1, 2);
+    if (Math.abs(v - this.supersample) < 0.01) return;
+    this.supersample = v;
+    this.refreshResolution();
   }
 
   /** Re-apply the resolution (the performance governor changed its scale). */
@@ -699,6 +803,10 @@ export class LensPipeline {
     const on = !!scene && !!camera;
     this.overlayPass.scene = scene;
     this.overlayPass.camera = camera;
+    // Flight is filmed: metered exposure and the grade (the observatory keeps its own look)
+    this.exposure.enabled = on;
+    this.gradePass.enabled = on;
+    if (!on) this.godRays.enabled = false;
     // Ambient occlusion on the jet: only where the GPU has room for it
     if (on && scene && camera && !this.aoPass && perf.settings.ao) {
       const size = this.renderer.getSize(new THREE.Vector2());
@@ -776,9 +884,37 @@ export class LensPipeline {
     this.lensPass.uniforms.uGrey.value = this.reducedMotion ? Math.min(level, 0.5) : level;
   }
 
+  /** God rays from the Sun at scene NDC (x, y), strength 0..1 (0 off). */
+  /** The film grade's warmth (0 noon, 1 with the Sun on the horizon) and the clock for its grain. */
+  public setGrade(warm: number, timeSec: number): void {
+    this.gradePass.uniforms.uWarm.value = warm;
+    this.gradePass.uniforms.uTime.value = timeSec;
+  }
+
+  public setGodRays(x: number, y: number, k: number): void {
+    const size = this.renderer.getSize(new THREE.Vector2());
+    this.godRays.enabled = this.overlayPass.enabled && k > 0.003;
+    this.godRays.set(x, y, k, size.x / Math.max(1, size.y));
+  }
+
+  /**
+   * The helmet round the eyes (0 off .. 1), with the Sun's position (output NDC) and strength for
+   * the visor's smudges.
+   */
+  public setHelmet(k: number, sunNdcX: number, sunNdcY: number, sunK: number, timeSec: number): void {
+    this.helmetPass.enabled = k > 0.001 && this.overlayPass.enabled;
+    const u = this.helmetPass.uniforms;
+    u.uOn.value = k;
+    u.uSun.value.set(sunNdcX * 0.5 + 0.5, sunNdcY * 0.5 + 0.5, sunK);
+    u.uTime.value = timeSec;
+    const size = this.renderer.getSize(new THREE.Vector2());
+    u.uAspect.value = size.x / Math.max(1, size.y);
+  }
+
   /** Sunlight on the canopy (from inside): the Sun's position (output NDC) and strength 0..1 (0 off). */
-  public setCanopySun(ndcX: number, ndcY: number, strength: number): void {
-    this.canopyPass.enabled = this.overlayPass.enabled && strength > 0.002;
+  public setCanopySun(ndcX: number, ndcY: number, strength: number, inside = false): void {
+    this.canopyPass.enabled = this.overlayPass.enabled && (inside || strength > 0.002);
+    this.canopyPass.uniforms.uInside.value = inside ? 1 : 0;
     const u = this.canopyPass.uniforms;
     u.uSun.value.set(ndcX * 0.5 + 0.5, ndcY * 0.5 + 0.5, strength);
     const size = this.renderer.getSize(new THREE.Vector2());
@@ -793,6 +929,7 @@ export class LensPipeline {
   }
 
   public render(timeSec: number): void {
+    if (this.clouds.enabled) this.clouds.setView(this.camera);
     if (this.profile.name === 'clean' && !this.overlayPass.enabled) {
       this.renderer.render(this.scene, this.camera);
       this.hasPrev = false;
@@ -809,6 +946,9 @@ export class LensPipeline {
     u.uPrevViewProj.value.copy(this.hasPrev ? this.prevViewProj : this.tmpViewProj);
     u.uTime.value = timeSec;
 
+    const rSize = this.renderer.getSize(new THREE.Vector2());
+    this.renderer.setViewport(0, 0, rSize.x, rSize.y);
+    this.renderer.setScissor(0, 0, rSize.x, rSize.y);
     this.composer.render();
 
     this.prevViewProj.copy(this.tmpViewProj);
@@ -817,6 +957,9 @@ export class LensPipeline {
 
   public dispose(): void {
     this.composer.dispose();
+    this.clouds.dispose();
+    this.exposure.dispose();
+    this.godRays.dispose();
     this.bloomPass.dispose();
     this.lensPass.dispose?.();
   }

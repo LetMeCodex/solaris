@@ -40,3 +40,4 @@ scripts/.sb-cache/
 
 # fonts fetched by the README art generator
 scripts/readme/.fonts/
+scripts/.radio_tmp/

@@ -10,7 +10,9 @@
 
 const URL_TEMPLATE = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
 const MAX_Z = 13;
-const MAX_CACHE = 160;
+// The procedural terrain's five patches hold ~25 tiles each at their own zoom, with the jet's own
+// besides: fewer and they pushed each other out, fetched again and again
+const MAX_CACHE = 260;
 const MAX_CONCURRENT = 6;
 
 interface HeightTile {
@@ -31,10 +33,15 @@ function mercator(latDeg: number, lonDeg: number, z: number): { x: number; y: nu
 }
 
 export class EarthElevation {
+  /** A clock read once a frame-ish (performance.now() for each of millions of samples added up). */
+  public static now = 0;
   private tiles = new Map<string, HeightTile>();
   private inFlight = 0;
   private waiting: Array<() => void> = [];
   private failures = 0;
+  private lastHit: { t: HeightTile | null; z: number; x: number; y: number; key: string } = { t: null, z: -1, x: -1, y: -1, key: '' };
+  /** Height tiles decoded so far (a change means new heights to build with). */
+  public loadedCount = 0;
   /** The service could not be reached: everything stays flat. */
   public disabled = false;
 
@@ -43,8 +50,14 @@ export class EarthElevation {
     return Math.max(0, Math.min(MAX_Z, Math.floor(Math.log2(360 / Math.max(spanDeg, 1e-6)))));
   }
 
+  /** Same as the static zoomFor (the ElevationSource seam shared with other worlds' terrain). */
+  public zoomFor(spanDeg: number): number {
+    return EarthElevation.zoomFor(spanDeg);
+  }
+
   /** Make sure every height tile covering the box is loaded (resolves when they are, or failed). */
   public ensure(south: number, west: number, north: number, east: number, z: number): Promise<void> {
+    EarthElevation.now = performance.now();
     if (this.disabled) return Promise.resolve();
     const a = mercator(north, west, z);
     const b = mercator(south, east, z);
@@ -67,7 +80,18 @@ export class EarthElevation {
       const n = 2 ** zz;
       const tx = Math.min(n - 1, Math.floor(p.x));
       const ty = Math.min(n - 1, Math.max(0, Math.floor(p.y)));
-      let t = this.tiles.get(`${zz}/${tx}/${ty}`);
+      // The same tile as the last call, as a run of nearby points nearly always is: no lookup (the
+      // key string made for each of the terrain's millions of calls was most of its cost, and its
+      // garbage stalled the page a third of a second at a time)
+      const last = this.lastHit;
+      if (last.t && last.z === zz && last.x === tx && last.y === ty && last.t.heights && this.tiles.get(last.key) === last.t) {
+        return this.sampleTile(last.t, p.x - tx, p.y - ty);
+      }
+      const key = `${zz}/${tx}/${ty}`;
+      let t = this.tiles.get(key);
+      if (t?.heights) {
+        last.t = t; last.z = zz; last.x = tx; last.y = ty; last.key = key;
+      }
       if (!t?.heights) {
         // On a shared edge: the tile on the other side holds the same heights
         const ex = p.x - tx < 1e-6 ? tx - 1 : tx;
@@ -84,7 +108,7 @@ export class EarthElevation {
   /** Bilinear height (km, sea level floor) at fractional position (u, v) in a tile (0..1, may touch 1). */
   private sampleTile(t: HeightTile, uu: number, vv: number): number {
     {
-      t.lastUsed = performance.now();
+      t.lastUsed = EarthElevation.now;
       const fx = Math.min(255, Math.max(0, uu * 256 - 0.5));
       const fy = Math.min(255, Math.max(0, vv * 256 - 0.5));
       const x0 = Math.floor(fx);
@@ -126,6 +150,7 @@ export class EarthElevation {
               for (let i = 0; i < h.length; i++) h[i] = d[i * 4] * 256 + d[i * 4 + 1] + d[i * 4 + 2] / 256 - 32768;
               tile.heights = h;
               tile.lastUsed = performance.now();
+              this.loadedCount++;
               this.failures = 0;
             } catch {
               this.fail();

@@ -860,6 +860,18 @@
 .sol-marker:hover i { transform: scale(1.5); }
 .sol-marker > * { pointer-events: none; }
 .sol-marker { margin-top: -5px; }
+.sol-marker.is-spacecraft { font-size: 9px; letter-spacing: 0.14em; color: rgba(182, 238, 255, 0.88); }
+.sol-marker.is-spacecraft i {
+  width: 7px;
+  height: 7px;
+  margin-left: -3.5px;
+  border-radius: 1px;
+  transform: rotate(45deg);
+  border-color: var(--c, #7fd4ff);
+  box-shadow: 0 0 8px rgba(127, 212, 255, 0.45);
+}
+.sol-marker.is-spacecraft i::after { display: none; }
+.sol-marker.is-spacecraft:hover i { transform: rotate(45deg) scale(1.45); }
 @media (max-width: 640px) { .sol-marker.is-minor span { display: none; } }
 
 /* ===================== Atlas launcher: an astrolabe ===================== */
@@ -1476,3 +1488,237 @@
 @media (max-width: 640px) { .frep-sub { width: 17ch; } .frep-name { font-size: 14px; } }
 @media (hover: none) { .frep-card { display: none; } }
 @media (prefers-reduced-motion: reduce) { .frep-sky, .frep-star, .frep-caret, .frep-vela { animation: none; } }
+
+/* A phone on its side (short and not wide): the top bar's words step aside for its icons, or the
+   last buttons (briefing, hide, settings) ran off the right edge */
+@media (max-height: 500px) and (max-width: 980px) {
+  .atlas-launch .atlas-text { display: none; }
+  .hud-btn > span.sm\:inline { display: none; }
+}
+
+/* ===================== NASA Spacecraft Fleet Tab (.sc-*) ===================== */
+.sc-stage {
+  position: absolute;
+  inset: calc(3.2vh + 86px) 40px 44px 40px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  pointer-events: auto;
+  animation: cat-in 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.sc-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(9, 13, 18, 0.82);
+  border: 1px solid rgba(110, 231, 255, 0.16);
+  backdrop-filter: blur(18px);
+}
+.sc-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.sc-pill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-family: var(--sol-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(236, 242, 239, 0.65);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.sc-pill:hover {
+  color: #fff;
+  border-color: rgba(110, 231, 255, 0.38);
+}
+.sc-pill.is-on {
+  color: #061217;
+  background: #6ee7ff;
+  border-color: #6ee7ff;
+  font-weight: 600;
+}
+.sc-pill.is-amber.is-on {
+  color: #161004;
+  background: #ffc861;
+  border-color: #ffc861;
+}
+.sc-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.sc-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.sc-search input {
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: #fff;
+  font-size: 11px;
+  width: 170px;
+}
+.sc-search input::placeholder {
+  color: rgba(236, 242, 239, 0.35);
+}
+.sc-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+  padding-right: 4px;
+  align-content: start;
+}
+.sc-grid::-webkit-scrollbar { width: 4px; }
+.sc-grid::-webkit-scrollbar-thumb { background: rgba(110, 231, 255, 0.24); border-radius: 4px; }
+.sc-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 15px;
+  border-radius: 12px;
+  background: rgba(10, 14, 20, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  transition: border-color 0.2s ease, transform 0.2s ease, background 0.2s ease;
+}
+.sc-card:hover {
+  border-color: rgba(110, 231, 255, 0.36);
+  background: rgba(13, 19, 28, 0.9);
+  transform: translateY(-1px);
+}
+.sc-card.is-current {
+  border-color: rgba(110, 231, 255, 0.65);
+  box-shadow: inset 0 0 0 1px rgba(110, 231, 255, 0.22);
+}
+.sc-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sc-name {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #f3f7f8;
+  line-height: 1.25;
+}
+.sc-role {
+  font-family: var(--sol-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #6ee7ff;
+  margin-top: 2px;
+}
+.sc-status {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-family: var(--sol-mono);
+  font-size: 8.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(236, 242, 239, 0.72);
+}
+.sc-status.is-active {
+  color: #6dfcc0;
+  border-color: rgba(109, 252, 192, 0.45);
+  background: rgba(109, 252, 192, 0.08);
+}
+.sc-status.is-upcoming {
+  color: #ffc861;
+  border-color: rgba(255, 200, 97, 0.45);
+  background: rgba(255, 200, 97, 0.08);
+}
+.sc-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-family: var(--sol-mono);
+  font-size: 9.5px;
+  color: rgba(236, 242, 239, 0.56);
+}
+.sc-meta b {
+  color: rgba(236, 242, 239, 0.88);
+  font-weight: 500;
+}
+.sc-desc {
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(236, 242, 239, 0.68);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.sc-highlights {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 10px;
+  color: rgba(236, 242, 239, 0.58);
+}
+.sc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: auto;
+  padding-top: 4px;
+}
+.sc-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  font-family: var(--sol-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border: 1px solid rgba(110, 231, 255, 0.35);
+  background: rgba(110, 231, 255, 0.12);
+  color: #b7f4ff;
+  transition: all 0.2s ease;
+}
+.sc-btn:hover {
+  background: rgba(110, 231, 255, 0.24);
+  color: #fff;
+}
+.sc-btn.is-epoch {
+  border-color: rgba(255, 200, 97, 0.35);
+  background: rgba(255, 200, 97, 0.1);
+  color: #ffd98f;
+}
+.sc-btn.is-epoch:hover {
+  background: rgba(255, 200, 97, 0.22);
+  color: #fff;
+}
+@media (max-width: 640px) {
+  .sc-stage { inset: calc(3.2vh + 82px) 14px 20px 14px; }
+  .sc-grid { grid-template-columns: 1fr; }
+}

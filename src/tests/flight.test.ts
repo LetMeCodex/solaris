@@ -37,6 +37,13 @@ describe('flight drive', () => {
     expect(thin).toBeCloseTo(AIR_LIMIT_MPS * 10, 3);
   });
 
+  it('in thick air the top speed does not follow the height over the ground', () => {
+    // 30 m over a ridge, then 2 km over the valley past it: same air, same throttle, same speed
+    const at = (km: number): number => speedCeiling({ altitudeUnits: km / EARTH_KPU, kmPerUnit: EARTH_KPU, airDensity: 0.7 });
+    expect(at(0.03)).toBeCloseTo(at(2), 9);
+    expect(throttleTarget(0.4, speedFloor(EARTH_KPU), at(0.03))).toBeCloseTo(throttleTarget(0.4, speedFloor(EARTH_KPU), at(2)), 9);
+  });
+
   it('maps the throttle exponentially between floor and ceiling, with idle at zero', () => {
     expect(throttleTarget(0, 1, 1000)).toBe(0);
     expect(throttleTarget(1, 1, 1000)).toBeCloseTo(1000, 9);

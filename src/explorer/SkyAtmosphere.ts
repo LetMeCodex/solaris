@@ -154,6 +154,14 @@ const fragmentShader = /* glsl */ `
     }
 
     vec3 o = vec3(0.0, uRadius + uEye, 0.0);
+    // Below the horizon the ground is drawn by the terrain: where it is not drawn (yet), the dome
+    // shows the air just above the horizon, a bright haze, rather than a dark band of planet
+    float dipY = -sqrt(max(0.0, 1.0 - pow(uRadius / (uRadius + uEye), 2.0)));
+    if (d.y < dipY + 0.002) {
+      vec2 hz = normalize(d.xz + vec2(1e-6));
+      float y = dipY + 0.002;
+      d = vec3(hz.x * sqrt(1.0 - y * y), y, hz.y * sqrt(1.0 - y * y));
+    }
     vec2 at = raySphere(o, d, uRadius + uTop);
     vec2 gr = raySphere(o, d, uRadius);
     float tEnd = at.y;
@@ -195,6 +203,15 @@ const fragmentShader = /* glsl */ `
     // Multiple scattering (approx.): light already scattered once, spread evenly over the sky
     vec3 multi = (sumR * uBetaR + sumM * uBetaMs) * (uMulti / (4.0 * PI));
     vec3 col = uSunI * (single + multi);
+    // The long, low paths near the horizon are lit by the whole sky above them, not only by the
+    // direct sunlight that reaches them (reddened on the way): with the Sun well up the horizon is
+    // the pale, whitened colour of the world's own sky (blue-white on Earth, a warm white on Mars),
+    // not the yellow band single scattering leaves. Brightness is kept; low Suns keep their glow
+    vec3 skyTint = pow(uBetaR / max(max(uBetaR.r, uBetaR.g), uBetaR.b), vec3(0.15));
+    skyTint /= dot(skyTint, vec3(0.2126, 0.7152, 0.0722));
+    float thick = 1.0 - exp(-(uBetaR.g * odR + uBetaMe.g * odM) * 0.9);
+    float msK = thick * smoothstep(0.06, 0.3, s.y) * 0.7;
+    col = mix(col, dot(col, vec3(0.2126, 0.7152, 0.0722)) * skyTint, msK);
     vec3 trans = exp(-(uBetaR * odR + uBetaMe * odM + uBetaA * odR));
     col *= uExposure;
     float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
@@ -296,7 +313,10 @@ export class SkyAtmosphere {
     u.uSunElev.value = sunDir.dot(frame.up);
     // Stars fade from civil twilight (−6°) to sunrise, as they do to the eye
     const sunAlt = (Math.asin(THREE.MathUtils.clamp(u.uSunElev.value, -1, 1)) * 180) / Math.PI;
-    u.uStarDim.value = this.model.kind === 'scatter' ? THREE.MathUtils.smoothstep(sunAlt, -10, -1) * this.starDimScale : 0;
+    // and with height: above ~20 km the air is too thin to glow, and by the edge of space (where
+    // the dome hands over to the open sky) the stars are fully there, with no sudden switch
+    const thin = 1 - THREE.MathUtils.smoothstep(eyeHeightM, 20000, 55000);
+    u.uStarDim.value = this.model.kind === 'scatter' ? THREE.MathUtils.smoothstep(sunAlt, -10, -1) * this.starDimScale * thin : 0;
     // The eye adapts after sunset: twilight reads as a lit sky, not the black of a daytime exposure
     const dusk = THREE.MathUtils.smoothstep(-sunAlt, -1, 5);
     u.uExposure.value = SkyAtmosphere.EXPOSURE * (1 + 7 * dusk);

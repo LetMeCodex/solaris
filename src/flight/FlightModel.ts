@@ -67,6 +67,15 @@ export const ROLL_ACCEL = 14;
 export const MAX_ROLL_RATE_AIR = 5.2;
 /** Speed bled in a hard turn: m/s² per g of load over 1 (scaled up steeply), at full density. */
 export const TURN_BLEED = 1.25;
+/**
+ * Handling speed, m/s: the g limit, the load's onset and the g the pilot feels are worked out as if
+ * the jet were at most this fast (about a fighter's corner speed). At true speed, past Mach 1 the
+ * 9 g limit shrinks the pitch rate to a crawl (0.6 deg/s at Mach 25) and the onset limit makes even
+ * that take twenty seconds to build, while a held pull reads hundreds of g, bleeds thousands of m/s²
+ * and greys the pilot out. So the stick answers as crisply at Mach 25 as at 1,000 km/h; the turn
+ * radius (speed over rate) still grows with speed.
+ */
+export const HANDLING_MPS = 300;
 /** The cobra: up to ~100 degrees nose-up and back, in this many seconds. */
 export const COBRA_TIME = 2.4;
 const G0 = 9.80665;
@@ -94,6 +103,19 @@ export interface FlightEnv {
   kmPerUnit: number;
   /** Air density relative to Earth's sea level (0 in vacuum). */
   airDensity: number;
+  /**
+   * Speed tier overrides (Earth's travel modes): the top speed in sea-level air, m/s, in place of
+   * AIR_LIMIT_MPS, and a speed the drive may always reach however low the jet is (the drive is
+   * otherwise held to DRIVE_RATE x height, which keeps a jet near the ground at jet speeds).
+   */
+  airLimitMps?: number;
+  driveFloorMps?: number;
+  /** Multiplies the engines' acceleration in air (the tiers' scramjet pulls far harder than a jet). */
+  airAccelScale?: number;
+  /** Optional close-range spacecraft inspection floor/ceiling (render units/s) blended when orbiting a probe. */
+  inspectFloorUnitsPerS?: number;
+  inspectCeilingUnitsPerS?: number;
+  inspectBlend?: number;
 }
 
 export const unitsPerMps = (kmPerUnit: number): number => 0.001 / kmPerUnit;
@@ -107,9 +129,20 @@ export function speedFloor(kmPerUnit: number): number {
 export function speedCeiling(env: FlightEnv): number {
   const floor = speedFloor(env.kmPerUnit);
   let ceiling = Math.max(floor, Math.min(MAX_DRIVE_UNITS_PER_S, DRIVE_RATE * Math.max(0, env.altitudeUnits)));
+  if (env.driveFloorMps) ceiling = Math.max(ceiling, env.driveFloorMps * unitsPerMps(env.kmPerUnit));
   if (env.airDensity > 0) {
-    const air = (AIR_LIMIT_MPS / Math.sqrt(Math.max(env.airDensity, 1e-6))) * unitsPerMps(env.kmPerUnit);
-    ceiling = Math.min(ceiling, Math.max(floor, air));
+    const air = ((env.airLimitMps ?? AIR_LIMIT_MPS) / Math.sqrt(Math.max(env.airDensity, 1e-6))) * unitsPerMps(env.kmPerUnit);
+    // In real air the engines set the top speed, not the height: held to DRIVE_RATE x height, a
+    // jet low over the ground had its speed tied to the ground under it, and it sped up on its
+    // own over every valley and cliff edge with the throttle untouched. (Up in the thin air the
+    // drive's limit takes over again; at 2% density the two meet.)
+    ceiling = env.airDensity > 0.02 ? Math.max(floor, air) : Math.min(ceiling, Math.max(floor, air));
+  }
+  if (env.inspectBlend && env.inspectBlend > 0 && env.inspectCeilingUnitsPerS !== undefined) {
+    const t = THREE.MathUtils.clamp(env.inspectBlend, 0, 1);
+    const capped = THREE.MathUtils.lerp(ceiling, Math.min(ceiling, Math.max(env.inspectCeilingUnitsPerS, env.inspectFloorUnitsPerS ?? floor)), t);
+    const raised = Math.max(capped, (env.inspectFloorUnitsPerS ?? 0) * t);
+    ceiling = raised;
   }
   return ceiling;
 }
@@ -234,7 +267,7 @@ export class FlightModel {
 
   /** How far boost pushes past the throttle ceiling: the afterburner in air, the drive in vacuum. */
   public boostFactor(airDensity: number): number {
-    const k = Math.min(1, airDensity * 10);
+    const k = Math.min(1, airDensity * 5);
     return BOOST_FACTOR + (AFTERBURNER_FACTOR - BOOST_FACTOR) * k;
   }
 
@@ -252,8 +285,9 @@ export class FlightModel {
     // rate is held under the G limit and the load can only build so fast (the onset limit); the
     // roll snaps to a high rate but has to accelerate to it.
     if (input.cobra && this.cobraT < 0 && inAir && speedMps > 80 && speedMps < 450 && input.assist) this.cobraT = 0;
+    const handling = Math.min(speedMps, HANDLING_MPS);
     let maxPitch = MAX_PITCH_RATE;
-    if (inAir && speedMps > 1) maxPitch = Math.max(0.3, Math.min(MAX_PITCH_RATE, (G_LIMIT * G0) / speedMps));
+    if (inAir && handling > 1) maxPitch = Math.max(0.3, Math.min(MAX_PITCH_RATE, (G_LIMIT * G0) / handling));
     const k = 1 - Math.exp(-RATE_RESPONSE * dt);
     const tp = THREE.MathUtils.clamp(input.pitch, -1, 1) * maxPitch;
     const ty = -THREE.MathUtils.clamp(input.yaw, -1, 1) * MAX_YAW_RATE;
@@ -276,7 +310,7 @@ export class FlightModel {
       let dp = (tp - this.rates.x) * k;
       if (inAir && speedMps > 30) {
         // Onset: the pitch rate (so the load) may not grow faster than G_ONSET allows
-        const maxStep = ((G_ONSET * G0) / speedMps) * dt;
+        const maxStep = ((G_ONSET * G0) / handling) * dt;
         if (Math.abs(this.rates.x + dp) > Math.abs(this.rates.x)) dp = THREE.MathUtils.clamp(dp, -maxStep, maxStep);
       }
       this.rates.x += dp;
@@ -297,25 +331,35 @@ export class FlightModel {
     const fwd = this.forward(this.tmpForward);
 
     // --- Speed: throttle → target between the floor and the drive ceiling
-    const floor = speedFloor(env.kmPerUnit);
+    const baseFloor = speedFloor(env.kmPerUnit);
+    const tInspect = env.inspectBlend ? THREE.MathUtils.clamp(env.inspectBlend, 0, 1) : 0;
+    const floor =
+      tInspect > 0 && env.inspectFloorUnitsPerS !== undefined
+        ? THREE.MathUtils.lerp(baseFloor, Math.max(baseFloor, env.inspectFloorUnitsPerS), tInspect)
+        : baseFloor;
     const ceiling = speedCeiling(env);
     let target = throttleTarget(input.throttle, floor, ceiling);
     this.boosting = input.boost && this.boostEnergy > 0.02 && input.throttle > 0.02;
     if (this.boosting) {
       target = Math.max(target, ceiling) * this.boostFactor(env.airDensity);
-      this.boostEnergy = Math.max(0, this.boostEnergy - BOOST_DRAIN * dt);
+      const drainRate = inAir ? BOOST_DRAIN * 0.45 : BOOST_DRAIN;
+      this.boostEnergy = Math.max(0, this.boostEnergy - drainRate * dt);
     } else {
-      this.boostEnergy = Math.min(1, this.boostEnergy + BOOST_RECHARGE * dt);
+      const rechargeRate = inAir ? BOOST_RECHARGE * 1.5 : BOOST_RECHARGE;
+      this.boostEnergy = Math.min(1, this.boostEnergy + rechargeRate * dt);
     }
-    const linear = LINEAR_ACCEL_MPS2 * upm * (this.boosting ? 3 : 1);
+    const baseLinear = LINEAR_ACCEL_MPS2 * upm;
+    const inspectLinear = tInspect > 0 && env.inspectFloorUnitsPerS ? env.inspectFloorUnitsPerS * 2.2 * tInspect : 0;
+    const linear = Math.max(baseLinear, inspectLinear) * (this.boosting ? 3 : 1);
 
     if (input.assist) {
       const before = this.speed;
       this.speed = approachSpeed(this.speed, target, dt, linear);
       // In air the engines, not the drive, set the pace: real fighter acceleration
       if (inAir && this.speed > before) {
-        const airAccel = (this.boosting ? AIR_ACCEL_AB_MPS2 : AIR_ACCEL_MPS2) * upm;
-        const k = Math.min(1, env.airDensity * 6);
+        const ramjetBonus = (1 - Math.min(1, env.airDensity * 2.5)) * 260;
+        const airAccel = ((this.boosting ? AIR_ACCEL_AB_MPS2 : AIR_ACCEL_MPS2) + (this.boosting ? ramjetBonus : 0)) * upm * (env.airAccelScale ?? 1);
+        const k = Math.min(1, env.airDensity * 4);
         this.speed = Math.min(this.speed, before + airAccel * dt + (this.speed - before) * (1 - k));
       }
       // A hard turn costs energy: induced drag grows with the load (steeply), so a sustained 9 g
@@ -357,7 +401,7 @@ export class FlightModel {
 
     // Load factor: centripetal acceleration of the turn plus 1 g, smoothed
     const turnRate = Math.hypot(this.rates.x, this.rates.y);
-    const g = inAir ? 1 + (speedMps * turnRate) / G0 : 0;
+    const g = inAir ? 1 + (Math.min(speedMps, HANDLING_MPS) * turnRate) / G0 : 0;
     this.gLoad += (g - this.gLoad) * (1 - Math.exp(-4 * dt));
 
     this.position.addScaledVector(this.velocity, dt);

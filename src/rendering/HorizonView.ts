@@ -113,10 +113,10 @@ export class HorizonView {
           vec3 toHole = normalize(-uCam);
           float th = acos(clamp(dot(r, toHole), -1.0, 1.0));
           float inside = smoothstep(uShadow * 0.92, uShadow * 1.02, th);
-          float ring = exp(-pow((th - uShadow * 1.12) / (uShadow * 0.22), 2.0)) * 3.2
-                     + exp(-pow((th - uShadow * 1.5) / (uShadow * 0.6), 2.0)) * 0.9;
+          float ring = exp(-(((th - uShadow * 1.12) / (uShadow * 0.22)) * ((th - uShadow * 1.12) / (uShadow * 0.22)))) * 3.2
+                     + exp(-(((th - uShadow * 1.5) / (uShadow * 0.6)) * ((th - uShadow * 1.5) / (uShadow * 0.6)))) * 0.9;
           // Disk band hugging the horizon, brightest towards the hole
-          float band = exp(-pow(r.y / 0.012, 2.0)) * exp(-pow(th / 0.9, 2.0)) * 2.4;
+          float band = exp(-((r.y / 0.012) * (r.y / 0.012))) * exp(-((th / 0.9) * (th / 0.9))) * 2.4;
           vec3 gold = vec3(1.0, 0.62, 0.26);
           vec3 cream = vec3(1.0, 0.78, 0.5);
           return (cream * ring + gold * band) * inside;

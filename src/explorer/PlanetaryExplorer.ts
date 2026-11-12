@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { earthElevation } from './Elevation';
+import { elevationFor, groundHeightKm } from './PlanetElevation';
 import { BodyImagery, getBodyImagery, minimumAltitudeKm } from './ImageryRegistry';
 import { SurfaceTileLayer, LayerStatus, TileImageLoader } from './SurfaceTileLayer';
 import { bodyLatLonToLocal, localToLatLon } from './TileMath';
@@ -7,6 +7,7 @@ import { getLandmark, Landmark, landmarksFor } from './Landmarks';
 import { ScreenLabelItem } from './ScreenLabels';
 import { TILE_SHELL } from './SurfaceTileLayer';
 import { CameraRig, OBSERVATION_FOV_DEG } from '../navigation/CameraRig';
+import { PhotorealEarth } from '../rendering/PhotorealEarth';
 
 /** What the explorer needs to know about a rendered body. */
 export interface ExplorerBody {
@@ -58,6 +59,13 @@ const EVEN_LIGHT_TO = 0.03;
 const CLOUDS_FADE_FROM = 1.0;
 const CLOUDS_FADE_TO = 0.3;
 const MAX_LIVE_LAYERS = 2;
+
+function localBodyRadius(body: ExplorerBody, latDeg: number): number {
+  if (body.name !== 'Earth') return body.visualRadius;
+  const latRad = (latDeg * Math.PI) / 180;
+  const ps = 0.996647; // 1 - Earth's flattening (0.003353)
+  return body.visualRadius * Math.sqrt(Math.cos(latRad) ** 2 + (ps * Math.sin(latRad)) ** 2);
+}
 
 /**
  * Planetary Explorer — Google Maps–style descent from the whole globe to the finest verified
@@ -135,15 +143,18 @@ export class PlanetaryExplorer {
     }
 
     this.lastViewportPx = viewportHeightPx;
-    const minAltKm = this.minAltitudeKmFor(body, imagery, camera.fov);
-    this.rig.surfaceMinAltitude = minAltKm / (body.radiusKm / body.visualRadius);
-
     body.surfaceMesh.updateWorldMatrix(true, false);
     const camLocal = body.surfaceMesh.worldToLocal(this.tmpV.copy(camera.position));
     const dLocal = camLocal.length();
     const altitudeRadii = Math.max(0, dLocal - 1);
-    const altitudeKm = altitudeRadii * body.radiusKm;
     const sub = localToLatLon(camLocal.x, camLocal.y, camLocal.z);
+    const groundKm = groundHeightKm(body.name, sub.lat, sub.lon);
+    const altitudeKm = Math.max(0.05, altitudeRadii * body.radiusKm - groundKm);
+    const minAltKm = this.minAltitudeKmFor(body, imagery, camera.fov);
+    const kmPerUnit = body.radiusKm / body.visualRadius;
+    const localR = localBodyRadius(body, sub.lat);
+    this.rig.focusedRadius = localR;
+    this.rig.surfaceMinAltitude = (groundKm + minAltKm) / kmPerUnit;
 
     // Ride along with the rotating surface when close, so the ground stays under the camera
     const q = body.surfaceMesh.getWorldQuaternion(new THREE.Quaternion());
@@ -162,20 +173,23 @@ export class PlanetaryExplorer {
       body.cloudMesh.visible = fade > 0.01;
     }
     this.daylightFactor = this.lighting === 'sun' || this.groundLight ? 0 : 1 - THREE.MathUtils.smoothstep(altitudeRadii, EVEN_LIGHT_TO, EVEN_LIGHT_FROM);
+    if (body.name === 'Earth' && PhotorealEarth.current) {
+      PhotorealEarth.current.setDaylight(this.daylightFactor);
+    }
 
     let layerStatus: LayerStatus | null = null;
-    if (imagery.provider) {
+    const hasPhotorealEarth = body.name === 'Earth' && !!PhotorealEarth.current;
+    if (hasPhotorealEarth) {
+      this.layers.get('Earth')?.hide();
+      if (body.atmosphereMesh) {
+        body.atmosphereMesh.renderOrder = altitudeKm < 60 ? 0.95 : 3;
+      }
+    } else if (imagery.provider) {
       const layer = this.ensureLayer(body, imagery);
       layer.setDaylight(this.daylightFactor);
-      // A deep-time scene brings its own 3D landscape: the imagery steps aside
-      const photoreal = this.photorealEarth && body.name === 'Earth';
-      layer.setOpacity(this.hideGround || photoreal ? 0 : 1 - THREE.MathUtils.smoothstep(altitudeRadii, FADE_IN_TO, FADE_IN_FROM));
-      // Raised terrain close by: the atmosphere shell (no depth test) would lay the haze of the whole
-      // path to the sea-level horizon over ground a few hundred metres away, a white-out. Drawn
-      // before the tiles instead, it is the sky behind the mountains; the tiles' own distance haze
-      // gives their aerial perspective
+      layer.setOpacity(this.hideGround ? 0 : 1 - THREE.MathUtils.smoothstep(altitudeRadii, FADE_IN_TO, FADE_IN_FROM));
       if (body.atmosphereMesh) {
-        const relief = ((!!layer.elevation && !layer.elevation.disabled) || photoreal) && !this.hideGround && altitudeKm < 60;
+        const relief = !!layer.elevation && !layer.elevation.disabled && !this.hideGround && altitudeKm < 60;
         body.atmosphereMesh.renderOrder = relief ? 0.95 : 3;
       }
       if (this.groundHaze) layer.setHaze(this.groundHaze.color, this.groundHaze.density);
@@ -188,8 +202,6 @@ export class PlanetaryExplorer {
           this.projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
           this.frustum.setFromProjectionMatrix(this.projView);
           const surface = body.surfaceMesh;
-          // Raised ground: tiles are tested where they are actually drawn (lifted to the local
-          // ground height), so the ground under a mountaintop is in view and gets full detail
           const lift = layer.elevation && !layer.elevation.disabled ? Math.max(0, layer.elevation.heightKm(sub.lat, sub.lon, 11)) / body.radiusKm : 0;
           const scale = body.visualRadius * (1 + lift);
           layer.update({
@@ -197,8 +209,6 @@ export class PlanetaryExplorer {
             groundLift: lift,
             pixelsPerRadian: viewportHeightPx / (2 * Math.tan((camera.fov * Math.PI) / 360)),
             isCapVisible: (centre, radius) => {
-              // Tight bounding sphere of a spherical cap: centred on the cap's base plane below
-              // 90°, otherwise the whole globe (a small chord sphere would miss parts of big caps).
               if (radius < Math.PI / 2) {
                 const k = Math.cos(radius);
                 const kl = k * (1 + lift);
@@ -227,13 +237,24 @@ export class PlanetaryExplorer {
     const minDist = this.rig.minimumDistance();
     this.status = {
       body: body.name,
-      imagery: {
-        title: imagery.title, source: imagery.source, sourceUrl: imagery.sourceUrl, attribution: imagery.attribution,
-        kind: imagery.kind, coverage: imagery.coverage, note: imagery.note, bestMetresPerPixel: imagery.bestMetresPerPixel,
-      },
-      streaming: !!imagery.provider && altitudeRadii < STREAM_BELOW_ALTITUDE,
+      imagery: hasPhotorealEarth
+        ? {
+            title: 'Google Photorealistic 3D Tiles',
+            source: 'Google Maps Platform · 3D Tiles',
+            sourceUrl: 'https://developers.google.com/maps/documentation/tile/3d-tiles',
+            attribution: 'Google · 3D Cities & Terrain',
+            kind: 'visible',
+            coverage: 'Global 3D photogrammetry & terrain',
+            note: 'Real 3D cities, monuments, buildings, trees and mountains across Earth.',
+            bestMetresPerPixel: 0.3,
+          }
+        : {
+            title: imagery.title, source: imagery.source, sourceUrl: imagery.sourceUrl, attribution: imagery.attribution,
+            kind: imagery.kind, coverage: imagery.coverage, note: imagery.note, bestMetresPerPixel: imagery.bestMetresPerPixel,
+          },
+      streaming: (!!imagery.provider || hasPhotorealEarth) && altitudeRadii < STREAM_BELOW_ALTITUDE,
       layer: layerStatus,
-      maxLevel: imagery.provider?.maxLevel ?? 0,
+      maxLevel: hasPhotorealEarth ? 20 : imagery.provider?.maxLevel ?? 0,
       altitudeKm,
       altitudeRadii,
       minAltitudeKm: minAltKm,
@@ -246,8 +267,12 @@ export class PlanetaryExplorer {
     };
   }
 
-  /** Data-driven zoom floor (km above the surface) for a body at a given field of view. */
+  /** Data-driven zoom floor (km above the local ground) for a body at a given field of view. */
   private minAltitudeKmFor(body: ExplorerBody, imagery: BodyImagery, fovDeg: number): number {
+    if (body.name === 'Earth' && PhotorealEarth.current) {
+      // Photorealistic 3D Tiles resolve down to street/building level (~120 m above ground)
+      return 0.12;
+    }
     const km = minimumAltitudeKm(imagery, fovDeg, this.lastViewportPx);
     // Bodies with only a global map: don't forbid the observation shot itself
     return imagery.provider ? km : Math.min(km, 0.5 * body.radiusKm);
@@ -267,7 +292,9 @@ export class PlanetaryExplorer {
     const out: ScreenLabelItem[] = [];
     for (const lm of landmarksFor(s.body)) {
       const [x, y, z] = bodyLatLonToLocal(s.body, lm.lat, lm.lon);
-      const p = body.surfaceMesh.localToWorld(new THREE.Vector3(x * TILE_SHELL, y * TILE_SHELL, z * TILE_SHELL));
+      const lift = groundHeightKm(s.body, lm.lat, lm.lon, 9) / body.radiusKm;
+      const r = Math.max(TILE_SHELL, 1 + lift);
+      const p = body.surfaceMesh.localToWorld(new THREE.Vector3(x * r, y * r, z * r));
       const n = p.clone().sub(centre).normalize();
       const toCam = camera.position.clone().sub(p).normalize();
       if (n.dot(toCam) < 0.08) continue; // beyond the limb
@@ -292,15 +319,32 @@ export class PlanetaryExplorer {
     const body = this.getBody(lm.body);
     if (!body) return null;
     const kmPerUnit = body.radiusKm / body.visualRadius;
-    const dir = this.surfaceDirection(body, lm.lat, lm.lon);
+    const targetLat = lm.vantageLat ?? lm.lat;
+    const targetLon = lm.vantageLon ?? lm.lon;
+    const dir = this.surfaceDirection(body, targetLat, targetLon);
+    // Start fetching the ground heights there now: the camera arrives on the real relief
+    void elevationFor(lm.body)?.ensure(targetLat - 0.3, targetLon - 0.3, targetLat + 0.3, targetLon + 0.3, 6);
+    const groundKm = groundHeightKm(lm.body, targetLat, targetLon);
+    const localR = localBodyRadius(body, targetLat);
+    this.rig.focusedRadius = localR;
     // Set the target body's zoom floor now: the previous focus (possibly a giant planet) still
     // owns it until the next frame, and the flight's end distance is clamped against it
     const imagery = getBodyImagery(lm.body, body.radiusKm);
-    if (imagery) this.rig.surfaceMinAltitude = this.minAltitudeKmFor(body, imagery, OBSERVATION_FOV_DEG) / kmPerUnit;
+    if (imagery) {
+      const minAltKm = this.minAltitudeKmFor(body, imagery, OBSERVATION_FOV_DEG);
+      this.rig.surfaceMinAltitude = (groundKm + minAltKm) / kmPerUnit;
+    }
     this.rig.focusedPhysicalRadiusKm = body.radiusKm;
-    this.rig.focusSurfacePoint(body.bodyGroup, body.visualRadius, dir, lm.viewAltitudeKm / kmPerUnit);
+    const viewAltKm = lm.body === 'Earth' && PhotorealEarth.current
+      ? Math.max(0.2, lm.viewAltitudeKm)
+      : lm.viewAltitudeKm;
+    this.rig.focusSurfacePoint(body.bodyGroup, localR, dir, (groundKm + viewAltKm) / kmPerUnit);
     this.landmark = lm;
     return lm;
+  }
+
+  public getLandmark(): Landmark | null {
+    return this.landmark;
   }
 
   /** 'auto': imagery is evenly lit close to the ground (web-map style); 'sun': real sunlight only. */
@@ -328,10 +372,12 @@ export class PlanetaryExplorer {
       layer = new SurfaceTileLayer(imagery.provider!, this.loader);
       layer.setMaxAnisotropy(this.maxAnisotropy);
       layer.setBaseMap(body.baseMap ?? null);
-      // Earth's ground in real 3D: mountains, canyons and coasts from global elevation data
-      if (body.name === 'Earth') {
-        layer.elevation = earthElevation;
-        layer.bodyName = 'Earth';
+      // Ground in real 3D where a world has elevation data (Earth, the Moon, Mars): mountains,
+      // crater walls and canyons from real heights (src/explorer/PlanetElevation)
+      const relief = elevationFor(body.name);
+      if (relief) {
+        layer.elevation = relief;
+        layer.bodyName = body.name;
         layer.radiusKm = body.radiusKm;
       }
       body.surfaceMesh.add(layer.group);

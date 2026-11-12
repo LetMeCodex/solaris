@@ -1,5 +1,6 @@
 import React, { useLayoutEffect, useRef, useState, useEffect } from 'react';
-import { Calendar, X } from 'lucide-react';
+import { Calendar, Rocket, X } from 'lucide-react';
+import { CatalogueManager } from '../../data/CatalogueManager';
 
 /* ==========================================================================
    SEGMENTED — the highlight glides to the chosen option
@@ -217,8 +218,11 @@ export const TimeDeck: React.FC<{
   onJ2000: () => void;
   onNow: () => void;
   onSeek: (utcMs: number) => void;
-}> = ({ isPaused, multiplier, date, onTogglePlay, onSetMultiplier, onJ2000, onNow, onSeek }) => {
+  onMissionEvent?: (dateUtc: string | null, target: string) => void;
+}> = ({ isPaused, multiplier, date, onTogglePlay, onSetMultiplier, onJ2000, onNow, onSeek, onMissionEvent }) => {
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [missionsOpen, setMissionsOpen] = useState(false);
+  const missionEvents = CatalogueManager.getMissionEvents();
   const [draft, setDraft] = useState(date);
   useEffect(() => {
     if (!pickerOpen) setDraft(date);
@@ -286,10 +290,27 @@ export const TimeDeck: React.FC<{
         <span className="w-px h-5 bg-white/10 shrink-0" />
         <button type="button" onClick={(e) => { e.stopPropagation(); onJ2000(); }} className="hud-btn !px-2 !hidden sm:!inline-flex" title="Epoch J2000.0 (1 Jan 2000, 12:00 TT)">J2000</button>
         <button type="button" onClick={(e) => { e.stopPropagation(); onNow(); }} className="hud-btn !px-2" title="Return to the present">Now</button>
+        {onMissionEvent && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setPickerOpen(false);
+              setMissionsOpen((o) => !o);
+            }}
+            aria-expanded={missionsOpen}
+            title="Jump to iconic NASA mission epochs & encounters"
+            className={`hud-btn !px-2 !tracking-[0.12em] ${missionsOpen ? '!text-[#6ee7ff] !border-[#6ee7ff]/40' : '!text-white/80'}`}
+          >
+            <Rocket size={10} className="text-[#6ee7ff]" />
+            <span className="hidden sm:inline">Missions</span>
+          </button>
+        )}
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
+            setMissionsOpen(false);
             setPickerOpen((o) => !o);
           }}
           aria-expanded={pickerOpen}
@@ -301,6 +322,47 @@ export const TimeDeck: React.FC<{
           <RollingText text={date} className="hud-num !hidden sm:!inline-flex" />
         </button>
       </div>
+      {missionsOpen && onMissionEvent && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="absolute bottom-full right-0 mb-2 w-80 max-w-[calc(100vw-24px)] rounded-xl bg-[#070b11]/95 border border-[#6ee7ff]/25 backdrop-blur-xl shadow-2xl p-2.5 z-40"
+        >
+          <div className="flex items-center justify-between px-1.5 pb-2 mb-1.5 border-b border-white/10">
+            <span className="font-mono text-[9.5px] uppercase tracking-[0.22em] text-[#6ee7ff]">
+              NASA Mission Eras
+            </span>
+            <button
+              type="button"
+              onClick={() => setMissionsOpen(false)}
+              className="hud-icon-btn !w-6 !h-6"
+              aria-label="Close missions popover"
+            >
+              <X size={11} />
+            </button>
+          </div>
+          <div className="max-h-72 overflow-y-auto flex flex-col gap-1 pr-0.5">
+            {missionEvents.map((ev) => (
+              <button
+                key={ev.id}
+                type="button"
+                onClick={() => {
+                  onMissionEvent(ev.dateUtc, ev.target);
+                  setMissionsOpen(false);
+                }}
+                className="w-full text-left px-2.5 py-2 rounded-lg bg-white/[0.03] hover:bg-[#6ee7ff]/15 border border-transparent hover:border-[#6ee7ff]/35 transition-colors"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-medium text-white/95">{ev.label}</span>
+                  <span className="font-mono text-[9px] text-[#ffc861] shrink-0">
+                    {ev.dateUtc ? ev.dateUtc.slice(0, 10) : 'Live Now'}
+                  </span>
+                </div>
+                <div className="text-[10px] text-white/55 mt-0.5 leading-snug">{ev.desc}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

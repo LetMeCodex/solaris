@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TextureGenerator } from './TextureGenerator';
+import { FastTextureLoader, applyBitmap, canUseBitmaps, decodeBitmap } from './FastTextureLoader';
 
 export interface PlanetTextureSet {
   map: THREE.Texture;
@@ -15,7 +16,8 @@ export interface PlanetTextureSet {
 
 export class TexturePipeline {
   private static instance: TexturePipeline;
-  private loader: THREE.TextureLoader = new THREE.TextureLoader();
+  // Decoded off the main thread, uploaded without the browser's slow flip (see FastTextureLoader)
+  private loader: THREE.TextureLoader = new FastTextureLoader();
   private customLoader: THREE.TextureLoader | null = null;
   private cache: Map<string, THREE.Texture> = new Map();
   private inFlightRequests: Map<string, Promise<THREE.Texture>> = new Map();
@@ -192,6 +194,7 @@ export class TexturePipeline {
             const fallbackTex = TextureGenerator.getTexture(fallbackKey);
             if (fallbackTex && fallbackTex.image) {
               targetTex.image = fallbackTex.image;
+              targetTex.flipY = fallbackTex.flipY;
               targetTex.needsUpdate = true;
             }
           } catch (e) {
@@ -209,6 +212,7 @@ export class TexturePipeline {
         const fallbackTex = TextureGenerator.getTexture(fallbackKey);
         if (fallbackTex && fallbackTex.image) {
           targetTex.image = fallbackTex.image;
+          targetTex.flipY = fallbackTex.flipY;
           targetTex.needsUpdate = true;
         }
       } catch (e) {
@@ -433,21 +437,31 @@ export class TexturePipeline {
       if (!tex) continue;
       const wants8k = high.includes('_8k');
       if (wants8k && this.maxTextureSize < 8192) continue;
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.decoding = 'async';
-      img.src = this.resolveUrl(high);
-      img
-        .decode()
-        .then(() => {
-          // The GPU copy was allocated at the old size and is immutable (texStorage2D): free it
-          // first, so the next draw allocates fresh storage at the new size. Writing the bigger
-          // image into the old storage fails and leaves the map garbled.
-          tex.dispose();
-          tex.image = img;
+      // The GPU copy was allocated at the old size and is immutable (texStorage2D): free it
+      // first, so the next draw allocates fresh storage at the new size. Writing the bigger
+      // image into the old storage fails and leaves the map garbled.
+      const swap = (image: HTMLImageElement | ImageBitmap, flipY: boolean): void => {
+        tex.dispose();
+        if (image instanceof HTMLImageElement) {
+          tex.image = image;
+          tex.flipY = flipY;
           tex.needsUpdate = true;
-        })
-        .catch((err) => console.warn(`[TexturePipeline] Sharper map unavailable for ${bodyName}: ${high}`, err));
+        } else {
+          applyBitmap(tex, image);
+        }
+      };
+      const fail = (err: unknown): void => console.warn(`[TexturePipeline] Sharper map unavailable for ${bodyName}: ${high}`, err);
+      if (canUseBitmaps) {
+        // An 8K <img> froze the page for 0.45-0.8 s on upload; a bitmap decoded off the main
+        // thread costs a fraction of that (see FastTextureLoader)
+        decodeBitmap(this.resolveUrl(high)).then((bmp) => swap(bmp, false)).catch(fail);
+      } else {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.decoding = 'async';
+        img.src = this.resolveUrl(high);
+        img.decode().then(() => swap(img, true)).catch(fail);
+      }
     }
   }
 

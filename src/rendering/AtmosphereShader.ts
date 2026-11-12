@@ -125,6 +125,19 @@ const FRAG = /* glsl */ `
     float g = uMieG;
     float phaseM = 3.0 / (8.0 * 3.14159265) * ((1.0 - g * g) * (1.0 + mu * mu)) / ((2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
     vec3 inscatter = uSunPower * (sumR * uBetaR * phaseR + sumM * uBetaM * uMieTint * phaseM);
+    // Multiple scattering, approximated: single scattering alone paints a yellow band along the
+    // horizon at midday (the sunlight reaching a long, low path has lost its blue), but in the
+    // real sky that path is also lit by the whole sky above it, and the horizon is the pale,
+    // whitened colour of that world's own sky (blue-white on Earth, a warm white on Mars). Where
+    // the view crosses a lot of air with the Sun well up, the colour is drawn towards that,
+    // keeping its brightness; at sunrise and sunset the warm horizon stays
+    float sunUpHere = dot(normalize(ro), sunDir);
+    float thick = 1.0 - exp(-(uBetaR.g * odView.x + uBetaM * odView.y) * 0.9);
+    float msK = thick * smoothstep(0.08, 0.35, sunUpHere) * 0.75;
+    float inL = dot(inscatter, vec3(0.2126, 0.7152, 0.0722));
+    vec3 skyTint = pow(uBetaR / max(max(uBetaR.r, uBetaR.g), uBetaR.b), vec3(0.15));
+    skyTint /= dot(skyTint, vec3(0.2126, 0.7152, 0.0722));
+    inscatter = mix(inscatter, inL * skyTint, msK);
 
     vec3 trans = exp(-(uBetaR * odView.x + uBetaM * 1.1 * odView.y + uAbsorb * odView.x));
     float T = dot(trans, vec3(0.2126, 0.7152, 0.0722));
@@ -201,10 +214,8 @@ export class AtmosphereShader {
       }
       const inside = camPos.distanceTo(centre) < visualRadius * shellScale * 1.0005;
       const side = inside ? THREE.BackSide : THREE.FrontSide;
-      if (mat.side !== side) {
-        mat.side = side;
-        mat.depthTest = !inside;
-      }
+      if (mat.side !== side) mat.side = side;
+      mat.depthTest = !inside || mesh.renderOrder < 1;
     };
   }
 }

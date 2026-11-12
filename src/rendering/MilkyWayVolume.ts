@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { BITMAP_OPTIONS, canUseBitmaps } from './FastTextureLoader';
 import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 import { DEFAULT_GALAXY_CONFIG, GALAXY_UNITS_PER_KPC, SUN_HEIGHT_KPC } from './MilkyWayGalaxy';
 
@@ -221,19 +222,46 @@ export class MilkyWayVolume {
   private load(): void {
     if (typeof document === 'undefined') return;
     const baseUrl = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
+    const sky = `${baseUrl}textures/gaia_sky.webp`;
+    const disk = `${baseUrl}textures/milky_way_disk.webp`;
+    if (canUseBitmaps) {
+      // Decoded off the main thread: the texture as an upload-ready bitmap, the pixels read here
+      // from a small copy made in the same decode (reading them from the full <img> held a frame
+      // for ~0.2 s while it was decoded)
+      const small = (blob: Blob, w: number, h: number) => createImageBitmap(blob, { resizeWidth: w, resizeHeight: h, resizeQuality: 'high' });
+      const fetchBlob = (url: string) => fetch(url).then((r) => (r.ok ? r.blob() : Promise.reject(new Error(`${r.status} ${url}`))));
+      fetchBlob(sky)
+        .then(async (blob) => {
+          const [full, thumb] = await Promise.all([createImageBitmap(blob, BITMAP_OPTIONS), small(blob, MilkyWayVolume.SKY_W, MilkyWayVolume.SKY_H)]);
+          this.buildSkyShells(full);
+          const px = MilkyWayVolume.readPixels(thumb, MilkyWayVolume.SKY_W, MilkyWayVolume.SKY_H);
+          thumb.close();
+          if (px) this.buildSkyStars(px);
+        })
+        .catch((err) => console.warn('[MilkyWayVolume] sky unavailable', err));
+      fetchBlob(disk)
+        .then((blob) => small(blob, MilkyWayVolume.DISK_SAMPLE, MilkyWayVolume.DISK_SAMPLE))
+        .then((thumb) => {
+          const px = MilkyWayVolume.readPixels(thumb, MilkyWayVolume.DISK_SAMPLE, MilkyWayVolume.DISK_SAMPLE);
+          thumb.close();
+          if (px) this.buildDisk(px);
+        })
+        .catch((err) => console.warn('[MilkyWayVolume] disk unavailable', err));
+      return;
+    }
     const loader = new THREE.ImageLoader();
-    loader.load(`${baseUrl}textures/gaia_sky.webp`, (image) => {
+    loader.load(sky, (image) => {
       this.buildSkyShells(image);
       const px = MilkyWayVolume.readPixels(image, MilkyWayVolume.SKY_W, MilkyWayVolume.SKY_H);
       if (px) this.buildSkyStars(px);
     });
-    loader.load(`${baseUrl}textures/milky_way_disk.webp`, (image) => {
+    loader.load(disk, (image) => {
       const px = MilkyWayVolume.readPixels(image, MilkyWayVolume.DISK_SAMPLE, MilkyWayVolume.DISK_SAMPLE);
       if (px) this.buildDisk(px);
     });
   }
 
-  private static readPixels(image: HTMLImageElement, w: number, h: number): Uint8ClampedArray | null {
+  private static readPixels(image: CanvasImageSource, w: number, h: number): Uint8ClampedArray | null {
     const canvas = document.createElement('canvas');
     canvas.width = w;
     canvas.height = h;
@@ -251,8 +279,10 @@ export class MilkyWayVolume {
    * Diffuse Gaia light on three nested, flattened shells. Each fragment looks up the map in its own
    * direction from the Sun, so the shells coincide from there and separate with parallax elsewhere.
    */
-  private buildSkyShells(image: HTMLImageElement): void {
+  private buildSkyShells(image: HTMLImageElement | ImageBitmap): void {
     const tex = new THREE.Texture(image);
+    // A bitmap is decoded the right way up for the GPU already
+    if (typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap) tex.flipY = false;
     tex.colorSpace = THREE.SRGBColorSpace;
     // Per-fragment longitude wraps at l = 180°: no mipmaps, so the seam has no derivative artefact
     tex.generateMipmaps = false;
@@ -421,10 +451,14 @@ export class MilkyWayVolume {
       let tb = 1;
       if (idx >= 0) {
         chroma(idx, tint, 0);
+        // A black pixel has no tint (0 / 0 gave NaN colours: those stars wrote NaN into every
+        // reflection of the sky, and the jet lit by it turned black)
         const m = Math.max(tint[0], tint[1], tint[2]);
-        tr = 0.85 + 0.15 * tint[0] / m;
-        tg = 0.85 + 0.15 * tint[1] / m;
-        tb = 0.85 + 0.15 * tint[2] / m;
+        if (m > 1e-6) {
+          tr = 0.85 + 0.15 * tint[0] / m;
+          tg = 0.85 + 0.15 * tint[1] / m;
+          tb = 0.85 + 0.15 * tint[2] / m;
+        }
       }
       data.colors[k * 3] = c[0] * tr;
       data.colors[k * 3 + 1] = c[1] * tg;

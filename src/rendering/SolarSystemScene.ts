@@ -1,7 +1,17 @@
+import { Avatar } from '../explorer/Avatar';
+import { GroundCover } from '../flight/GroundCover';
+import { ProceduralTerrain } from './ProceduralTerrain';
+import { MOON_DIR, MOON_LIGHT, NIGHT_AIR } from './AerialPerspective';
 import { emitVela } from '../companion/events';
 import * as THREE from 'three';
+import { installCompileGate, type CompileGate, type GateMode } from './CompileGate';
 import { perf } from './Performance';
 import { PhotorealEarth } from './PhotorealEarth';
+import { SkyAtmosphere, atmosphereFor } from '../explorer/SkyAtmosphere';
+import { EarthClouds } from '../flight/EarthClouds';
+import { ProceduralCity } from '../explorer/ProceduralCity';
+import { earthElevation } from '../explorer/Elevation';
+import { bodyLatLonToLocal, bodyLocalToLatLon } from '../explorer/TileMath';
 import type { Postcard } from '../data/Postcards';
 import { settings, Settings } from '../ui/settings';
 import { CatalogueManager } from '../data/CatalogueManager';
@@ -30,13 +40,20 @@ import { PlanetaryExplorer, ExplorerStatus } from '../explorer/PlanetaryExplorer
 import { SurfaceObserver, SurfaceStatus } from '../explorer/SurfaceObserver';
 import { ScreenLabels } from '../explorer/ScreenLabels';
 import { SkyBodySource } from '../explorer/SkyBodies';
-import { TimeOfDay } from '../explorer/SkyAstronomy';
-import { Landmark } from '../explorer/Landmarks';
+import { TimeOfDay, sunElevationAt, findTimeOfDay, findMorningSun } from '../explorer/SkyAstronomy';
+import { Landmark, getLandmark } from '../explorer/Landmarks';
 import { localToLatLon } from '../explorer/TileMath';
 import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 import { BodyFrame, getBodyFrame, getSynchronousFrame } from '../astronomy/BodyOrientation';
 import { JetController } from '../flight/JetController';
 import { EarthMaterial } from './EarthMaterial';
+import {
+  ComparisonPropKind,
+  createSpaceEnvironmentMap,
+  GltfModelBank,
+  SpacecraftLayerManager,
+} from './SpacecraftFactory';
+import { ParentResolver } from '../astronomy/DynamoTrajectory';
 
 export interface TelemetryData {
   speedKmS: number;
@@ -169,6 +186,17 @@ export class SolarSystemScene {
   public explorer: PlanetaryExplorer;
   /** Google Photorealistic 3D Tiles on Earth (when a Maps key is configured). */
   private photoreal: PhotorealEarth | null = null;
+  /**
+   * The sky while flying in Earth's air: the same physical (Rayleigh and Mie) dome as the ground
+   * view, so the jet sees real twilight, a blue sky over a hazy horizon and stars only at night.
+   * The orbit-scale atmosphere shell takes over higher up.
+   */
+  private jetSky: SkyAtmosphere | null = null;
+  private jetSkyFrame = { east: new THREE.Vector3(), north: new THREE.Vector3(), up: new THREE.Vector3() };
+  /** Clouds from the live weather, over Earth while flying low (see EarthClouds). */
+  private earthClouds: EarthClouds | null = null;
+  /** OpenStreetMap buildings where Google has no 3D (pilot regions; see ProceduralCity). */
+  private city: ProceduralCity | null = null;
   public surface: SurfaceObserver;
   /** Jet mode: fly the SX-1 through the system (src/flight). */
   public jet: JetController = new JetController();
@@ -227,6 +255,8 @@ export class SolarSystemScene {
   public selectedBody: CelestialBodyDefinition;
   /** Camera distance of the opening view (14 AU: Mercury out to Saturn). */
   public static readonly OPENING_DISTANCE = 14 * UNITS_PER_AU;
+  private spacecraftLayer!: SpacecraftLayerManager;
+  private jetRendezvousToken = 0;
   private onTelemetryUpdate?: (telemetry: TelemetryData) => void;
   private lastTelemetryTime: number = 0;
   private static readonly TELEMETRY_INTERVAL_MS = 100;
@@ -268,6 +298,7 @@ export class SolarSystemScene {
     // is compiled once, in the warm-up, with the same settings
     this.renderer.shadowMap.enabled = perf.settings.shadowMap > 0;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.gate = installCompileGate(this.renderer);
 
     this.renderer.domElement.style.position = 'absolute';
     this.renderer.domElement.style.top = '0';
@@ -281,8 +312,10 @@ export class SolarSystemScene {
     this.cameraRig = new CameraRig(container);
     this.lens = new LensPipeline(this.renderer, this.scene, this.cameraRig.camera);
 
-    // 4. Lighting
+    // 4. Lighting & Space HDR PBR Environment
     this.setupLighting();
+    GltfModelBank.init(this.renderer);
+    this.scene.environment = createSpaceEnvironmentMap(this.renderer);
 
     // 5. Starfield background (41,394 real Hipparcos stars + IAU Constellations)
     this.starfield = new Starfield();
@@ -323,16 +356,26 @@ export class SolarSystemScene {
     });
     this.planetBundles.get('Sun')?.bodyGroup.add(this.sunGlint);
     // Real 3D Earth: Google's photorealistic tiles, where a key is configured (.env.local)
+    // The key comes from .env.local only (gitignored): never write it into source
     const mapsKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined;
     const earthBundle = this.planetBundles.get('Earth');
     if (mapsKey && earthBundle) {
       this.photoreal = new PhotorealEarth(mapsKey, this.container);
       this.photoreal.attach(earthBundle.surfaceMesh, 1 - (earthBundle.definition.physical.flattening ?? 0));
+      const u = (earthBundle.surfaceMesh.material as THREE.ShaderMaterial).uniforms;
+      this.photoreal.setGlobeMaps((u?.dayMap?.value as THREE.Texture) ?? null, (u?.nightMap?.value as THREE.Texture) ?? null);
     }
     this.markers = new BodyMarkers(container, (name) => this.selectBody(name));
     for (const b of this.planetBundles.values()) {
       this.markerBodies.push({ definition: b.definition, object: b.bodyGroup, radius: b.visualRadius });
     }
+    this.ensureCometsSpawned();
+    this.spacecraftLayer = new SpacecraftLayerManager({
+      scene: this.scene,
+      renderer: this.renderer,
+      container,
+      onPickSpacecraft: (name) => this.selectBody(name),
+    });
     this.labels = new ScreenLabels(container, (id) => {
       if (id.startsWith('sky:')) this.surface.lookAt(id.slice(4));
       else this.flyToLandmark(id);
@@ -364,6 +407,7 @@ export class SolarSystemScene {
         // TDB → UTC (TT − UTC = 69.184 s) → Unix ms
         const jdUtc = d + SimulationClock.J2000_JD - 69.184 / 86400;
         this.clock.setUtcMs((jdUtc - 2440587.5) * 86400000);
+        this.propagateAll(d);
       },
       setSceneMode: (on, body, skyRadius) => this.setSurfaceSceneMode(on, body, skyRadius),
       setGround: (light, haze) => {
@@ -423,7 +467,7 @@ export class SolarSystemScene {
   }
 
   private setupBodies(): void {
-    const bodies = CatalogueManager.getAllBodies();
+    const bodies = CatalogueManager.getSceneBodies();
     for (const def of bodies) {
       const bundle = PlanetFactory.createPlanet(def);
       this.scene.add(bundle.bodyGroup);
@@ -443,7 +487,7 @@ export class SolarSystemScene {
     }
     this.moonOrbitLines.clear();
 
-    const bodies = CatalogueManager.getAllBodies();
+    const bodies = CatalogueManager.getSceneBodies();
 
     // 1. Heliocentric orbit lines (Planets, Dwarf Planets, Asteroids)
     for (const def of bodies) {
@@ -536,19 +580,64 @@ export class SolarSystemScene {
   }
 
   /** Stand on the focused body (at the landmark if one is active, else below the camera). */
-  public enterSurface(lat?: number, lon?: number, place?: string): boolean {
+  public enterSurface(
+    lat?: number,
+    lon?: number,
+    place?: string,
+    altKm?: number,
+    headingDeg?: number,
+    pitchDeg?: number
+  ): boolean {
     const st = this.explorer.getStatus();
-    const body = st.body;
+    const sel = this.selectedBody?.name;
+    const body = (sel && sel !== 'Sun' && sel !== 'Sagittarius A*' ? sel : null) ?? st.body;
     if (!body) return false;
-    const lm = st.landmark && st.landmark.body === body ? st.landmark : null;
-    const la = lat ?? lm?.lat ?? st.subCamera?.lat;
-    const lo = lon ?? lm?.lon ?? st.subCamera?.lon;
+    const curLm = this.explorer.getLandmark();
+    const lm = (curLm && curLm.body === body ? curLm : null) ?? (st.landmark && st.landmark.body === body ? st.landmark : null);
+    const la = lat ?? lm?.vantageLat ?? lm?.lat ?? st.subCamera?.lat;
+    const lo = lon ?? lm?.vantageLon ?? lm?.lon ?? st.subCamera?.lon;
     if (la === undefined || lo === undefined) return false;
+    if (body === 'Earth' && !this.pendingPostcard && !this.pendingDeepTime) {
+      const d0 = this.clock.getJulianDateTDB() - SimulationClock.J2000_JD;
+      const sunAlt = sunElevationAt('Earth', la, lo, d0);
+      if (sunAlt !== null && sunAlt < 22) {
+        const dNoon = findTimeOfDay('Earth', la, lo, d0, 'noon');
+        if (dNoon !== null) {
+          const dDay = dNoon - 0.06;
+          const jdUtc = dDay + SimulationClock.J2000_JD - 69.184 / 86400;
+          this.clock.setUtcMs((jdUtc - 2440587.5) * 86400000);
+          this.propagateAll(dDay);
+        }
+      }
+    } else if (body !== 'Earth' && lm && !this.pendingPostcard && !this.pendingDeepTime && Math.abs(la - (lm.vantageLat ?? lm.lat)) < 0.01 && Math.abs(lo - (lm.vantageLon ?? lm.lon)) < 0.01) {
+      // Landing at a landmark on another world: in the dark there is nothing to see of the ground,
+      // so the clock moves on to that place's next morning, the Sun ~25° up (long shadows show the
+      // relief). The sky is still the real one for that moment
+      const d0 = this.clock.getJulianDateTDB() - SimulationClock.J2000_JD;
+      const sunAlt = sunElevationAt(body, la, lo, d0);
+      if (sunAlt !== null && sunAlt < 12) {
+        const dDay = findMorningSun(body, la, lo, d0, lm.sunAltitudeDeg ?? 25);
+        if (dDay !== null) {
+          const jdUtc = dDay + SimulationClock.J2000_JD - 69.184 / 86400;
+          this.clock.setUtcMs((jdUtc - 2440587.5) * 86400000);
+          this.propagateAll(dDay);
+        }
+      }
+    }
     this.cameraRig.suspended = true;
     this.lens.setEffectScale(0.3);
     // A daylit sky is near white in HDR terms; only the Sun itself should bloom
     this.lens.setBloomThreshold(2.5);
-    return this.surface.enter(body, la, lo, place ?? lm?.name ?? null);
+    const ok = this.surface.enter(
+      body,
+      la,
+      lo,
+      place ?? lm?.name ?? null,
+      altKm ?? lm?.vantageAltKm,
+      headingDeg ?? lm?.viewHeadingDeg,
+      pitchDeg ?? lm?.viewPitchDeg
+    );
+    return ok;
   }
 
   /**
@@ -863,6 +952,7 @@ export class SolarSystemScene {
   }
 
   public toggleOrbits(): boolean {
+    if (this.surface.isActive() || this.jet.active) return false;
     this.orbitLinesGroup.visible = !this.orbitLinesGroup.visible;
     return this.orbitLinesGroup.visible;
   }
@@ -953,6 +1043,19 @@ export class SolarSystemScene {
     this.planetBundles.forEach((bundle) => {
       interactiveMeshes.push(bundle.surfaceMesh);
     });
+    const scMeshOwner = new Map<THREE.Object3D, string>();
+    if (this.spacecraftLayer) {
+      for (const sc of this.spacecraftLayer.getBundles()) {
+        if (sc.lodTier <= 2 && sc.bodyGroup.visible) {
+          sc.modelRoot.traverse((obj) => {
+            if ((obj as THREE.Mesh).isMesh) {
+              interactiveMeshes.push(obj);
+              scMeshOwner.set(obj, sc.entry.name);
+            }
+          });
+        }
+      }
+    }
 
     // Also include Sagittarius A* hit mesh and lensing volume
     if (this.starfield?.externalGalaxy?.sagittariusAStar) {
@@ -978,6 +1081,12 @@ export class SolarSystemScene {
         return;
       }
 
+      const scPicked = scMeshOwner.get(hit);
+      if (scPicked) {
+        this.selectBody(scPicked);
+        return;
+      }
+
       for (const bundle of this.planetBundles.values()) {
         if (bundle.surfaceMesh === hit) {
           // Clicking the globe you are exploring must not yank the camera back to orbit
@@ -999,7 +1108,14 @@ export class SolarSystemScene {
   /** Heliocentric ecliptic position of a body by name, km. */
   public bodyPositionKm(name: string): [number, number, number] {
     if (name === 'Sagittarius A*') return SGR_A_ECLIPTIC_KM;
-    return this.latestPhysicalStates.get(name)?.positionKm ?? [0, 0, 0];
+    const core = this.latestPhysicalStates.get(name)?.positionKm;
+    if (core) return core;
+    const sc = this.spacecraftLayer?.getBundle(name);
+    if (sc?.lastEval) {
+      const p = sc.bodyGroup.position;
+      return CoordinateFrames.threeToEcliptic([p.x * KM_PER_UNIT, p.y * KM_PER_UNIT, p.z * KM_PER_UNIT]);
+    }
+    return [0, 0, 0];
   }
 
   private recordRoute(to: string): void {
@@ -1018,6 +1134,7 @@ export class SolarSystemScene {
   }
 
   public selectBody(name: string, durationMs: number = 1800): void {
+    if (this.showcase.active) this.stopShowcase();
     this.endNebulaVisit();
     if (this.surface?.isActive()) this.exitSurface(false);
     this.exitHorizonView(false);
@@ -1038,7 +1155,35 @@ export class SolarSystemScene {
     }
 
     const bundle = this.planetBundles.get(name);
-    if (!bundle) return;
+    if (!bundle) {
+      const sc = this.spacecraftLayer?.getBundle(name);
+      if (sc) {
+        this.selectedBody = sc.definition;
+        this.explorer.clearLandmark();
+        this.cameraRig.surfaceMinAltitude = null;
+        this.updateSpacecraftAndComets(0);
+        this.cameraRig.focusCinematic(
+          sc.bodyGroup,
+          sc.visualRadius,
+          sc.entry.name,
+          durationMs,
+          undefined,
+          sc.definition.physical.meanRadiusKm
+        );
+        return;
+      }
+      const comet = this.comets.find((c) => c.spec.name.toLowerCase() === name.toLowerCase());
+      const def = CatalogueManager.getSagittariusAStar();
+      if (comet && def) {
+        comet.group.visible = true;
+        comet.update(0, this.cameraRig.camera);
+        this.selectedBody = { ...def, id: `comet:${comet.spec.name}`, name: comet.spec.name, category: 'asteroid' };
+        this.explorer.clearLandmark();
+        this.cameraRig.surfaceMinAltitude = null;
+        this.cameraRig.focusCinematic(comet.group, Math.max(0.08, comet.radius * 0.08), comet.spec.name, durationMs);
+      }
+      return;
+    }
 
     this.selectedBody = bundle.definition;
     this.explorer.clearLandmark();
@@ -1099,7 +1244,7 @@ export class SolarSystemScene {
   }
 
   public propagateAll(elapsedDaysSinceJ2000: number): void {
-    const bodies = CatalogueManager.getAllBodies();
+    const bodies = CatalogueManager.getSceneBodies();
     const parentPositionsRender: Map<string, [number, number, number]> = new Map();
     const d = elapsedDaysSinceJ2000;
 
@@ -1258,21 +1403,36 @@ export class SolarSystemScene {
     if (this.jet.active) {
       const w = this.container.clientWidth;
       const h = this.container.clientHeight;
-      this.jet.update(deltaSec, now * 0.001, this.cameraRig.camera, w, h, this.jetToScreen);
-      this.updateJetEra(deltaSec);
       for (const c of this.comets) {
         c.group.visible = true;
         c.update(deltaSec, this.cameraRig.camera);
       }
+      // Update spacecraft transforms to current frame's jdTDB before jet.step() so station-keeping has zero frame lag
+      this.updateSpacecraftAndComets(deltaSec, false);
+      this.jet.update(deltaSec, now * 0.001, this.cameraRig.camera, w, h, this.jetToScreen);
+      this.updateJetEra(deltaSec);
       const jt = this.jet.telemetry;
       const [bx, by] = this.lens.sceneToOutputNdc(jt.blurNdc.x, jt.blurNdc.y, w / Math.max(1, h));
       this.lens.setSpeedBlur(jt.blur, bx, by);
       // A GoPro brings its own glass: a wide fisheye with a dark image circle at the corners
-      this.lens.setLensOverride(jt.lens === 'gopro' ? { distortion: 0, fisheyeMask: 0, chromatic: 0.003, edgeBlur: 1.2, vignette: 0.55, grain: 0.006 } : null);
-      this.lens.setActionCam(jt.lens === 'gopro', jt.vibration, now * 0.001);
+      const useGoPro = jt.lens === 'gopro' && !this.jet.landing;
+      // A sharp action camera: a little fringe and vignette at the rim, no smeared edges or noise
+      this.lens.setLensOverride(useGoPro ? { distortion: 0, fisheyeMask: 0, chromatic: 0.0012, edgeBlur: 0.25, vignette: 0.45, grain: 0.0015 } : null);
+      // (only with frame time to spare: as the governor starts lowering the resolution, the extra
+      // pixels go first)
+      const ssMax = perf.tier === 'high' ? 1.4 : perf.tier === 'medium' ? 1.2 : 1;
+      this.lens.setSupersample(useGoPro ? 1 + (ssMax - 1) * THREE.MathUtils.clamp((perf.scale - 0.85) / 0.15, 0, 1) : 1);
+      this.lens.setActionCam(useGoPro, jt.vibration, now * 0.001);
       const cam = this.cameraRig.camera;
-      this.lens.setProjection(jt.lens === 'gopro', cam.aspect, cam.fov / 2);
-      this.lens.setCanopySun(jt.canopySun.x, jt.canopySun.y, jt.canopySun.k);
+      this.lens.setProjection(useGoPro, cam.aspect, Math.max(50, cam.fov / 2));
+      this.lens.setCanopySun(jt.canopySun.x, jt.canopySun.y, jt.canopySun.k, (jt.view === 'cockpit' || jt.view === 'gopro') && !this.jet.landing);
+      // Through the pilot's own helmet and visor (GoPro view, which is at the eyes)
+      this.lens.setHelmet(useGoPro ? 1 : 0, jt.canopySun.x, jt.canopySun.y, jt.canopySun.k, now * 0.001);
+      this.lens.setGodRays(jt.sunNdc.x, jt.sunNdc.y, jt.sunNdc.k);
+      // Golden hour: the grade warms as the Sun nears the horizon (in the air only)
+      const sunUp = this.jet.sunElevation;
+      const warm = jt.airDensity > 0.05 ? (1 - THREE.MathUtils.smoothstep(sunUp, 0.04, 0.4)) * THREE.MathUtils.smoothstep(sunUp, -0.08, 0.02) : 0;
+      this.lens.setGrade(warm, performance.now() / 1000);
       this.lens.setGrey(jt.greyOut);
       // Auto-exposure: facing the Sun the camera stops down (the cockpit falls into silhouette)
       // Under a daylit sky the action cam meters for the sky, as a real one does: the blue keeps its depth
@@ -1300,8 +1460,10 @@ export class SolarSystemScene {
     // Nebulae show only in a dark sky: always in space and on airless worlds, after twilight under air
     const sky = this.surface.getStatus();
     const airy = !!sky && sky.atmosphereOn && sky.atmosphereKind !== 'none';
+    // Flying in Earth's air: the coloured nebula pictures are not a naked-eye sight from here
+    const jetLowOverEarth = this.jet.active && this.jet.telemetry.nearest === 'Earth' && this.jet.telemetry.altKm < 60;
     this.starfield.nebulae.setSkyDarkness(
-      !sky || !airy ? 1 : sky.atmosphereKind === 'overcast' ? 0 : 1 - THREE.MathUtils.smoothstep(sky.sunAltDeg, -16, -7)
+      jetLowOverEarth ? 0 : !sky || !airy ? 1 : sky.atmosphereKind === 'overcast' ? 0 : 1 - THREE.MathUtils.smoothstep(sky.sunAltDeg, -16, -7)
     );
     if (this.horizon?.active) this.horizon.update(this.cameraRig.camera, now * 0.001);
 
@@ -1360,6 +1522,9 @@ export class SolarSystemScene {
     const markersOn = this.userMarkers && !this.jet.active && !this.surface.isActive() && !this.horizon?.active && !isBlackHole && !this.showcase.active &&
       this.cameraRig.camera.position.length() < 3500.0 * COSMIC_SCALE;
     this.markers.setVisible(markersOn);
+    if (!this.jet.active) {
+      this.updateSpacecraftAndComets(deltaSec, markersOn);
+    }
     if (markersOn) {
       const w = this.container.clientWidth;
       const h = this.container.clientHeight;
@@ -1426,7 +1591,9 @@ export class SolarSystemScene {
       }
     }
     this.updatePhotoreal();
-    this.renderFrame(now * 0.001);
+    // Behind the fly page's opening the world still updates and streams every frame, but is drawn
+    // only every few (the opening film has the GPU; nothing of this shows yet)
+    if (this.drawEvery <= 1 || this.drawCount++ % this.drawEvery === 0) this.renderFrame(now * 0.001);
 
     // React only needs ~10 updates/s for the HUD readouts; re-rendering the HUD every few frames
     // at 120–144 Hz is wasted work
@@ -1552,6 +1719,8 @@ export class SolarSystemScene {
     };
     // A clear sky from the cockpit: no orbit lines or constellation figures drawn across it
     this.orbitLinesGroup.visible = false;
+    for (const l of this.moonOrbitLines.values()) l.visible = false;
+    this.starfield.travelParticles.mesh.visible = false;
     this.starfield.setConstellationsVisible(false);
     this.clock.timeMultiplier = 1;
     this.clock.isPaused = false;
@@ -1567,15 +1736,39 @@ export class SolarSystemScene {
       this.exitJet(false);
       this.enterDeepTime(id);
     };
+    if (this.spacecraftLayer) {
+      // Ensure every spacecraft has an evaluated world position before JetController indexes targets
+      this.updateSpacecraftAndComets(0, false);
+    }
+    const scSelected =
+      !takeOffFrom && this.selectedBody.category === 'spacecraft'
+        ? this.spacecraftLayer?.ensureTargetPrepared(
+            this.selectedBody.name,
+            this.clock.getJulianDateTDB(),
+            this.getParentResolver()
+          ) ?? this.spacecraftLayer?.getBundle(this.selectedBody.name)
+        : undefined;
+    const rawHost = scSelected?.lastEval?.parentName ?? this.selectedBody.parentName ?? 'Earth';
+    const spawnHost = this.planetBundles.has(rawHost) ? rawHost : 'Earth';
+    const jetStartBody = takeOffFrom?.body ?? (scSelected ? spawnHost : this.selectedBody.name);
+
     this.jetLastCam.copy(cam.position);
-    this.jet.enter(cam, this.planetBundles, takeOffFrom?.body ?? this.selectedBody.name, this.container, () => this.exitJet(), (n) => this.bodyPositionKm(n), {
+    this.jet.enter(cam, this.planetBundles, jetStartBody, this.container, () => this.exitJet(), (n) => this.bodyPositionKm(n), {
       onLand: (lm) => this.landJetAt(lm),
       takeOffFrom,
       extraTargets: this.jetExtraTargets(),
       shiftHours: (h) => this.clock.setUtcMs(this.clock.getUtcMs() + h * 3600000),
+      timePreset: () => this.nextJetTimeOfDay(),
+      onRendezvousSpacecraft: (id) => {
+        this.rendezvousJetToSpacecraft(id);
+      },
       // Clicks in the cockpit go through the lens: map screen NDC back to the scene's
       toSceneNdc: (x, y) => this.lens.outputToSceneNdc(x, y, this.container.clientWidth / Math.max(1, this.container.clientHeight)),
     });
+    if (scSelected) {
+      this.jet.placeFormationBeside(scSelected);
+      this.syncJetAfterDynHydration(scSelected.definition.name);
+    }
     this.jetLastCam.copy(cam.position);
   }
 
@@ -1584,13 +1777,16 @@ export class SolarSystemScene {
     if (!this.jet.active) return;
     const world = this.jet.nearestWorld();
     this.jet.exit();
-    for (const c of this.comets) c.group.visible = false;
+    for (const c of this.comets) {
+      if (!c.spec.modelPath) c.group.visible = false;
+    }
     // Back under today's sky
     this.jet.era = null;
     this.updateJetEra(0);
     this.lens.setOverlay(null, null);
     this.lens.setLensOverride(null);
     this.lens.setActionCam(false, 0, 0);
+    this.lens.setHelmet(0, 0, 0, 0, 0);
     this.renderer.toneMappingExposure = 1.05;
     const cam = this.cameraRig.camera;
     const saved = this.jetSaved;
@@ -1600,8 +1796,10 @@ export class SolarSystemScene {
       this.clock.isPaused = saved.paused;
       cam.fov = saved.fov;
       cam.updateProjectionMatrix();
-      this.orbitLinesGroup.visible = saved.orbits;
-      this.starfield.setConstellationsVisible(saved.constellations);
+      if (flyToWorld) {
+        this.orbitLinesGroup.visible = saved.orbits;
+        this.starfield.setConstellationsVisible(saved.constellations);
+      }
     }
     this.cameraRig.suspended = false;
     this.cameraRig.syncFromCamera();
@@ -1616,15 +1814,18 @@ export class SolarSystemScene {
     if (def && group) out.push({ definition: def, bodyGroup: group, surfaceMesh: group as unknown as THREE.Mesh, visualRadius: 180 });
     // Comets: real 3D objects (nucleus, coma, ion and dust tails) to fly to and through
     if (def) {
-      if (!this.comets.length) {
-        this.comets = COMETS.map((c) => new Comet3D(c));
-        for (const c of this.comets) this.scene.add(c.group);
-      }
+      this.ensureCometsSpawned();
       for (const c of this.comets) {
         out.push({
           definition: { ...def, id: `comet:${c.spec.name}`, name: c.spec.name, physical: { ...def.physical, meanRadiusKm: c.radius * KM_PER_UNIT, colorHex: '#bff7ea' } },
           bodyGroup: c.group, surfaceMesh: c.group as unknown as THREE.Mesh, visualRadius: c.radius,
         });
+      }
+    }
+    // Register all 174 NASA Eyes spacecraft in Jet Mode targeting & OBB hull collision tracking
+    if (this.spacecraftLayer) {
+      for (const sc of this.spacecraftLayer.getBundles()) {
+        out.push(sc);
       }
     }
     // The nebulae: their 3D stages, where their pictures hang on the sky, to fly out to and into
@@ -1654,6 +1855,7 @@ export class SolarSystemScene {
     if (!this.visiting) this.starfield.nebulae.hide(shown);
   }
 
+  private gateBeforeLanding: GateMode | null = null;
   /** The landmark the jet landed at (shown with a Take off button), or null. */
   public landedFrom: Landmark | null = null;
   /** The UI hears about landings and take-offs here. */
@@ -1665,13 +1867,26 @@ export class SolarSystemScene {
    */
   private landJetAt(lm: Landmark): void {
     this.exitJet(false);
+    // Standing on the ground the page draws as three.js does: the look-up view needs no shader
+    // gate, and a gate left on there once kept its sky hidden (a black sky by day)
+    if (this.gate.mode !== 'off') {
+      this.gateBeforeLanding = this.gate.mode;
+      this.gate.mode = 'off';
+    }
     this.selectBody(lm.body, 1);
-    const ok = this.enterSurface(lm.lat, lm.lon, lm.name);
+    const ok = this.enterSurface(
+      lm.vantageLat ?? lm.lat,
+      lm.vantageLon ?? lm.lon,
+      lm.name,
+      lm.vantageAltKm,
+      lm.viewHeadingDeg,
+      lm.viewPitchDeg
+    );
     if (!ok) {
       this.flyToLandmark(lm.id);
       return;
     }
-    this.surface.setView(lm.viewHeadingDeg ?? 0, 4);
+    this.surface.setView(lm.viewHeadingDeg ?? 0, lm.viewPitchDeg ?? 10);
     this.landedFrom = lm;
     this.onJetLanding?.(lm);
   }
@@ -1680,7 +1895,52 @@ export class SolarSystemScene {
   public takeOffFromLanding(): void {
     const lm = this.landedFrom;
     if (!lm) return;
+    if (this.gateBeforeLanding) {
+      this.gate.mode = this.gateBeforeLanding;
+      this.gateBeforeLanding = null;
+    }
     this.enterJet(lm);
+  }
+
+  /**
+   * The fly page: straight into the jet over a real 3D city where it is daytime now (the Sun
+   * highest), held still until the page reveals it.
+   */
+  public startFlyPage(): { name: string; lat: number; lon: number } | null {
+    const picks = ['earth-eiffel-tower', 'earth-manhattan', 'earth-christ-redeemer', 'earth-tokyo-tower', 'earth-sydney-opera', 'earth-cape-town', 'earth-golden-gate', 'earth-chamonix-mont-blanc', 'earth-hong-kong', 'earth-colosseum', 'earth-las-vegas', 'earth-venice'];
+    const now = new Date(this.clock.getUtcMs());
+    const doy = (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - Date.UTC(now.getUTCFullYear(), 0, 0)) / 86400000;
+    const decl = THREE.MathUtils.degToRad(23.44 * Math.sin((2 * Math.PI * (doy - 81)) / 365));
+    const subLon = (12 - (now.getUTCHours() + now.getUTCMinutes() / 60)) * 15;
+    let best: Landmark | undefined;
+    let bestScore = -Infinity;
+    for (const id of picks) {
+      const lm = getLandmark(id);
+      if (!lm) continue;
+      const la = THREE.MathUtils.degToRad(lm.lat);
+      const dl = THREE.MathUtils.degToRad(lm.lon - subLon);
+      // Sun's elevation there; a mid-morning or afternoon Sun (~35°) looks best, not noon's glare
+      const elev = THREE.MathUtils.radToDeg(Math.asin(Math.sin(la) * Math.sin(decl) + Math.cos(la) * Math.cos(decl) * Math.cos(dl)));
+      const score = elev > 5 ? 60 - Math.abs(elev - 35) : elev;
+      if (score > bestScore) {
+        bestScore = score;
+        best = lm;
+      }
+    }
+    this.enterJet(best);
+    this.jet.hold = true;
+    return best ? { name: best.name, lat: best.lat, lon: best.lon } : null;
+  }
+
+  /** How far the fly page's loading has got: the aircraft, and Google's tiles still to come. */
+  public flyReadiness(): { jet: boolean; aircraft: boolean; tilesPending: number; tilesVisible: number } {
+    const st = (this.photoreal?.tiles as unknown as { stats?: object } | undefined)?.stats as { queued?: number; downloading?: number; parsing?: number; visible?: number } | undefined;
+    return {
+      jet: this.jet.active,
+      aircraft: this.jet.aircraftReady,
+      tilesPending: st ? (st.queued ?? 0) + (st.downloading ?? 0) + (st.parsing ?? 0) : 0,
+      tilesVisible: st?.visible ?? 0,
+    };
   }
 
   public isJetActive(): boolean {
@@ -1692,6 +1952,12 @@ export class SolarSystemScene {
    * scene shifted the other way for the duration of the draw, then everything is put back.
    */
   private renderFrame(timeSec: number): void {
+    this.gate.beginFrame(6);
+    if (this.jet.active || this.surface.isActive()) {
+      this.orbitLinesGroup.visible = false;
+      for (const l of this.moonOrbitLines.values()) l.visible = false;
+      this.starfield.setConstellationsVisible(false);
+    }
     const cam = this.cameraRig.camera;
     const o = this.renderOrigin.copy(cam.position);
     this.scene.position.copy(o).negate();
@@ -1701,6 +1967,8 @@ export class SolarSystemScene {
     try {
       // The jet's reflections: a cube of the real scene from where it is (every few frames)
       if (this.jet.active) this.jet.captureEnvironment(this.renderer, this.scene);
+      else if (this.surface.isActive()) this.updateSurfaceCover();
+      else this.surfaceCover?.setVisible(false);
       this.lens.render(timeSec);
     } finally {
       this.scene.position.set(0, 0, 0);
@@ -1743,13 +2011,14 @@ export class SolarSystemScene {
       const started = performance.now();
       const tick = () => {
         const t = Math.min(1, (performance.now() - started) / 15000);
-        if ((diskTex.image && this.textureFraction >= 0.999) || t >= 1) return resolve();
+        if ((diskTex.image && this.textureFraction >= 0.999) || t >= 1 || this.disposed) return resolve();
         onProgress(0.05 + 0.6 * Math.max(t, this.textureFraction), 'Loading NASA surface maps');
         setTimeout(tick, 120);
       };
       tick();
     });
 
+    if (this.disposed) return;
     // 2. Shaders (70 → 95 %)
     onProgress(0.72, 'Compiling the relativistic ray tracer');
     const galaxy = this.starfield.externalGalaxy.group;
@@ -1782,6 +2051,9 @@ export class SolarSystemScene {
 
     // 3. Upload the large textures now rather than on first sight
     onProgress(0.96, 'Resolving the Milky Way');
+    // One texture a frame, not all in one go: uploading them together froze the page for seconds
+    // (the opening animation stood still); spread out, each is a short hitch at most
+    const toUpload = new Set<THREE.Texture>();
     this.scene.traverse((o) => {
       const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
       const mats = Array.isArray(m) ? m : m ? [m] : [];
@@ -1789,16 +2061,25 @@ export class SolarSystemScene {
         const rec = mat as unknown as Record<string, unknown>;
         for (const key of ['map', 'normalMap', 'emissiveMap']) {
           const t = rec[key];
-          if (t instanceof THREE.Texture && t.image) this.renderer.initTexture(t);
+          if (t instanceof THREE.Texture && t.image) toUpload.add(t);
         }
         const uniforms = (mat as THREE.ShaderMaterial).uniforms;
         if (uniforms) {
           for (const u of Object.values(uniforms)) {
-            if (u && u.value instanceof THREE.Texture && u.value.image) this.renderer.initTexture(u.value);
+            if (u && u.value instanceof THREE.Texture && u.value.image) toUpload.add(u.value);
           }
         }
       }
     });
+    let uploaded = 0;
+    for (const t of toUpload) {
+      // A scene thrown away while loading (React's development double mount) stops here
+      if (this.disposed) return;
+      this.renderer.initTexture(t);
+      uploaded++;
+      onProgress(0.96 + 0.04 * (uploaded / toUpload.size), 'Resolving the Milky Way');
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    }
     onProgress(1, 'Ready');
     // The nebulae are not needed for the first frame: they load now, in the background, and fade in
     this.starfield.nebulae.load(this.renderer);
@@ -1998,12 +2279,603 @@ export class SolarSystemScene {
     const kmPerUnit = earth.definition.physical.meanRadiusKm / earth.visualRadius;
     const altKm = (cam.position.distanceTo(centre) - earth.visualRadius) * kmPerUnit;
     const deepLand = this.surface.isActive() && !!this.surface.getStatus()?.deepTime;
-    p.update(cam, this.renderer, altKm < 1500 && !deepLand && !this.explorer.hideGround);
+    // Below 1,200 km: higher up Solaris's own globe (clouds, night lights) is the better picture,
+    // and the depth buffer can no longer tell the tiles from the globe under them
+    const speedKmS = this.jet.active ? this.jet.telemetry.speedMps / 1000 : 0;
+    p.setTime(this.clock.getUtcMs(), performance.now() * 0.001);
+    this.updateCity(earth);
+    // Flying or standing on the ground, Earth is lit by the real Sun (the explorer's even daylight
+    // is for inspecting the night side from orbit; it left night lit like noon in the jet)
+    if (this.jet.active || this.surface.isActive()) p.setDaylight(0);
+    this.updateJetSky(earth, altKm);
+    p.update(cam, this.renderer, (altKm < 1200 || this.surface.isActive()) && !deepLand && !this.explorer.hideGround, altKm, speedKmS);
     this.explorer.photorealEarth = p.showing;
+    // The globe stays drawn under the tiles as their fallback: where a tile has not arrived yet
+    // you see the globe's map, not a black hole. It is sunk 500 m so the two never fight for
+    // depth: sea level in the tiles is the geoid, up to 106 m below the ellipsoid the globe is
+    // drawn on, and the Dead Sea shore is 430 m below.
+    const meshMat = earth.surfaceMesh.material as THREE.ShaderMaterial;
+    meshMat.visible = true;
+    meshMat.depthWrite = true;
+    // Under the tiles the globe must be the ground's shape too. At 96 x 64 segments each flat
+    // triangle spans ~400 km and sags up to 3.4 km under the true surface: wherever a tile had not
+    // arrived, a straight-edged pit of blurry blue-green map showed (the "slabs"). Low down, a
+    // fine sphere (sag ~50 m) stands in, so a gap shows ground at the right height
+    this.setFineGlobe(earth, p.showing && altKm < 400);
+    if (meshMat.uniforms?.uSink) meshMat.uniforms.uSink.value = p.showing ? 0.3 / earth.definition.physical.meanRadiusKm : 0;
+    // The tiles' air on the globe too, low down (fading out by 80 km up, where the globe alone is
+    // the view): the open sea past the tiles stopped showing as a flat deep blue to the horizon
+    if (meshMat.uniforms?.uNearAir) {
+      const air = p.air;
+      meshMat.uniforms.uNearAir.value = p.showing ? 1 - THREE.MathUtils.smoothstep(altKm, 40, 80) : 0;
+      meshMat.uniforms.uAirKmPerUnit.value = air.kmPerUnit;
+      meshMat.uniforms.uAirCamAltKm.value = air.camAltKm;
+      meshMat.uniforms.uAirHaze.value = air.haze;
+    }
+    this.updateNightLight(earth, cam.position, centre);
+    // You, standing a few steps ahead in the look-up view (see Avatar)
+    {
+      const st = this.surface.isActive() ? this.surface.getStatus() : null;
+      const on = !!st && st.body === 'Earth' && this.avatarOn && st.eyeHeightKm < 0.01;
+      if (on || this.avatar) {
+        this.avatar ??= new Avatar();
+        const up = this.coverTmp.up.subVectors(cam.position, centre).normalize();
+        const sunUp = -cam.position.clone().normalize().dot(up);
+        this.avatar.update(on, earth.surfaceMesh, cam.position, cam.getWorldDirection(this.coverTmp.sun), st?.eyeHeightKm ?? 0.0017, sunUp, performance.now() / 1000);
+      }
+    }
+    // The land's real shape, generated, under the tiles: there before they load and where they
+    // have nothing (see ProceduralTerrain)
+    {
+      const on = (this.jet.active || this.surface.isActive()) && altKm < 400 && !deepLand && !this.explorer.hideGround;
+      if (on || this.terrain) {
+        this.terrain ??= new ProceduralTerrain();
+        this.terrain.attach(earth.surfaceMesh);
+        const dayMap = (meshMat.uniforms?.dayMap?.value ?? null) as THREE.Texture | null;
+        this.terrain.setMaps(dayMap);
+        const local = earth.surfaceMesh.worldToLocal(this.hiResTmp.copy(cam.position));
+        const ll = bodyLocalToLatLon('Earth', local.x, local.y, local.z);
+        this.terrain.setTileOffset(this.jet.active ? this.jet.tileGroundOffsetKm : null);
+        const kmTrue = 6378.137 / earth.visualRadius;
+        // Towards the Sun (at the scene's origin) in Earth's own frame
+        const sunLocal = earth.surfaceMesh.worldToLocal(this.nightTmp.sun.set(0, 0, 0));
+        this.terrain.update(on, ll.lat, ll.lon, Math.max(0.05, altKm), { kmPerUnit: kmTrue, camAltKm: Math.max(0, altKm), haze: p.air.haze }, p.dayOfYearNow, sunLocal);
+      }
+    }
+    if (earth.atmosphereMesh) {
+      const lowPhoto = p.showing && altKm < 60;
+      earth.atmosphereMesh.renderOrder = lowPhoto ? 0.95 : 3;
+      (earth.atmosphereMesh.material as THREE.Material).transparent = true;
+    }
+  }
+
+  private terrain: ProceduralTerrain | null = null;
+  private avatar: Avatar | null = null;
+  /** Whether the person stands in front in the look-up view (on by default). */
+  public avatarOn = true;
+  /** Trees and their shadows round you, standing on Earth (the jet keeps its own set). */
+  private surfaceCover: GroundCover | null = null;
+  private readonly coverTmp = { up: new THREE.Vector3(), centre: new THREE.Vector3(), sun: new THREE.Vector3() };
+
+  /**
+   * Standing on Earth over Google's tiles: the same planted trees as low in the jet (GroundCover:
+   * real 3D conifers and broadleaves where the photographs show woods and parks, in the season of
+   * the place, swaying, casting their shadows), so the ground round you is a park or a wood and
+   * not the photographs' melted blobs. Run inside the floating-origin draw (camera at the origin),
+   * where metre-sized work keeps its precision.
+   */
+  private updateSurfaceCover(): void {
+    const st = this.surface.getStatus();
+    const earth = this.planetBundles.get('Earth');
+    const photo = this.photoreal;
+    if (!st || st.body !== 'Earth' || !earth || !photo?.showing || perf.tier === 'low' || st.eyeHeightKm > 1.2) {
+      this.surfaceCover?.setVisible(false);
+      photo?.setTreeShadow(null, null);
+      return;
+    }
+    const t = this.coverTmp;
+    earth.bodyGroup.getWorldPosition(t.centre);
+    t.up.copy(t.centre).negate().normalize();
+    const gc = (this.surfaceCover ??= new GroundCover());
+    const surf = earth.surfaceMesh;
+    gc.attach(surf);
+    gc.setVisible(true);
+    gc.setSeason(photo.dayOfYearNow, st.lat, performance.now() / 1000);
+    const unitsPerKm = earth.visualRadius / 6378.137;
+    gc.setArea(unitsPerKm);
+    if (gc.captureDue) {
+      const tileErrors = new Map<THREE.Object3D, number>();
+      for (const tile of photo.tiles.visibleTiles as Set<{ geometricError?: number; engineData?: { scene?: THREE.Object3D } }>) {
+        const sc = tile.engineData?.scene;
+        if (sc && typeof tile.geometricError === 'number') tileErrors.set(sc, tile.geometricError);
+      }
+      photo.withNeutralLight(() => gc.capture(this.renderer, photo.tiles.group, surf, t.up, unitsPerKm, Math.max(0.0015, st.eyeHeightKm), tileErrors));
+    }
+    t.sun.copy(SUN_WORLD.value).normalize();
+    gc.renderShadow(this.renderer, surf, t.sun, t.up, unitsPerKm, t.sun.dot(t.up));
+    gc.setSky(t.sun.dot(t.up));
+    photo.setTreeShadow(gc.shadowTexture, gc.shadowMatrix);
+  }
+  private readonly nightTmp = { moon: new THREE.Vector3(), up: new THREE.Vector3(), sun: new THREE.Vector3() };
+
+  /**
+   * The night's light over Earth (see AerialPerspective's NIGHT_AIR, MOON_LIGHT, MOON_DIR): where
+   * the Moon really is, how much of it is lit (its phase, from the true positions), how high it
+   * stands over the camera, and how dark it is (the Sun's height there).
+   */
+  private updateNightLight(earth: PlanetMeshBundle, cam: THREE.Vector3, centre: THREE.Vector3): void {
+    const t = this.nightTmp;
+    const moonB = this.planetBundles.get('Moon');
+    const mp = this.latestPhysicalStates.get('Moon')?.positionKm;
+    const ep = this.latestPhysicalStates.get('Earth')?.positionKm;
+    let illum = 0;
+    if (moonB) {
+      moonB.bodyGroup.getWorldPosition(t.moon);
+      MOON_DIR.value.subVectors(t.moon, centre).normalize();
+    }
+    if (mp && ep) {
+      // Phase: the angle at the Moon between the Sun (at the origin) and Earth
+      const toSun = new THREE.Vector3(-mp[0], -mp[1], -mp[2]).normalize();
+      const toEarth = new THREE.Vector3(ep[0] - mp[0], ep[1] - mp[1], ep[2] - mp[2]).normalize();
+      illum = (1 + toSun.dot(toEarth)) / 2;
+    }
+    t.up.subVectors(cam, centre).normalize();
+    const moonUp = moonB ? t.up.dot(MOON_DIR.value) : -1;
+    const moonHigh = THREE.MathUtils.smoothstep(moonUp, -0.04, 0.2);
+    // The Sun at the origin: how dark it is here
+    t.sun.copy(cam).negate().normalize();
+    const night = 1 - THREE.MathUtils.smoothstep(t.up.dot(t.sun), -0.12, 0.05);
+    // A crescent gives far less than its share of light (the full Moon's surge): about phase^1.5
+    const moon = Math.pow(illum, 1.5);
+    MOON_LIGHT.value.set(0.16, 0.2, 0.3).multiplyScalar(moon * night);
+    NIGHT_AIR.value.set(0.018, 0.024, 0.042).addScaledVector(new THREE.Vector3(0.07, 0.09, 0.14), moon * moonHigh).multiplyScalar(night);
+    // The eye adapts to the dark: low over Earth at night the meter may brighten up to ~2.8x
+    // (the land stays readable on a moonless night; by day and in space it is held to 1.6x)
+    const kmTrue = 6378.137 / earth.visualRadius;
+    const altKm = cam.distanceTo(centre) * kmTrue - 6371;
+    const low = 1 - THREE.MathUtils.smoothstep(altKm, 60, 150);
+    this.lens.exposure.maxGain = 1.6 + 1.2 * night * low;
+  }
+
+  /** Draw one frame in this many (the fly page's opening sets 4; 1 is every frame). */
+  public drawEvery = 1;
+  private drawCount = 0;
+
+  /**
+   * While on (the fly page's loading, behind its film), a draw is only made once its shaders are
+   * compiled and its images uploaded, and skipped until then (see CompileGate): the ~120 programs
+   * and the big maps that froze the film for 0.3-1 s at a time cost the page nothing.
+   */
+  private gate!: CompileGate;
+  /** 'hold' behind a loading screen, 'hide' live (see CompileGate); 'off' draws as three.js does. */
+  public get compileGate(): GateMode {
+    return this.gate.mode;
+  }
+  public set compileGate(mode: GateMode) {
+    this.gate.mode = mode;
+  }
+  /** Draws skipped and objects held back by the gate (diagnostics). */
+  public get gateStats(): { skips: number; hidden: number } {
+    return { skips: this.gate.skips, hidden: this.gate.hidden };
+  }
+
+  private coarseGlobe: THREE.BufferGeometry | null = null;
+  private fineGlobe: THREE.BufferGeometry | null = null;
+
+  /** Swap Earth's globe between its usual sphere and a fine one (see updatePhotoreal). */
+  private setFineGlobe(earth: PlanetMeshBundle, on: boolean): void {
+    const mesh = earth.surfaceMesh;
+    if (on) {
+      if (!this.fineGlobe) {
+        this.coarseGlobe = mesh.geometry;
+        const g = new THREE.SphereGeometry(1, 768, 384);
+        if (this.coarseGlobe.getAttribute('tangent')) g.computeTangents();
+        this.fineGlobe = g;
+      }
+      if (mesh.geometry !== this.fineGlobe) mesh.geometry = this.fineGlobe;
+    } else if (this.coarseGlobe && mesh.geometry !== this.coarseGlobe) {
+      mesh.geometry = this.coarseGlobe;
+    }
+  }
+
+  private timePresetIndex = -1;
+  private static readonly TIME_PRESETS: Array<{ label: string; kind: 'rise' | 'set' | 'noon' | 'night'; elev: number }> = [
+    { label: 'Sunrise', kind: 'rise', elev: -0.833 },
+    { label: 'Morning', kind: 'rise', elev: 22 },
+    { label: 'Noon', kind: 'noon', elev: 0 },
+    { label: 'Golden hour', kind: 'set', elev: 6 },
+    { label: 'Sunset', kind: 'set', elev: -0.833 },
+    { label: 'Blue hour', kind: 'set', elev: -5 },
+    { label: 'Night', kind: 'night', elev: 0 },
+  ];
+
+  /**
+   * O in the jet: the next named time of day where the jet is (sunrise, morning, noon, golden hour,
+   * sunset, blue hour, night), found from the real Sun over that place within the coming day.
+   */
+  private nextJetTimeOfDay(): string | null {
+    const jt = this.jet.telemetry;
+    const body = jt.nearest;
+    if (jt.lat === undefined || jt.lon === undefined || !body) return null;
+    const lat = jt.lat;
+    const lon = jt.lon;
+    const d0 = this.clock.getJulianDateTDB() - SimulationClock.J2000_JD;
+    const presets = SolarSystemScene.TIME_PRESETS;
+    for (let tries = 0; tries < presets.length; tries++) {
+      this.timePresetIndex = (this.timePresetIndex + 1) % presets.length;
+      const p = presets[this.timePresetIndex];
+      let d: number | null = null;
+      if (p.kind === 'noon' || p.kind === 'night') {
+        d = findTimeOfDay(body, lat, lon, d0 + 1 / 1440, p.kind);
+      } else {
+        // Scan the next day in 3-minute steps for the Sun crossing this height, rising or setting
+        const step = 3 / 1440;
+        let prev = sunElevationAt(body, lat, lon, d0);
+        for (let i = 1; i <= 480 && prev !== null; i++) {
+          const t = d0 + i * step;
+          const e = sunElevationAt(body, lat, lon, t);
+          if (e === null) break;
+          const up = p.kind === 'rise' ? prev < p.elev && e >= p.elev : prev > p.elev && e <= p.elev;
+          if (up) {
+            d = t;
+            break;
+          }
+          prev = e;
+        }
+      }
+      if (d === null) continue;
+      const jdUtc = d + SimulationClock.J2000_JD - 69.184 / 86400;
+      const ms = (jdUtc - 2440587.5) * 86400000;
+      this.clock.setUtcMs(ms);
+      this.propagateAll(d);
+      const utcH = (ms / 3600000) % 24;
+      const local = (((utcH + lon / 15) % 24) + 24) % 24;
+      const hh = Math.floor(local);
+      const mm = Math.floor((local - hh) * 60);
+      return `${p.label} · ${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+    }
+    return null;
+  }
+
+  /** Procedural buildings under the jet or the standing eye, in a pilot region. */
+  private updateCity(earth: PlanetMeshBundle): void {
+    const jt = this.jet.telemetry;
+    const st = this.surface.isActive() ? this.surface.getStatus() : null;
+    const lat = this.jet.active ? jt.lat : st?.body === 'Earth' ? st.lat : undefined;
+    const lon = this.jet.active ? jt.lon : st?.body === 'Earth' ? st.lon : undefined;
+    if (lat === undefined || lon === undefined) {
+      if (this.city) this.city.group.visible = false;
+      return;
+    }
+    if (!this.city && !ProceduralCity.regionAt(lat, lon)) return;
+    // On wherever a region is listed (see ProceduralCity); localStorage solaris.proceduralCity = 0
+    // turns it off
+    let enabled = true;
+    try {
+      enabled = localStorage.getItem('solaris.proceduralCity') !== '0';
+    } catch {
+      enabled = true;
+    }
+    if (!enabled) {
+      if (this.city) this.city.group.visible = false;
+      return;
+    }
+    if (!this.city) {
+      const city = new ProceduralCity();
+      city.dataGroundKm = (la, lo) => earthElevation.heightKm(la, lo, 13);
+      city.prepareGround = (s, w, n, e) => earthElevation.ensure(s, w, n, e, 13);
+      const ray = new THREE.Raycaster();
+      city.drawnGroundKm = (la, lo) => {
+        const target = PhotorealEarth.current?.raycastTarget();
+        if (!target) return null;
+        const mesh = earth.surfaceMesh;
+        mesh.updateWorldMatrix(true, false);
+        const [x, y, z] = bodyLatLonToLocal('Earth', la, lo);
+        const from = new THREE.Vector3(x, y, z).multiplyScalar(1 + 12 / 6378.137).applyMatrix4(mesh.matrixWorld);
+        const centre = earth.bodyGroup.getWorldPosition(new THREE.Vector3());
+        ray.set(from, centre.clone().sub(from).normalize());
+        const hit = ray.intersectObject(target, true)[0];
+        if (!hit) return null;
+        const loc = hit.point.clone().applyMatrix4(mesh.matrixWorld.clone().invert());
+        return (loc.length() - 1) * 6378.137;
+      };
+      this.city = city;
+    }
+    const kmPerUnit = 6378.137 / earth.visualRadius;
+    const altKm = this.jet.active ? jt.altKm : 0.002;
+    this.city.haze.value = this.photoreal?.air.haze ?? 1;
+    this.city.offsetHintKm = this.jet.active ? this.jet.tileGroundOffsetKm : this.city.offsetHintKm;
+    this.city.fallbackOffsetKm = this.terrain && Number.isFinite(this.terrain.surfaceOffsetKm) ? this.terrain.surfaceOffsetKm : null;
+    this.city.update(earth.surfaceMesh, this.cameraRig.camera.position, lat, lon, altKm, kmPerUnit);
+  }
+
+  /** The physical sky dome around the jet in Earth's air (see jetSky). */
+  private updateJetSky(earth: PlanetMeshBundle, roughAltKm: number): void {
+    // The jet's own height over the ground (the rough one is over a mean-radius sphere, which reads
+    // kilometres below zero near the equator, where Earth bulges)
+    const jt = this.jet.telemetry;
+    const altKm = this.jet.active && jt.nearest === 'Earth' ? jt.altKm : roughAltKm;
+    const on = this.jet.active && jt.nearest === 'Earth' && altKm < 60;
+    if (!this.jetSky && on) {
+      this.jetSky = new SkyAtmosphere();
+      this.jetSky.setModel(atmosphereFor('Earth'));
+      this.scene.add(this.jetSky.mesh);
+    }
+    const sky = this.jetSky;
+    if (!sky) return;
+    if (!on) {
+      sky.mesh.visible = false;
+      if (earth.atmosphereMesh && this.jet.active) earth.atmosphereMesh.visible = true;
+      this.earthClouds?.hide();
+      this.photoreal?.setCloudShadows(null);
+      return;
+    }
+    const cam = this.cameraRig.camera.position;
+    const centre = earth.bodyGroup.getWorldPosition(new THREE.Vector3());
+    const f = this.jetSkyFrame;
+    f.up.subVectors(cam, centre).normalize();
+    const pole = new THREE.Vector3(0, 1, 0).applyQuaternion(earth.surfaceMesh.getWorldQuaternion(new THREE.Quaternion()));
+    f.north.copy(pole).addScaledVector(f.up, -pole.dot(f.up));
+    if (f.north.lengthSq() < 1e-10) f.north.set(1, 0, 0);
+    f.north.normalize();
+    f.east.crossVectors(f.north, f.up).normalize();
+    // The Sun is at the scene origin (world coordinates, before the floating origin shifts them)
+    const sunDir = new THREE.Vector3().copy(cam).negate().normalize();
+    const kmPerUnit = earth.definition.physical.meanRadiusKm / earth.visualRadius;
+    const horizonKm = Math.sqrt(2 * 6371 * Math.max(altKm, 0.05));
+    const radius = Math.max(60, horizonKm * 3) / kmPerUnit;
+    // The sky's air is measured from sea level (the jet's own height is over the ground: in a
+    // Himalayan valley 3.3 km lower, which put the dome's horizon at eye level)
+    const kmTrueSky = 6378.137 / earth.visualRadius;
+    const latR = ((jt.lat ?? 0) * Math.PI) / 180;
+    const seaKm = 6378.137 * (1 - Math.sin(latR) ** 2 / 298.257);
+    const aslKm = jt.lat !== undefined ? cam.distanceTo(centre) * kmTrueSky - seaKm : altKm;
+    sky.update(cam, radius, f, sunDir, Math.max(aslKm, altKm, 0.002) * 1000, true);
+    // Clouds from the real weather where the jet is
+    if (jt.lat !== undefined && jt.lon !== undefined) {
+      this.earthClouds ??= new EarthClouds(this.lens.clouds);
+      const kmTrue = 6378.137 / earth.visualRadius;
+      this.earthClouds.update(altKm < 40, earth.surfaceMesh, centre, this.cameraRig.camera, jt.lat, jt.lon, altKm, kmTrue, sunDir);
+      const live = this.earthClouds.weather.current;
+      this.jet.weather.live = live ? { kind: live.kind, strength: live.strength, label: live.label } : null;
+      // The volumetric clouds fog the view themselves: only a touch of white-out on top
+      this.jet.weather.cloudInside = this.earthClouds.inside * 0.4;
+      if (live) this.photoreal?.setVisibility(live.visibilityKm);
+      const cp = this.lens.clouds;
+      this.photoreal?.setCloudShadows({ enabled: cp.enabled, layer: cp.layer, earthRot: cp.u.uEarthRot.value });
+    }
+    // The orbit-scale shell would add its own scattering on top: it steps aside low down
+    if (earth.atmosphereMesh) earth.atmosphereMesh.visible = altKm > 45;
+  }
+
+  private disposed = false;
+
+  private cachedParentResolver: ParentResolver | null = null;
+  private bundleLowerLookup = new Map<string, PlanetMeshBundle>();
+
+  private ensureCometsSpawned(): void {
+    if (this.comets.length > 0) return;
+    this.comets = COMETS.map((c) => new Comet3D(c));
+    for (const c of this.comets) {
+      c.group.visible = Boolean(c.spec.modelPath);
+      this.scene.add(c.group);
+    }
+  }
+
+  private resolvePlanetBundle(nameOrId: string): PlanetMeshBundle | undefined {
+    const direct = this.planetBundles.get(nameOrId);
+    if (direct) return direct;
+    if (this.bundleLowerLookup.size === 0 && this.planetBundles.size > 0) {
+      for (const [k, b] of this.planetBundles) {
+        this.bundleLowerLookup.set(k.toLowerCase(), b);
+        this.bundleLowerLookup.set(b.definition.id.toLowerCase(), b);
+      }
+    }
+    return this.bundleLowerLookup.get(nameOrId.toLowerCase());
+  }
+
+  private resolveComet(nameOrId: string) {
+    const targetLower = nameOrId.toLowerCase();
+    const targetNorm = targetLower.replace(/[^a-z0-9]/g, '');
+    return this.comets.find((c) => {
+      const nLower = c.spec.name.toLowerCase();
+      if (nLower === targetLower) return true;
+      const nNorm = nLower.replace(/[^a-z0-9]/g, '');
+      return nNorm === targetNorm || (targetNorm.length >= 2 && nNorm.startsWith(targetNorm));
+    });
+  }
+
+  private getParentResolver(): ParentResolver {
+    if (this.cachedParentResolver) return this.cachedParentResolver;
+    this.cachedParentResolver = {
+      getWorldPosition: (nameOrId, out = new THREE.Vector3()) => {
+        const b = this.resolvePlanetBundle(nameOrId);
+        if (b) return out.copy(b.bodyGroup.position);
+        const comet = this.resolveComet(nameOrId);
+        if (comet) return out.copy(comet.group.position);
+        return null;
+      },
+      getPhysicalRadiusKm: (nameOrId) => {
+        const b = this.resolvePlanetBundle(nameOrId);
+        if (b) return b.definition.physical.meanRadiusKm;
+        const comet = this.resolveComet(nameOrId);
+        if (comet) return comet.spec.nucleusKm;
+        return 6371;
+      },
+      getVisualRadius: (nameOrId) => {
+        const b = this.resolvePlanetBundle(nameOrId);
+        if (b) return b.visualRadius;
+        const comet = this.resolveComet(nameOrId);
+        if (comet) return Math.max(0.05, comet.spec.nucleusKm / KM_PER_UNIT);
+        return 1;
+      },
+      getSurfaceObject: (nameOrId) => {
+        const b = this.resolvePlanetBundle(nameOrId);
+        return b ? b.surfaceMesh : null;
+      },
+      getGravitationalParameterKm3S2: (nameOrId) => {
+        const b = this.resolvePlanetBundle(nameOrId);
+        if (!b) return null;
+        return (
+          b.definition.physical.gmKm3S2 ??
+          (b.definition.physical.massKg ? b.definition.physical.massKg * 6.6743e-20 : null)
+        );
+      },
+    };
+    return this.cachedParentResolver;
+  }
+
+  private updateSpacecraftAndComets(deltaSec: number, showReticles = true): void {
+    if (!this.spacecraftLayer) return;
+    const cam = this.cameraRig.camera;
+    cam.updateMatrixWorld();
+    if (!this.jet.active) {
+      for (const c of this.comets) {
+        if (c.spec.modelPath) {
+          c.group.visible = true;
+          c.update(deltaSec, cam);
+        }
+      }
+    }
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    const aspect = w / Math.max(1, h);
+    this.spacecraftLayer.update({
+      jdTDB: this.clock.getJulianDateTDB(),
+      camera: cam,
+      resolver: this.getParentResolver(),
+      focusedName: this.selectedBody?.name ?? null,
+      jetLockedName: this.jet.active ? this.jet.target : null,
+      jetActive: this.jet.active,
+      deltaSec,
+      projectWorldToScreen: showReticles
+        ? (world) => {
+            const p = this.tmpMarker.copy(world).project(cam);
+            if (p.z > 1 || p.z < -1) return null;
+            const [ox, oy] = this.lens.sceneToOutputNdc(p.x, p.y, aspect);
+            if (Math.abs(ox) > 1.02 || Math.abs(oy) > 1.02) return null;
+            return { x: (ox * 0.5 + 0.5) * w, y: (-oy * 0.5 + 0.5) * h };
+          }
+        : () => null,
+    });
+  }
+
+  /** Selects a NASA Eyes spacecraft, optionally jumping the clock to its signature mission epoch. */
+  public selectSpacecraft(nameOrId: string, featuredEpochUtc?: string | null): void {
+    if (featuredEpochUtc) {
+      const ms = Date.parse(featuredEpochUtc);
+      if (Number.isFinite(ms)) {
+        this.clock.setUtcMs(ms);
+        this.propagateAll(this.clock.getJulianDateTDB() - SimulationClock.J2000_JD);
+      }
+    }
+    const sc = this.spacecraftLayer?.getBundle(nameOrId);
+    this.selectBody(sc ? sc.entry.name : nameOrId);
+  }
+
+  /** Re-anchors the jet cleanly once an uncached `.dyn` binary finishes downloading after rendezvous. */
+  private syncJetAfterDynHydration(nameOrId: string): void {
+    if (!this.spacecraftLayer) return;
+    const token = ++this.jetRendezvousToken;
+    void this.spacecraftLayer
+      .awaitTargetPrepared(nameOrId, this.clock.getJulianDateTDB(), this.getParentResolver())
+      .then((hydrated) => {
+        if (!hydrated || !this.jet.active || token !== this.jetRendezvousToken) return;
+        if (this.jet.target !== hydrated.definition.name) return;
+        this.updateSpacecraftAndComets(0, false);
+        this.jet.placeFormationBeside(hydrated, true);
+      });
+  }
+
+  /** Evaluates a NASA spacecraft immediately and places the active jet in sunlit close formation beside it. */
+  public rendezvousJetToSpacecraft(nameOrId: string, featuredEpochUtc?: string | null): boolean {
+    if (!this.spacecraftLayer) return false;
+    if (featuredEpochUtc) {
+      const ms = Date.parse(featuredEpochUtc);
+      if (Number.isFinite(ms)) {
+        this.clock.setUtcMs(ms);
+        this.propagateAll(this.clock.getJulianDateTDB() - SimulationClock.J2000_JD);
+      }
+    }
+    const prepared = this.spacecraftLayer.ensureTargetPrepared(
+      nameOrId,
+      this.clock.getJulianDateTDB(),
+      this.getParentResolver()
+    );
+    if (!prepared) return false;
+    this.updateSpacecraftAndComets(0, false);
+    this.jet.placeFormationBeside(prepared);
+    this.syncJetAfterDynHydration(prepared.definition.name);
+    return true;
+  }
+
+  /** Enters Jet Mode (or warps the active jet) directly into formation beside any NASA spacecraft. */
+  public enterJetBesideSpacecraft(nameOrId: string, featuredEpochUtc?: string | null): void {
+    if (this.jet.active) {
+      this.rendezvousJetToSpacecraft(nameOrId, featuredEpochUtc);
+      return;
+    }
+    // End showcase/surface/horizon/nebula BEFORE selecting the target spacecraft so stopShowcase()
+    // cannot revert selectedBody back to the saved planet/Sun inside enterJet().
+    if (this.surface.isActive()) this.exitSurface(false);
+    if (this.showcase.active) this.stopShowcase();
+    this.exitHorizonView(false);
+    if (this.visiting) this.endNebulaVisit();
+    if (featuredEpochUtc) {
+      const ms = Date.parse(featuredEpochUtc);
+      if (Number.isFinite(ms)) {
+        this.clock.setUtcMs(ms);
+        this.propagateAll(this.clock.getJulianDateTDB() - SimulationClock.J2000_JD);
+      }
+    }
+    const prepared = this.spacecraftLayer?.ensureTargetPrepared(
+      nameOrId,
+      this.clock.getJulianDateTDB(),
+      this.getParentResolver()
+    );
+    if (prepared) {
+      this.selectedBody = prepared.definition;
+    }
+    this.enterJet();
+  }
+
+  /** Jumps time + focuses the signature body/spacecraft of a NASA historic mission event. */
+  public jumpToMissionEvent(dateUtc: string | null, target: string): void {
+    const ms = dateUtc ? Date.parse(dateUtc) : Date.now();
+    if (Number.isFinite(ms)) {
+      this.clock.setUtcMs(ms);
+      this.propagateAll(this.clock.getJulianDateTDB() - SimulationClock.J2000_JD);
+    }
+    this.selectBody(target);
+  }
+
+  public setComparisonProp(kind: ComparisonPropKind): void {
+    this.spacecraftLayer?.setComparisonProp(kind);
+  }
+
+  public getComparisonProp(): ComparisonPropKind {
+    return this.spacecraftLayer?.getComparisonProp() ?? 'none';
+  }
+
+  public setScienceOverlaysVisible(visible: boolean): void {
+    this.spacecraftLayer?.setScienceOverlaysVisible(visible);
+  }
+
+  public getScienceOverlaysVisible(): boolean {
+    return this.spacecraftLayer?.getScienceOverlaysVisible() ?? false;
   }
 
   public dispose(): void {
+    this.disposed = true;
     this.photoreal?.dispose();
+    this.jetSky?.dispose();
+    this.earthClouds?.dispose();
+    this.city?.dispose();
+    this.spacecraftLayer?.dispose();
+    if (this.scene.environment) {
+      this.scene.environment.dispose();
+      this.scene.environment = null;
+    }
     this.isRunning = false;
     this.horizon?.dispose();
     this.jet.dispose();

@@ -36,6 +36,8 @@ export interface WmsProvider extends EquirectGrid {
   kind: 'wms';
   /** GetMap URL with {bbox} (minLon,minLat,maxLon,maxLat) and {size}. */
   template: string;
+  /** As for WmtsProvider: greyscale detail, hue from the bundled colour map. */
+  colorize?: boolean;
 }
 
 export type TileProvider = WmtsProvider | WmsProvider;
@@ -67,6 +69,179 @@ const TREK = (body: string, layer: string, ext: string) =>
   `https://trek.nasa.gov/tiles/${body}/EQ/${layer}/1.0.0/default/default028mm/{z}/{y}/{x}.${ext}`;
 
 const TREK_GRID = { tileSize: 256, level0TileDeg: 180, minLevel: 0 };
+
+/** USGS Astrogeology planetary WMS (MapServer, CORS open), one GetMap per 256 px tile. */
+const USGS_WMS = (map: string, layer: string) =>
+  `https://planetarymaps.usgs.gov/cgi-bin/mapserv?map=/maps/${map}.map&service=WMS&version=1.1.1&request=GetMap&layers=${layer}&styles=&srs=EPSG:4326&bbox={bbox}&width={size}&height={size}&format=image/jpeg`;
+
+const USGS = 'https://astrogeology.usgs.gov/search';
+
+/**
+ * Moons and dwarf planets with a real streamed mosaic. Each map's registration (east-positive,
+ * centred on 0°) was checked against the bundled global maps in the browser: Io, Europa,
+ * Ganymede, Callisto, Iapetus, Triton and Pluto correlate at 0.5–0.8 with no shift or mirror
+ * (−0.4 to 0.4 shifted 180° or mirrored); Mimas and Tethys were compared by eye across the USGS,
+ * Trek and bundled maps (Herschel and Odysseus line up). Levels are capped near each map's own
+ * resolution: deeper requests would only be upsampled by the server.
+ */
+const MOON_IMAGERY: BodyImagery[] = [
+  {
+    body: 'Io',
+    provider: { kind: 'wms', template: USGS_WMS('jupiter/io_simp_cyl', 'SSI_VGR_color'), ...TREK_GRID, maxLevel: 5 },
+    kind: 'visible',
+    title: 'Galileo SSI + Voyager colour mosaic (~1 km)',
+    source: 'USGS Astrogeology planetary WMS · NASA Galileo SSI and Voyager',
+    sourceUrl: USGS,
+    attribution: 'NASA/JPL/USGS (Galileo SSI, Voyager) via USGS Astrogeology, public domain',
+    bestMetresPerPixel: 0,
+    coverage: 'Global colour mosaic of Io; sharper Galileo frames over some volcanoes',
+  },
+  {
+    body: 'Europa',
+    provider: { kind: 'wms', template: USGS_WMS('jupiter/europa_simp_cyl', 'GALILEO_VOYAGER'), ...TREK_GRID, maxLevel: 5, colorize: true },
+    kind: 'monochrome',
+    title: 'Galileo + Voyager global mosaic (500 m)',
+    source: 'USGS Astrogeology planetary WMS · NASA Galileo SSI and Voyager',
+    sourceUrl: USGS,
+    attribution: 'NASA/JPL/USGS (Galileo SSI, Voyager) via USGS Astrogeology, public domain',
+    bestMetresPerPixel: 0,
+    coverage: 'Global greyscale mosaic; resolution varies from 500 m to several km',
+  },
+  {
+    body: 'Ganymede',
+    provider: { kind: 'wms', template: USGS_WMS('jupiter/ganymede_simp_cyl', 'GALILEO_VOYAGER'), ...TREK_GRID, maxLevel: 5, colorize: true },
+    kind: 'monochrome',
+    title: 'Galileo + Voyager global mosaic (1 km)',
+    source: 'USGS Astrogeology planetary WMS · NASA Galileo SSI and Voyager',
+    sourceUrl: USGS,
+    attribution: 'NASA/JPL/USGS (Galileo SSI, Voyager) via USGS Astrogeology, public domain',
+    bestMetresPerPixel: 0,
+    coverage: 'Global greyscale mosaic',
+  },
+  {
+    body: 'Callisto',
+    provider: { kind: 'wms', template: USGS_WMS('jupiter/callisto_simp_cyl', 'GALILEO_VOYAGER'), ...TREK_GRID, maxLevel: 5, colorize: true },
+    kind: 'monochrome',
+    title: 'Galileo + Voyager global mosaic (1 km)',
+    source: 'USGS Astrogeology planetary WMS · NASA Galileo SSI and Voyager',
+    sourceUrl: USGS,
+    attribution: 'NASA/JPL/USGS (Galileo SSI, Voyager) via USGS Astrogeology, public domain',
+    bestMetresPerPixel: 0,
+    coverage: 'Global greyscale mosaic',
+  },
+  {
+    body: 'Titan',
+    provider: { kind: 'wmts', template: TREK('Titan', 'Titan_ISS_Globe_65Sto45N_450M_AvgMos', 'png'), ...TREK_GRID, maxLevel: 6 },
+    kind: 'monochrome',
+    title: 'Cassini ISS controlled mosaic, 938 nm (450 m)',
+    source: 'NASA Titan Trek · Cassini Imaging Science Subsystem',
+    sourceUrl: 'https://trek.nasa.gov/titan/',
+    attribution: 'NASA/JPL-Caltech/SSI/USGS via NASA Solar System Treks',
+    bestMetresPerPixel: 0,
+    coverage: 'Near-infrared view through the haze, 65°S to 45°N; the north is the bundled map',
+    note: 'Titan’s surface is hidden in visible light: this is the 938 nm window through the haze.',
+  },
+  {
+    body: 'Enceladus',
+    provider: { kind: 'wmts', template: TREK('Enceladus', 'Enceladus_Cassini_ISS_Global_Mosaic_100m_HPF', 'png'), ...TREK_GRID, maxLevel: 5 },
+    kind: 'monochrome',
+    title: 'Cassini ISS global mosaic (100 m)',
+    source: 'NASA Icy Moons Trek · Cassini Imaging Science Subsystem',
+    sourceUrl: 'https://trek.nasa.gov/icymoons/',
+    attribution: 'NASA/JPL-Caltech/SSI/LPI via NASA Solar System Treks',
+    bestMetresPerPixel: 0,
+    coverage: 'Global greyscale mosaic',
+  },
+  {
+    body: 'Mimas',
+    provider: { kind: 'wmts', template: TREK('Mimas', 'MI_170630_DLR_basemap', 'jpg'), ...TREK_GRID, maxLevel: 4 },
+    kind: 'monochrome',
+    title: 'Cassini ISS global basemap (DLR)',
+    source: 'NASA Icy Moons Trek · Cassini ISS, DLR basemap',
+    sourceUrl: 'https://trek.nasa.gov/icymoons/',
+    attribution: 'NASA/JPL-Caltech/SSI/DLR via NASA Solar System Treks',
+    bestMetresPerPixel: 0,
+    coverage: 'Global greyscale mosaic',
+  },
+  {
+    body: 'Tethys',
+    provider: { kind: 'wmts', template: TREK('Tethys', 'Tethys_Cassini_mosaic_global_293m', 'jpg'), ...TREK_GRID, maxLevel: 4 },
+    kind: 'monochrome',
+    title: 'Cassini global mosaic (293 m)',
+    source: 'NASA Icy Moons Trek · Cassini Imaging Science Subsystem',
+    sourceUrl: 'https://trek.nasa.gov/icymoons/',
+    attribution: 'NASA/JPL-Caltech/SSI/LPI via NASA Solar System Treks',
+    bestMetresPerPixel: 0,
+    coverage: 'Global greyscale mosaic',
+  },
+  {
+    body: 'Iapetus',
+    provider: { kind: 'wmts', template: TREK('Iapetus', 'Iapetus_Cassini_Voyager_mosaic_global_783m', 'jpg'), ...TREK_GRID, maxLevel: 3 },
+    kind: 'monochrome',
+    title: 'Cassini + Voyager global mosaic (783 m)',
+    source: 'NASA Icy Moons Trek · Cassini ISS and Voyager',
+    sourceUrl: 'https://trek.nasa.gov/icymoons/',
+    attribution: 'NASA/JPL-Caltech/SSI/LPI via NASA Solar System Treks',
+    bestMetresPerPixel: 0,
+    coverage: 'Global greyscale mosaic',
+  },
+  {
+    body: 'Triton',
+    provider: { kind: 'wms', template: USGS_WMS('neptune/triton_simp_cyl', 'TRITON_VOYAGER2'), ...TREK_GRID, maxLevel: 5 },
+    kind: 'monochrome',
+    title: 'Voyager 2 mosaic (600 m)',
+    source: 'USGS Astrogeology planetary WMS · NASA Voyager 2',
+    sourceUrl: USGS,
+    attribution: 'NASA/JPL/USGS (Voyager 2) via USGS Astrogeology, public domain',
+    bestMetresPerPixel: 0,
+    coverage: 'The southern hemisphere Voyager 2 saw in 1989; the rest is the bundled map',
+  },
+  {
+    body: 'Pluto',
+    provider: { kind: 'wms', template: USGS_WMS('pluto/pluto_simp_cyl', 'NEWHORIZONS_PLUTO_MOSAIC'), ...TREK_GRID, maxLevel: 6, colorize: true },
+    kind: 'monochrome',
+    title: 'New Horizons LORRI + MVIC mosaic (300 m)',
+    source: 'USGS Astrogeology planetary WMS · NASA New Horizons',
+    sourceUrl: USGS,
+    attribution: 'NASA/JHUAPL/SwRI/LPI (New Horizons) via USGS Astrogeology, public domain',
+    bestMetresPerPixel: 0,
+    coverage: 'The encounter hemisphere at up to 300 m; the far side only at tens of km',
+  },
+  {
+    body: 'Charon',
+    provider: { kind: 'wms', template: USGS_WMS('pluto/charon_simp_cyl', 'NEWHORIZONS_CHARON_MOSAIC'), ...TREK_GRID, maxLevel: 5, colorize: true },
+    kind: 'monochrome',
+    title: 'New Horizons LORRI + MVIC mosaic (300 m)',
+    source: 'USGS Astrogeology planetary WMS · NASA New Horizons',
+    sourceUrl: USGS,
+    attribution: 'NASA/JHUAPL/SwRI/LPI (New Horizons) via USGS Astrogeology, public domain',
+    bestMetresPerPixel: 0,
+    coverage: 'The encounter hemisphere; the south was in darkness',
+  },
+  {
+    body: 'Ceres',
+    provider: { kind: 'wms', template: USGS_WMS('asteroid_belt/ceres_simp_cyl', 'Ceres_FC_global'), ...TREK_GRID, maxLevel: 6 },
+    kind: 'monochrome',
+    title: 'Dawn Framing Camera global mosaic',
+    source: 'USGS Astrogeology planetary WMS · NASA Dawn',
+    sourceUrl: USGS,
+    attribution: 'NASA/JPL-Caltech/UCLA/MPS/DLR/IDA (Dawn) via USGS Astrogeology, public domain',
+    bestMetresPerPixel: 0,
+    coverage: 'Global greyscale mosaic',
+  },
+  {
+    body: 'Vesta',
+    provider: { kind: 'wmts', template: TREK('Vesta', 'Vesta_Dawn_HAMO_Photo_DLR_global_74ppd_IAU', 'png'), ...TREK_GRID, maxLevel: 6 },
+    kind: 'monochrome',
+    title: 'Dawn FC HAMO mosaic (64 m), IAU coordinates',
+    source: 'NASA Vesta Trek · Dawn Framing Camera (DLR)',
+    sourceUrl: 'https://trek.nasa.gov/vesta/',
+    attribution: 'NASA/JPL-Caltech/UCLA/MPS/DLR/IDA (Dawn) via NASA Solar System Treks',
+    bestMetresPerPixel: 0,
+    coverage: 'Global greyscale mosaic in the IAU (4) Vesta frame, which the landmarks use',
+    note: 'Vesta is drawn as a sphere; the real body is a lumpy 573 × 557 × 446 km.',
+  },
+];
 
 export const BODY_IMAGERY: Record<string, BodyImagery> = {
   Earth: {
@@ -200,10 +375,15 @@ export const BODY_IMAGERY: Record<string, BodyImagery> = {
   },
 };
 
+for (const m of MOON_IMAGERY) BODY_IMAGERY[m.body] = m;
+
 /** Mean radii (km) used for ground-sample calculations. */
-const RADII_KM: Record<string, number> = {
+export const RADII_KM: Record<string, number> = {
   Earth: 6371.0, Moon: 1737.4, Mercury: 2439.7, Venus: 6051.8, Mars: 3389.5,
   Jupiter: 69911, Saturn: 58232, Uranus: 25362, Neptune: 24622,
+  Io: 1821.6, Europa: 1560.8, Ganymede: 2634.1, Callisto: 2410.3, Titan: 2574.7, Enceladus: 252.1,
+  Mimas: 198.2, Tethys: 531.1, Iapetus: 734.5, Triton: 1353.4, Pluto: 1188.3, Charon: 606.0,
+  Ceres: 469.7, Vesta: 262.7,
 };
 
 for (const entry of Object.values(BODY_IMAGERY)) {
@@ -211,6 +391,21 @@ for (const entry of Object.values(BODY_IMAGERY)) {
   entry.bestMetresPerPixel = entry.provider
     ? metresPerPixel(entry.provider, entry.provider.maxLevel, r)
     : ((2 * Math.PI * r * KM) / 2048);
+}
+
+/** Thick-hazed worlds: the surface view stays below this (km) or the haze hides all the ground. */
+const HAZE_EYE_CAP_KM: Record<string, number> = { Titan: 1.5, Venus: 1.5 };
+
+/**
+ * Eye height (km) for standing over a world's streamed imagery. With real relief (Moon, Mars) ~30 ×
+ * the map's metres per pixel: an overlook, with one map pixel about 3 screen pixels where you look.
+ * Flat imagery (no elevation data) is a photograph, best seen sharp: ~60 ×, about 1.7 screen
+ * pixels per map pixel 15° below the horizon (0.4 km over Vesta, 42 km over Io's 700 m mosaic).
+ * Capped on worlds whose haze would hide the ground (Titan, Venus).
+ */
+export function imageryEyeKm(img: BodyImagery, relief: boolean): number {
+  const eye = (img.bestMetresPerPixel * (relief ? 30 : 60)) / 1000;
+  return Math.min(eye, HAZE_EYE_CAP_KM[img.body] ?? Infinity);
 }
 
 const fallbackCache = new Map<string, BodyImagery>();

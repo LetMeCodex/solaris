@@ -144,6 +144,21 @@ export function findTimeOfDay(bodyName: string, latDeg: number, lonDeg: number, 
   return null;
 }
 
+/**
+ * The next morning after d0 when the Sun climbs through `targetDeg` above the horizon (capped just
+ * under that day's noon height): low, raking light that shows relief. Null if the Sun never rises.
+ */
+export function findMorningSun(bodyName: string, latDeg: number, lonDeg: number, d0: number, targetDeg: number): number | null {
+  const f = (d: number) => sunElevationAt(bodyName, latDeg, lonDeg, d);
+  const rise = findTimeOfDay(bodyName, latDeg, lonDeg, d0, 'sunrise');
+  if (rise === null) return null;
+  const noon = findTimeOfDay(bodyName, latDeg, lonDeg, rise, 'noon');
+  if (noon === null) return null;
+  const target = Math.min(targetDeg, f(noon)! - 2);
+  if (target <= 0) return noon;
+  return bisect(f, rise, noon, target);
+}
+
 function bisect(f: (d: number) => number | null, a: number, b: number, target: number): number {
   let fa = f(a)! - target;
   for (let i = 0; i < 40; i++) {

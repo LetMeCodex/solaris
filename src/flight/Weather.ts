@@ -45,6 +45,10 @@ function hash(a: number, b: number, c: number): number {
 export class Weather {
   public readonly group = new THREE.Group();
   public mode: WeatherMode = 'auto';
+  /** Live weather where the jet is (Earth, Open-Meteo): used in 'auto' mode in place of the climate guess. */
+  public live: { kind: WeatherKind; strength: number; label: string } | null = null;
+  /** 0..1 inside one of the drawn clouds (EarthClouds): a white-out. */
+  public cloudInside = 0;
   public state: WeatherState = { kind: 'clear', strength: 0, cloud: 0, flash: 0, shake: 0, label: 'Clear' };
 
   private pts = new Float32Array(N * 3);
@@ -187,6 +191,13 @@ export class Weather {
     }
     this.group.visible = true;
     let { kind, strength } = Weather.climate(ctx.world, ctx.latDeg, ctx.lonDeg, ctx.altKm, ctx.hourIndex);
+    if (this.mode === 'auto' && ctx.world === 'Earth' && this.live) {
+      kind = this.live.kind;
+      strength = this.live.strength;
+      // Above the weather nothing falls: rain and snow come from clouds a few km up at most
+      if (ctx.altKm > (kind === 'storm' ? 11 : 6)) kind = 'clear';
+      else if (kind === 'rain' && ctx.altKm > 4) kind = 'snow';
+    }
     if (this.mode !== 'auto' && ctx.world === 'Earth') {
       kind = this.mode === 'clear' ? 'clear' : this.mode;
       strength = this.mode === 'clear' ? 0 : 0.85;
@@ -195,11 +206,14 @@ export class Weather {
     st.kind = kind;
     st.strength = strength;
     st.label = { clear: 'Clear', rain: 'Rain', snow: 'Snow', storm: 'Thunderstorm', dust: strength > 0.5 ? 'Dust storm' : 'Dust haze', methane: 'Methane drizzle', acid: 'Sulphuric acid haze', turbulence: 'Storm turbulence' }[kind];
+    if (this.mode === 'auto' && ctx.world === 'Earth' && this.live) st.label = this.live.label;
 
     // Cloud: on Earth the deck where it is raining (1–9 km); dust and haze fill the air on Mars/Venus
-    const inDeck = ctx.world === 'Earth' && kind !== 'clear' ? THREE.MathUtils.smoothstep(ctx.altKm, 0.8, 1.6) * (1 - THREE.MathUtils.smoothstep(ctx.altKm, 7.5, 9.5)) : 0;
+    // Over Earth with the live weather the volumetric clouds are drawn in the scene itself
+    const volumetric = ctx.world === 'Earth' && this.live !== null && this.mode === 'auto';
+    const inDeck = ctx.world === 'Earth' && kind !== 'clear' && !volumetric ? THREE.MathUtils.smoothstep(ctx.altKm, 0.8, 1.6) * (1 - THREE.MathUtils.smoothstep(ctx.altKm, 7.5, 9.5)) : 0;
     const puffs = 0.55 + 0.45 * Math.sin(timeSec * 0.9 + ctx.lonDeg * 40) * Math.sin(timeSec * 0.37 + ctx.latDeg * 31);
-    let cloud = inDeck * puffs * (kind === 'storm' ? 0.95 : 0.8);
+    let cloud = Math.max(inDeck * puffs * (kind === 'storm' ? 0.95 : 0.8), ctx.world === 'Earth' ? this.cloudInside : 0);
     const veilColor = this.veilMat.uniforms.uColor.value as THREE.Color;
     const light = 0.25 + 0.75 * ctx.daylight;
     if (kind === 'dust') {
@@ -219,7 +233,7 @@ export class Weather {
       veilColor.setRGB(grey * light, grey * light, (grey + 0.04) * light);
     }
     // Under the deck while it rains or snows: an overcast grey sky, not a clear one
-    if (ctx.world === 'Earth' && kind !== 'clear' && ctx.altKm < 1.6) cloud = Math.max(cloud, (kind === 'storm' ? 0.42 : 0.28) * strength);
+    if (ctx.world === 'Earth' && kind !== 'clear' && !volumetric && ctx.altKm < 1.6) cloud = Math.max(cloud, (kind === 'storm' ? 0.42 : 0.28) * strength);
     st.cloud = cloud;
 
     // Lightning: thunderstorms, and the deep storms of Jupiter and Saturn

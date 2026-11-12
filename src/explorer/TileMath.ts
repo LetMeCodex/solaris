@@ -117,6 +117,18 @@ export function localToLatLon(x: number, y: number, z: number): { lat: number; l
   return { lat: Math.asin(Math.max(-1, Math.min(1, y / r))) / DEG, lon: Math.atan2(-z, x) / DEG };
 }
 
+/**
+ * Inverts bodyLatLonToLocal: given a point on/near a body's surface in its mesh's local frame,
+ * returns the body's true geodetic latitude (inverted WGS84 flattening for Earth) and longitude.
+ */
+export function bodyLocalToLatLon(body: string, x: number, y: number, z: number): { lat: number; lon: number } {
+  const s = localToLatLon(x, y, z);
+  if (body !== 'Earth' || Math.abs(s.lat) >= 89.999) return s;
+  const beta = s.lat * DEG;
+  const phi = Math.atan(Math.tan(beta) / (1 - EARTH_FLATTENING)) / DEG;
+  return { lat: phi, lon: s.lon };
+}
+
 /** Centre direction and angular radius (radians) of the drawn part of a tile. */
 export function tileCap(grid: EquirectGrid, k: TileKey): { centre: [number, number, number]; radius: number } {
   const b = tileBounds(grid, k);

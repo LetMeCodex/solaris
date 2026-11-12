@@ -183,15 +183,16 @@ export class SunFlare {
       (s.material as THREE.SpriteMaterial).opacity = opacity;
     };
     // Subtle, as real optics are: a tight starburst, a faint halo, ghosts you only just notice
-    place(this.burst, p.x, p.y, 0.32, 0.42 * k);
-    // The cinematic part: a rainbow halo, a horizontal streak, a warm glare over the frame
-    place(this.rainbowRing, p.x, p.y, 0.85, 0.55 * k * (0.35 + 0.65 * centre));
-    place(this.streakSprite, p.x, p.y, 1.0, 0.5 * k);
+    place(this.burst, p.x, p.y, 0.32, 0.22 * k);
+    // A film look: the rainbow halo, the streak and the ghosts only just there (stacked over the
+    // canopy's own optics they washed the frame out round a low Sun)
+    place(this.rainbowRing, p.x, p.y, 0.85, 0.12 * k * (0.35 + 0.65 * centre));
+    place(this.streakSprite, p.x, p.y, 1.0, 0.18 * k);
     this.streakSprite.scale.set(this.streakSprite.scale.x * 1.8, this.streakSprite.scale.y, 1);
-    place(this.veil, p.x, p.y, 2.2, 0.35 * k * centre);
+    place(this.veil, p.x, p.y, 2.2, 0.12 * k * centre);
     (this.veil.material as THREE.SpriteMaterial).color.setRGB(1, 0.75 + 0.25 * (1 - this.warmth), 0.55 + 0.45 * (1 - this.warmth));
-    place(this.ring, p.x, p.y, 0.6, 0.12 * k * (0.3 + 0.7 * centre));
-    for (const g of this.ghosts) place(g.s, p.x * g.f, p.y * g.f, g.size, 0.1 * k * centre);
+    place(this.ring, p.x, p.y, 0.6, 0.05 * k * (0.3 + 0.7 * centre));
+    for (const g of this.ghosts) place(g.s, p.x * g.f, p.y * g.f, g.size, 0.04 * k * centre);
   }
 
   public dispose(): void {

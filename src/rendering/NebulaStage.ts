@@ -60,7 +60,7 @@ const layerFragment = /* glsl */ `
     float w = 0.0, tot = 0.0;
     for (int i = 0; i < ${LAYERS}; i++) {
       float b = (float(i) + 0.5) / float(${LAYERS});
-      float g = exp(-pow((l - b) / 0.16, 2.0));
+      float g = exp(-(((l - b) / 0.16) * ((l - b) / 0.16)));
       tot += g;
       if (abs(b - uBand) < 0.001) w = g;
     }
@@ -231,7 +231,8 @@ export class NebulaStage {
     } else {
       // Wisps lifting off bright edges: find them in the picture itself
       const img = tex.image as HTMLImageElement | ImageBitmap | undefined;
-      const pts = img ? edgePoints(img) : [];
+      // A bitmap decoded off-thread is stored upside down already (flipY off): turned back to read it
+      const pts = img ? edgePoints(img, !tex.flipY && typeof ImageBitmap !== 'undefined' && img instanceof ImageBitmap) : [];
       for (let k = 0; k < 900 && pts.length; k++) {
         const [u, v] = pts[Math.floor(rnd() * pts.length)];
         const [x, y] = toLocal(u, v);
@@ -311,7 +312,7 @@ export class NebulaStage {
 }
 
 /** Points along the top edges of bright gas in a picture (u, v with v up), for rising wisps. */
-function edgePoints(img: HTMLImageElement | ImageBitmap): Array<[number, number]> {
+function edgePoints(img: HTMLImageElement | ImageBitmap, upsideDown = false): Array<[number, number]> {
   const W = 160;
   const H = Math.max(8, Math.round((W * img.height) / img.width));
   const c = document.createElement('canvas');
@@ -319,6 +320,10 @@ function edgePoints(img: HTMLImageElement | ImageBitmap): Array<[number, number]
   c.height = H;
   const ctx = c.getContext('2d');
   if (!ctx) return [];
+  if (upsideDown) {
+    ctx.translate(0, H);
+    ctx.scale(1, -1);
+  }
   ctx.drawImage(img, 0, 0, W, H);
   const d = ctx.getImageData(0, 0, W, H).data;
   const a = (x: number, y: number) => d[(y * W + x) * 4 + 3] / 255;

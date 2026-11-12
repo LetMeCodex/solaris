@@ -1,0 +1,56 @@
+<!doctype html>
+<!--
+  Development only (not part of the build): the tactical HUD drawn on its own, over a still, with
+  made-up flight data, so its layout can be checked at any screen size without the 3D scene.
+  Open /solaris/src/dev/hud-lab.html and resize; ?scene=space|earth|warn|mach selects the data.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>HUD lab</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Rajdhani:wght@500;600;700&family=Montserrat:wght@400;500;600&display=swap" rel="stylesheet" />
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1016 url('/solaris/gallery/earth-sliver.jpg') center / cover no-repeat; }
+      canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <canvas id="hud"></canvas>
+    <script type="module">
+      import { drawTactical } from '/solaris/src/flight/TacticalHud.ts';
+      const scene = new URLSearchParams(location.search).get('scene') || 'earth';
+      const canvas = document.getElementById('hud');
+      const ctx = canvas.getContext('2d');
+      const t0 = performance.now();
+      function telemetry(w, h, s) {
+        const space = scene === 'space';
+        return {
+          width: w, height: h, timeSec: s, nearest: space ? 'Mars' : 'Earth',
+          lat: space ? undefined : 40.7484, lon: space ? undefined : -73.9857, bodyLat: 7.5, bodyLon: 80.4,
+          altKm: space ? 6148 : 1.2 + Math.sin(s * 0.3) * 0.2, airWorld: space ? '' : 'Earth', airDensity: space ? 0 : 0.9,
+          sunDistKm: space ? 2.4e8 : 1.479e8, earthDistKm: space ? 1.996e8 : 6372, localTime: 12.5 + s / 3600,
+          headingDeg: 15 + s * 4, speedMps: scene === 'mach' ? 300 + s * 8 : 250, mach: scene === 'mach' ? (300 + s * 8) / 340 : 0.74,
+          gLoad: 1 + Math.max(0, Math.sin(s * 0.7)) * 5, warning: scene === 'warn' ? 1 : 0,
+          waypoint: { name: 'Eiffel Tower', distKm: 5800, bearingDeg: 50, etaS: 1200, x: 0, y: 0, on: false, angle: 0 },
+        };
+      }
+      const earth = { title: 'NEW YORK', subtitle: 'New York, United States' };
+      function frame() {
+        const dpr = window.devicePixelRatio || 1;
+        const w = innerWidth;
+        const h = innerHeight;
+        if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+          canvas.width = Math.round(w * dpr);
+          canvas.height = Math.round(h * dpr);
+        }
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        const s = (performance.now() - t0) / 1000;
+        drawTactical(ctx, telemetry(w, h, s), scene === 'space' ? null : earth, 18, scene === 'earth' ? 'TRANSIT · PARIS · 5,800 KM' : '');
+        requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+    </script>
+  </body>
+</html>

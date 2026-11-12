@@ -13,8 +13,8 @@ import { glowTexture } from './JetModel';
  * relative to the camera every frame, so a trail stays exactly where the air was.
  */
 
-const COUNT = 900;
-const BOX = 420;
+const COUNT = 1800;
+const BOX = 520;
 
 export class SpeedField {
   public readonly mesh: THREE.LineSegments;
@@ -51,7 +51,7 @@ export class SpeedField {
    * @param air 0 vacuum .. 1 dense air
    * @param brightness overall gain (sunlit vs night)
    */
-  public update(dt: number, velMps: THREE.Vector3, air: number, brightness: number): void {
+  public update(dt: number, velMps: THREE.Vector3, air: number, brightness: number, mach = 0, boosting = false): void {
     const speed = velMps.length();
     const shown = Math.min(speed, 2600);
     const k = speed > 1e-6 ? shown / speed : 0;
@@ -62,10 +62,17 @@ export class SpeedField {
     // In vacuum, past the speed the eye can follow, the dust stretches into long threads with the
     // drive: the space around you reads as moving, not a painted backdrop
     const drive = air < 0.05 ? Math.min(0.5, Math.log10(1 + speed / 2600) * 0.09) : 0;
-    const stretch = 1 / 30 + Math.min(0.12, Math.log10(1 + speed / 300) * 0.05) + drive;
+    const boostStretch = boosting ? 0.22 : 0;
+    const machStretch = mach > 1 ? Math.min(0.12, (mach / 22) * 0.12) : 0;
+    const stretch = 1 / 30 + Math.min(0.18, Math.log10(1 + speed / 300) * 0.06) + drive + boostStretch + machStretch;
     const active = Math.round(COUNT * (0.25 + 0.75 * air));
-    const base = (0.2 + 0.23 * air) * brightness * THREE.MathUtils.smoothstep(shown, 30, 400);
-    const tint = air > 0.05 ? [0.82, 0.88, 1.0] : [0.75, 0.82, 1.0];
+    // In air the motes are only a hint (real air is clear: at Mach 20 nothing streaks past the
+    // canopy); in space the dust and the drive's threads carry the sense of speed
+    const inAir = air > 0.05;
+    const base = inAir
+      ? 0.07 * brightness * THREE.MathUtils.smoothstep(shown, 25, 300) * (boosting ? 1.4 : 1)
+      : (0.22 + 0.25 * air) * brightness * THREE.MathUtils.smoothstep(shown, 25, 300) * (1 + (mach > 1 ? 0.5 : 0) + (boosting ? 0.6 : 0));
+    const tint = mach > 2 ? [0.95, 0.98, 1.0] : air > 0.05 ? [0.86, 0.92, 1.0] : [0.75, 0.82, 1.0];
     for (let i = 0; i < COUNT; i++) {
       let x = this.pts[i * 3] - vx * dt;
       let y = this.pts[i * 3 + 1] - vy * dt;
@@ -85,7 +92,7 @@ export class SpeedField {
       this.positions[o + 4] = y + vy * stretch;
       this.positions[o + 5] = z + vz * stretch;
       const d = Math.sqrt(x * x + y * y + z * z);
-      const near = 1 - THREE.MathUtils.smoothstep(d, BOX * 0.25, BOX);
+      const near = (1 - THREE.MathUtils.smoothstep(d, BOX * 0.25, BOX)) * THREE.MathUtils.smoothstep(d, 8, 28);
       const a = i < active ? base * near * (0.4 + 0.6 * ((i * 7919) % 97) / 97) : 0;
       this.colors[o] = 0;
       this.colors[o + 1] = 0;
@@ -245,6 +252,9 @@ export class ShockEffects {
   private cone: THREE.Mesh;
   private coneLife = 0;
   private glow: THREE.Texture;
+  private hypersonicConeMat: THREE.ShaderMaterial;
+  private hypersonicCone: THREE.Mesh;
+  private hypersonicOpacity = 0;
 
   constructor() {
     this.plasmaMat = new THREE.ShaderMaterial({
@@ -279,6 +289,55 @@ export class ShockEffects {
     this.cone.position.z = 0.5;
     this.cone.renderOrder = 7;
     this.group.add(this.cone);
+
+    this.hypersonicConeMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uOpacity: { value: 0 },
+        uMach: { value: 1 },
+        uTime: { value: 0 },
+      },
+      vertexShader: `
+        varying vec3 vN;
+        varying vec3 vV;
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          vN = normalize(normalMatrix * normal);
+          vV = normalize(-mv.xyz);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        uniform float uOpacity;
+        uniform float uMach;
+        uniform float uTime;
+        varying vec3 vN;
+        varying vec3 vV;
+        varying vec2 vUv;
+        void main() {
+          float fres = pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 2.2);
+          float rings = 0.82 + 0.18 * sin(vUv.y * 42.0 - uTime * 24.0);
+          float lengthFade = smoothstep(1.0, 0.2, vUv.y) * smoothstep(0.0, 0.08, vUv.y);
+          vec3 core = vec3(0.92, 0.98, 1.0);
+          vec3 rim = vec3(0.25, 0.75, 1.0);
+          vec3 col = mix(rim, core, fres);
+          // A real shock cone is almost invisible: only a faint shimmer where it is seen edge-on
+          float a = uOpacity * pow(fres, 3.0) * rings * lengthFade;
+          gl_FragColor = vec4(col * a * 0.9, 1.0);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+    const hConeGeo = new THREE.ConeGeometry(5.2, 22.0, 64, 1, true);
+    hConeGeo.rotateX(-Math.PI / 2);
+    this.hypersonicCone = new THREE.Mesh(hConeGeo, this.hypersonicConeMat);
+    this.hypersonicCone.position.z = 2.5;
+    this.hypersonicCone.renderOrder = 6;
+    this.group.add(this.hypersonicCone);
     this.group.traverse((o) => (o.frustumCulled = false));
   }
 
@@ -286,13 +345,30 @@ export class ShockEffects {
     this.coneLife = 1;
   }
 
-  public update(dt: number, timeSec: number, heat: number): void {
+  public update(dt: number, timeSec: number, heat: number, mach = 0, airDensity = 0): void {
     this.plasmaMat.uniforms.uHeat.value = heat;
     this.plasmaMat.uniforms.uTime.value = timeSec;
     this.coneLife = Math.max(0, this.coneLife - dt * 1.8);
     this.coneMat.opacity = 0.42 * Math.pow(this.coneLife, 1.5);
     this.cone.scale.setScalar(1 + (1 - this.coneLife) * 0.25);
     this.cone.visible = this.coneLife > 0;
+
+    if (mach > 1.15) {
+      const radiusScale = THREE.MathUtils.clamp(1.5 / Math.sqrt(Math.max(0.01, mach * mach - 1)), 0.26, 2.2);
+      this.hypersonicCone.scale.set(radiusScale, radiusScale, 1.0);
+      const machFactor = THREE.MathUtils.smoothstep(mach, 1.15, 3.2);
+      const densityFactor = Math.min(1, airDensity * 8 + 0.18);
+      const targetOpacity = machFactor * densityFactor * 0.3;
+      this.hypersonicOpacity += (targetOpacity - this.hypersonicOpacity) * (1 - Math.exp(-6.0 * dt));
+      this.hypersonicConeMat.uniforms.uOpacity.value = this.hypersonicOpacity;
+      this.hypersonicConeMat.uniforms.uMach.value = mach;
+      this.hypersonicConeMat.uniforms.uTime.value = timeSec;
+      this.hypersonicCone.visible = this.hypersonicOpacity > 0.01;
+    } else {
+      this.hypersonicOpacity = Math.max(0, this.hypersonicOpacity - dt * 4);
+      this.hypersonicConeMat.uniforms.uOpacity.value = this.hypersonicOpacity;
+      this.hypersonicCone.visible = this.hypersonicOpacity > 0.01;
+    }
   }
 
   public dispose(): void {
@@ -302,6 +378,7 @@ export class ShockEffects {
     this.plasmaMat.dispose();
     this.coneMat.dispose();
     this.glow.dispose();
+    this.hypersonicConeMat.dispose();
   }
 }
 

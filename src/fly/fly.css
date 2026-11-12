@@ -1,0 +1,299 @@
+/* The fly page's opening film (FlyPreloader.tsx) */
+
+.flyfilm {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #010103;
+  color: #f3efe6;
+  font-family: 'Montserrat', system-ui, sans-serif;
+  overflow: hidden;
+  user-select: none;
+}
+.flyfilm__canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.flyfilm__vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 50% 55%, transparent 45%, rgba(0, 0, 0, 0.55) 100%);
+}
+/* Letterbox bars: the film is a film; they open as you dive */
+.flyfilm__bars::before, .flyfilm__bars::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 7vh;
+  background: #000;
+  transition: transform 1.2s cubic-bezier(0.7, 0, 0.2, 1);
+  z-index: 1;
+}
+.flyfilm__bars::before { top: 0; }
+.flyfilm__bars::after { bottom: 0; }
+.flyfilm--dive .flyfilm__bars::before { transform: translateY(-100%); }
+.flyfilm--dive .flyfilm__bars::after { transform: translateY(100%); }
+
+.flyfilm__top {
+  position: absolute;
+  top: calc(7vh + 14px);
+  left: 30px;
+  right: 30px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 9.5px;
+  letter-spacing: 0.46em;
+  color: rgba(243, 239, 230, 0.5);
+  z-index: 2;
+  animation: ff-fade 2s ease 0.4s both;
+}
+.flyfilm__brand b { color: #f4cd72; font-weight: 500; }
+.flyfilm__clock { font-family: 'JetBrains Mono', ui-monospace, monospace; letter-spacing: 0.24em; }
+
+/* The title: thin, wide, each letter condensing out of a blur */
+.flyfilm__title {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 26vh;
+  text-align: center;
+  font-weight: 200;
+  font-size: clamp(30px, 6.4vw, 104px);
+  letter-spacing: 0.62em;
+  padding-left: 0.62em;
+  z-index: 2;
+  pointer-events: none;
+  transition: opacity 1.2s ease, transform 1.6s cubic-bezier(0.7, 0, 0.2, 1), letter-spacing 1.6s cubic-bezier(0.7, 0, 0.2, 1);
+}
+.flyfilm__title > span {
+  display: inline-block;
+  background: linear-gradient(180deg, #ffffff 0%, #ffe9c2 55%, #f4b968 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ff-letter 2.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+  filter: drop-shadow(0 0 18px rgba(255, 200, 120, 0.25));
+}
+@keyframes ff-letter {
+  from { opacity: 0; filter: blur(16px); transform: translateY(0.25em) scale(1.3); }
+  to { opacity: 1; filter: blur(0) drop-shadow(0 0 18px rgba(255, 200, 120, 0.25)); transform: none; }
+}
+.flyfilm__tag {
+  margin-top: 1.1em;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: rgba(243, 239, 230, 0.55);
+  animation: ff-fade 2s ease 2.2s both;
+}
+.flyfilm--ready .flyfilm__title { opacity: 0; transform: translateY(-8vh) scale(0.9); }
+.flyfilm--dive .flyfilm__title { opacity: 0; letter-spacing: 1.6em; transform: scale(1.4); }
+
+/* Where you will take off */
+.flyfilm__dest {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  /* Below the ENGAGE ring (its bottom edge is 52px under the centre): the take-off place sat
+     under the ring and its pulse on a phone */
+  transform: translate(-50%, 66px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  z-index: 2;
+  pointer-events: none;
+  animation: ff-rise 1.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: opacity 0.6s ease;
+}
+.flyfilm__dest-k { font-size: 8.5px; letter-spacing: 0.5em; color: #6dfcc0; }
+.flyfilm__dest-name { font-size: 15px; letter-spacing: 0.24em; text-transform: uppercase; }
+.flyfilm__dest-ll { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.16em; color: rgba(243, 239, 230, 0.55); }
+.flyfilm--dive .flyfilm__dest { opacity: 0; }
+
+/* Preflight and the count */
+.flyfilm__bottom {
+  position: absolute;
+  left: 30px;
+  right: 30px;
+  bottom: calc(7vh + 18px);
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  z-index: 2;
+  transition: opacity 0.5s ease;
+  animation: ff-fade 1.5s ease 1s both;
+}
+.flyfilm__checks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 5px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  min-width: 0;
+}
+.flyfilm__checks li { display: flex; align-items: center; gap: 10px; color: rgba(243, 239, 230, 0.4); transition: color 0.5s ease; min-width: 0; }
+.flyfilm__checks li i {
+  width: 6px;
+  height: 6px;
+  border: 1px solid rgba(244, 205, 114, 0.6);
+  transform: rotate(45deg);
+  flex: none;
+  animation: ff-pulse 1.4s ease-in-out infinite;
+}
+.flyfilm__checks li.is-done { color: rgba(243, 239, 230, 0.82); }
+.flyfilm__checks li.is-done i { background: #6dfcc0; border-color: #6dfcc0; box-shadow: 0 0 8px rgba(109, 252, 192, 0.7); animation: none; }
+.flyfilm__label { letter-spacing: 0.3em; white-space: nowrap; }
+.flyfilm__detail { opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.flyfilm__pct { text-align: right; flex: none; }
+.flyfilm__pct span {
+  display: block;
+  font-weight: 100;
+  font-size: clamp(44px, 6vw, 86px);
+  line-height: 0.9;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.flyfilm__pct small { font-size: 9px; letter-spacing: 0.42em; text-transform: uppercase; color: rgba(243, 239, 230, 0.5); }
+.flyfilm__line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 7vh;
+  height: 1px;
+  background: rgba(243, 239, 230, 0.08);
+  z-index: 2;
+}
+.flyfilm__line > div {
+  height: 100%;
+  transform-origin: 0 50%;
+  background: linear-gradient(90deg, transparent, #f4cd72 70%, #fff4d6);
+  box-shadow: 0 0 10px rgba(244, 205, 114, 0.8);
+  transition: transform 0.6s ease;
+}
+.flyfilm--dive .flyfilm__bottom, .flyfilm--dive .flyfilm__top, .flyfilm--dive .flyfilm__line { animation: none; opacity: 0; transition: opacity 0.5s ease; }
+
+/* ENGAGE */
+.flyfilm__engage {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 140px;
+  height: 140px;
+  margin-top: -18px;
+  border: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 220, 160, 0.08), transparent 70%);
+  color: #fff4d6;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  z-index: 3;
+  animation: ff-in 1s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes ff-in { from { opacity: 0; transform: translate(-50%, -50%) scale(0.7); } to { opacity: 1; transform: translate(-50%, -50%); } }
+.flyfilm__engage-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(244, 205, 114, 0.85);
+  box-shadow: 0 0 34px rgba(244, 205, 114, 0.25), inset 0 0 26px rgba(244, 205, 114, 0.12);
+  animation: ff-ring 2.2s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+.flyfilm__engage-ring--2 { animation-delay: 1.1s; }
+@keyframes ff-ring { from { transform: scale(0.85); opacity: 0.9; } to { transform: scale(1.5); opacity: 0; } }
+.flyfilm__engage-label { font-size: 12px; letter-spacing: 0.55em; margin-right: -0.55em; font-weight: 600; text-shadow: 0 0 14px rgba(255, 210, 140, 0.8); }
+.flyfilm__engage-hint { font-size: 8px; letter-spacing: 0.24em; text-transform: uppercase; color: rgba(243, 239, 230, 0.5); }
+.flyfilm__engage:hover .flyfilm__engage-label { color: #fff; }
+.flyfilm__engage:focus-visible { outline: 1px solid #6dfcc0; outline-offset: 8px; }
+
+/* The dive: through the air and the cloud tops into the live world */
+.flyfilm__flash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(ellipse at 50% 50%, #ffffff 0%, #e8f2ff 40%, #9cc4ff 100%);
+  z-index: 4;
+}
+.flyfilm--dive .flyfilm__flash { animation: ff-flash 2.9s ease-in forwards; }
+@keyframes ff-flash {
+  0%, 55% { opacity: 0; }
+  78% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.flyfilm--dive { animation: ff-out 2.9s ease forwards; pointer-events: none; }
+@keyframes ff-out {
+  0%, 74% { background-color: #010103; opacity: 1; }
+  78% { background-color: transparent; }
+  100% { opacity: 0; }
+}
+.flyfilm--dive .flyfilm__canvas { animation: ff-canvas 2.9s ease forwards; }
+@keyframes ff-canvas { 0%, 74% { opacity: 1; } 78%, 100% { opacity: 0; } }
+
+@keyframes ff-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ff-rise { from { opacity: 0; transform: translate(-50%, 82px); } to { opacity: 1; transform: translate(-50%, 66px); } }
+@keyframes ff-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+@media (max-width: 640px) {
+  .flyfilm__top, .flyfilm__bottom { left: 16px; right: 16px; }
+  .flyfilm__title { letter-spacing: 0.4em; padding-left: 0.4em; }
+  .flyfilm__detail { display: none; }
+}
+/* A phone on its side (~360 px tall): ready to go, the loading log steps aside so the ENGAGE ring
+   and the take-off place have the middle of the screen to themselves */
+@media (max-height: 500px) {
+  .flyfilm--ready .flyfilm__stream { opacity: 0; transition: opacity 0.5s ease; }
+  .flyfilm__engage { width: 110px; height: 110px; margin-top: -24px; }
+  .flyfilm__dest { transform: translate(-50%, 44px); }
+  @keyframes ff-rise { from { opacity: 0; transform: translate(-50%, 58px); } to { opacity: 1; transform: translate(-50%, 44px); } }
+  .flyfilm__pct span { font-size: 38px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .flyfilm__title > span, .flyfilm__engage-ring, .flyfilm__checks li i { animation: none !important; }
+}
+
+/* Names on the planets while the system is in view */
+.flyfilm__labels { position: absolute; inset: 0; pointer-events: none; z-index: 2; overflow: hidden; }
+.flyfilm__planet {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  color: rgba(244, 205, 114, 0.85);
+  white-space: nowrap;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.9);
+  transition: opacity 0.4s ease;
+  will-change: transform;
+}
+
+/* The stream log: what is really loading, as it loads */
+.flyfilm__stream { min-width: 0; max-width: min(640px, 70vw); }
+.flyfilm__stream-head { display: flex; gap: 18px; flex-wrap: wrap; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 9.5px; letter-spacing: 0.26em; color: rgba(243, 239, 230, 0.4); margin-bottom: 10px; }
+.flyfilm__stream-head span { display: inline-flex; align-items: center; gap: 7px; transition: color 0.5s ease; }
+.flyfilm__stream-head i { width: 6px; height: 6px; border: 1px solid rgba(244, 205, 114, 0.6); transform: rotate(45deg); animation: ff-pulse 1.4s ease-in-out infinite; }
+.flyfilm__stream-head .is-done { color: rgba(243, 239, 230, 0.85); }
+.flyfilm__stream-head .is-done i { background: #6dfcc0; border-color: #6dfcc0; box-shadow: 0 0 8px rgba(109, 252, 192, 0.7); animation: none; }
+.flyfilm__log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10.5px;
+  line-height: 1.75;
+  color: rgba(243, 239, 230, 0.8);
+  min-height: 7em;
+}
+.flyfilm__log li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; animation: ff-logline 0.5s ease both; }
+.flyfilm__log li::before { content: '› '; color: #6dfcc0; }
+@keyframes ff-logline { from { transform: translateY(6px); opacity: 0; } }

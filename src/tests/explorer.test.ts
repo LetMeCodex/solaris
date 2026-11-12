@@ -138,7 +138,9 @@ describe('Landmark catalogue', () => {
   const bodyNames = new Set(ALL_CELESTIAL_BODIES.map((b) => b.name));
 
   it('is a large catalogue across many worlds', () => {
-    expect(LANDMARKS.length).toBeGreaterThanOrEqual(80);
+    // 75 after the non-Earth audit removed places whose landings could not show real ground
+    // (polar sites, Miranda, Titan, Venus): see the comments in src/explorer/Landmarks.ts
+    expect(LANDMARKS.length).toBeGreaterThanOrEqual(75);
     expect(new Set(LANDMARKS.map((l) => l.body)).size).toBeGreaterThanOrEqual(15);
   });
 

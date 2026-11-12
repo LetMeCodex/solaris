@@ -1,9 +1,12 @@
 /**
- * The jet's sound, synthesised (no recordings), in layers that each follow the flight:
+ * The jet's sound, in layers that each follow the flight: real recordings where a real one exists
+ * (public/audio/jet/, cut and levelled by scripts/build_cockpit_sounds.py), synthesised around them.
  *
  *  Engine
  *  - Spool: the engine's speed (N2, 0..1) lags the throttle, quicker winding up than running
  *    down, as a turbofan's rotors do. Every engine layer follows the spool, not the lever.
+ *  - Recorded engine: two seamless loops of real jet engines, one idling and one wound up near full
+ *    power, crossfaded by the spool and played faster as it winds up (the turbine's pitch rises).
  *  - Sub: two low sines an octave apart, the body of the sound you feel more than hear.
  *  - Turbine: two detuned saws through a low-pass, plus a thin compressor whine a fifth above.
  *  - Roar: filtered noise opening up with the spool.
@@ -16,18 +19,25 @@
  *  Air
  *  - Wind: band-passed noise scaled by dynamic pressure, with buffet.
  *  - Cockpit air (the environmental control system): a steady soft hiss inside.
+ *  - Canopy: the airframe's rumble through the sealed cockpit (a recorded loop), louder with speed.
  *  - In vacuum nothing carries sound: everything goes through a low-pass that closes to what the
  *    pilot hears through the airframe, and the wind falls silent.
  *
  *  The pilot, under G (inside only)
- *  - Breathing through the oxygen mask: from about 4 g the straining manoeuvre, short hard
- *    inhales and held exhales on a ~3 s cycle, heard muffled through the mask.
- *  - The G-suit: a hiss as the bladders inflate when the load builds, a sigh as they vent.
+ *  - Breathing through the oxygen mask (recorded breaths, a different one each time, a little
+ *    higher or lower and louder or softer): every ~4.3 s, heavier after a hard pull or on full
+ *    power, held while the radio talks. From about 4 g the straining manoeuvre: a grunt against
+ *    the load and a snatched breath on a ~3 s cycle.
+ *  - The G-suit: its valve bangs air into the bladders as the load builds past ~2 g, a hiss as
+ *    they fill further, the vent as the load comes off.
  *  - Heartbeat: from about 6.5 g a low double thump, quickening with the load.
  *  - Canopy creak: the frame complaining at a hard onset of G.
  *
- *  Warning: a two-tone pulse for terrain and heat. Thunder: delayed by the speed of sound.
+ *  Warning: a two-tone pulse and Betty, the cockpit's voice ("Altitude, altitude", then "Pull up,
+ *  pull up" for terrain; "Warning, overheat" for heat). Thunder: delayed by the speed of sound.
  */
+import { RadioChain, type RadioSpeaker } from './audio/RadioChain';
+
 export interface JetAudioState {
   throttle: number;
   boost: number;
@@ -40,10 +50,49 @@ export interface JetAudioState {
   warning: number;
   /** Load factor, g. */
   gLoad: number;
+  /** Height over the ground (km): the engine sinks away as you climb. */
+  altKm?: number;
+  /** The pilot's grey-out (0..1): the world's sound narrows and dims. */
+  greyOut?: number;
+  /** Inside a cloud: the outside sound is muffled. */
+  inCloud?: boolean;
 }
+
+// Levels of the recordings in the mix (they are levelled to about -20..-26 LUFS when cut)
+/** Breaths against the synthesised breaths' level scale (0.32 a calm breath on the ground). */
+const BREATH_GAIN = 0.4;
+const STRAIN_GAIN = 0.7;
+const SUIT_GAIN = 0.8;
+/** The engine loops, from inside the canopy and outside. */
+const ENGINE_IN = 0.55;
+const ENGINE_OUT = 0.9;
+const CANOPY = 0.4;
+
+/** The recordings in public/audio/jet/ (made by scripts/build_cockpit_sounds.py). */
+export const JET_RECORDINGS = [
+  ...Array.from({ length: 10 }, (_, i) => `breath_calm_${i + 1}`),
+  ...Array.from({ length: 5 }, (_, i) => `breath_deep_${i + 1}`),
+  ...Array.from({ length: 4 }, (_, i) => `strain_${i + 1}`),
+  'gsuit_in', 'gsuit_out', 'betty_pullup', 'betty_altitude', 'betty_overheat',
+  'engine_idle', 'engine_high', 'canopy',
+];
+
+const smooth01 = (x: number): number => {
+  const c = Math.min(1, Math.max(0, x));
+  return c * c * (3 - 2 * c);
+};
 
 export class JetAudio {
   private ctx: AudioContext | null = null;
+  /** Everything outside the pilot's mask and helmet passes through here (grey-out, cloud, ducking). */
+  private world!: BiquadFilterNode;
+  private duck!: GainNode;
+  private radioBus!: GainNode;
+  private radioChain: RadioChain | null = null;
+  /** The radio is talking until then (context time): the pilot holds their breath. */
+  private radioUntil = 0;
+  private nextCalm = 0;
+  private startPlayed = false;
   private master!: GainNode;
   private hull!: BiquadFilterNode;
   private engineBus!: GainNode;
@@ -63,6 +112,22 @@ export class JetAudio {
   private brown: AudioBuffer | null = null;
   private wasBoosting = false;
   public muted = false;
+  /** The recordings (public/audio/jet/), by name, once loaded. */
+  private rec = new Map<string, AudioBuffer>();
+  private engineRec: { idle: AudioBufferSourceNode; high: AudioBufferSourceNode; idleGain: GainNode; highGain: GainNode } | null = null;
+  private canopy: GainNode | null = null;
+  /** The pilot's own recorded sounds: through the mask mic into the headset. */
+  private maskRec!: BiquadFilterNode;
+  private lastTake = '';
+  private breathGain: GainNode | null = null;
+  private lastGain: GainNode | null = null;
+  private strainEnd = -100;
+  private suitFull = false;
+  private lastSuitBang = -10;
+  private betty!: GainNode;
+  private warnSince = -1;
+  private warnKind = 0;
+  private nextBetty = 0;
 
   // Spool and the pilot's state
   private spool = 0.35;
@@ -91,8 +156,29 @@ export class JetAudio {
     this.hull.type = 'lowpass';
     this.hull.frequency.value = 600;
     this.hull.Q.value = 0.4;
-    this.hull.connect(this.master);
-    this.master.connect(ctx.destination);
+    // The world outside the mask: one low-pass (open; it closes under G and in cloud) and the
+    // ducking gain the radio pulls down while it talks. The radio and the pilot's own breathing
+    // and body go straight to the master: they are the sounds closest to the head
+    this.world = ctx.createBiquadFilter();
+    this.world.type = 'lowpass';
+    this.world.frequency.value = 20000;
+    this.world.Q.value = 0.5;
+    this.duck = ctx.createGain();
+    this.world.connect(this.duck);
+    this.duck.connect(this.master);
+    this.hull.connect(this.world);
+    // A gentle master compressor: holds the peaks without lifting the quiet floor
+    const glue = ctx.createDynamicsCompressor();
+    glue.threshold.value = -10;
+    glue.ratio.value = 2.5;
+    glue.attack.value = 0.01;
+    glue.release.value = 0.3;
+    this.master.connect(glue);
+    glue.connect(ctx.destination);
+    this.radioBus = ctx.createGain();
+    this.radioBus.gain.value = 0.75;
+    this.radioBus.connect(this.master);
+    this.radioChain = new RadioChain(ctx, this.radioBus);
     this.engineBus = ctx.createGain();
     this.engineBus.connect(this.hull);
     // The pilot's own sounds: close, inside the helmet, never through the hull filter
@@ -109,6 +195,34 @@ export class JetAudio {
     maskBody.gain.value = 4;
     this.mask.connect(maskBody);
     maskBody.connect(this.pilotBus);
+    // Recorded breaths come through the mask's microphone: no deep lows, a little forward
+    this.maskRec = ctx.createBiquadFilter();
+    this.maskRec.type = 'highpass';
+    this.maskRec.frequency.value = 140;
+    const maskPresence = ctx.createBiquadFilter();
+    maskPresence.type = 'peaking';
+    maskPresence.frequency.value = 1400;
+    maskPresence.Q.value = 0.8;
+    maskPresence.gain.value = 2;
+    const maskTop = ctx.createBiquadFilter();
+    maskTop.type = 'lowpass';
+    maskTop.frequency.value = 6000;
+    this.maskRec.connect(maskPresence);
+    maskPresence.connect(maskTop);
+    maskTop.connect(this.pilotBus);
+    // Betty speaks on the intercom, straight into the helmet (never ducked or greyed out)
+    this.betty = ctx.createGain();
+    this.betty.gain.value = 0.8;
+    const bettyBand = ctx.createBiquadFilter();
+    bettyBand.type = 'highpass';
+    bettyBand.frequency.value = 280;
+    const bettyTop = ctx.createBiquadFilter();
+    bettyTop.type = 'lowpass';
+    bettyTop.frequency.value = 5200;
+    this.betty.connect(bettyBand);
+    bettyBand.connect(bettyTop);
+    bettyTop.connect(this.master);
+    this.loadRecordings(ctx);
 
     // Noise beds: 4 s pink-ish, 4 s brown
     const len = ctx.sampleRate * 4;
@@ -230,7 +344,7 @@ export class JetAudio {
     const wf = filter('bandpass', 700, 0.6);
     loop(buf).connect(wf);
     wf.connect(wg);
-    wg.connect(this.master);
+    wg.connect(this.world);
     this.wind = { gain: wg, filter: wf };
 
     // Cockpit air: the conditioning hiss
@@ -240,7 +354,7 @@ export class JetAudio {
     loop(buf).connect(eb);
     eb.connect(el);
     el.connect(eg);
-    eg.connect(this.master);
+    eg.connect(this.world);
     this.ecs = { gain: eg };
 
     // G-suit bladders: a hiss through the suit's hose
@@ -288,22 +402,48 @@ export class JetAudio {
     // From inside at speed the airflow drowns the engine
     const q = s.air * Math.min(s.speedMps, 1500) ** 2 / 1.0e6; // ~dynamic pressure, normalised
     const masking = s.inside ? 1 - 0.45 * Math.min(1, q * 2.5) : 1;
-    this.engineBus.gain.setTargetAtTime(masking, t, 0.6);
+    // Inside, the engine is felt more than heard, and sinks further as you climb (about -9 dB by
+    // 5 km): behind a sealed canopy and a helmet's earcups the jet is a texture, not a roar
+    const high = s.inside ? 1 - 0.65 * smooth01((s.altKm ?? 0) / 5) : 1;
+    this.engineBus.gain.setTargetAtTime(masking * high, t, 0.6);
+    // Grey-out: the world slides down to ~280 Hz and loses 6 dB; in cloud it closes to ~900 Hz.
+    // While the radio talks, the world ducks 6 dB (quick down, slow back)
+    const grey = Math.min(1, Math.max(0, s.greyOut ?? 0));
+    const openHz = s.inCloud ? 900 : 20000;
+    this.world.frequency.setTargetAtTime(Math.exp(Math.log(openHz) + (Math.log(280) - Math.log(openHz)) * grey), t, 0.25);
+    const talking = t < this.radioUntil;
+    this.duck.gain.setTargetAtTime((talking ? 0.5 : 1) * (1 - 0.5 * grey), t, talking ? 0.1 : 0.45);
+    if (!this.startPlayed) {
+      this.startPlayed = true;
+      if ((s.altKm ?? 1) < 0.1 && s.speedMps < 30) this.playStart();
+    }
 
     for (let i = 0; i < this.sub.osc.length; i++) this.sub.osc[i].frequency.setTargetAtTime((32 + 26 * n) * (i === 0 ? 1 : 2.01), t, 0.2);
     this.sub.gain.gain.setTargetAtTime((s.inside ? 0.32 : 0.22) * (0.25 + 0.75 * g) * (1 + 0.4 * s.boost), t, 0.2);
 
+    // The recorded engine: idle and high loops crossfaded by the spool, sped up as it winds (the
+    // synthesised turbine, whine and roar stay under it, thinner, for the throttle's fine moves)
+    const synth = this.engineRec ? 0.5 : 1;
+    if (this.engineRec) {
+      const x = smooth01(g + 0.25 * s.boost);
+      const e = this.engineRec;
+      const level = s.inside ? ENGINE_IN : ENGINE_OUT;
+      e.idleGain.gain.setTargetAtTime(level * Math.cos((x * Math.PI) / 2), t, 0.3);
+      e.highGain.gain.setTargetAtTime(level * Math.sin((x * Math.PI) / 2) * (1 + 0.3 * s.boost), t, 0.3);
+      e.idle.playbackRate.setTargetAtTime(0.86 + 0.4 * n, t, 0.3);
+      e.high.playbackRate.setTargetAtTime(0.8 + 0.2 * n, t, 0.3);
+    }
     for (const o of this.turbine.osc) o.frequency.setTargetAtTime(140 + 760 * n, t, 0.2);
     this.turbine.filter.frequency.setTargetAtTime(900 + 2600 * n, t, tc);
-    this.turbine.gain.gain.setTargetAtTime((s.inside ? 0.05 : 0.025) * (0.4 + n), t, tc);
+    this.turbine.gain.gain.setTargetAtTime((s.inside ? 0.05 : 0.025) * (0.4 + n) * synth, t, tc);
 
     const whineHz = 1900 + 1700 * n;
     this.whine.osc.frequency.setTargetAtTime(whineHz, t, 0.2);
     this.whine.filter.frequency.setTargetAtTime(whineHz, t, 0.2);
-    this.whine.gain.gain.setTargetAtTime((s.inside ? 0.012 : 0.02) * (0.3 + 0.7 * g), t, 0.2);
+    this.whine.gain.gain.setTargetAtTime((s.inside ? 0.012 : 0.02) * (0.3 + 0.7 * g) * synth, t, 0.2);
 
     this.roar.filter.frequency.setTargetAtTime(220 + 1800 * g + 1400 * s.boost, t, tc);
-    this.roar.gain.gain.setTargetAtTime((s.inside ? 0.35 : 0.6) * (0.2 + 0.8 * g) * (1 + s.boost * 0.6), t, tc);
+    this.roar.gain.gain.setTargetAtTime((s.inside ? 0.35 : 0.6) * (0.2 + 0.8 * g) * (1 + s.boost * 0.6) * (0.4 + 0.6 * synth), t, tc);
     this.rough.gain.gain.setTargetAtTime(0.18 * (0.3 + 0.7 * g + 0.4 * s.boost), t, 0.25);
 
     this.burner.filter.frequency.setTargetAtTime(110 + 160 * s.boost, t, 0.2);
@@ -316,12 +456,15 @@ export class JetAudio {
     this.wind.filter.frequency.setTargetAtTime(350 + Math.min(s.speedMps, 1500) * 1.6, t, 0.2);
 
     this.ecs.gain.gain.setTargetAtTime(s.inside ? 0.035 : 0, t, 0.4);
+    // The canopy's rumble: the airframe in the airstream (a hum of the systems in vacuum)
+    this.canopy?.gain.setTargetAtTime(s.inside ? CANOPY * (0.12 + atmos * (0.35 + 0.65 * Math.min(1, q * 2))) : 0, t, 0.5);
 
     this.updatePilot(t, dt, s);
 
     const pulse = s.warning > 0 && Math.floor(timeSec * (s.warning === 1 ? 6 : 3)) % 2 === 0;
     this.warn.osc.frequency.setTargetAtTime(s.warning === 1 ? 1050 : 620, t, 0.01);
-    this.warn.gain.gain.setTargetAtTime(pulse ? 0.06 : 0, t, 0.01);
+    this.warn.gain.gain.setTargetAtTime(pulse ? (this.rec.has('betty_pullup') ? 0.035 : 0.06) : 0, t, 0.01);
+    this.updateBetty(t, s.warning);
   }
 
   /** The afterburner lighting: a low thump dropping in pitch under a burst of noise. */
@@ -364,12 +507,38 @@ export class JetAudio {
       this.nextBreath = t;
     } else if (this.straining && g < 3.5) {
       this.straining = false;
-      this.breath(t, 'out', 0.7);
+      this.strainEnd = t;
+      // the long breath out after the strain
+      if (!this.playBreath(t, 'deep', 1.1)) this.breath(t, 'out', 0.7);
+      this.nextCalm = t + 3.2;
+    }
+    // Calm breathing through the mask the rest of the time: the demand valve's hiss in, the
+    // rubber exhale valve out, every ~4.3 s on the ground, slower and softer up high, quicker on
+    // full power; held while the radio talks, and a slightly deeper one after
+    if (!this.straining && t >= this.nextCalm && t > this.radioUntil) {
+      const busy = Math.min(1, s.throttle * 0.6 + s.boost * 0.6 + Math.max(0, g - 1.5) / 3);
+      const up = smooth01((s.altKm ?? 0) / 8);
+      const deep = t - this.radioUntil < 1.5 ? 1.25 : 1;
+      const level = (0.32 - 0.08 * up + 0.12 * busy) * deep;
+      // Heavier breaths on full power and for a while after a hard pull
+      const kind = busy > 0.55 || t - this.strainEnd < 12 ? 'deep' : 'calm';
+      const len = this.playBreath(t, kind, level / 0.32);
+      if (!len) {
+        const inDur = this.maskBreath(t, 'in', level);
+        this.maskBreath(t + inDur + 0.25 + Math.random() * 0.2, 'out', level);
+      }
+      this.nextCalm = t + Math.max(len + 0.9, (4.3 + 0.8 * up - 0.9 * busy) * (0.9 + Math.random() * 0.2));
     }
     if (this.straining && t >= this.nextBreath) {
-      // A short sharp exhale-inhale, then the held strain
-      const outDur = this.breath(t, 'out', 0.7 + 0.3 * strain);
-      this.breath(t + outDur, 'in', 0.7 + 0.3 * strain);
+      // The straining manoeuvre: a grunt against the load (a closed throat, the chest tensed),
+      // then a snatched breath, every ~3 s
+      const grunt = this.playRec(this.take('strain', 4), t, STRAIN_GAIN * (0.75 + 0.35 * strain), this.maskRec, 0.96 + Math.random() * 0.08);
+      if (grunt) {
+        this.breath(t + grunt * 0.95, 'in', 0.6 + 0.3 * strain);
+      } else {
+        const outDur = this.breath(t, 'out', 0.7 + 0.3 * strain);
+        this.breath(t + outDur, 'in', 0.7 + 0.3 * strain);
+      }
       this.nextBreath = t + 2.9 - 0.4 * strain + Math.random() * 0.25;
     }
 
@@ -378,7 +547,16 @@ export class JetAudio {
     const prev = this.suitLevel;
     this.suitLevel += (target - this.suitLevel) * Math.min(1, dt * (target > this.suitLevel ? 2.5 : 1.2));
     const flow = Math.abs(this.suitLevel - prev) / Math.max(dt, 1e-3);
-    this.suit.gain.gain.setTargetAtTime(Math.min(0.22, flow * 0.5) * (this.suitLevel > prev ? 1 : 0.7), t, 0.08);
+    this.suit.gain.gain.setTargetAtTime(Math.min(0.22, flow * 0.5) * (this.suitLevel > prev ? 1 : 0.7) * (this.rec.has('gsuit_in') ? 0.6 : 1), t, 0.08);
+    // The valve opening as the load passes ~2 g, and the vent when it is all off again
+    if (!this.suitFull && g > 2.1 && target > this.suitLevel && t - this.lastSuitBang > 1.5) {
+      this.suitFull = true;
+      this.lastSuitBang = t;
+      this.playRec(this.rec.get('gsuit_in'), t, SUIT_GAIN, this.pilotBus);
+    } else if (this.suitFull && this.suitLevel < 0.03 && g < 1.6) {
+      this.suitFull = false;
+      this.playRec(this.rec.get('gsuit_out'), t, SUIT_GAIN * 0.7, this.pilotBus);
+    }
 
     // Heartbeat from ~6.5 g, quickening
     const heart = Math.min(1, Math.max(0, (g - 6.5) / 2.5));
@@ -397,6 +575,98 @@ export class JetAudio {
       this.creak(t + 0.05, 0.6 + 0.4 * Math.min(1, (g - 4.5) / 3.5));
       this.lastCreak = t;
     }
+  }
+
+  /** Fetches the recordings; each sound uses its recording as soon as it has arrived. */
+  private loadRecordings(ctx: AudioContext): void {
+    const base = `${import.meta.env.BASE_URL || '/'}audio/jet/`;
+    for (const name of JET_RECORDINGS) {
+      void fetch(`${base}${name}.mp3`)
+        .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(name))))
+        .then((d) => ctx.decodeAudioData(d))
+        .then((buf) => {
+          if (this.ctx !== ctx) return;
+          this.rec.set(name, buf);
+          this.onRecording(ctx, name);
+        })
+        .catch(() => undefined);
+    }
+  }
+
+  /** Starts a loop when its recording arrives (the engine once both halves are in). */
+  private onRecording(ctx: AudioContext, name: string): void {
+    const loop = (buf: AudioBuffer, to: AudioNode): { src: AudioBufferSourceNode; gain: GainNode } => {
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.loop = true;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      src.connect(gain);
+      gain.connect(to);
+      src.start(0, Math.random() * buf.duration);
+      return { src, gain };
+    };
+    const idle = this.rec.get('engine_idle');
+    const high = this.rec.get('engine_high');
+    if ((name === 'engine_idle' || name === 'engine_high') && idle && high && !this.engineRec) {
+      const a = loop(idle, this.engineBus);
+      const b = loop(high, this.engineBus);
+      this.engineRec = { idle: a.src, high: b.src, idleGain: a.gain, highGain: b.gain };
+    }
+    const canopy = this.rec.get('canopy');
+    if (name === 'canopy' && canopy) this.canopy = loop(canopy, this.world).gain;
+  }
+
+  /** A random take of `prefix_1..count`, never the same one twice running. */
+  private take(prefix: string, count: number): AudioBuffer | undefined {
+    const have = Array.from({ length: count }, (_, i) => `${prefix}_${i + 1}`).filter((n) => this.rec.has(n) && n !== this.lastTake);
+    if (!have.length) return undefined;
+    const name = have[Math.floor(Math.random() * have.length)];
+    this.lastTake = name;
+    return this.rec.get(name);
+  }
+
+  /** Plays a recording once; returns how long it lasts (0 if it has not arrived). */
+  private playRec(buf: AudioBuffer | undefined, t: number, level: number, to: AudioNode, rate = 1): number {
+    const ctx = this.ctx;
+    if (!ctx || !buf) return 0;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = rate;
+    const g = ctx.createGain();
+    g.gain.value = level;
+    src.connect(g);
+    g.connect(to);
+    src.start(t);
+    this.lastGain = g;
+    return buf.duration / rate;
+  }
+
+  /**
+   * One recorded breath through the mask, in and out: a different take each time, a few percent
+   * higher or lower and a little louder or softer, so no two in a row sound alike. Returns its
+   * length (0 when the recordings are not in yet).
+   */
+  private playBreath(t: number, kind: 'calm' | 'deep', level: number): number {
+    const buf = kind === 'calm' ? this.take('breath_calm', 10) : this.take('breath_deep', 5);
+    const rate = 0.94 + Math.random() * 0.12;
+    const len = this.playRec(buf, t, BREATH_GAIN * level * (0.85 + Math.random() * 0.3), this.maskRec, rate);
+    // (kept, so a radio call can cut it short: the pilot holds the breath to listen)
+    if (len) this.breathGain = this.lastGain;
+    return len;
+  }
+
+  /** Betty: "Altitude, altitude" when the ground comes up, "Pull up" if it keeps coming; "Overheat". */
+  private updateBetty(t: number, warning: number): void {
+    if (warning !== this.warnKind) {
+      this.warnKind = warning;
+      this.warnSince = t;
+      this.nextBetty = t + 0.15;
+    }
+    if (!warning || t < this.nextBetty) return;
+    const name = warning === 2 ? 'betty_overheat' : t - this.warnSince < 2.5 ? 'betty_altitude' : 'betty_pullup';
+    const len = this.playRec(this.rec.get(name), t, 1, this.betty);
+    this.nextBetty = t + (len ? len + (warning === 2 ? 2.5 : 0.6) : 1);
   }
 
   /** One breath through the mask: in is quick and high, out longer and lower. Returns its length. */
@@ -488,6 +758,140 @@ export class JetAudio {
       src.start(at, Math.random() * 3);
       src.stop(at + 0.05);
     }
+  }
+
+  /**
+   * One calm breath through the oxygen mask. In: the demand regulator opens with a small metallic
+   * tick and hisses (bright, a faint whistle in it). Out: a softer, lower breath into the rubber,
+   * the exhale valve fluttering as it lifts and clicking shut at the end. Returns its length.
+   */
+  private maskBreath(t: number, kind: 'in' | 'out', level: number): number {
+    const ctx = this.ctx;
+    if (!ctx || !this.noise) return 1;
+    const g = ctx.createGain();
+    g.connect(this.pilotBus);
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    if (kind === 'in') {
+      const dur = 0.9 + Math.random() * 0.3;
+      bp.Q.value = 0.9;
+      bp.frequency.setValueAtTime(1800, t);
+      bp.frequency.linearRampToValueAtTime(2600, t + dur);
+      const whistle = ctx.createBiquadFilter();
+      whistle.type = 'bandpass';
+      whistle.frequency.value = 3100 + Math.random() * 300;
+      whistle.Q.value = 14;
+      const wg = ctx.createGain();
+      wg.gain.value = 0.5;
+      src.connect(bp);
+      bp.connect(g);
+      src.connect(whistle);
+      whistle.connect(wg);
+      wg.connect(g);
+      const peak = 1.25 * level;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(peak, t + 0.12);
+      g.gain.setValueAtTime(peak * 0.9, t + dur * 0.75);
+      g.gain.linearRampToValueAtTime(0, t + dur);
+      src.start(t, Math.random() * 3);
+      src.stop(t + dur + 0.05);
+      this.valveTick(t, (0.4 * level) / 0.32, 3800);
+      return dur;
+    }
+    const dur = 1.1 + Math.random() * 0.4;
+    bp.Q.value = 1.1;
+    bp.frequency.setValueAtTime(900, t);
+    bp.frequency.linearRampToValueAtTime(560, t + dur);
+    // The flap of the exhale valve: a fast flutter in the air as it lifts
+    const flutter = ctx.createGain();
+    flutter.gain.value = 0.75;
+    const lfo = ctx.createOscillator();
+    lfo.frequency.value = 26 + Math.random() * 8;
+    const lg = ctx.createGain();
+    lg.gain.value = 0.25;
+    lfo.connect(lg);
+    lg.connect(flutter.gain);
+    src.connect(bp);
+    bp.connect(flutter);
+    flutter.connect(g);
+    const peak = 0.95 * level;
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(peak, t + 0.08);
+    g.gain.setTargetAtTime(0, t + dur * 0.45, dur * 0.22);
+    lfo.start(t);
+    lfo.stop(t + dur);
+    src.start(t, Math.random() * 3);
+    src.stop(t + dur + 0.1);
+    this.valveTick(t + dur * 0.92, (0.28 * level) / 0.32, 1600);
+    return dur;
+  }
+
+  /** A valve's tick: a very short band of noise. */
+  private valveTick(t: number, level: number, hz: number): void {
+    const ctx = this.ctx;
+    if (!ctx || !this.noise) return;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = hz;
+    bp.Q.value = 3;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(level, t);
+    g.gain.setTargetAtTime(0, t + 0.002, 0.005);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(this.pilotBus);
+    src.start(t, Math.random() * 3);
+    src.stop(t + 0.04);
+  }
+
+  /** The engines being started on the ground (a recording), heard through the canopy. */
+  private playStart(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    void fetch(`${import.meta.env.BASE_URL || '/'}audio/jet/engine_start.mp3`)
+      .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error('no start'))))
+      .then((d) => ctx.decodeAudioData(d))
+      .then((buf) => {
+        const t = ctx.currentTime + 0.05;
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, t);
+        g.gain.linearRampToValueAtTime(0.55, t + 0.3);
+        g.gain.setValueAtTime(0.55, t + Math.max(1, buf.duration - 4));
+        g.gain.linearRampToValueAtTime(0, t + buf.duration);
+        src.connect(g);
+        g.connect(this.hull);
+        src.start(t);
+      })
+      .catch(() => undefined);
+  }
+
+  /** The radio: plays a call through the set; returns its length (s). The mix ducks under it. */
+  public speak(buffer: AudioBuffer, speaker: RadioSpeaker, distance: number): number {
+    const ctx = this.ctx;
+    if (!ctx || !this.radioChain || this.muted) return 0;
+    const at = ctx.currentTime + 0.15;
+    const end = this.radioChain.transmit(buffer, speaker, at, distance);
+    this.radioUntil = Math.max(this.radioUntil, end);
+    // A breath already under way is cut short: the pilot holds it to listen
+    if (this.breathGain) this.breathGain.gain.setTargetAtTime(0, ctx.currentTime, 0.12);
+    this.breathGain = null;
+    return end - ctx.currentTime;
+  }
+
+  /** Whether the audio has been started (it needs a user gesture first). */
+  public get started(): boolean {
+    return !!this.ctx;
+  }
+
+  public decode(data: ArrayBuffer): Promise<AudioBuffer> {
+    if (!this.ctx) return Promise.reject(new Error('audio not started'));
+    return this.ctx.decodeAudioData(data);
   }
 
   /**

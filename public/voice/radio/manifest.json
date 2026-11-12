@@ -1,0 +1,453 @@
+{
+ "place.himalaya": {
+  "file": "place.himalaya.mp3",
+  "seconds": 12.13,
+  "text": "Oh... wow. Everest, right off the left wing. The whole ridge is glowing. I'm never getting used to this.",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "place:himalaya"
+ },
+ "start.1": {
+  "file": "start.1.mp3",
+  "seconds": 5.34,
+  "text": "Okay. Engines good, oxygen good. Solaris One-One, ready when you are.",
+  "speaker": "pilot",
+  "mood": "calm",
+  "trigger": "start",
+  "key": "d6838067efc1",
+  "heard": "Okay, engine's good, oxygen good, Solaris 11, ready when you are."
+ },
+ "start.2": {
+  "file": "start.2.mp3",
+  "seconds": 5.56,
+  "text": "Solaris One-One, cleared as filed. Sky's all yours today. Have a good one.",
+  "speaker": "control",
+  "mood": "pro",
+  "trigger": "start",
+  "key": "647adad73493",
+  "heard": "Solaris 11 cleared as filed. Skies all yours today, have a good one."
+ },
+ "start.3": {
+  "file": "start.3.mp3",
+  "seconds": 3.77,
+  "text": "Two's up and burning. Let's go see something nobody's seen before, huh?",
+  "speaker": "wing",
+  "mood": "joy",
+  "trigger": "start",
+  "key": "f0c3c02d4c93",
+  "heard": "Tues up and burning, let's go see something nobody's seen before, huh?"
+ },
+ "takeoff.1": {
+  "file": "takeoff.1.mp3",
+  "seconds": 6.22,
+  "text": "And... rotate. Gear up. Hah, I love this part.",
+  "speaker": "pilot",
+  "mood": "joy",
+  "trigger": "takeoff"
+ },
+ "takeoff.2": {
+  "file": "takeoff.2.mp3",
+  "seconds": 7.46,
+  "text": "Solaris One-One, airborne. Climb at your discretion, contact departure. Good day.",
+  "speaker": "control",
+  "mood": "pro",
+  "trigger": "takeoff",
+  "key": "82fcb6abfefa",
+  "heard": "Solaris 11, airborne. Climate your discretion, contact departure. Good day.",
+  "unsure": true
+ },
+ "climb.1": {
+  "file": "climb.1.mp3",
+  "seconds": 4.17,
+  "text": "Passing ten thousand. Smooth air. Ground's starting to look like a map.",
+  "speaker": "pilot",
+  "mood": "calm",
+  "trigger": "climb",
+  "key": "72c7380a9571",
+  "heard": "Passing 10,000, smooth air. Ground starting to look like a map."
+ },
+ "climb.2": {
+  "file": "climb.2.mp3",
+  "seconds": 3.57,
+  "text": "Two's through flight level two-zero-zero. Man... it's quiet up here.",
+  "speaker": "wing",
+  "mood": "calm",
+  "trigger": "climb",
+  "key": "b30bde4b41ea",
+  "heard": "Tooster Flight Level 2-00. Man, it's quiet up here."
+ },
+ "mach1.1": {
+  "file": "mach1.1.mp3",
+  "seconds": 10.4,
+  "text": "Needle's past one. We're supersonic. Somebody down there just heard a very loud bang. Sorry!",
+  "speaker": "pilot",
+  "mood": "joy",
+  "trigger": "mach1",
+  "model": "gemini-3.1-flash-tts-preview"
+ },
+ "mach1.2": {
+  "file": "mach1.2.mp3",
+  "seconds": 6.19,
+  "text": "Woo! Mach one! You feel that little shudder? That's the sound barrier saying goodbye.",
+  "speaker": "wing",
+  "mood": "joy",
+  "trigger": "mach1",
+  "model": "gemini-3.1-flash-tts-preview"
+ },
+ "mach2.1": {
+  "file": "mach2.1.mp3",
+  "seconds": 4.13,
+  "text": "Mach two... nose is getting warm. Everything's just sliding past underneath.",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "mach2",
+  "key": "f7834281cc5d",
+  "heard": "Mott 2, nose is getting warm, everything's just sliding past underneath."
+ },
+ "hyper.1": {
+  "file": "hyper.1.mp3",
+  "seconds": 5.2,
+  "text": "Solaris, we show you hypersonic. Skin temp is climbing. Watch your heat, keep it smooth.",
+  "speaker": "mission",
+  "mood": "pro",
+  "trigger": "hyper",
+  "key": "41b64d4c71ab",
+  "heard": "Solaris, we show you hypersonic. Skin temp is climbing. Watch your heat. Keep it smooth."
+ },
+ "hyper.2": {
+  "file": "hyper.2.mp3",
+  "seconds": 4.92,
+  "text": "Mach five. Whole countries going by in minutes. This is... this is insane.",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "hyper",
+  "key": "46cd903c04f8",
+  "heard": "Mark 5, whole country is going by in minutes. This is, this is insane.",
+  "unsure": true
+ },
+ "g.1": {
+  "file": "g.1.mp3",
+  "seconds": 5.52,
+  "text": "Hnn... okay... holding it... hold it...",
+  "speaker": "pilot",
+  "mood": "strain",
+  "trigger": "highg",
+  "model": "gemini-3.1-flash-tts-preview"
+ },
+ "g.2": {
+  "file": "g.2.mp3",
+  "seconds": 4.19,
+  "text": "Ugh... heavy... come on... come on...",
+  "speaker": "pilot",
+  "mood": "strain",
+  "trigger": "highg",
+  "model": "gemini-3.1-flash-tts-preview"
+ },
+ "g.3": {
+  "file": "g.3.mp3",
+  "seconds": 6.62,
+  "text": "Phew. Okay. That one squeezed. Vision's coming back.",
+  "speaker": "pilot",
+  "mood": "relief",
+  "trigger": "gafter",
+  "model": "gemini-3.1-flash-tts-preview"
+ },
+ "g.4": {
+  "file": "g.4.mp3",
+  "seconds": 5.96,
+  "text": "You still with me, lead? That was a nine-G grin if I ever saw one.",
+  "speaker": "wing",
+  "mood": "humor",
+  "trigger": "gafter",
+  "model": "gemini-3.1-flash-tts-preview"
+ },
+ "cloudin.1": {
+  "file": "cloudin.1.mp3",
+  "seconds": 2.81,
+  "text": "In the soup. Nothing but white. On the gauges.",
+  "speaker": "pilot",
+  "mood": "calm",
+  "trigger": "cloudin",
+  "key": "6d1cb804bfb9",
+  "heard": "in the soup, nothing but white on the gauges."
+ },
+ "cloudout.1": {
+  "file": "cloudout.1.mp3",
+  "seconds": 3.53,
+  "text": "Oh... popping out on top. Look at that. Whole ocean of cloud.",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "cloudout",
+  "key": "e6de8281f1b5",
+  "heard": "Oh, popping out on top. Look at that whole ocean of cloud."
+ },
+ "sunrise.1": {
+  "file": "sunrise.1.mp3",
+  "seconds": 3.82,
+  "text": "Here comes the sun... whole horizon just turned gold. Wow.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "sunrise",
+  "key": "deb6506f8c17",
+  "heard": "Here comes the sun, whole horizon, just turned gold. Wow!"
+ },
+ "sunrise.2": {
+  "file": "sunrise.2.mp3",
+  "seconds": 3.5,
+  "text": "Lead, look east. Look east. Oh, that's beautiful.",
+  "speaker": "wing",
+  "mood": "awe",
+  "trigger": "sunrise",
+  "key": "f4ce18180d37",
+  "heard": "Lead, look east, look east. Oh, that's beautiful."
+ },
+ "sunset.1": {
+  "file": "sunset.1.mp3",
+  "seconds": 3.65,
+  "text": "Sun's going down behind us. Everything's orange and pink... wish you could see this.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "sunset",
+  "key": "983021184bd7",
+  "heard": "Sun's going down behind us. Everything's orange and pink, wish you could see this."
+ },
+ "sunset.2": {
+  "file": "sunset.2.mp3",
+  "seconds": 6.14,
+  "text": "Solaris One-One, sunset at your altitude in about two minutes. Enjoy the show.",
+  "speaker": "control",
+  "mood": "calm",
+  "trigger": "sunset",
+  "key": "363818a901d5",
+  "heard": "Solaris 11 Sunset at your altitude in about two minutes. Enjoy the show."
+ },
+ "night.1": {
+  "file": "night.1.mp3",
+  "seconds": 5.48,
+  "text": "Night side now. Cities look like spilled gold down there. And the stars... so many stars.",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "night",
+  "key": "209c83f14717",
+  "heard": "Nightside now, cities look like spilled gold down there, and the stars, so many stars."
+ },
+ "night.2": {
+  "file": "night.2.mp3",
+  "seconds": 3.52,
+  "text": "Dark out here. Just the glow off the instruments. Kinda peaceful, honestly.",
+  "speaker": "wing",
+  "mood": "calm",
+  "trigger": "night",
+  "key": "09c533273685",
+  "heard": "Dark out here, just the glow off the instruments. and peaceful honestly."
+ },
+ "storm.2": {
+  "file": "storm.2.mp3",
+  "seconds": 5.8,
+  "text": "Solaris One-One, heavy weather on your route, recommend deviation. Stay safe up there.",
+  "speaker": "control",
+  "mood": "pro",
+  "trigger": "storm",
+  "key": "450fa46e022f",
+  "heard": "Solaris 11, heavy weather on your route, recommend deviation. Stay safe up there."
+ },
+ "terrain.3": {
+  "file": "terrain.3.mp3",
+  "seconds": 3.25,
+  "text": "Lead, you okay?! I thought you were going into those rocks!",
+  "speaker": "wing",
+  "mood": "fear",
+  "trigger": "terrainafter",
+  "key": "795e1c76257b",
+  "heard": "Lead, you okay? I thought you were going into those rocks."
+ },
+ "low.2": {
+  "file": "low.2.mp3",
+  "seconds": 2.88,
+  "text": "Down in the weeds, hundred feet. Everything's a blur. Love it.",
+  "speaker": "pilot",
+  "mood": "joy",
+  "trigger": "lowfly",
+  "key": "92fa459e92a2",
+  "heard": "down in the weeds 100 feet. Everything's a blur, love it."
+ },
+ "land.1": {
+  "file": "land.1.mp3",
+  "seconds": 6.73,
+  "text": "Solaris One-One, wind calm, runway two-seven, cleared to land. Welcome back.",
+  "speaker": "control",
+  "mood": "pro",
+  "trigger": "approach",
+  "key": "fc48db6f037d",
+  "heard": "Solaris 11, wind calm, runway 27, cleared to land. Welcome back."
+ },
+ "karman.1": {
+  "file": "karman.1.mp3",
+  "seconds": 5.14,
+  "text": "Passing a hundred kilometres... sky just went black. Black, in daytime. Holy...",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "karman",
+  "key": "7d14f2082ebf",
+  "heard": "Passing 100 kilometers, Sky just went black. Black in daytime. Holy!"
+ },
+ "karman.2": {
+  "file": "karman.2.mp3",
+  "seconds": 3.74,
+  "text": "Solaris, you've crossed the Karman line. Officially, you are in space. Congratulations.",
+  "speaker": "mission",
+  "mood": "wonder",
+  "trigger": "karman",
+  "key": "836d4f3a5348",
+  "heard": "Solaris, you've crossed the Kermond Line, officially you are in space, congratulations."
+ },
+ "orbit.1": {
+  "file": "orbit.1.mp3",
+  "seconds": 4.28,
+  "text": "I can see the whole curve of the Earth. That thin blue line... that's all the air there is.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "orbit",
+  "key": "f541bfcce4fe",
+  "heard": "I can see the whole curve of the earth, that thin blue line that's all the air there is."
+ },
+ "orbit.2": {
+  "file": "orbit.2.mp3",
+  "seconds": 3.91,
+  "text": "Lead... it's so small. Everything we've ever known, right there under us.",
+  "speaker": "wing",
+  "mood": "awe",
+  "trigger": "orbit",
+  "key": "813b55389e5f",
+  "heard": "led, it's so small, everything we've ever known right there under us."
+ },
+ "reentry.1": {
+  "file": "reentry.1.mp3",
+  "seconds": 3.95,
+  "text": "Getting hot! Plasma all over the canopy. Bit of a ride here, hang on...",
+  "speaker": "pilot",
+  "mood": "fear",
+  "trigger": "reentry",
+  "key": "a3ae4f4bfee7",
+  "heard": "Getting hot. Plasma all over the canopy. Bit of a ride here, hang on."
+ },
+ "reentry.2": {
+  "file": "reentry.2.mp3",
+  "seconds": 4.36,
+  "text": "Solaris, expect loss of signal during blackout. We'll talk to you on the other side.",
+  "speaker": "mission",
+  "mood": "pro",
+  "trigger": "reentry",
+  "key": "a27662d009af",
+  "heard": "Solaris, expect loss of signal during blackout, will talk to you on the other side."
+ },
+ "leave.1": {
+  "file": "leave.1.mp3",
+  "seconds": 3.92,
+  "text": "Earth's getting smaller behind us. Little blue dot. Weird feeling, leaving home.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "leaveearth",
+  "key": "3163abea73c7",
+  "heard": "Earth's getting smaller behind us. Little blue dot, weird feeling, leaving home."
+ },
+ "leave.2": {
+  "file": "leave.2.mp3",
+  "seconds": 4.15,
+  "text": "Solaris, you're on your way. From here on, every word takes a little longer to reach us.",
+  "speaker": "mission",
+  "mood": "calm",
+  "trigger": "leaveearth",
+  "key": "fee3b4837cb9",
+  "heard": "Solaris, you're on your way. From here on, every word takes a little longer to reach us."
+ },
+ "cruise.1": {
+  "file": "cruise.1.mp3",
+  "seconds": 4.64,
+  "text": "Long way still. Ever think about how quiet it is out here? Just us and the engines.",
+  "speaker": "wing",
+  "mood": "calm",
+  "trigger": "cruise",
+  "key": "b003838eee7f",
+  "heard": "Long way still. Everything about how quiet it is out here, just us and the engines."
+ },
+ "cruise.3": {
+  "file": "cruise.3.mp3",
+  "seconds": 4.04,
+  "text": "Solaris, all your systems look green from here. Sit back, enjoy the view.",
+  "speaker": "mission",
+  "mood": "calm",
+  "trigger": "cruise",
+  "key": "1b1828f7f93a",
+  "heard": "Solaris, all your systems look green from here. Sit back and enjoy the view."
+ },
+ "cruise.5": {
+  "file": "cruise.5.mp3",
+  "seconds": 3.81,
+  "text": "Uh... checking fuel... we're fine. Plenty. Just enjoying the quiet.",
+  "speaker": "pilot",
+  "mood": "calm",
+  "trigger": "cruise",
+  "key": "99ccfa277f1f",
+  "heard": "uh, checking fuel, or fine, plenty, just enjoying the quiet."
+ },
+ "cruise.6": {
+  "file": "cruise.6.mp3",
+  "seconds": 3.89,
+  "text": "You know... done this a hundred times. Still gives me goosebumps.",
+  "speaker": "pilot",
+  "mood": "tired",
+  "trigger": "cruise",
+  "key": "c57f08f22105",
+  "heard": "You know, done this a hundred times, still gives me goosebumps."
+ },
+ "react.awe.1": {
+  "file": "react.awe.1.mp3",
+  "seconds": 1.58,
+  "text": "Oh, wow... look at that.",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "awe",
+  "key": "a8bca385db03",
+  "heard": "Oh wow, look at that."
+ },
+ "react.awe.3": {
+  "file": "react.awe.3.mp3",
+  "seconds": 2.04,
+  "text": "Yeah... yeah. That's something else.",
+  "speaker": "wing",
+  "mood": "awe",
+  "trigger": "awe",
+  "key": "b35500c559dc",
+  "heard": "Yeah, yeah, that's something else."
+ },
+ "react.awe.4": {
+  "file": "react.awe.4.mp3",
+  "seconds": 1.81,
+  "text": "I... don't even have words for that.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "awe",
+  "key": "a9c8ad9c5457",
+  "heard": "I don't even have words for that."
+ },
+ "react.calm.1": {
+  "file": "react.calm.1.mp3",
+  "seconds": 1.44,
+  "text": "Mm. Nice and smooth.",
+  "speaker": "pilot",
+  "mood": "calm",
+  "trigger": "calm",
+  "key": "f4d614f19d39",
+  "heard": "Hmm, nice and smooth."
+ },
+ "react.calm.2": {
+  "file": "react.calm.2.mp3",
+  "seconds": 4.84,
+  "text": "Solaris One-One, radar contact. Nice to have you with us.",
+  "speaker": "control",
+  "mood": "calm",
+  "trigger": "calm",
+  "key": "32735cbd1214",
+  "heard": "Salaris11, radar contact. Nice to have you with us."
+ },

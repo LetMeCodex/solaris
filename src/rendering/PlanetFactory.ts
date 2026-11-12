@@ -7,6 +7,8 @@ import { EarthMaterial } from './EarthMaterial';
 import { PlanetMaterial } from './PlanetMaterial';
 import { drawnRadius } from './Scale';
 import { SUN_WORLD } from './RenderOrigin';
+import { CatalogueManager } from '../data/CatalogueManager';
+import { GltfModelBank } from './SpacecraftFactory';
 
 export interface PlanetMeshBundle {
   definition: CelestialBodyDefinition;
@@ -216,6 +218,18 @@ export class PlanetFactory {
     // Single-application scale from unit sphere
     surfaceMesh.scale.set(visualRadius, visualRadius * polarScale, visualRadius);
     bodyGroup.add(surfaceMesh);
+
+    const nasaModelPath = CatalogueManager.getSmallBodyModelPath(body.name);
+    if (nasaModelPath && GltfModelBank.isReady()) {
+      void GltfModelBank.loadNormalized(nasaModelPath, 'natural').then((asset) => {
+        if (!asset) return;
+        const nasaShape = GltfModelBank.instantiate(asset);
+        // Normalized asset already encodes true 3D triaxial proportions inside [-1, 1]
+        surfaceMesh.scale.setScalar(visualRadius);
+        (surfaceMaterial as THREE.Material).visible = false;
+        surfaceMesh.add(nasaShape);
+      });
+    }
 
     // --- SATURN ANNULAR RING SYSTEM WITH PLANETARY SHADOW ---
     if (body.name === 'Saturn') {

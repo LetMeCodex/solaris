@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { FastTextureLoader } from './FastTextureLoader';
 import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 
 /**
@@ -216,7 +217,7 @@ export class NebulaSky {
     const mem = (navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8;
     const phone = window.matchMedia('(pointer: coarse)').matches && Math.min(window.innerWidth, window.innerHeight) < 820;
     const lite = phone || maxTex < 4096 || mem <= 4;
-    const loader = new THREE.TextureLoader();
+    const loader = new FastTextureLoader();
     void fetch(`${BASE}nebulae.json`)
       .then((r) => r.json() as Promise<Record<string, number>>)
       .then((aspects) => {
