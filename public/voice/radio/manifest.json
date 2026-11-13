@@ -1,11 +1,13 @@
 {
  "place.himalaya": {
   "file": "place.himalaya.mp3",
-  "seconds": 12.13,
-  "text": "Oh... wow. Everest, right off the left wing. The whole ridge is glowing. I'm never getting used to this.",
+  "seconds": 4.85,
+  "text": "Oh... wow. Everest, right off the left wing. Whole ridge is glowing. Never getting used to this.",
   "speaker": "pilot",
   "mood": "awe",
-  "trigger": "place:himalaya"
+  "trigger": "place:himalaya",
+  "key": "8578a581eff6",
+  "heard": "Oh wow, Everest, right off the left wing. whole rage is glowing, never getting used to this."
  },
  "start.1": {
   "file": "start.1.mp3",
@@ -39,11 +41,13 @@
  },
  "takeoff.1": {
   "file": "takeoff.1.mp3",
-  "seconds": 6.22,
-  "text": "And... rotate. Gear up. Hah, I love this part.",
+  "seconds": 4.38,
+  "text": "Rotate... gear up. Man, I love this part.",
   "speaker": "pilot",
   "mood": "joy",
-  "trigger": "takeoff"
+  "trigger": "takeoff",
+  "key": "737f9fa9a8e9",
+  "heard": "Rotate. Gear up. Ha ha ha ha. Man, I love this part."
  },
  "takeoff.2": {
   "file": "takeoff.2.mp3",
@@ -78,21 +82,23 @@
  },
  "mach1.1": {
   "file": "mach1.1.mp3",
-  "seconds": 10.4,
-  "text": "Needle's past one. We're supersonic. Somebody down there just heard a very loud bang. Sorry!",
+  "seconds": 6.32,
+  "text": "Needle's past one, we're supersonic. Somebody down there just heard a big bang. Sorry!",
   "speaker": "pilot",
   "mood": "joy",
   "trigger": "mach1",
-  "model": "gemini-3.1-flash-tts-preview"
+  "key": "13677067f301",
+  "heard": "Needles past one. We're supersonic. Somebody down there just heard a big bang. Sorry."
  },
  "mach1.2": {
   "file": "mach1.2.mp3",
-  "seconds": 6.19,
-  "text": "Woo! Mach one! You feel that little shudder? That's the sound barrier saying goodbye.",
+  "seconds": 5.73,
+  "text": "Mach one! Feel that little shudder? That's the sound barrier waving goodbye.",
   "speaker": "wing",
   "mood": "joy",
   "trigger": "mach1",
-  "model": "gemini-3.1-flash-tts-preview"
+  "key": "f5f741d28138",
+  "heard": "Ha ha ha. Mach 1. Feel that little shutter. That's the sound barrier. Goodbye."
  },
  "mach2.1": {
   "file": "mach2.1.mp3",
@@ -127,39 +133,43 @@
  },
  "g.1": {
   "file": "g.1.mp3",
-  "seconds": 5.52,
-  "text": "Hnn... okay... holding it... hold it...",
+  "seconds": 2.44,
+  "text": "Okay... holding it... hold it...",
   "speaker": "pilot",
   "mood": "strain",
   "trigger": "highg",
-  "model": "gemini-3.1-flash-tts-preview"
+  "key": "122a08e9eaa9",
+  "heard": "Ah, okay, holding it, hold it."
  },
  "g.2": {
   "file": "g.2.mp3",
-  "seconds": 4.19,
-  "text": "Ugh... heavy... come on... come on...",
+  "seconds": 2.28,
+  "text": "Heavy... come on... come on.",
   "speaker": "pilot",
   "mood": "strain",
   "trigger": "highg",
-  "model": "gemini-3.1-flash-tts-preview"
+  "key": "e1580d6f0eb0",
+  "heard": "uh... heavy come on come on"
  },
  "g.3": {
   "file": "g.3.mp3",
-  "seconds": 6.62,
-  "text": "Phew. Okay. That one squeezed. Vision's coming back.",
+  "seconds": 2.59,
+  "text": "Okay. That one squeezed. Vision's coming back.",
   "speaker": "pilot",
   "mood": "relief",
   "trigger": "gafter",
-  "model": "gemini-3.1-flash-tts-preview"
+  "key": "e2a50b6239ad",
+  "heard": "Okay, that one's squeezed. Vision's coming back."
  },
  "g.4": {
   "file": "g.4.mp3",
-  "seconds": 5.96,
+  "seconds": 5.55,
   "text": "You still with me, lead? That was a nine-G grin if I ever saw one.",
   "speaker": "wing",
   "mood": "humor",
   "trigger": "gafter",
-  "model": "gemini-3.1-flash-tts-preview"
+  "key": "2d7163c15e4d",
+  "heard": "You still with me, lead? That was a 9G grin if I ever saw one."
  },
  "cloudin.1": {
   "file": "cloudin.1.mp3",
@@ -451,3 +461,1034 @@
   "key": "32735cbd1214",
   "heard": "Salaris11, radar contact. Nice to have you with us."
  },
+ "country.IN": {
+  "file": "country.IN.mp3",
+  "seconds": 7.25,
+  "text": "Solaris One-One, Delhi Control, radar contact. Welcome to India. Himalayas off to the north.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:India",
+  "key": "a5a1116d1a79",
+  "heard": "Solaris 11, Delhi Control, radar contact. Welcome to India. Himalayas off to the north."
+ },
+ "country.IN.2": {
+  "file": "country.IN.2.mp3",
+  "seconds": 4.0,
+  "text": "India! Look at all those lights... rivers like silver threads. Home, sort of.",
+  "speaker": "pilot",
+  "mood": "joy",
+  "trigger": "country:India",
+  "key": "3076b1bb83e0",
+  "heard": "India, look at all those lights, rivers like Silver Threads, home sort of."
+ },
+ "country.NP": {
+  "file": "country.NP.mp3",
+  "seconds": 8.33,
+  "text": "Solaris One-One, Kathmandu Control. Over Nepal now. Eight of the ten highest mountains on Earth are right here.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Nepal",
+  "key": "9c8485c55d69",
+  "heard": "Solaris 11, Catmindu Control, over Nepal now. 8 of the 10 highest mountains on earth are right here."
+ },
+ "country.PK": {
+  "file": "country.PK.mp3",
+  "seconds": 8.76,
+  "text": "Solaris One-One, Lahore Control. Over Pakistan. K2, the second highest peak in the world, is up in the north.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Pakistan",
+  "key": "e60536a3f828",
+  "heard": "Solaris 11, Lahore Control, over Pakistan. K2, the second highest peak in the world, is up in the north."
+ },
+ "country.BD": {
+  "file": "country.BD.mp3",
+  "seconds": 8.88,
+  "text": "Solaris One-One, Dhaka Control. Over Bangladesh, the biggest river delta on the planet. All that green is the Sundarbans.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Bangladesh",
+  "key": "99b660002724",
+  "heard": "Solaris 11, DACA control, over Bangladesh, the biggest river delta on the planet, All that green is the sundarbons."
+ },
+ "country.LK": {
+  "file": "country.LK.mp3",
+  "seconds": 7.87,
+  "text": "Solaris One-One, Colombo Control. Over Sri Lanka. Tea country in the hills, beaches all the way round.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Sri Lanka",
+  "key": "af4b8129dd4f",
+  "heard": "Solaris 11, Colombo Control. Overshri Lanka. Tea country in the hills beaches all the way around."
+ },
+ "country.CN": {
+  "file": "country.CN.mp3",
+  "seconds": 8.88,
+  "text": "Solaris One-One, Beijing Control. You are over China. The Great Wall runs for thousands of kilometres somewhere under you.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:China",
+  "key": "dfedf3e8369e",
+  "heard": "Solaris 11 Beijing Control. You are over China. The Great Wall runs for thousands of kilometers somewhere under you."
+ },
+ "country.JP": {
+  "file": "country.JP.mp3",
+  "seconds": 8.69,
+  "text": "Solaris One-One, Tokyo Control. Welcome over Japan. If it's clear, Mount Fuji should be visible to the west.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Japan",
+  "key": "48d61a8c3dcb",
+  "heard": "Solaris 11 Tokyo Control. Welcome over Japan. If it's clear, Mount Fuji should be visible to the West."
+ },
+ "country.KR": {
+  "file": "country.KR.mp3",
+  "seconds": 8.09,
+  "text": "Solaris One-One, Incheon Control. Over South Korea. Seoul at night is one of the brightest sights from up there.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:South Korea",
+  "key": "81a620c1ab6b",
+  "heard": "Solaris 11 in Cheon control. Over South Korea, Soil at night is one of the brightest sites from up there."
+ },
+ "country.TH": {
+  "file": "country.TH.mp3",
+  "seconds": 8.58,
+  "text": "Solaris One-One, Bangkok Control. Over Thailand. Temples, rice fields, and some very warm water down south.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Thailand",
+  "key": "83bdeb371821",
+  "heard": "Solaris 11, Bangkok control, over Thailand, temples, rice fields, and some very warm water down south."
+ },
+ "country.ID": {
+  "file": "country.ID.mp3",
+  "seconds": 9.13,
+  "text": "Solaris One-One, Jakarta Control. Over Indonesia. Seventeen thousand islands, and more than a hundred active volcanoes.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Indonesia",
+  "key": "2b0666c9bc26",
+  "heard": "Solaris 11, Jakarta Control, over Indonesia, 17,000 islands and more than 100 active volcanoes."
+ },
+ "country.AU": {
+  "file": "country.AU.mp3",
+  "seconds": 7.59,
+  "text": "Solaris One-One, Brisbane Centre, g'day. Welcome to Australia. Lot of red desert ahead. A lot.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Australia",
+  "key": "6dd2466aa3d4",
+  "heard": "Solaris 11 Brisbane Center, good day. Welcome to Australia. Lot of red desert ahead. a lot."
+ },
+ "country.NZ": {
+  "file": "country.NZ.mp3",
+  "seconds": 8.33,
+  "text": "Solaris One-One, Christchurch Control. Over New Zealand. Glaciers, fjords and more sheep than people.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:New Zealand",
+  "key": "3525fa21b7db",
+  "heard": "Solaris 11, Christchurch control, over New Zealand, glaciers, fjords, and more sheep than people."
+ },
+ "country.AE": {
+  "file": "country.AE.mp3",
+  "seconds": 8.84,
+  "text": "Solaris One-One, Dubai Control. Over the Emirates. The tall one sticking up out of the city? That's the Burj Khalifa.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:United Arab Emirates",
+  "key": "8a942531cbfc",
+  "heard": "Salaris 1-1, Dubai Control, over the Emirates. The tall one sticking up out of the city, that's the Burj Khalifa."
+ },
+ "country.SA": {
+  "file": "country.SA.mp3",
+  "seconds": 9.28,
+  "text": "Solaris One-One, Jeddah Control. Over Saudi Arabia. The Empty Quarter, the largest sand sea in the world, lies to the south.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Saudi Arabia",
+  "key": "ef9e46fa4b59",
+  "heard": "Solaris 11, Jetta Control. Overs Audi Arabia. The empty quarter, the largest sand seen in the world Lies to the south."
+ },
+ "country.IR": {
+  "file": "country.IR.mp3",
+  "seconds": 8.81,
+  "text": "Solaris One-One, Tehran Control. Over Iran. Mountains, high desert, and cities older than most countries.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Iran",
+  "key": "17cf681c1c6d",
+  "heard": "Solaris 11, Taron Control, over Iran. Mountains, high desert, and cities older than most countries."
+ },
+ "country.TR": {
+  "file": "country.TR.mp3",
+  "seconds": 8.16,
+  "text": "Solaris One-One, Ankara Control. Over Turkey, where Europe meets Asia. Istanbul sits right on the line.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Turkey",
+  "key": "15b2704faad9",
+  "heard": "Solarist 11, Ankara Control. Over Turkey, where Yurt meets Asia, Istanbul sits right on the line."
+ },
+ "country.EG": {
+  "file": "country.EG.mp3",
+  "seconds": 8.84,
+  "text": "Solaris One-One, Cairo Control. Over Egypt. Follow the green strip of the Nile, and the pyramids are just west of Cairo.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Egypt",
+  "key": "d1d4d52e330b",
+  "heard": "Solaris 11, Cairo Control, over-Egypt. Follow the green strip of the Nile, and the pyramids are just west of Cairo."
+ },
+ "country.KE": {
+  "file": "country.KE.mp3",
+  "seconds": 9.83,
+  "text": "Solaris One-One, Nairobi Control. Over Kenya. The savanna below is migration country. Keep an eye out for Kilimanjaro, south.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Kenya",
+  "key": "b5a4cdcdd731",
+  "heard": "Solaris 11, Nairobi control, over Kenya. The savanna below is migration country. Keep an eye out for Kilimanjaro South."
+ },
+ "country.ZA": {
+  "file": "country.ZA.mp3",
+  "seconds": 8.07,
+  "text": "Solaris One-One, Johannesburg Control. Over South Africa. Two oceans meet off the Cape.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:South Africa",
+  "key": "cdb4839168bf",
+  "heard": "Solaris 11, Johannesburg Control, over South Africa. Two oceans meet off the cape."
+ },
+ "country.NG": {
+  "file": "country.NG.mp3",
+  "seconds": 8.86,
+  "text": "Solaris One-One, Lagos Control. Over Nigeria, the most populous country in Africa. Busy skies tonight.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Nigeria",
+  "key": "688a54afa205",
+  "heard": "Solaris 11, Lagos Control. Over Nigeria, the most populous country in Africa. Busy skies tonight."
+ },
+ "country.MA": {
+  "file": "country.MA.mp3",
+  "seconds": 8.28,
+  "text": "Solaris One-One, Casablanca Control. Over Morocco. The Atlas mountains, and beyond them, the Sahara.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Morocco",
+  "key": "ac6c87f19fd8",
+  "heard": "Solaris 11, Casablanca Control, over Morocco. The Atlas Mountains and beyond them, the Sahara."
+ },
+ "country.RU": {
+  "file": "country.RU.mp3",
+  "seconds": 9.19,
+  "text": "Solaris One-One, Moscow Control. Over Russia. Eleven time zones wide. You could fly all day and still be here.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Russia",
+  "key": "0ecf127618af",
+  "heard": "Solaris 11, Moscow control. Over Russia. 11 time zones wide. You could fly all day and still be here."
+ },
+ "country.GB": {
+  "file": "country.GB.mp3",
+  "seconds": 8.77,
+  "text": "Solaris One-One, London Control, good day. Over the United Kingdom. Bit of cloud, as usual.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:United Kingdom",
+  "key": "d2900adfdbda",
+  "heard": "Solaris 11, London Control, good day. Over the United Kingdom. Bit of cloud as usual."
+ },
+ "country.FR": {
+  "file": "country.FR.mp3",
+  "seconds": 9.92,
+  "text": "Solaris One-One, Paris Control, bonjour. Over France. The Alps are to the east, and the Eiffel Tower is waiting in Paris.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:France",
+  "key": "a3a0fd141e91",
+  "heard": "Solaris 11, Paris Control, Bonjour, over France. The alps are to the east, and the Eiffel Tower is waiting in Paris."
+ },
+ "country.DE": {
+  "file": "country.DE.mp3",
+  "seconds": 8.2,
+  "text": "Solaris One-One, Langen Radar. Over Germany. The Rhine valley and the Black Forest are under your left wing.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Germany",
+  "key": "ac92897e8ce6",
+  "heard": "Solaris 11, Longen radar. Over Germany, the Rhine Valley and the Black Forest are under your left wing."
+ },
+ "country.IT": {
+  "file": "country.IT.mp3",
+  "seconds": 8.89,
+  "text": "Solaris One-One, Roma Control, buongiorno. Over Italy. The boot, the Alps, and Vesuvius near Naples.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Italy",
+  "key": "54ad5ab476d9",
+  "heard": "Solaris 11, Roma Control, Buon Giorno. Over Italy, the boot, the alps, and Vistubias near Naples."
+ },
+ "country.ES": {
+  "file": "country.ES.mp3",
+  "seconds": 8.85,
+  "text": "Solaris One-One, Madrid Control, hola. Over Spain. Sunshine and the Pyrenees to the north.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Spain",
+  "key": "ec4d501ab71c",
+  "heard": "Solaris 11, Madrid. Control, Hola. Overspan. Sunshine and the Pyrenees to the North."
+ },
+ "country.CH": {
+  "file": "country.CH.mp3",
+  "seconds": 9.76,
+  "text": "Solaris One-One, Zurich Control. Over Switzerland. Mountains in every direction. The Matterhorn is the pointy one.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Switzerland",
+  "key": "18e989cee32a",
+  "heard": "Solaris 11, Zurich control. Oversewitzeriend. Mountains in every direction. The Matterhorn is the pointy one."
+ },
+ "country.NO": {
+  "file": "country.NO.mp3",
+  "seconds": 8.6,
+  "text": "Solaris One-One, Norway Control. Over Norway. Fjords all down the coast, and in winter, the northern lights.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Norway",
+  "key": "4856d290c64c",
+  "heard": "Solaris 11, Norway control, over Norway. Fjords all down the coast and in winter the northern lights."
+ },
+ "country.IS": {
+  "file": "country.IS.mp3",
+  "seconds": 9.46,
+  "text": "Solaris One-One, Reykjavik Control. Over Iceland. Fire and ice down there. Volcanoes under glaciers.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Iceland",
+  "key": "9ffcd986df95",
+  "heard": "Solaris 11, Reykjavit control, over Iceland, fire an ice down there, Volcanoes under glaciers."
+ },
+ "country.GR": {
+  "file": "country.GR.mp3",
+  "seconds": 7.16,
+  "text": "Solaris One-One, Athinai Control. Over Greece. Thousands of islands in that blue water.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Greece",
+  "key": "34c9b0262fe3",
+  "heard": "Solaris 11, Athenae control, over grease, thousands of islands in that blue water."
+ },
+ "country.US": {
+  "file": "country.US.mp3",
+  "seconds": 8.63,
+  "text": "Solaris One-One, Center, radar contact. Welcome to the United States. Sky's wide open, enjoy.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:United States",
+  "key": "9feb7906052e",
+  "heard": "Solaris 11 Center, radar contact. Welcome to the United States. Skies wide open, enjoy."
+ },
+ "country.CA": {
+  "file": "country.CA.mp3",
+  "seconds": 9.27,
+  "text": "Solaris One-One, Toronto Centre. Over Canada. Forests and lakes as far as you can see. Millions of lakes.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Canada",
+  "key": "2bf1c3d4248b",
+  "heard": "Solaris 11 Toronto Center Over Canada Forests and lakes as far as you can see Millions of lakes."
+ },
+ "country.MX": {
+  "file": "country.MX.mp3",
+  "seconds": 8.83,
+  "text": "Solaris One-One, Mexico Control, buenas. Over Mexico. Volcanoes around the capital, beaches on both coasts.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Mexico",
+  "key": "87eef4d45208",
+  "heard": "Solaris 11, Mexico control, Buenos, over Mexico. Volcanoes around the capital, beaches on both coasts."
+ },
+ "country.BR": {
+  "file": "country.BR.mp3",
+  "seconds": 8.85,
+  "text": "Solaris One-One, Brasilia Control, bom dia. Over Brazil. The Amazon is the green that never ends.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Brazil",
+  "key": "d83b592f7f77",
+  "heard": "Solaris 11, Brasilia control, bomb DIA. Over Brazil. The Amazon is the green that never ends."
+ },
+ "country.AR": {
+  "file": "country.AR.mp3",
+  "seconds": 8.62,
+  "text": "Solaris One-One, Ezeiza Control. Over Argentina. Pampas, Andes, and down south, Patagonia.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Argentina",
+  "key": "dacf665f1acb",
+  "heard": "Solaris 11, Aziza Control, over Argentina, Pampus, Andes, and Down South, Patagonia."
+ },
+ "country.PE": {
+  "file": "country.PE.mp3",
+  "seconds": 7.97,
+  "text": "Solaris One-One, Lima Control. Over Peru. Machu Picchu is up in those mountains, in the clouds.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Peru",
+  "key": "55393e120eea",
+  "heard": "Solaris 11, Lima control, over Peru. Mathew Peachew is up in those mountains in the clouds."
+ },
+ "country.CL": {
+  "file": "country.CL.mp3",
+  "seconds": 8.74,
+  "text": "Solaris One-One, Santiago Control. Over Chile. Four thousand kilometres long and barely two hundred wide.",
+  "speaker": "control",
+  "mood": "info",
+  "trigger": "country:Chile",
+  "key": "3ce59a97221a",
+  "heard": "Solaris-11, Santiago control, over Chile, 4,000 kilometers long and barely 200 wide."
+ },
+ "country.AQ": {
+  "file": "country.AQ.mp3",
+  "seconds": 4.79,
+  "text": "Antarctica. Nothing but white, all the way to the horizon. Nobody calling us down here.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "country:Antarctica",
+  "key": "43785b409cb1",
+  "heard": "Antarctica. Nothing but white all the way to the horizon. Nobody calling us down here."
+ },
+ "ocean.pacific": {
+  "file": "ocean.pacific.mp3",
+  "seconds": 5.33,
+  "text": "Feet wet over the Pacific. Biggest thing on the planet, and it's just... blue. Forever.",
+  "speaker": "pilot",
+  "mood": "calm",
+  "trigger": "ocean:Pacific",
+  "key": "77fae3f5b6c9",
+  "heard": "feet wet over the Pacific. They get on the planet and it's just blue forever."
+ },
+ "ocean.atlantic": {
+  "file": "ocean.atlantic.mp3",
+  "seconds": 8.61,
+  "text": "Solaris One-One, Shanwick, radar service terminated. Crossing the Atlantic. Good luck.",
+  "speaker": "control",
+  "mood": "pro",
+  "trigger": "ocean:Atlantic",
+  "key": "90e6e5e36cb1",
+  "heard": "Solaris 11, Shanwick, radar service terminated. Crossing the Atlantic. Good luck."
+ },
+ "ocean.indian": {
+  "file": "ocean.indian.mp3",
+  "seconds": 4.48,
+  "text": "Over the Indian Ocean now. Nothing out here but water and a few lonely islands.",
+  "speaker": "pilot",
+  "mood": "calm",
+  "trigger": "ocean:Indian",
+  "key": "d87cab268ed7",
+  "heard": "Over the Indian Ocean now. Nothing out here but water and a few lonely islands."
+ },
+ "ocean.arctic": {
+  "file": "ocean.arctic.mp3",
+  "seconds": 4.28,
+  "text": "Sea ice everywhere. Cracked like a mirror. It's the top of the world, lead.",
+  "speaker": "wing",
+  "mood": "awe",
+  "trigger": "ocean:Arctic",
+  "key": "274e69302332",
+  "heard": "Seize Everywhere, Cracked Like a Mirror. It's the top of the world, lead."
+ },
+ "place.pyramids": {
+  "file": "place.pyramids.mp3",
+  "seconds": 5.42,
+  "text": "The pyramids... four and a half thousand years old. And we're flying past them in a jet. Unreal.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "place:pyramids",
+  "key": "2ff51ad317d8",
+  "heard": "The pyramids, four and a half thousand years old, and we're flying past them in a jet, real."
+ },
+ "place.grandcanyon": {
+  "file": "place.grandcanyon.mp3",
+  "seconds": 3.33,
+  "text": "Lead... the Grand Canyon. A mile deep. Look at all those colours.",
+  "speaker": "wing",
+  "mood": "awe",
+  "trigger": "place:grandcanyon",
+  "key": "8eafaa46aa3e",
+  "heard": "Lead the Grand Canyon. A mile deep, look at all those colors."
+ },
+ "place.sahara": {
+  "file": "place.sahara.mp3",
+  "seconds": 4.58,
+  "text": "Sand dunes all the way to the horizon. The Sahara's the size of a whole continent.",
+  "speaker": "pilot",
+  "mood": "calm",
+  "trigger": "place:sahara",
+  "key": "29a992ea4545",
+  "heard": "sand dunes all the way to the horizon. The Sahara is the size of a whole continent."
+ },
+ "place.alps": {
+  "file": "place.alps.mp3",
+  "seconds": 4.01,
+  "text": "The Alps. Look at those glaciers... snow on every peak. Beautiful.",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "place:alps",
+  "key": "ca649cea0faf",
+  "heard": "the Alps. Look at those glaciers snow on every peak. wonderful."
+ },
+ "place.tokyo": {
+  "file": "place.tokyo.mp3",
+  "seconds": 4.17,
+  "text": "Tokyo at night... it's like a circuit board made of light. Thirty-seven million people.",
+  "speaker": "wing",
+  "mood": "awe",
+  "trigger": "place:tokyo",
+  "key": "ea089ab398b1",
+  "heard": "Tokyo at night, it's like a circuit board made of light, 37 million people."
+ },
+ "place.newyork": {
+  "file": "place.newyork.mp3",
+  "seconds": 3.99,
+  "text": "Manhattan off the nose. All those towers, packed together. Hello, New York!",
+  "speaker": "pilot",
+  "mood": "joy",
+  "trigger": "place:newyork",
+  "key": "89d093a37902",
+  "heard": "Manhattan off the nose. All those towers packed together. Hello, New York."
+ },
+ "place.taj": {
+  "file": "place.taj.mp3",
+  "seconds": 3.86,
+  "text": "The Taj Mahal... white marble on the river. Built for love. Still gets me.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "place:taj",
+  "key": "7b4e79f09a39",
+  "heard": "The Taj Mahal, white marble on the river, Dilt for Love still gets me."
+ },
+ "place.fuji": {
+  "file": "place.fuji.mp3",
+  "seconds": 4.08,
+  "text": "Mount Fuji. That perfect cone, snow on top. Just like the paintings.",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "place:fuji",
+  "key": "954ccc974f67",
+  "heard": "Malfurgy, that perfect cone snow on top just like the paintings."
+ },
+ "place.amazon": {
+  "file": "place.amazon.mp3",
+  "seconds": 4.41,
+  "text": "The Amazon. The river's wider than some countries. And the forest just doesn't stop.",
+  "speaker": "wing",
+  "mood": "awe",
+  "trigger": "place:amazon",
+  "key": "23267da0d3a0",
+  "heard": "the Amazon, the rivers wider than some countries, and the forest just doesn't stop."
+ },
+ "place.aurora": {
+  "file": "place.aurora.mp3",
+  "seconds": 5.28,
+  "text": "Northern lights... green curtains moving across the sky. Oh my god. Look at them dance.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "aurora",
+  "key": "4ff23386552a",
+  "heard": "Northern Lights, Green Curtains moving across the sky. Oh my god, look at them dance."
+ },
+ "body.Moon": {
+  "file": "body.Moon.mp3",
+  "seconds": 6.27,
+  "text": "Moon, dead ahead. Grey and silent. And look... Earth rising over the rim. No borders from here.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "body:Moon",
+  "key": "1cb9ffc73642",
+  "heard": "Moon, Dead ahead, Gray and Silent, and look, Earth rising over the rim, no borders from here."
+ },
+ "body.Moon.2": {
+  "file": "body.Moon.2.mp3",
+  "seconds": 6.55,
+  "text": "Solaris, lunar arrival. The Sea of Tranquility, where Apollo eleven landed, is on the near side. The footprints are still there.",
+  "speaker": "mission",
+  "mood": "info",
+  "trigger": "body:Moon",
+  "key": "53a91b914425",
+  "heard": "Solaris Lunar Arrival. The Sea of Tranquility, where Apollo 11 landed, is on the near side, the footprints are still there."
+ },
+ "body.Mars": {
+  "file": "body.Mars.mp3",
+  "seconds": 6.38,
+  "text": "Mars. It's really red. Rusty, dusty red. And that canyon... it would cross a whole continent back home.",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "body:Mars",
+  "key": "df348eeb6160",
+  "heard": "Mars, it's really red. Rusty, dusty red. And that canyon, it would cross a whole continent back home."
+ },
+ "body.Mars.2": {
+  "file": "body.Mars.2.mp3",
+  "seconds": 6.96,
+  "text": "Solaris, Mars arrival confirmed. Olympus Mons is three times higher than Everest. Our messages are taking minutes to reach you now.",
+  "speaker": "mission",
+  "mood": "info",
+  "trigger": "body:Mars",
+  "key": "fffbc7762055",
+  "heard": "Solaris Mars Arrival Confirmed. Olympus Mons is three times higher than Everest. Our messages are taking minutes to reach you now."
+ },
+ "body.Mars.3": {
+  "file": "body.Mars.3.mp3",
+  "seconds": 4.35,
+  "text": "Dust storm on the horizon, lead. That thing's covering half the planet. Let's not go in there.",
+  "speaker": "wing",
+  "mood": "fear",
+  "trigger": "body:Mars",
+  "key": "3ee60a63246b",
+  "heard": "Dust storm on the horizon, lead. That thing's covering half the planet. Let's not go in there."
+ },
+ "body.Venus": {
+  "file": "body.Venus.mp3",
+  "seconds": 5.98,
+  "text": "Solaris, Venus. Surface is hot enough to melt lead and the clouds are sulphuric acid. Do not go down there.",
+  "speaker": "mission",
+  "mood": "pro",
+  "trigger": "body:Venus",
+  "key": "38957be67fc4",
+  "heard": "Solaris, Venus. Surface is hot enough to melt lead in the clouds or sulfuric acid. Do not go down there."
+ },
+ "body.Venus.2": {
+  "file": "body.Venus.2.mp3",
+  "seconds": 3.93,
+  "text": "Those clouds look like they're boiling. Yeah... I'm staying up here, thanks.",
+  "speaker": "pilot",
+  "mood": "fear",
+  "trigger": "body:Venus",
+  "key": "c2ac2809adaa",
+  "heard": "Those clouds look like they're boiling. Yeah, I'm staying up here, thanks."
+ },
+ "body.Mercury": {
+  "file": "body.Mercury.mp3",
+  "seconds": 5.38,
+  "text": "Mercury. The Sun is huge from here. Three times bigger. And the ground's all craters.",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "body:Mercury",
+  "key": "817d24e55856",
+  "heard": "Mercury, the sun is huge from here, three times bigger, and the ground's all craters."
+ },
+ "body.Jupiter": {
+  "file": "body.Jupiter.mp3",
+  "seconds": 4.04,
+  "text": "Jupiter... holy hell. Great Red Spot, dead ahead. That storm could swallow the Earth.",
+  "speaker": "pilot",
+  "mood": "fear",
+  "trigger": "body:Jupiter",
+  "key": "3234ee4f454e",
+  "heard": "Jupiter, holy hell, great red spot, dead ahead, that storm could swallow the Earth."
+ },
+ "body.Jupiter.2": {
+  "file": "body.Jupiter.2.mp3",
+  "seconds": 5.13,
+  "text": "Solaris, radiation levels are high this close to Jupiter. Keep your distance from the inner moons.",
+  "speaker": "mission",
+  "mood": "pro",
+  "trigger": "body:Jupiter",
+  "key": "0721424d1aaf",
+  "heard": "So, Larus, radiation levels are high this close to Jupiter. Keep your distance from the inner moons."
+ },
+ "body.Io": {
+  "file": "body.Io.mp3",
+  "seconds": 4.64,
+  "text": "Io! There's a volcano going off right now! Look at that plume, straight up into space!",
+  "speaker": "wing",
+  "mood": "joy",
+  "trigger": "body:Io",
+  "key": "a4c8e9d13003",
+  "heard": "I-O, there's a volcano going off right now. at that plume straight up into space."
+ },
+ "body.Europa": {
+  "file": "body.Europa.mp3",
+  "seconds": 5.71,
+  "text": "Europa. All that ice... and an ocean underneath. If there's life out here, it might be right below us.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "body:Europa",
+  "key": "0a73f856b98c",
+  "heard": "Europa, all that ice and an ocean underneath. If there's life out here, it might be right below us."
+ },
+ "body.Ganymede": {
+  "file": "body.Ganymede.mp3",
+  "seconds": 4.81,
+  "text": "Solaris, Ganymede. The largest moon in the solar system. Bigger than Mercury.",
+  "speaker": "mission",
+  "mood": "info",
+  "trigger": "body:Ganymede",
+  "key": "4969d4bad51f",
+  "heard": "Solaris, Genymead. The largest moon in the solar system, bigger than Mercury."
+ },
+ "body.Callisto": {
+  "file": "body.Callisto.mp3",
+  "seconds": 5.32,
+  "text": "Callisto. Craters on top of craters. Nothing's changed here in four billion years.",
+  "speaker": "pilot",
+  "mood": "calm",
+  "trigger": "body:Callisto",
+  "key": "dfcf2da5f243",
+  "heard": "Callisto, craters on top of craters. Nothing's changed here in 4 billion years."
+ },
+ "body.Saturn": {
+  "file": "body.Saturn.mp3",
+  "seconds": 5.84,
+  "text": "Saturn. Oh... the rings. So thin, and they go on forever. Most beautiful thing I've ever seen.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "body:Saturn",
+  "key": "3a84d251d110",
+  "heard": "Saturn. Oh, the rings so thin and they go on forever. Most beautiful thing I've ever seen."
+ },
+ "body.Saturn.2": {
+  "file": "body.Saturn.2.mp3",
+  "seconds": 5.12,
+  "text": "Lead, those rings are ice and rock, moving fast. Careful crossing the plane. Real careful.",
+  "speaker": "wing",
+  "mood": "fear",
+  "trigger": "body:Saturn",
+  "key": "50db0c792014",
+  "heard": "Lead, those rings are ice and rock moving fast, careful crossing the plane. Real careful."
+ },
+ "body.Titan": {
+  "file": "body.Titan.mp3",
+  "seconds": 5.89,
+  "text": "Solaris, Titan. Thick orange haze, and lakes of liquid methane on the surface. It rains there.",
+  "speaker": "mission",
+  "mood": "info",
+  "trigger": "body:Titan",
+  "key": "afbf774c7594",
+  "heard": "Solaris Titan Thick orange haze and lakes of liquid methane on the surface, it rains there."
+ },
+ "body.Enceladus": {
+  "file": "body.Enceladus.mp3",
+  "seconds": 5.85,
+  "text": "Geysers! Enceladus is spraying ice right out into space. Sparkling. Wow.",
+  "speaker": "wing",
+  "mood": "awe",
+  "trigger": "body:Enceladus",
+  "key": "97f294370735",
+  "heard": "geysers and celadus is spraying ice right out into space sparkling wow"
+ },
+ "body.Uranus": {
+  "file": "body.Uranus.mp3",
+  "seconds": 4.78,
+  "text": "Uranus. Pale blue, and tipped right over on its side. Strange, quiet planet.",
+  "speaker": "pilot",
+  "mood": "calm",
+  "trigger": "body:Uranus",
+  "key": "ec27398c12e0",
+  "heard": "Uranus, pale blue and tipped right over on its side. Strange, quiet planet."
+ },
+ "body.Neptune": {
+  "file": "body.Neptune.mp3",
+  "seconds": 5.0,
+  "text": "Neptune. That blue... the deepest blue. Fastest winds in the solar system down there.",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "body:Neptune",
+  "key": "52a615a6c378",
+  "heard": "Neptune. That blue, the deepest blue, fastest winds in the solar system down there."
+ },
+ "body.Pluto": {
+  "file": "body.Pluto.mp3",
+  "seconds": 5.19,
+  "text": "Pluto. There's the heart. The Sun's just a bright star from here. We're so far from home.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "body:Pluto",
+  "key": "a2b5c4eb30c4",
+  "heard": "Pluto. There's the heart. The sun's just a bright star from here. We're so far from home."
+ },
+ "body.Ceres": {
+  "file": "body.Ceres.mp3",
+  "seconds": 4.96,
+  "text": "Solaris, Ceres, in the asteroid belt. Those bright spots in the crater are salt.",
+  "speaker": "mission",
+  "mood": "info",
+  "trigger": "body:Ceres",
+  "key": "4d53436e7cbc",
+  "heard": "Solaris, series, in the asteroid build. Those bright spots in the crater are salt."
+ },
+ "body.Sun": {
+  "file": "body.Sun.mp3",
+  "seconds": 5.28,
+  "text": "Solaris, you are getting very close to the Sun. Heat shields near limits. Turn away, turn away now.",
+  "speaker": "mission",
+  "mood": "fear",
+  "trigger": "body:Sun",
+  "key": "339e0490c487",
+  "heard": "Salaris, you are getting very close to the sun, heat shields near limits. Turn away, turn away now."
+ },
+ "body.Sun.2": {
+  "file": "body.Sun.2.mp3",
+  "seconds": 5.82,
+  "text": "The corona... like white fire reaching out into space. Okay. That's close enough. Way close enough.",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "body:Sun",
+  "key": "17fc64bc6145",
+  "heard": "The corona, like white fire reaching out into space. Okay, that's close enough. Way close enough."
+ },
+ "body.Earth": {
+  "file": "body.Earth.mp3",
+  "seconds": 4.4,
+  "text": "Solaris, welcome home. Earth approach. It's good to hear your voice clearly again.",
+  "speaker": "mission",
+  "mood": "relief",
+  "trigger": "body:Earth",
+  "key": "2753dba1e765",
+  "heard": "Solaris, welcome home. Earth approach. It's good to hear your voice clearly again."
+ },
+ "body.Earth.2": {
+  "file": "body.Earth.2.mp3",
+  "seconds": 4.97,
+  "text": "There she is. Home. Blue and white and... alive. Nothing else out there looks like this.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "body:Earth",
+  "key": "d489264dc351",
+  "heard": "There she is, home, blue and white and alive. Nothing else out there looks like this."
+ },
+ "body.Sgr": {
+  "file": "body.Sgr.mp3",
+  "seconds": 5.51,
+  "text": "The black hole... light's bending all around it. I don't like this. I really don't like this.",
+  "speaker": "pilot",
+  "mood": "fear",
+  "trigger": "body:Sagittarius A*",
+  "key": "76b94df342bc",
+  "heard": "The black hole, lights bending all around it. I don't like this. I really don't like this."
+ },
+ "belt.1": {
+  "file": "belt.1.mp3",
+  "seconds": 5.38,
+  "text": "Asteroid belt. Funny, in movies it's packed. Out here they're thousands of kilometres apart.",
+  "speaker": "wing",
+  "mood": "calm",
+  "trigger": "belt",
+  "key": "1f9994a85a4e",
+  "heard": "asteroid belt. Funny, in movies it's packed. Out here, they're thousands of kilometers apart."
+ },
+ "deep.1": {
+  "file": "deep.1.mp3",
+  "seconds": 5.49,
+  "text": "Look back. That speck of light? That's Earth. Everyone who ever lived... on that little dot.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "deep",
+  "key": "34c8e7ae164e",
+  "heard": "Look back. That's spec of light, that's earth. someone who ever lived on that little dot."
+ },
+ "deep.2": {
+  "file": "deep.2.mp3",
+  "seconds": 4.94,
+  "text": "Solaris, your signal's taking hours to reach us now. We hear you. You're doing great out there.",
+  "speaker": "mission",
+  "mood": "calm",
+  "trigger": "deep",
+  "key": "3126d440bfca",
+  "heard": "Solaris, your signal's taking hours to reach us now. We hear you. You're doing great out there."
+ },
+ "sky.eclipse": {
+  "file": "sky.eclipse.mp3",
+  "seconds": 5.1,
+  "text": "Eclipse! The Moon's sliding over the Sun... the light's going strange. Look at the corona.",
+  "speaker": "pilot",
+  "mood": "wonder",
+  "trigger": "sky:eclipse",
+  "key": "4180a3286f49",
+  "heard": "Eclipse, the moon's sliding over the sun, the light's going strange, look at the corona."
+ },
+ "sky.flare": {
+  "file": "sky.flare.mp3",
+  "seconds": 5.06,
+  "text": "Solaris, solar flare in progress. Radiation spike incoming. Expect some static on this channel.",
+  "speaker": "mission",
+  "mood": "fear",
+  "trigger": "sky:flare",
+  "key": "582ec7a5241f",
+  "heard": "Solaris Solar flare and progress Radiation spike incoming expect some static on this channel"
+ },
+ "sky.comet": {
+  "file": "sky.comet.mp3",
+  "seconds": 3.54,
+  "text": "Comet! Look at the tail on that thing! Millions of kilometres long!",
+  "speaker": "wing",
+  "mood": "joy",
+  "trigger": "sky:comet",
+  "key": "e1298c8caf61",
+  "heard": "Comment, look at the tail on that thing, millions of kilometers long."
+ },
+ "sky.meteors": {
+  "file": "sky.meteors.mp3",
+  "seconds": 3.83,
+  "text": "Shooting stars... there's another one. And another. It's raining light tonight.",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "sky:meteors",
+  "key": "643480c664aa",
+  "heard": "Shooting stars, there's another one, and another. It's raining like tonight."
+ },
+ "era.1": {
+  "file": "era.1.mp3",
+  "seconds": 6.75,
+  "text": "Solaris, you are now seeing the solar system as it was, long before us. Look closely. Nothing here knows we exist yet.",
+  "speaker": "mission",
+  "mood": "info",
+  "trigger": "era",
+  "key": "63ebaa107ffa",
+  "heard": "Stellaris, you are now seeing the solar system as it was, long before us. But closely, nothing here knows we exist yet."
+ },
+ "cloudout.2": {
+  "file": "cloudout.2.mp3",
+  "seconds": 4.12,
+  "text": "And we're out! Blue sky, sun on the wings. Never gets old.",
+  "speaker": "wing",
+  "mood": "joy",
+  "trigger": "cloudout",
+  "key": "16cd6873f1f2",
+  "heard": "And we're out, blue sky, some on the wings. Hehe, never gets old."
+ },
+ "storm.1": {
+  "file": "storm.1.mp3",
+  "seconds": 4.5,
+  "text": "Whoa, whoa. Lightning off the right side, that's close. Turning away from that cell.",
+  "speaker": "pilot",
+  "mood": "fear",
+  "trigger": "storm",
+  "key": "dc321f4304ce",
+  "heard": "Whoa, whoa, lightning off the right side, that's close. turning away from that cell."
+ },
+ "terrain.1": {
+  "file": "terrain.1.mp3",
+  "seconds": 3.27,
+  "text": "Ground! Ground! Pull up, pull up, come on!",
+  "speaker": "pilot",
+  "mood": "fear",
+  "trigger": "terrain",
+  "key": "deec7e48dbae",
+  "heard": "Ground, ground, pull up, pull up, come on."
+ },
+ "terrain.2": {
+  "file": "terrain.2.mp3",
+  "seconds": 3.74,
+  "text": "Oh my god. Okay. Okay... way too close. Breathe.",
+  "speaker": "pilot",
+  "mood": "relief",
+  "trigger": "terrainafter",
+  "key": "893734c79751",
+  "heard": "Oh my God, okay, okay, way too close. Breathe."
+ },
+ "low.1": {
+  "file": "low.1.mp3",
+  "seconds": 4.32,
+  "text": "You're so low I can see the treetops moving. Show-off.",
+  "speaker": "wing",
+  "mood": "joy",
+  "trigger": "lowfly",
+  "key": "b929426c905f",
+  "heard": "You're so low I can see the tree taps moving. Show off."
+ },
+ "land.2": {
+  "file": "land.2.mp3",
+  "seconds": 4.26,
+  "text": "And... we're down. Nice and soft. What a flight.",
+  "speaker": "pilot",
+  "mood": "relief",
+  "trigger": "touchdown",
+  "key": "501381969422",
+  "heard": "and, or down, nice and soft. Huh, what a flight."
+ },
+ "land.3": {
+  "file": "land.3.mp3",
+  "seconds": 4.26,
+  "text": "Smooth landing, lead. I'd give it a nine. Maybe a nine and a half.",
+  "speaker": "wing",
+  "mood": "humor",
+  "trigger": "touchdown",
+  "key": "b897b076df2f",
+  "heard": "Smooth landing, lead. I give it a 9. Maybe a 9 and a half."
+ },
+ "cruise.2": {
+  "file": "cruise.2.mp3",
+  "seconds": 3.33,
+  "text": "Coffee would be nice right about now. Long leg, this one.",
+  "speaker": "pilot",
+  "mood": "tired",
+  "trigger": "cruise",
+  "key": "ec3057632656",
+  "heard": "Coffee would be nice right about now. Long leg, this one."
+ },
+ "cruise.4": {
+  "file": "cruise.4.mp3",
+  "seconds": 6.07,
+  "text": "Lead, if we meet aliens, I'm doing the talking. You've got a terrible radio voice.",
+  "speaker": "wing",
+  "mood": "humor",
+  "trigger": "cruise",
+  "key": "a73af0f3ff65",
+  "heard": "Lead, if we meet aliens, I'm doing the talking. You've got a terrible radio voice."
+ },
+ "react.awe.2": {
+  "file": "react.awe.2.mp3",
+  "seconds": 1.32,
+  "text": "You seeing this?",
+  "speaker": "pilot",
+  "mood": "awe",
+  "trigger": "awe",
+  "key": "1254e5563678",
+  "heard": "You seeing this?"
+ },
+ "react.joy.1": {
+  "file": "react.joy.1.mp3",
+  "seconds": 3.53,
+  "text": "That was awesome! Again, again!",
+  "speaker": "wing",
+  "mood": "joy",
+  "trigger": "joy",
+  "key": "6d6f595aed66",
+  "heard": "That was awesome. Again, again."
+ },
+ "react.joy.2": {
+  "file": "react.joy.2.mp3",
+  "seconds": 2.75,
+  "text": "Woo! Best job in the world, I'm telling you.",
+  "speaker": "pilot",
+  "mood": "joy",
+  "trigger": "joy",
+  "key": "18723d60d893",
+  "heard": "Woo, best job in the world, I'm telling you. Hmm."
+ },
+ "place.eiffel": {
+  "file": "place.eiffel.mp3",
+  "seconds": 4.01,
+  "text": "There's the Eiffel Tower! Looks like a little toy from up here.",
+  "speaker": "wing",
+  "mood": "joy",
+  "trigger": "place:eiffel",
+  "key": "6fd7f4f2f02b",
+  "heard": "There's the Eiffel Tower. Looks like a little toy from up here."
+ },
+ "place.dubai": {
+  "file": "place.dubai.mp3",
+  "seconds": 4.27,
+  "text": "Burj Khalifa, eight hundred and twenty-eight metres. And we're higher.",
+  "speaker": "wing",
+  "mood": "joy",
+  "trigger": "place:dubai",
+  "key": "6a60bc4c65b4",
+  "heard": "Burj Khalifa 828 meters, and we're higher."
+ }
+}

@@ -52,6 +52,7 @@ import {
   createSpaceEnvironmentMap,
   GltfModelBank,
   SpacecraftLayerManager,
+  SPACECRAFT_LAYER,
 } from './SpacecraftFactory';
 import { ParentResolver } from '../astronomy/DynamoTrajectory';
 
@@ -376,6 +377,10 @@ export class SolarSystemScene {
       container,
       onPickSpacecraft: (name) => this.selectBody(name),
     });
+    // The spacecraft's own layer: seen by the main camera (and clicks), not by the jet's
+    // reflection cube, displays or mirrors (see SPACECRAFT_LAYER)
+    this.cameraRig.camera.layers.enable(SPACECRAFT_LAYER);
+    this.raycaster.layers.enable(SPACECRAFT_LAYER);
     this.labels = new ScreenLabels(container, (id) => {
       if (id.startsWith('sky:')) this.surface.lookAt(id.slice(4));
       else this.flyToLandmark(id);

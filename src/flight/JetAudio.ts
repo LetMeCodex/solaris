@@ -60,7 +60,7 @@ export interface JetAudioState {
 
 // Levels of the recordings in the mix (they are levelled to about -20..-26 LUFS when cut)
 /** Breaths against the synthesised breaths' level scale (0.32 a calm breath on the ground). */
-const BREATH_GAIN = 0.4;
+const BREATH_GAIN = 0.45;
 const STRAIN_GAIN = 0.7;
 const SUIT_GAIN = 0.8;
 /** The engine loops, from inside the canopy and outside. */
@@ -174,9 +174,18 @@ export class JetAudio {
     glue.attack.value = 0.01;
     glue.release.value = 0.3;
     this.master.connect(glue);
-    glue.connect(ctx.destination);
+    // and a fast catch after it, so a radio call over a loud burner never clips the output
+    const limit = ctx.createDynamicsCompressor();
+    limit.threshold.value = -3;
+    limit.knee.value = 0;
+    limit.ratio.value = 20;
+    limit.attack.value = 0.002;
+    limit.release.value = 0.12;
+    glue.connect(limit);
+    limit.connect(ctx.destination);
     this.radioBus = ctx.createGain();
-    this.radioBus.gain.value = 0.75;
+    // Measured live in the cockpit: with the world ducked to 0.4, speech sits ~6-7 dB over it
+    this.radioBus.gain.value = 1.0;
     this.radioBus.connect(this.master);
     this.radioChain = new RadioChain(ctx, this.radioBus);
     this.engineBus = ctx.createGain();
@@ -212,7 +221,8 @@ export class JetAudio {
     maskTop.connect(this.pilotBus);
     // Betty speaks on the intercom, straight into the helmet (never ducked or greyed out)
     this.betty = ctx.createGain();
-    this.betty.gain.value = 0.8;
+    // (measured live: her words land ~5 dB over the cockpit bed, so a warning always cuts through)
+    this.betty.gain.value = 2.0;
     const bettyBand = ctx.createBiquadFilter();
     bettyBand.type = 'highpass';
     bettyBand.frequency.value = 280;
@@ -412,7 +422,7 @@ export class JetAudio {
     const openHz = s.inCloud ? 900 : 20000;
     this.world.frequency.setTargetAtTime(Math.exp(Math.log(openHz) + (Math.log(280) - Math.log(openHz)) * grey), t, 0.25);
     const talking = t < this.radioUntil;
-    this.duck.gain.setTargetAtTime((talking ? 0.5 : 1) * (1 - 0.5 * grey), t, talking ? 0.1 : 0.45);
+    this.duck.gain.setTargetAtTime((talking ? 0.4 : 1) * (1 - 0.5 * grey), t, talking ? 0.1 : 0.45);
     if (!this.startPlayed) {
       this.startPlayed = true;
       if ((s.altKm ?? 1) < 0.1 && s.speedMps < 30) this.playStart();

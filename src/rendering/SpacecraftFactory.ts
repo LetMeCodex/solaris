@@ -347,6 +347,14 @@ export class GltfModelBank {
   }
 }
 
+/**
+ * The spacecraft are drawn on a layer of their own, which only the main view's camera sees: the
+ * jet's reflection cube, the cockpit displays and the mirrors render the whole scene from other
+ * cameras, and drawing every satellite round the planet there (each a speck at best) cost draw
+ * calls and pulled their textures back onto the GPU as soon as they had been released.
+ */
+export const SPACECRAFT_LAYER = 5;
+
 export function computeSpacecraftVisualRadius(entry: NasaSpacecraftEntry): number {
   // Logarithmic/bounded size scaling keeps giant stations & tiny landers cleanly inspectable in 3D
   const spanM = Math.max(1.2, entry.physicalSpanM);
@@ -386,6 +394,31 @@ export class SpacecraftLayerManager {
   private tmpSun = new THREE.Vector3(0, 0, 0);
   private tmpParent = new THREE.Vector3();
   private frameCounter = 0;
+  /**
+   * GPU memory: when each loaded model was last on screen, and the ones whose geometry and
+   * textures have been released from the GPU (three.js uploads them again by itself the next
+   * time they are drawn; the decoded images stay in memory). Without this, every craft ever
+   * loaded stayed resident: flying near Earth loaded every satellite in orbit, gigabytes of
+   * textures on a 6 GB card, and the frame rate collapsed as the GPU paged them in and out.
+   */
+  private lastShown = new Map<SpacecraftBundle, number>();
+  private evicted = new Set<SpacecraftBundle>();
+  private frustum = new THREE.Frustum();
+  private frustumMat = new THREE.Matrix4();
+  private frustumSphere = new THREE.Sphere();
+  private static readonly EVICT_AFTER_MS = 20000;
+
+  private releaseGpu(b: SpacecraftBundle): void {
+    b.modelRoot.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.geometry?.dispose();
+      for (const m of ([] as THREE.Material[]).concat(mesh.material ?? [])) {
+        for (const v of Object.values(m)) if ((v as THREE.Texture | null)?.isTexture) (v as THREE.Texture).dispose();
+      }
+    });
+    this.evicted.add(b);
+  }
 
   constructor(opts: {
     scene: THREE.Scene;
@@ -440,6 +473,7 @@ export class SpacecraftLayerManager {
       );
       proxy.name = 'lod_proxy';
       bodyGroup.add(proxy);
+      bodyGroup.traverse((o) => o.layers.set(SPACECRAFT_LAYER));
 
       this.scene.add(bodyGroup);
 
@@ -570,6 +604,7 @@ export class SpacecraftLayerManager {
           bundle.modelRoot.remove(bundle.modelRoot.children[0]);
         }
         const instance = GltfModelBank.instantiate(asset);
+        instance.traverse((o) => o.layers.set(SPACECRAFT_LAYER));
         instance.scale.setScalar(bundle.visualRadius);
         bundle.modelRoot.add(instance);
         bundle.loadedModelPath = modelPath;
@@ -709,8 +744,13 @@ export class SpacecraftLayerManager {
       }
 
       const camDist = this.tmpCam.distanceTo(ev.worldPosition);
-      const nearInspect = camDist < 120;
-      const nearPrefetch = camDist < 420;
+      // How big the craft is on screen (radius, px): a model is only worth loading, and drawing,
+      // once it is more than a speck. By distance alone (420 units, ~37,000 km near Earth) every
+      // satellite in orbit loaded the moment the jet was over Earth, each a fraction of a pixel
+      const screenH = typeof window !== 'undefined' ? window.innerHeight : 1080;
+      const pxRadius = (b.visualRadius / Math.max(camDist, 1e-6)) * (screenH / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+      const nearInspect = camDist < 120 && pxRadius > 2.5;
+      const nearPrefetch = camDist < 420 && pxRadius > 1;
 
       if (isFocused || isLocked || nearInspect) {
         b.lodTier = 1;
@@ -736,6 +776,25 @@ export class SpacecraftLayerManager {
       } else {
         b.lodTier = 3;
         b.bodyGroup.visible = false;
+      }
+    }
+
+    // Release the GPU memory of models off screen for a while (re-uploaded on their next draw).
+    // On screen means in the camera's view: craft scattered round a planet are mostly behind
+    // the camera or beside it, and those held their textures for nothing
+    const nowMs = performance.now();
+    camera.updateMatrixWorld();
+    this.frustum.setFromProjectionMatrix(this.frustumMat.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse));
+    for (const b of this.bundles) {
+      if (!b.loadedModelPath) continue;
+      const inView = b.bodyGroup.visible && this.frustum.intersectsSphere(this.frustumSphere.set(b.bodyGroup.position, b.visualRadius * 2));
+      if (inView) {
+        this.lastShown.set(b, nowMs);
+        this.evicted.delete(b);
+      } else if (!this.evicted.has(b) && nowMs - (this.lastShown.get(b) ?? nowMs) > SpacecraftLayerManager.EVICT_AFTER_MS) {
+        this.releaseGpu(b);
+      } else if (!this.lastShown.has(b)) {
+        this.lastShown.set(b, nowMs);
       }
     }
 
