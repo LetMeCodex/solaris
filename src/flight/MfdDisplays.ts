@@ -1,27 +1,63 @@
 import * as THREE from 'three';
 import { perf } from '../rendering/Performance';
-import type { JetTelemetry } from './JetController';
+import {
+  createDefaultMfdPages,
+  createJetSurfaceState,
+  type JetSurfaceState,
+  type JetTelemetry,
+  type MfdPage,
+  type MfdPageMap,
+  type MfdSlot,
+} from './JetTelemetry';
+import { formatDistance, formatEta, formatSpeed } from './worlds';
 
 /**
- * The Gripen's three cockpit displays, alive. The model's display surfaces (material
- * `dynamic_mfd`) share one texture atlas: the left display in its top-left quarter, the centre in
- * the bottom-left, the right in the bottom-right. One canvas is drawn in that layout a few times
- * a second and used as both the colour and the glow of the screens:
- *  - Left, NAV: a heading-up moving map: compass rose, the track ahead, the target or waypoint
- *    with its bearing and distance, the place below.
- *  - Centre, PFD: the attitude (sky and ground, pitch ladder, bank), speed and altitude tapes,
- *    heading, Mach and g.
- *  - Right, SYS: throttle and afterburner, boost energy, Mach, g, speed tier, weather and local time.
+ * Interactive 3-screen cockpit MFD atlas (`dynamic_mfd` material on Gripen / Su-30 / cockpit mesh).
  *
- * The left and centre displays are real 3D, live: synthetic vision. The centre shows the world
- * ahead of the nose (the real scene: Google's 3D cities, the terrain, the sky), rendered by a
- * camera on the jet's axis; the left a heading-up 3D moving map, the ground below seen from
- * above. The symbols are drawn over them from the canvas (transparent there). The canvas is drawn
- * at 2048 px for the 1024 layout, so lines and figures stay sharp close up.
+ * Each display (`left`, `centre`, `right`) renders any of four pages:
+ *  - `PFD`: synthetic-vision HUD underlay with artificial horizon, `-o-` FPM, gear AoA E-bracket,
+ *    airspeed/altitude/VSI tapes, heading and waypoint readout.
+ *  - `FCS`: live airframe-specific control surface diagram (Gripen canards+elevons, Su-30 twin tails,
+ *    slats, flaperons, 3D/2D TVC thrust-vectoring gimbals), stick/pedal box, and live `α / G` envelope.
+ *  - `ENG`: N1/AB zones 1-3, thrust & T/W, Specific Excess Power (`Ps`), fuel flow & remaining mass,
+ *    supercruise badge, dynamic pressure (`q`), and atmosphere telemetry.
+ *  - `NAV`: 3D moving-map underlay with tactical heading rose, range rings, target intercept vector,
+ *    landing waypoint, nearby contacts, and world/weather coordinates.
+ *
+ * Zero `shadowBlur` calls are made anywhere in 2D canvas drawing for predictable frame budgets.
  */
 
 const RES = 2048;
+const S = 1024;
 const PFD_FOV = 58;
+
+const MINT = '#6dfcc0';
+const MINT_DIM = 'rgba(109, 252, 192, 0.44)';
+const AMBER = '#f4cd72';
+const CYAN = '#7ae8ff';
+const RED = '#ff6c6c';
+const BG_PANEL = 'rgba(8, 13, 19, 0.98)';
+const BG_SCRIM = 'rgba(6, 11, 16, 0.68)';
+const GRID_LINE = 'rgba(109, 252, 192, 0.16)';
+const MONO = '"JetBrains Mono", ui-monospace, monospace';
+
+const PAGE_ORDER: readonly MfdPage[] = ['PFD', 'FCS', 'ENG', 'NAV'];
+const SLOTS: readonly MfdSlot[] = ['left', 'centre', 'right'];
+
+export interface MfdRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+const SLOT_RECTS: Record<MfdSlot, MfdRect> = {
+  left: { x: 8, y: 66, w: 496, h: 380 },
+  centre: { x: 66, y: 520, w: 384, h: 500 },
+  right: { x: 520, y: 578, w: 496, h: 380 },
+};
+
+const TAB_BAR_H = 32;
 
 const screenVert = /* glsl */ `
 varying vec2 vUv;
@@ -32,33 +68,40 @@ uniform sampler2D tCanvas;
 uniform sampler2D tPfd;
 uniform sampler2D tNav;
 uniform float uViews;
+uniform vec3 uModes;
 varying vec2 vUv;
 vec3 srgbToLinear(vec3 c) { return pow(c, vec3(2.2)); }
-// Inside a display's rectangle (atlas uv), the local coordinate, else -1
-vec2 local(vec2 uv, vec4 r) { vec2 l = (uv - r.xy) / r.zw; return (l.x < 0.0 || l.y < 0.0 || l.x > 1.0 || l.y > 1.0) ? vec2(-1.0) : l; }
+vec2 local(vec2 uv, vec4 r) {
+  vec2 l = (uv - r.xy) / r.zw;
+  return (l.x < 0.0 || l.y < 0.0 || l.x > 1.0 || l.y > 1.0) ? vec2(-1.0) : l;
+}
+vec3 sampleMode(float m, vec2 uv) {
+  if (m > 1.5) return texture2D(tNav, uv).rgb * 0.85;
+  if (m > 0.5) return texture2D(tPfd, uv).rgb * 0.90;
+  return vec3(0.0);
+}
 void main() {
   vec4 sym = texture2D(tCanvas, vec2(vUv.x, 1.0 - vUv.y));
   vec3 col = vec3(0.0);
-  vec2 lp = local(vUv, vec4(0.0645, 0.0, 0.375, 0.5));
-  vec2 ln = local(vUv, vec4(0.0078, 0.564, 0.4844, 0.371));
-  if (uViews > 0.5 && lp.x >= 0.0) col = texture2D(tPfd, lp).rgb * 0.9;
-  else if (uViews > 0.5 && ln.x >= 0.0) col = texture2D(tNav, ln).rgb * 0.85;
-  // The symbols glow over the picture (a display is emissive)
-  col = mix(col, srgbToLinear(sym.rgb) * 1.6, sym.a);
+  if (uViews > 0.5) {
+    vec2 lLeft = local(vUv, vec4(0.0078125, 0.564453125, 0.484375, 0.37109375));
+    vec2 lCentre = local(vUv, vec4(0.064453125, 0.00390625, 0.375, 0.48828125));
+    vec2 lRight = local(vUv, vec4(0.5078125, 0.064453125, 0.484375, 0.37109375));
+    if (lLeft.x >= 0.0) col = sampleMode(uModes.x, lLeft);
+    else if (lCentre.x >= 0.0) col = sampleMode(uModes.y, lCentre);
+    else if (lRight.x >= 0.0) col = sampleMode(uModes.z, lRight);
+  }
+  col = mix(col, srgbToLinear(sym.rgb) * 1.55, sym.a);
   gl_FragColor = vec4(col, 1.0);
 }`;
 
-/** Layout units (the canvas is drawn at RES pixels for these). */
-const S = 1024;
-const MINT = '#6dfcc0';
-const AMBER = '#f4cd72';
-const DIM = 'rgba(109,252,192,0.45)';
-const MONO = '"JetBrains Mono", ui-monospace, monospace';
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
+}
 
-/** Each display's rectangle on the canvas (y down), from the atlas UVs. */
-const LEFT = { x: 8, y: 66, w: 496, h: 380 };
-const CENTRE = { x: 66, y: 520, w: 384, h: 500 };
-const RIGHT = { x: 520, y: 578, w: 496, h: 380 };
+function pageModeValue(page: MfdPage): number {
+  return page === 'PFD' ? 1 : page === 'NAV' ? 2 : 0;
+}
 
 export class MfdDisplays {
   public readonly texture: THREE.CanvasTexture;
@@ -71,53 +114,140 @@ export class MfdDisplays {
   private pfdCam = new THREE.PerspectiveCamera(PFD_FOV, 384 / 500, 1e-6, 2.4e8);
   private navCam = new THREE.PerspectiveCamera(50, 496 / 380, 1e-6, 2.4e8);
   private screenMat: THREE.ShaderMaterial;
+  private meshes: THREE.Mesh[] = [];
   private frameNo = 0;
   private tmp = new THREE.Vector3();
   private tmp2 = new THREE.Vector3();
 
+  private pages: MfdPageMap = createDefaultMfdPages();
+  private lastExternalPages: MfdPageMap | null = null;
+  private forceAllDirty = true;
+  private drawnOnce = false;
+  private turn = 0;
+  private dirty: Array<MfdRect> = [];
+
   constructor() {
     this.canvas.width = this.canvas.height = RES;
-    // Drawn in main memory (a few ms), so a rectangle of it can be sent to the GPU on its own
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D;
     this.texture = new THREE.CanvasTexture(this.canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
-    // Stored as drawn (row 0 the canvas's top), as the rectangle uploads write it; the screens'
-    // v runs up, so the shader reads it at 1 - v
     this.texture.flipY = false;
     this.texture.anisotropy = 16;
     this.texture.generateMipmaps = true;
     this.texture.minFilter = THREE.LinearMipmapLinearFilter;
+
     this.screenMat = new THREE.ShaderMaterial({
-      uniforms: { tCanvas: { value: this.texture }, tPfd: { value: this.pfdTarget.texture }, tNav: { value: this.navTarget.texture }, uViews: { value: 0 } },
+      uniforms: {
+        tCanvas: { value: this.texture },
+        tPfd: { value: this.pfdTarget.texture },
+        tNav: { value: this.navTarget.texture },
+        uViews: { value: 0 },
+        uModes: {
+          value: new THREE.Vector3(
+            pageModeValue(this.pages.left),
+            pageModeValue(this.pages.centre),
+            pageModeValue(this.pages.right),
+          ),
+        },
+      },
       vertexShader: screenVert,
       fragmentShader: screenFrag,
     });
     this.screenMat.name = 'dynamic_mfd_live';
   }
 
+  public getPages(): MfdPageMap {
+    return { ...this.pages };
+  }
+
+  public setSlotPage(slot: MfdSlot, page: MfdPage): void {
+    if (this.pages[slot] === page) return;
+    this.pages[slot] = page;
+    this.syncModeUniforms();
+    this.forceAllDirty = true;
+    this.last = -1;
+  }
+
+  public cycleSlot(slot: MfdSlot = 'centre'): MfdPage {
+    const idx = PAGE_ORDER.indexOf(this.pages[slot]);
+    const next = PAGE_ORDER[(idx + 1) % PAGE_ORDER.length];
+    this.setSlotPage(slot, next);
+    return next;
+  }
+
   /**
-   * Render the two 3D views (inside the floating-origin draw: the eye at the origin), small
-   * targets, each a few times a second: every one of them draws the whole world again (every 3D
-   * tile in view), and on alternate frames they had cost as much as half the frame's draw calls.
-   * Real displays refresh their 3D pages slower than the eye's frame anyway. Slower still when the
-   * frame rate is already struggling (the governor has lowered the resolution).
-   * `forward` and `up`: the jet's nose and roof; `vertical`: away from the world's centre;
-   * `unitsPerKm` at the jet; `altKm` above ground.
+   * Handle a cockpit raycast click against `dynamic_mfd` meshes.
+   * Clicking a bottom bezel tab (`PFD | FCS | ENG | NAV`) selects that page directly;
+   * clicking elsewhere on a screen cycles that display's page.
    */
-  public renderViews(renderer: THREE.WebGLRenderer, scene: THREE.Scene, forward: THREE.Vector3, up: THREE.Vector3, vertical: THREE.Vector3, unitsPerKm: number, altKm: number, near: number, on: boolean): void {
+  public handleRayClick(ray: THREE.Raycaster): boolean {
+    if (this.meshes.length === 0) return false;
+    const hits = ray.intersectObjects(this.meshes, false);
+    for (const hit of hits) {
+      if (!hit.uv) continue;
+      if (this.handleUvClick(hit.uv.x, hit.uv.y)) return true;
+    }
+    return false;
+  }
+
+  public handleUvClick(u: number, v: number): boolean {
+    const ax = u * S;
+    const ay = (1 - v) * S;
+    for (const slot of SLOTS) {
+      const r = SLOT_RECTS[slot];
+      if (ax < r.x - 10 || ax > r.x + r.w + 10 || ay < r.y - 10 || ay > r.y + r.h + 10) continue;
+      if (ay >= r.y + r.h - TAB_BAR_H - 8) {
+        const idx = clamp(Math.floor(((ax - r.x) / r.w) * PAGE_ORDER.length), 0, PAGE_ORDER.length - 1);
+        this.setSlotPage(slot, PAGE_ORDER[idx]);
+      } else {
+        this.cycleSlot(slot);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  private syncModeUniforms(): void {
+    const vec = this.screenMat.uniforms.uModes.value as THREE.Vector3;
+    vec.set(
+      pageModeValue(this.pages.left),
+      pageModeValue(this.pages.centre),
+      pageModeValue(this.pages.right),
+    );
+  }
+
+  public renderViews(
+    renderer: THREE.WebGLRenderer,
+    scene: THREE.Scene,
+    forward: THREE.Vector3,
+    up: THREE.Vector3,
+    vertical: THREE.Vector3,
+    unitsPerKm: number,
+    altKm: number,
+    near: number,
+    on: boolean,
+  ): void {
     this.flush(renderer);
     this.screenMat.uniforms.uViews.value = on ? 1 : 0;
     if (!on) return;
+
+    const needPfd = this.pages.left === 'PFD' || this.pages.centre === 'PFD' || this.pages.right === 'PFD';
+    const needNav = this.pages.left === 'NAV' || this.pages.centre === 'NAV' || this.pages.right === 'NAV';
+    if (!needPfd && !needNav) return;
+
     const period = (perf.tier === 'high' ? 8 : 12) * (perf.scale < 0.85 ? 2 : 1);
     const slot = this.frameNo++ % period;
-    const which = slot === 0 ? 0 : slot === period / 2 ? 2 : -1;
+    let which = -1;
+    if (slot === 0 && needPfd) which = 0;
+    else if (slot === Math.floor(period / 2) && needNav) which = 2;
+    else if (slot === 0 && needNav && !needPfd) which = 2;
     if (which < 0) return;
+
     const target = renderer.getRenderTarget();
     const autoClear = renderer.autoClear;
     try {
       renderer.autoClear = true;
       if (which === 0) {
-        // Synthetic vision: straight down the jet's axis
         const c = this.pfdCam;
         c.position.set(0, 0, 0);
         c.up.copy(up);
@@ -128,14 +258,16 @@ export class MfdDisplays {
         renderer.setRenderTarget(this.pfdTarget);
         renderer.render(scene, c);
       } else {
-        // Moving map: above the jet looking down, heading up, the jet a little below the centre
         const hKm = THREE.MathUtils.clamp(altKm * 5 + 4, 5, 600);
         const head = this.tmp.copy(forward).addScaledVector(vertical, -forward.dot(vertical));
         if (head.lengthSq() < 1e-8) head.copy(up);
         head.normalize();
         const c = this.navCam;
         const half = hKm * Math.tan(THREE.MathUtils.degToRad(25));
-        c.position.copy(vertical).multiplyScalar(hKm * unitsPerKm).addScaledVector(head, half * 0.24 * unitsPerKm);
+        c.position
+          .copy(vertical)
+          .multiplyScalar(hKm * unitsPerKm)
+          .addScaledVector(head, half * 0.24 * unitsPerKm);
         c.up.copy(head);
         c.lookAt(this.tmp2.copy(c.position).addScaledVector(vertical, -1));
         c.near = Math.max(1e-6, hKm * unitsPerKm * 0.02);
@@ -151,300 +283,959 @@ export class MfdDisplays {
   }
 
   public dispose(): void {
+    this.meshes = [];
     this.pfdTarget.dispose();
     this.navTarget.dispose();
     this.screenMat.dispose();
     this.texture.dispose();
   }
 
-  /** Give the model's display surfaces this live picture. */
+  /** Attach live MFD shader material to every `dynamic_mfd` mesh in the jet hierarchy. */
   public attach(root: THREE.Object3D): number {
+    this.meshes = [];
     let n = 0;
     root.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      let matched = false;
       mats.forEach((m, i) => {
         if (m.name !== 'dynamic_mfd') return;
         if (Array.isArray(mesh.material)) mesh.material[i] = this.screenMat;
         else mesh.material = this.screenMat;
+        matched = true;
         n++;
       });
+      if (matched && !this.meshes.includes(mesh)) {
+        this.meshes.push(mesh);
+      }
     });
+    this.forceAllDirty = true;
+    this.drawnOnce = false;
     return n;
   }
 
-  /**
-   * Redraw the displays: one of the three every 40 ms (each still refreshes every 0.12 s), and
-   * only its rectangle sent to the GPU (see flush). Redrawing the whole 2048 px atlas and sending
-   * it all (16 MB, with its mipmaps) held every fifth frame for 50-70 ms.
-   */
   public update(t: JetTelemetry, timeSec: number): void {
-    if (timeSec - this.last < 0.04) return;
+    // Allow external key shortcuts updating `t.mfdPages` without clobbering cockpit clicks
+    if (t.mfdPages) {
+      const ext = t.mfdPages;
+      if (
+        !this.lastExternalPages ||
+        ext.left !== this.lastExternalPages.left ||
+        ext.centre !== this.lastExternalPages.centre ||
+        ext.right !== this.lastExternalPages.right
+      ) {
+        this.pages = { ...ext };
+        this.lastExternalPages = { ...ext };
+        this.syncModeUniforms();
+        this.forceAllDirty = true;
+      }
+    }
+
+    if (!this.forceAllDirty && timeSec - this.last < 0.04) return;
     this.last = timeSec;
+
     const c = this.ctx;
     c.setTransform(RES / S, 0, 0, RES / S, 0, 0);
-    if (!this.drawnOnce) {
-      // Transparent where the 3D views show through (left and centre), dark elsewhere
+    c.shadowBlur = 0;
+
+    if (!this.drawnOnce || this.forceAllDirty) {
       c.clearRect(0, 0, S, S);
-      this.drawNav(c, t);
-      this.drawPfd(c, t);
-      this.drawSys(c, t);
+      for (const slot of SLOTS) {
+        this.drawSlot(c, slot, SLOT_RECTS[slot], this.pages[slot], t);
+      }
       this.texture.needsUpdate = true;
       this.drawnOnce = true;
+      this.forceAllDirty = false;
+      this.dirty.length = 0;
       return;
     }
-    const k = this.turn++ % 3;
-    const r = k === 0 ? LEFT : k === 1 ? CENTRE : RIGHT;
+
+    const slot = SLOTS[this.turn++ % SLOTS.length];
+    const r = SLOT_RECTS[slot];
     c.clearRect(r.x - 2, r.y - 2, r.w + 4, r.h + 4);
-    if (k === 0) this.drawNav(c, t);
-    else if (k === 1) this.drawPfd(c, t);
-    else this.drawSys(c, t);
+    this.drawSlot(c, slot, r, this.pages[slot], t);
+
     const px = RES / S;
     const x0 = Math.max(0, Math.floor((r.x - 2) * px));
     const y0 = Math.max(0, Math.floor((r.y - 2) * px));
-    this.dirty.push({ x: x0, y: y0, w: Math.min(RES, Math.ceil((r.x + r.w + 2) * px)) - x0, h: Math.min(RES, Math.ceil((r.y + r.h + 2) * px)) - y0 });
+    this.dirty.push({
+      x: x0,
+      y: y0,
+      w: Math.min(RES, Math.ceil((r.x + r.w + 2) * px)) - x0,
+      h: Math.min(RES, Math.ceil((r.y + r.h + 2) * px)) - y0,
+    });
   }
 
-  private drawnOnce = false;
-  private turn = 0;
-  private dirty: Array<{ x: number; y: number; w: number; h: number }> = [];
-
-  /** Send the redrawn rectangles to the GPU texture (a sub-rectangle upload, then its mipmaps). */
   private flush(renderer: THREE.WebGLRenderer): void {
     if (this.dirty.length === 0) return;
-    const props = renderer.properties.get(this.texture) as { __webglTexture?: WebGLTexture; __version?: number };
-    // Not on the GPU yet, or a whole upload already due: three.js sends it all
+    const props = renderer.properties.get(this.texture) as {
+      __webglTexture?: WebGLTexture;
+      __version?: number;
+    };
     if (!props.__webglTexture || props.__version !== this.texture.version) {
       this.dirty.length = 0;
       return;
     }
     const gl = renderer.getContext() as WebGL2RenderingContext;
-    renderer.state.bindTexture(gl.TEXTURE_2D, props.__webglTexture);
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+    const prevUnpack = gl.getParameter(gl.UNPACK_ALIGNMENT) as number;
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.bindTexture(gl.TEXTURE_2D, props.__webglTexture);
     for (const d of this.dirty) {
-      gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, d.x);
-      gl.pixelStorei(gl.UNPACK_SKIP_ROWS, d.y);
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, d.x, d.y, d.w, d.h, gl.RGBA, gl.UNSIGNED_BYTE, this.canvas);
+      if (d.w <= 0 || d.h <= 0) continue;
+      // Extract cropped ImageData aligned to full backing resolution
+      const img = this.ctx.getImageData(d.x, d.y, d.w, d.h);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, d.x, d.y, d.w, d.h, gl.RGBA, gl.UNSIGNED_BYTE, img.data);
     }
-    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
-    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
     gl.generateMipmap(gl.TEXTURE_2D);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, prevUnpack);
     this.dirty.length = 0;
   }
 
-  private frame(c: CanvasRenderingContext2D, r: { x: number; y: number; w: number; h: number }, title: string, opaque = true): void {
-    const g = c.createRadialGradient(r.x + r.w / 2, r.y + r.h / 2, 10, r.x + r.w / 2, r.y + r.h / 2, r.w * 0.8);
-    g.addColorStop(0, opaque ? 'rgba(14,40,30,1)' : 'rgba(0,0,0,0)');
-    g.addColorStop(1, opaque ? 'rgba(2,8,6,1)' : 'rgba(0,0,0,0.55)');
-    c.fillStyle = g;
-    c.fillRect(r.x, r.y, r.w, r.h);
-    c.strokeStyle = 'rgba(109,252,192,0.25)';
-    c.lineWidth = 2;
-    c.strokeRect(r.x + 6, r.y + 6, r.w - 12, r.h - 12);
-    c.font = `600 22px ${MONO}`;
-    c.fillStyle = MINT;
-    c.textAlign = 'left';
-    c.fillText(title, r.x + 16, r.y + 34);
-  }
-
-  private drawNav(c: CanvasRenderingContext2D, t: JetTelemetry): void {
-    const r = LEFT;
-    this.frame(c, r, 'NAV', false);
-    const cx = r.x + r.w / 2;
-    const cy = r.y + r.h * 0.62;
-    const rad = r.h * 0.42;
-    c.save();
-    c.beginPath();
-    c.rect(r.x + 8, r.y + 44, r.w - 16, r.h - 52);
-    c.clip();
-    // Compass rose, heading up
-    c.strokeStyle = DIM;
-    c.lineWidth = 2;
-    c.beginPath();
-    c.arc(cx, cy, rad, 0, Math.PI * 2);
-    c.stroke();
-    for (let d = 0; d < 360; d += 10) {
-      const a = ((d - t.headingDeg) * Math.PI) / 180 - Math.PI / 2;
-      const l = d % 30 === 0 ? 18 : 9;
-      c.beginPath();
-      c.moveTo(cx + Math.cos(a) * rad, cy + Math.sin(a) * rad);
-      c.lineTo(cx + Math.cos(a) * (rad - l), cy + Math.sin(a) * (rad - l));
-      c.stroke();
-      if (d % 90 === 0) {
-        c.fillStyle = MINT;
-        c.font = `600 20px ${MONO}`;
-        c.textAlign = 'center';
-        c.fillText(['N', 'E', 'S', 'W'][d / 90], cx + Math.cos(a) * (rad - 34), cy + Math.sin(a) * (rad - 34) + 7);
-      }
-    }
-    // Track ahead and the jet
-    c.setLineDash([8, 8]);
-    c.beginPath();
-    c.moveTo(cx, cy);
-    c.lineTo(cx, cy - rad);
-    c.stroke();
-    c.setLineDash([]);
-    c.fillStyle = MINT;
-    c.beginPath();
-    c.moveTo(cx, cy - 14);
-    c.lineTo(cx - 11, cy + 10);
-    c.lineTo(cx + 11, cy + 10);
-    c.closePath();
-    c.fill();
-    // Waypoint (or the world targeted): bearing on the rose, distance and name
-    const wp = t.waypoint;
-    if (wp) {
-      const a = ((wp.bearingDeg - t.headingDeg) * Math.PI) / 180 - Math.PI / 2;
-      const d = Math.min(1, Math.log10(1 + wp.distKm) / 4) * rad;
-      const x = cx + Math.cos(a) * d;
-      const y = cy + Math.sin(a) * d;
-      c.strokeStyle = '#78dcff';
-      c.lineWidth = 3;
-      c.beginPath();
-      c.moveTo(x, y - 12);
-      c.lineTo(x + 12, y);
-      c.lineTo(x, y + 12);
-      c.lineTo(x - 12, y);
-      c.closePath();
-      c.stroke();
-      c.beginPath();
-      c.moveTo(cx, cy);
-      c.lineTo(x, y);
-      c.stroke();
-    }
-    c.restore();
-    c.font = `500 20px ${MONO}`;
-    c.textAlign = 'right';
-    c.fillStyle = MINT;
-    c.fillText(`HDG ${String(Math.round(t.headingDeg) % 360).padStart(3, '0')}`, r.x + r.w - 16, r.y + 34);
-    c.textAlign = 'left';
-    c.fillStyle = wp ? '#78dcff' : DIM;
-    const line = wp ? `${wp.name.slice(0, 18).toUpperCase()}  ${Math.round(wp.distKm).toLocaleString('en-US')} KM` : `TGT ${t.target.toUpperCase()}`;
-    c.fillText(line, r.x + 16, r.y + r.h - 18);
-  }
-
-  private drawPfd(c: CanvasRenderingContext2D, t: JetTelemetry): void {
-    const r = CENTRE;
-    const cx = r.x + r.w / 2;
-    const cy = r.y + r.h * 0.48;
-    const pxDeg = r.h / PFD_FOV;
+  private drawSlot(
+    c: CanvasRenderingContext2D,
+    _slot: MfdSlot,
+    r: MfdRect,
+    page: MfdPage,
+    t: JetTelemetry,
+  ): void {
+    const contentRect: MfdRect = { x: r.x, y: r.y, w: r.w, h: r.h - TAB_BAR_H };
     c.save();
     c.beginPath();
     c.rect(r.x, r.y, r.w, r.h);
     c.clip();
-    // Sky and ground, rolled and pitched
-    c.translate(cx, cy);
-    c.rotate((-t.rollDeg * Math.PI) / 180);
-    const off = t.pitchDeg * pxDeg;
-    // A dark halo under the white so it reads over the picture: drawn as a wider dark stroke first
-    // (a blurred canvas shadow on each line cost ~50 ms of GPU raster per display update)
-    const halo = 'rgba(0,0,0,0.55)';
-    const line = (x0: number, y0: number, x1: number, y1: number, width: number): void => {
-      c.beginPath();
-      c.moveTo(x0, y0);
-      c.lineTo(x1, y1);
-      c.strokeStyle = halo;
-      c.lineWidth = width + 4;
-      c.stroke();
-      c.strokeStyle = '#ffffff';
-      c.lineWidth = width;
-      c.stroke();
-    };
-    line(-600, off, 600, off, 3);
-    // Pitch ladder
-    c.font = `500 16px ${MONO}`;
-    c.fillStyle = '#ffffff';
-    c.lineJoin = 'round';
-    for (let p = -30; p <= 30; p += 5) {
-      if (p === 0) continue;
-      const y = off - p * pxDeg;
-      const w = p % 10 === 0 ? 70 : 36;
-      line(-w, y, w, y, 2);
-      if (p % 10 === 0) {
-        c.textAlign = 'left';
-        c.strokeStyle = halo;
-        c.lineWidth = 4;
-        c.strokeText(String(Math.abs(p)), w + 6, y + 6);
-        c.fillText(String(Math.abs(p)), w + 6, y + 6);
-      }
-    }
+
+    if (page === 'PFD') this.drawPfdPage(c, contentRect, t);
+    else if (page === 'FCS') this.drawFcsPage(c, contentRect, t);
+    else if (page === 'ENG') this.drawEngPage(c, contentRect, t);
+    else this.drawNavPage(c, contentRect, t);
+
+    this.drawBezelTabs(c, r, page);
+
+    // Outer display bezel border
+    c.strokeStyle = MINT_DIM;
+    c.lineWidth = 1.5;
+    c.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
     c.restore();
-    // Aircraft symbol
-    c.strokeStyle = AMBER;
-    c.lineWidth = 5;
-    c.beginPath();
-    c.moveTo(cx - 70, cy);
-    c.lineTo(cx - 24, cy);
-    c.lineTo(cx - 12, cy + 12);
-    c.moveTo(cx + 70, cy);
-    c.lineTo(cx + 24, cy);
-    c.lineTo(cx + 12, cy + 12);
-    c.stroke();
-    // Tapes: speed (left), altitude (right)
-    const box = (x: number, label: string, value: string): void => {
-      c.fillStyle = 'rgba(0,0,0,0.65)';
-      c.fillRect(x, cy - 26, 112, 52);
-      c.strokeStyle = MINT;
-      c.lineWidth = 2;
-      c.strokeRect(x, cy - 26, 112, 52);
-      c.fillStyle = MINT;
-      c.font = `600 26px ${MONO}`;
-      c.textAlign = 'center';
-      c.fillText(value, x + 56, cy + 9);
-      c.font = `500 15px ${MONO}`;
-      c.fillText(label, x + 56, cy - 34);
-    };
-    box(r.x + 6, 'KM/H', String(Math.round(t.speedMps * 3.6)));
-    const altM = t.altKm * 1000;
-    box(r.x + r.w - 118, 'ALT M', altM < 99999 ? String(Math.round(altM)) : `${Math.round(t.altKm)}K`);
-    // Heading and the numbers that matter in a turn
-    c.fillStyle = 'rgba(0,0,0,0.6)';
-    c.fillRect(r.x, r.y, r.w, 44);
-    c.fillRect(r.x, r.y + r.h - 46, r.w, 46);
-    c.fillStyle = MINT;
-    c.font = `600 24px ${MONO}`;
-    c.textAlign = 'center';
-    c.fillText(String(Math.round(t.headingDeg) % 360).padStart(3, '0') + '°', cx, r.y + 31);
-    c.font = `500 20px ${MONO}`;
-    c.textAlign = 'left';
-    c.fillText(`M ${t.mach.toFixed(2)}`, r.x + 12, r.y + r.h - 16);
-    c.textAlign = 'right';
-    c.fillStyle = t.gLoad > 7 ? '#ff7a6b' : MINT;
-    c.fillText(`${t.gLoad.toFixed(1)} G`, r.x + r.w - 12, r.y + r.h - 16);
   }
 
-  private drawSys(c: CanvasRenderingContext2D, t: JetTelemetry): void {
-    const r = RIGHT;
-    this.frame(c, r, 'SYS');
-    const bar = (i: number, label: string, v: number, color: string, text: string): void => {
-      const x = r.x + 20;
-      const y = r.y + 64 + i * 58;
-      c.fillStyle = DIM;
-      c.font = `500 18px ${MONO}`;
-      c.textAlign = 'left';
-      c.fillText(label, x, y);
-      c.fillStyle = 'rgba(109,252,192,0.12)';
-      c.fillRect(x, y + 8, r.w - 160, 18);
-      c.fillStyle = color;
-      c.fillRect(x, y + 8, (r.w - 160) * THREE.MathUtils.clamp(v, 0, 1), 18);
+  private drawBezelTabs(
+    c: CanvasRenderingContext2D,
+    r: MfdRect,
+    activePage: MfdPage,
+  ): void {
+    const y = r.y + r.h - TAB_BAR_H;
+    const w = r.w / PAGE_ORDER.length;
+    c.fillStyle = BG_PANEL;
+    c.fillRect(r.x, y, r.w, TAB_BAR_H);
+
+    c.strokeStyle = MINT_DIM;
+    c.lineWidth = 1;
+    c.beginPath();
+    c.moveTo(r.x, y);
+    c.lineTo(r.x + r.w, y);
+    c.stroke();
+
+    c.font = `700 12px ${MONO}`;
+    c.textAlign = 'center';
+    PAGE_ORDER.forEach((p, idx) => {
+      const tx = r.x + idx * w;
+      const isAct = p === activePage;
+      if (isAct) {
+        c.fillStyle = 'rgba(109, 252, 192, 0.22)';
+        c.fillRect(tx + 2, y + 3, w - 4, TAB_BAR_H - 6);
+        c.strokeStyle = MINT;
+        c.lineWidth = 1.4;
+        c.strokeRect(tx + 2, y + 3, w - 4, TAB_BAR_H - 6);
+      }
+      c.fillStyle = isAct ? MINT : MINT_DIM;
+      c.fillText(p, tx + w * 0.5, y + 20);
+    });
+  }
+
+  // ===========================================================================
+  // PAGE 1: PFD (Synthetic Vision + Attitude + Tapes + FPM + E-Bracket)
+  // ===========================================================================
+  private drawPfdPage(c: CanvasRenderingContext2D, r: MfdRect, t: JetTelemetry): void {
+    const cx = r.x + r.w * 0.5;
+    const cy = r.y + r.h * 0.48;
+    const ppd = r.h / PFD_FOV;
+
+    // Top scrim bar for HDG & status
+    c.fillStyle = BG_SCRIM;
+    c.fillRect(r.x, r.y, r.w, 34);
+    c.fillRect(r.x, r.y + r.h - 28, r.w, 28);
+
+    // Side tape scrims
+    const tapeW = clamp(Math.round(r.w * 0.2), 78, 96);
+    c.fillRect(r.x, r.y + 34, tapeW, r.h - 62);
+    c.fillRect(r.x + r.w - tapeW, r.y + 34, tapeW, r.h - 62);
+
+    // Attitude ladder clipped to central viewport
+    c.save();
+    c.beginPath();
+    c.rect(r.x + tapeW + 2, r.y + 36, r.w - (tapeW + 2) * 2, r.h - 66);
+    c.clip();
+
+    if (t.hasHorizon) {
+      c.save();
+      c.translate(cx, cy);
+      c.rotate((-t.rollDeg * Math.PI) / 180);
+      c.strokeStyle = MINT;
       c.fillStyle = MINT;
-      c.textAlign = 'right';
-      c.font = `600 20px ${MONO}`;
-      c.fillText(text, r.x + r.w - 20, y + 24);
-    };
-    bar(0, 'THROTTLE', t.throttle, t.boost > 0 ? '#ff9a3c' : MINT, `${Math.round(t.throttle * 100)}%${t.boost > 0 ? ' AB' : ''}`);
-    bar(1, 'BOOST', t.boostEnergy, AMBER, `${Math.round(t.boostEnergy * 100)}%`);
-    bar(2, 'MACH', Math.min(1, t.mach / 25), MINT, t.mach.toFixed(2));
-    bar(3, 'LOAD', Math.min(1, Math.max(0, t.gLoad) / 9), t.gLoad > 7 ? '#ff7a6b' : MINT, `${t.gLoad.toFixed(1)} G`);
-    c.fillStyle = AMBER;
-    c.font = `500 19px ${MONO}`;
+      c.lineWidth = 1.8;
+      c.font = `600 12px ${MONO}`;
+      for (let deg = -60; deg <= 60; deg += 10) {
+        const y = (t.pitchDeg - deg) * ppd;
+        if (Math.abs(y) > r.h * 0.52) continue;
+        const half = deg === 0 ? 92 : 42;
+        const gap = 18;
+        c.setLineDash(deg < 0 ? [6, 5] : []);
+        c.beginPath();
+        c.moveTo(-half, y);
+        c.lineTo(-gap, y);
+        c.moveTo(gap, y);
+        c.lineTo(half, y);
+        c.stroke();
+        c.setLineDash([]);
+        if (deg !== 0) {
+          c.textAlign = 'right';
+          c.fillText(String(Math.abs(deg)), -half - 4, y + 4);
+        }
+      }
+      c.restore();
+    }
+
+    // Waterline `-W-`
+    c.strokeStyle = AMBER;
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(cx - 22, cy);
+    c.lineTo(cx - 9, cy);
+    c.lineTo(cx - 4, cy + 7);
+    c.lineTo(cx, cy);
+    c.lineTo(cx + 4, cy + 7);
+    c.lineTo(cx + 9, cy);
+    c.lineTo(cx + 22, cy);
+    c.stroke();
+
+    // FPM `-o-` & gear E-bracket
+    const aoa = t.aoaDeg ?? 0;
+    const aos = t.aosDeg ?? 0;
+    const fpmX = clamp(cx + aos * ppd, r.x + tapeW + 16, r.x + r.w - tapeW - 16);
+    const fpmY = clamp(cy + aoa * ppd, r.y + 48, r.y + r.h - 42);
+    c.strokeStyle = MINT;
+    c.lineWidth = 2;
+    c.beginPath();
+    c.arc(fpmX, fpmY, 6, 0, Math.PI * 2);
+    c.moveTo(fpmX - 13, fpmY);
+    c.lineTo(fpmX - 6, fpmY);
+    c.moveTo(fpmX + 6, fpmY);
+    c.lineTo(fpmX + 13, fpmY);
+    c.moveTo(fpmX, fpmY - 6);
+    c.lineTo(fpmX, fpmY - 12);
+    c.stroke();
+
+    if (t.gearDown && t.airDensity > 0) {
+      const eY = clamp(cy + 12 * ppd, r.y + 52, r.y + r.h - 44);
+      const onSpd = aoa >= 11 && aoa <= 13;
+      c.strokeStyle = onSpd ? MINT : AMBER;
+      c.beginPath();
+      c.moveTo(fpmX - 24, eY - 9);
+      c.lineTo(fpmX - 18, eY - 9);
+      c.lineTo(fpmX - 18, eY + 9);
+      c.lineTo(fpmX - 24, eY + 9);
+      c.moveTo(fpmX - 23, eY);
+      c.lineTo(fpmX - 18, eY);
+      c.stroke();
+    }
+    c.restore();
+
+    // Top Header: HDG, Bank, FBW Mode
+    c.fillStyle = MINT;
+    c.font = `700 16px ${MONO}`;
+    c.textAlign = 'center';
+    c.fillText(t.hasHorizon ? `HDG ${String(Math.round(((t.headingDeg % 360) + 360) % 360)).padStart(3, '0')}°` : 'INERTIAL', cx, r.y + 22);
+
+    c.font = `600 11px ${MONO}`;
+    c.fillStyle = MINT_DIM;
     c.textAlign = 'left';
-    const h = Math.floor(t.localTime);
-    const m = Math.floor((t.localTime - h) * 60);
-    c.fillText(`${t.speedTier.toUpperCase()}  ·  ${t.weather.toUpperCase()}  ·  ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`, r.x + 20, r.y + r.h - 22);
+    c.fillText((t.airframeName ?? 'JAS 39').slice(0, 12), r.x + 8, r.y + 21);
+    c.textAlign = 'right';
+    c.fillStyle = (t.fbwMode ?? 'norm') === 'psm' ? CYAN : MINT;
+    c.fillText(`FBW ${(t.fbwMode ?? 'norm').toUpperCase()}`, r.x + r.w - 8, r.y + 21);
+
+    // Left Tape: Speed, Mach, Alpha, G
+    const lx = r.x + 8;
+    const ias = t.airDensity > 0 && t.iasMps !== undefined ? t.iasMps : t.speedMps;
+    c.textAlign = 'left';
+    c.fillStyle = MINT_DIM;
+    c.font = `600 10px ${MONO}`;
+    c.fillText(t.airDensity > 0 ? 'IAS' : 'SPD', lx, cy - 26);
+    c.fillStyle = MINT;
+    c.font = `700 15px ${MONO}`;
+    c.fillText(formatSpeed(ias), lx, cy - 6);
+    c.font = `600 12px ${MONO}`;
+    c.fillStyle = t.mach >= 1 ? CYAN : MINT_DIM;
+    c.fillText(t.airDensity > 0 ? `M ${t.mach.toFixed(2)}` : 'VAC', lx, cy + 16);
+    c.fillStyle = t.alphaWarning ? AMBER : MINT;
+    c.fillText(`α ${aoa.toFixed(1)}°`, lx, cy + 36);
+    c.fillStyle = t.overGWarning ? RED : MINT;
+    c.fillText(`G ${t.gLoad.toFixed(1)}`, lx, cy + 56);
+
+    // Right Tape: Alt, VSI, T/W, Ps
+    const rx = r.x + r.w - 8;
+    c.textAlign = 'right';
+    c.fillStyle = MINT_DIM;
+    c.font = `600 10px ${MONO}`;
+    c.fillText('ALT', rx, cy - 26);
+    c.fillStyle = MINT;
+    c.font = `700 15px ${MONO}`;
+    c.fillText(formatDistance(t.altKm), rx, cy - 6);
+    c.font = `600 12px ${MONO}`;
+    const vsi = Math.round(t.verticalSpeedMps ?? 0);
+    c.fillStyle = vsi >= 0 ? MINT : AMBER;
+    c.fillText(`VS ${vsi >= 0 ? '+' : ''}${vsi}`, rx, cy + 16);
+    const ps = Math.round(t.specificExcessPowerMps ?? 0);
+    c.fillStyle = ps >= 0 ? MINT : AMBER;
+    c.fillText(`Ps ${ps >= 0 ? '+' : ''}${ps}`, rx, cy + 36);
+    c.fillStyle = MINT_DIM;
+    c.fillText(`T/W ${(t.twRatio ?? 0).toFixed(2)}`, rx, cy + 56);
+
+    // Bottom Strip: Target / Waypoint summary
+    c.fillStyle = MINT;
+    c.font = `600 11px ${MONO}`;
+    c.textAlign = 'left';
+    c.fillText(`TGT ${t.target.toUpperCase()} · ${formatDistance(t.targetDistKm)}`, r.x + 8, r.y + r.h - 10);
+    c.textAlign = 'right';
+    c.fillStyle = t.gearDown ? AMBER : MINT_DIM;
+    c.fillText(t.gearDown ? 'GEAR DN · APPROACH' : t.nearest.toUpperCase(), r.x + r.w - 8, r.y + r.h - 10);
+  }
+
+  // ===========================================================================
+  // PAGE 2: FCS (Live Deflecting Control Surfaces, TVC Vectors & α/G Envelope)
+  // ===========================================================================
+  private drawFcsPage(c: CanvasRenderingContext2D, r: MfdRect, t: JetTelemetry): void {
+    c.fillStyle = BG_PANEL;
+    c.fillRect(r.x, r.y, r.w, r.h);
+
+    const s: JetSurfaceState = t.surfaces ?? createJetSurfaceState();
+    const af = t.airframeId ?? 'gripen';
+    const fbw = (t.fbwMode ?? 'norm').toUpperCase();
+    const flp = (t.flapMode ?? 'auto').toUpperCase();
+
+    // Header bar
+    c.fillStyle = 'rgba(109, 252, 192, 0.1)';
+    c.fillRect(r.x, r.y, r.w, 30);
+    c.font = `700 13px ${MONO}`;
+    c.fillStyle = MINT;
+    c.textAlign = 'left';
+    c.fillText(`FCS · ${af.toUpperCase()}`, r.x + 10, r.y + 20);
+    c.textAlign = 'right';
+    c.fillStyle = fbw === 'PSM' ? CYAN : fbw === 'HIGH-G' ? AMBER : MINT;
+    c.fillText(`${fbw}${t.tvcActive ? '+TVC' : ''} · FLP ${flp}`, r.x + r.w - 10, r.y + 20);
+
+    // Split left (planform) and right (stick box + α/G envelope)
+    const splitX = r.x + Math.round(r.w * 0.56);
+    const bodyTop = r.y + 34;
+    const bodyH = r.h - 38;
+
+    // 1. Airframe Planform & Live Control Surface Diagram
+    this.drawFcsPlanform(c, { x: r.x + 6, y: bodyTop, w: splitX - r.x - 10, h: bodyH }, af, s, t);
+
+    // 2. Right Column: Stick/Rudder Crosshair + Alpha/G Envelope
+    const rx = splitX + 4;
+    const rw = r.x + r.w - rx - 8;
+    const stickH = Math.round(bodyH * 0.42);
+    this.drawStickBox(c, { x: rx, y: bodyTop + 4, w: rw, h: stickH }, s);
+    this.drawEnvelopePlot(c, { x: rx, y: bodyTop + stickH + 10, w: rw, h: bodyH - stickH - 16 }, t);
+  }
+
+  private drawFcsPlanform(
+    c: CanvasRenderingContext2D,
+    box: MfdRect,
+    af: string,
+    s: JetSurfaceState,
+    t: JetTelemetry,
+  ): void {
+    const cx = box.x + box.w * 0.5;
+    const cy = box.y + box.h * 0.52;
+    const scale = Math.min(box.w / 180, box.h / 240);
+
+    c.save();
+    c.translate(cx, cy);
+    c.scale(scale, scale);
+
+    // Subtle fuselage outline
+    c.strokeStyle = MINT_DIM;
+    c.lineWidth = 1.6;
+    c.beginPath();
+    c.moveTo(0, -108); // nose
+    c.lineTo(11, -68);
+    if (af === 'gripen') {
+      c.lineTo(18, -32);
+      c.lineTo(74, 48); // delta wing tip
+      c.lineTo(74, 62);
+      c.lineTo(14, 66);
+      c.lineTo(12, 92); // exhaust
+      c.lineTo(-12, 92);
+      c.lineTo(-14, 66);
+      c.lineTo(-74, 62);
+      c.lineTo(-74, 48);
+      c.lineTo(-18, -32);
+    } else if (af === 'su30') {
+      c.lineTo(20, -30);
+      c.lineTo(80, 32); // swept main wing
+      c.lineTo(80, 46);
+      c.lineTo(28, 44);
+      c.lineTo(54, 78); // horizontal stab
+      c.lineTo(24, 94);
+      c.lineTo(10, 94);
+      c.lineTo(0, 74); // stinger
+      c.lineTo(-10, 94);
+      c.lineTo(-24, 94);
+      c.lineTo(-54, 78);
+      c.lineTo(-28, 44);
+      c.lineTo(-80, 46);
+      c.lineTo(-80, 32);
+      c.lineTo(-20, -30);
+    } else {
+      // Kestrel
+      c.lineTo(16, -24);
+      c.lineTo(76, 30);
+      c.lineTo(76, 48);
+      c.lineTo(22, 52);
+      c.lineTo(44, 78);
+      c.lineTo(14, 92);
+      c.lineTo(-14, 92);
+      c.lineTo(-44, 78);
+      c.lineTo(-22, 52);
+      c.lineTo(-76, 48);
+      c.lineTo(-76, 30);
+      c.lineTo(-16, -24);
+    }
+    c.lineTo(-11, -68);
+    c.closePath();
+    c.stroke();
+
+    const drawSurfaceBar = (
+      x0: number,
+      y0: number,
+      w: number,
+      h: number,
+      rad: number,
+      label: string,
+    ): void => {
+      const deg = THREE.MathUtils.radToDeg(rad);
+      const norm = clamp(deg / 25, -1, 1);
+      const fill = Math.abs(norm) > 0.15 ? (norm > 0 ? CYAN : AMBER) : MINT;
+      c.fillStyle = Math.abs(norm) > 0.15 ? 'rgba(122, 232, 255, 0.25)' : 'rgba(109, 252, 192, 0.16)';
+      c.strokeStyle = fill;
+      c.lineWidth = 1.4;
+      c.fillRect(x0, y0, w, h);
+      c.strokeRect(x0, y0, w, h);
+      c.fillStyle = fill;
+      c.font = `600 9px ${MONO}`;
+      c.textAlign = 'center';
+      c.fillText(`${label}${deg >= 0 ? '+' : ''}${Math.round(deg)}`, x0 + w * 0.5, y0 + h + 10);
+    };
+
+    // Canards on Gripen, Slats on Su-30 / Kestrel
+    if (af === 'gripen') {
+      drawSurfaceBar(-44, -46, 26, 10, s.canardRad, 'CN');
+      drawSurfaceBar(18, -46, 26, 10, s.canardRad, 'CN');
+      drawSurfaceBar(-64, 58, 42, 11, s.elevonLeftRad, 'EL');
+      drawSurfaceBar(22, 58, 42, 11, s.elevonRightRad, 'ER');
+    } else {
+      // Slats
+      if (s.slat > 0.02) {
+        c.strokeStyle = CYAN;
+        c.lineWidth = 3;
+        c.beginPath();
+        c.moveTo(-24, -22);
+        c.lineTo(-76, 28);
+        c.moveTo(24, -22);
+        c.lineTo(76, 28);
+        c.stroke();
+      }
+      drawSurfaceBar(-68, 42, 34, 10, s.flapLeftRad, 'FL');
+      drawSurfaceBar(34, 42, 34, 10, s.flapRightRad, 'FR');
+      drawSurfaceBar(-50, 74, 24, 11, s.elevonLeftRad, 'SL');
+      drawSurfaceBar(26, 74, 24, 11, s.elevonRightRad, 'SR');
+    }
+
+    // Rudder bar
+    const rudDeg = THREE.MathUtils.radToDeg(s.rudderRad);
+    c.strokeStyle = Math.abs(rudDeg) > 2 ? CYAN : MINT;
+    c.lineWidth = 2.6;
+    c.beginPath();
+    c.moveTo(0, 62);
+    c.lineTo(clamp(rudDeg * 0.45, -12, 12), 88);
+    c.stroke();
+
+    // Dorsal Airbrake highlight
+    if (s.airbrake > 0.05) {
+      c.fillStyle = `rgba(244, 205, 114, ${0.25 + s.airbrake * 0.6})`;
+      c.strokeStyle = AMBER;
+      c.lineWidth = 1.4;
+      c.fillRect(-10, -2, 20, 26);
+      c.strokeRect(-10, -2, 20, 26);
+      c.fillStyle = AMBER;
+      c.font = `700 9px ${MONO}`;
+      c.textAlign = 'center';
+      c.fillText('BRK', 0, 14);
+    }
+
+    // TVC Vector Arrows
+    const drawNozzle = (nx: number, ny: number, pitchRad: number, yawRad: number, hasTvc: boolean): void => {
+      const irisR = 6 + s.nozzleIris * 4;
+      c.strokeStyle = t.abStage && t.abStage > 0 ? AMBER : MINT;
+      c.lineWidth = 1.6;
+      c.beginPath();
+      c.arc(nx, ny, irisR, 0, Math.PI * 2);
+      c.stroke();
+      if (hasTvc) {
+        const vx = clamp(THREE.MathUtils.radToDeg(yawRad), -20, 20) * 1.1;
+        const vy = clamp(THREE.MathUtils.radToDeg(pitchRad), -20, 20) * 1.1;
+        c.strokeStyle = t.tvcActive ? CYAN : MINT_DIM;
+        c.lineWidth = 2.2;
+        c.beginPath();
+        c.moveTo(nx, ny);
+        c.lineTo(nx + vx, ny + 18 - vy * 0.65);
+        c.stroke();
+      }
+    };
+
+    if (af === 'su30') {
+      drawNozzle(-16, 98, s.tvcPitchLeftRad, s.tvcYawLeftRad, true);
+      drawNozzle(16, 98, s.tvcPitchRightRad, s.tvcYawRightRad, true);
+    } else if (af === 'kestrel') {
+      drawNozzle(0, 98, s.tvcPitchLeftRad, 0, true);
+    } else {
+      drawNozzle(0, 98, 0, 0, false);
+    }
+
+    c.restore();
+
+    // Bottom status bar under schematic
+    c.font = `600 10px ${MONO}`;
+    c.textAlign = 'center';
+    c.fillStyle = t.tvcActive ? CYAN : MINT_DIM;
+    const tvcTxt =
+      af === 'gripen'
+        ? 'NO TVC · CANARD-DELTA'
+        : `TVC P:${Math.round(THREE.MathUtils.radToDeg(s.tvcPitchLeftRad))}° Y:${Math.round(THREE.MathUtils.radToDeg(s.tvcYawLeftRad))}°`;
+    c.fillText(tvcTxt, box.x + box.w * 0.5, box.y + box.h - 4);
+  }
+
+  private drawStickBox(c: CanvasRenderingContext2D, box: MfdRect, s: JetSurfaceState): void {
+    c.strokeStyle = MINT_DIM;
+    c.lineWidth = 1;
+    c.strokeRect(box.x, box.y, box.w, box.h);
+
+    const plotSize = Math.min(box.w - 22, box.h - 32);
+    const px = box.x + (box.w - plotSize) * 0.5;
+    const py = box.y + 18;
+    const cx = px + plotSize * 0.5;
+    const cy = py + plotSize * 0.5;
+
+    c.fillStyle = MINT_DIM;
+    c.font = `600 10px ${MONO}`;
+    c.textAlign = 'center';
+    c.fillText('STICK / RUD', box.x + box.w * 0.5, box.y + 12);
+
+    // Crosshair lines
+    c.strokeStyle = GRID_LINE;
+    c.strokeRect(px, py, plotSize, plotSize);
+    c.beginPath();
+    c.moveTo(cx, py);
+    c.lineTo(cx, py + plotSize);
+    c.moveTo(px, cy);
+    c.lineTo(px + plotSize, cy);
+    c.stroke();
+
+    // Live stick position dot
+    const sx = cx + clamp(s.cmdRoll, -1, 1) * (plotSize * 0.44);
+    const sy = cy + clamp(s.cmdPitch, -1, 1) * (plotSize * 0.44);
+    c.fillStyle = CYAN;
+    c.beginPath();
+    c.arc(sx, sy, 4.5, 0, Math.PI * 2);
+    c.fill();
+
+    // Rudder bar below stick square
+    const ry = py + plotSize + 5;
+    c.strokeStyle = MINT_DIM;
+    c.strokeRect(px, ry, plotSize, 6);
+    const rxPos = cx + clamp(s.cmdYaw, -1, 1) * (plotSize * 0.45);
+    c.fillStyle = AMBER;
+    c.fillRect(rxPos - 4, ry + 1, 8, 4);
+  }
+
+  private drawEnvelopePlot(c: CanvasRenderingContext2D, box: MfdRect, t: JetTelemetry): void {
+    c.strokeStyle = MINT_DIM;
+    c.lineWidth = 1;
+    c.strokeRect(box.x, box.y, box.w, box.h);
+
+    c.fillStyle = MINT_DIM;
+    c.font = `600 10px ${MONO}`;
+    c.textAlign = 'center';
+    c.fillText('α / G ENVELOPE', box.x + box.w * 0.5, box.y + 12);
+
+    const px = box.x + 16;
+    const py = box.y + 20;
+    const pw = box.w - 24;
+    const ph = box.h - 40;
+
+    // Axes: alpha [-10..95], G [-3..12]
+    const mapX = (aoa: number): number => px + (clamp(aoa, -10, 95) + 10) / 105 * pw;
+    const mapY = (g: number): number => py + ph - (clamp(g, -3, 12) + 3) / 15 * ph;
+
+    // Normal FBW envelope box (+9/-3G, 28 deg)
+    c.strokeStyle = GRID_LINE;
+    c.strokeRect(mapX(-10), mapY(9), mapX(28) - mapX(-10), mapY(-3) - mapY(9));
+
+    // High-G / PSM expanded border
+    c.strokeStyle = (t.fbwMode ?? 'norm') === 'psm' ? CYAN : AMBER;
+    c.setLineDash([4, 3]);
+    const maxAoa = (t.fbwMode ?? 'norm') === 'psm' ? 95 : 35;
+    const maxG = (t.fbwMode ?? 'norm') === 'norm' ? 9 : 11.5;
+    c.strokeRect(mapX(-10), mapY(maxG), mapX(maxAoa) - mapX(-10), mapY(-3) - mapY(maxG));
+    c.setLineDash([]);
+
+    // Zero G horizontal & 0 deg vertical
+    c.strokeStyle = MINT_DIM;
+    c.beginPath();
+    c.moveTo(px, mapY(0));
+    c.lineTo(px + pw, mapY(0));
+    c.moveTo(mapX(0), py);
+    c.lineTo(mapX(0), py + ph);
+    c.stroke();
+
+    // Current flight state dot
+    const aoa = t.aoaDeg ?? 0;
+    const curX = mapX(aoa);
+    const curY = mapY(t.gLoad);
+    c.fillStyle = t.overGWarning || t.spinWarning ? RED : t.alphaWarning ? AMBER : MINT;
+    c.beginPath();
+    c.arc(curX, curY, 4.5, 0, Math.PI * 2);
+    c.fill();
+
+    c.font = `600 10px ${MONO}`;
+    c.fillStyle = MINT;
+    c.textAlign = 'center';
+    c.fillText(`α ${aoa.toFixed(1)}° · ${t.gLoad.toFixed(1)}G`, box.x + box.w * 0.5, box.y + box.h - 6);
+  }
+
+  // ===========================================================================
+  // PAGE 3: ENG (AB Zones 1-3, Supercruise, T/W, Ps, Mass/Fuel, Aero Telemetry)
+  // ===========================================================================
+  private drawEngPage(c: CanvasRenderingContext2D, r: MfdRect, t: JetTelemetry): void {
+    c.fillStyle = BG_PANEL;
+    c.fillRect(r.x, r.y, r.w, r.h);
+
+    const af = t.airframeId ?? 'gripen';
+    const abStage = t.abStage ?? (t.boost > 0.66 ? 3 : t.boost > 0.33 ? 2 : t.boost > 0 ? 1 : 0);
+
+    // Header bar
+    c.fillStyle = 'rgba(109, 252, 192, 0.1)';
+    c.fillRect(r.x, r.y, r.w, 30);
+    c.font = `700 13px ${MONO}`;
+    c.fillStyle = MINT;
+    c.textAlign = 'left';
+    c.fillText(`ENG / FUEL · ${(t.airframeName ?? af).toUpperCase()}`, r.x + 10, r.y + 20);
+    c.textAlign = 'right';
+    if (t.supercruise) {
+      c.fillStyle = CYAN;
+      c.fillText('SUPERCRUISE', r.x + r.w - 10, r.y + 20);
+    } else if (abStage > 0) {
+      c.fillStyle = AMBER;
+      c.fillText(`AFTERBURNER Z${abStage}`, r.x + r.w - 10, r.y + 20);
+    } else {
+      c.fillStyle = t.abArmed ? MINT : MINT_DIM;
+      c.fillText(t.abArmed ? 'AB ARMED' : 'MIL POWER', r.x + r.w - 10, r.y + 20);
+    }
+
+    const pad = 12;
+    let y = r.y + 42;
+
+    // 1. Throttle & AB Zone 1-3 segmented gauge
+    const barW = r.w - pad * 2;
+    const thr = clamp(t.throttle, 0, 1);
+    const rpmPct = Math.round(52 + thr * 48 + (abStage > 0 ? 3 : 0));
+
+    c.fillStyle = MINT_DIM;
+    c.font = `600 11px ${MONO}`;
+    c.textAlign = 'left';
+    c.fillText(`N1 ${rpmPct}% · THROTTLE ${Math.round(thr * 100)}%`, r.x + pad, y);
+    c.textAlign = 'right';
+    const thrustKn = t.thrustN !== undefined ? (t.thrustN / 1000).toFixed(1) : '—';
+    const maxKn = t.maxWetThrustN !== undefined ? Math.round(t.maxWetThrustN / 1000) : '—';
+    c.fillStyle = abStage > 0 ? AMBER : MINT;
+    c.fillText(`${thrustKn} / ${maxKn} kN`, r.x + r.w - pad, y);
+
+    y += 8;
+    // Main throttle bar (MIL = 70%, AB1-3 = 30%)
+    const milW = barW * 0.7;
+    const abW = barW * 0.3;
+    c.strokeStyle = MINT_DIM;
+    c.lineWidth = 1.2;
+    c.strokeRect(r.x + pad, y, milW - 3, 14);
+    c.fillStyle = MINT;
+    c.fillRect(r.x + pad + 1, y + 1, (milW - 5) * thr, 12);
+
+    for (let z = 1; z <= 3; z++) {
+      const zw = (abW - 4) / 3;
+      const zx = r.x + pad + milW + (z - 1) * zw;
+      const lit = abStage >= z;
+      c.strokeStyle = lit ? AMBER : MINT_DIM;
+      c.strokeRect(zx, y, zw - 2, 14);
+      if (lit) {
+        c.fillStyle = AMBER;
+        c.fillRect(zx + 1, y + 1, zw - 4, 12);
+      }
+      c.fillStyle = lit ? '#081016' : MINT_DIM;
+      c.font = `700 9px ${MONO}`;
+      c.textAlign = 'center';
+      c.fillText(`Z${z}`, zx + zw * 0.5 - 1, y + 10);
+    }
+
+    // 2. Fuel Bar
+    y += 32;
+    const fuelFrac = clamp(t.fuelFrac ?? t.boostEnergy, 0, 1);
+    const fuelPct = Math.round(fuelFrac * 100);
+    c.textAlign = 'left';
+    c.font = `600 11px ${MONO}`;
+    c.fillStyle = fuelPct <= 15 ? RED : fuelPct <= 30 ? AMBER : MINT;
+    const fuelTxt =
+      t.fuelKg !== undefined && t.maxFuelKg !== undefined
+        ? `FUEL ${Math.round(t.fuelKg)} / ${Math.round(t.maxFuelKg)} kg (${fuelPct}%)`
+        : `FUEL / ENERGY ${fuelPct}%`;
+    c.fillText(fuelTxt, r.x + pad, y);
+    if (t.fuelFlowKgS !== undefined) {
+      c.textAlign = 'right';
+      c.fillStyle = MINT_DIM;
+      c.fillText(`FF ${t.fuelFlowKgS.toFixed(1)} kg/s`, r.x + r.w - pad, y);
+    }
+    y += 7;
+    c.strokeStyle = MINT_DIM;
+    c.strokeRect(r.x + pad, y, barW, 12);
+    c.fillStyle = fuelPct <= 15 ? RED : fuelPct <= 30 ? AMBER : MINT;
+    c.fillRect(r.x + pad + 1, y + 1, (barW - 2) * fuelFrac, 10);
+
+    // 3. Key Readout Grid (2x3)
+    y += 26;
+    const cellW = (barW - 10) * 0.5;
+    const cellH = clamp(Math.floor((r.y + r.h - y - 34) / 3), 38, 56);
+    const cells: Array<{ k: string; v: string; color: string }> = [
+      {
+        k: 'T/W RATIO',
+        v: (t.twRatio ?? 0).toFixed(2),
+        color: (t.twRatio ?? 0) >= 1 ? CYAN : MINT,
+      },
+      {
+        k: 'SPEC EXCESS PWR (Ps)',
+        v:
+          t.specificExcessPowerMps !== undefined
+            ? `${t.specificExcessPowerMps >= 0 ? '+' : ''}${Math.round(t.specificExcessPowerMps)} m/s`
+            : '—',
+        color: (t.specificExcessPowerMps ?? 0) >= 0 ? MINT : AMBER,
+      },
+      {
+        k: 'MASS / GRAVITY',
+        v: `${t.massKg ? Math.round(t.massKg).toLocaleString('en-US') + ' kg' : '—'} · ${(t.gravityMps2 ?? 9.81).toFixed(1)}g₀`,
+        color: MINT,
+      },
+      {
+        k: 'IAS / MACH',
+        v: `${formatSpeed(t.iasMps ?? t.speedMps)} · ${t.airDensity > 0 ? 'M ' + t.mach.toFixed(2) : 'VAC'}`,
+        color: t.mach >= 1 ? CYAN : MINT,
+      },
+      {
+        k: 'DYN PRESS (q̄)',
+        v:
+          t.dynamicPressurePa !== undefined
+            ? `${(t.dynamicPressurePa / 1000).toFixed(1)} kPa`
+            : `${t.airDensity.toFixed(3)} kg/m³`,
+        color: MINT_DIM,
+      },
+      {
+        k: 'G LOAD / PEAK',
+        v: `${t.gLoad.toFixed(1)}G · PK ${(t.gPeak ?? t.gLoad).toFixed(1)}G`,
+        color: t.overGWarning ? RED : MINT,
+      },
+    ];
+
+    cells.forEach((cell, idx) => {
+      const col = idx % 2;
+      const row = Math.floor(idx / 2);
+      const cx = r.x + pad + col * (cellW + 10);
+      const cy = y + row * (cellH + 6);
+      c.strokeStyle = GRID_LINE;
+      c.strokeRect(cx, cy, cellW, cellH);
+      c.textAlign = 'left';
+      c.fillStyle = MINT_DIM;
+      c.font = `600 10px ${MONO}`;
+      c.fillText(cell.k, cx + 6, cy + 14);
+      c.fillStyle = cell.color;
+      c.font = `700 13px ${MONO}`;
+      c.fillText(cell.v, cx + 6, cy + cellH - 8);
+    });
+
+    // Footer status line
+    c.textAlign = 'left';
+    c.fillStyle = MINT_DIM;
+    c.font = `600 11px ${MONO}`;
+    c.fillText(`TIER ${t.speedTier.toUpperCase()}`, r.x + pad, r.y + r.h - 10);
+    c.textAlign = 'right';
+    c.fillText(`${t.weather.toUpperCase()} · ${t.airWorld.toUpperCase()}`, r.x + r.w - pad, r.y + r.h - 10);
+  }
+
+  // ===========================================================================
+  // PAGE 4: NAV (Moving Map Underlay + Tactical PPI Compass + Intercept Vector)
+  // ===========================================================================
+  private drawNavPage(c: CanvasRenderingContext2D, r: MfdRect, t: JetTelemetry): void {
+    // Scrim bands top and bottom, leaving center transparent for tNav 3D map
+    c.fillStyle = BG_SCRIM;
+    c.fillRect(r.x, r.y, r.w, 34);
+    c.fillRect(r.x, r.y + r.h - 46, r.w, 46);
+
+    const cx = r.x + r.w * 0.5;
+    const cy = r.y + r.h * 0.56;
+    const radius = Math.min(r.w, r.h - 70) * 0.42;
+
+    // Range rings & compass rose
+    c.save();
+    c.strokeStyle = MINT_DIM;
+    c.lineWidth = 1.2;
+    c.beginPath();
+    c.arc(cx, cy, radius, 0, Math.PI * 2);
+    c.stroke();
+
+    c.strokeStyle = GRID_LINE;
+    c.beginPath();
+    c.arc(cx, cy, radius * 0.5, 0, Math.PI * 2);
+    c.stroke();
+
+    const hdgRad = (t.headingDeg * Math.PI) / 180;
+    const dirs = [
+      { l: 'N', a: 0 },
+      { l: 'E', a: Math.PI * 0.5 },
+      { l: 'S', a: Math.PI },
+      { l: 'W', a: Math.PI * 1.5 },
+    ];
+    c.font = `700 11px ${MONO}`;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    for (let i = 0; i < 12; i++) {
+      const a = (i * Math.PI) / 6 - hdgRad - Math.PI * 0.5;
+      c.strokeStyle = MINT_DIM;
+      c.beginPath();
+      c.moveTo(cx + Math.cos(a) * (radius - 5), cy + Math.sin(a) * (radius - 5));
+      c.lineTo(cx + Math.cos(a) * radius, cy + Math.sin(a) * radius);
+      c.stroke();
+    }
+    for (const d of dirs) {
+      const a = d.a - hdgRad - Math.PI * 0.5;
+      c.fillStyle = d.l === 'N' ? AMBER : MINT;
+      c.fillText(d.l, cx + Math.cos(a) * (radius - 15), cy + Math.sin(a) * (radius - 15));
+    }
+    c.textBaseline = 'alphabetic';
+
+    // Own-ship symbol + track vector line
+    c.strokeStyle = MINT;
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(cx, cy - 10);
+    c.lineTo(cx - 7, cy + 7);
+    c.lineTo(cx, cy + 3);
+    c.lineTo(cx + 7, cy + 7);
+    c.closePath();
+    c.stroke();
+
+    c.strokeStyle = MINT_DIM;
+    c.setLineDash([4, 4]);
+    c.beginPath();
+    c.moveTo(cx, cy - 12);
+    c.lineTo(cx, cy - radius + 12);
+    c.stroke();
+    c.setLineDash([]);
+
+    // Target intercept diamond (relative to view / waypoint)
+    if (t.targetScreen) {
+      const a = t.targetScreen.angle - Math.PI * 0.5;
+      const distNorm = clamp(Math.log10(Math.max(1, t.targetDistKm) + 1) / 5, 0.25, 0.94);
+      const tx = cx + Math.cos(a) * radius * distNorm;
+      const ty = cy + Math.sin(a) * radius * distNorm;
+      c.strokeStyle = AMBER;
+      c.lineWidth = 1.6;
+      c.beginPath();
+      c.moveTo(cx, cy);
+      c.lineTo(tx, ty);
+      c.stroke();
+
+      c.fillStyle = AMBER;
+      c.beginPath();
+      c.moveTo(tx, ty - 6);
+      c.lineTo(tx + 6, ty);
+      c.lineTo(tx, ty + 6);
+      c.lineTo(tx - 6, ty);
+      c.closePath();
+      c.fill();
+    }
+
+    // Waypoint / landing runway marker
+    if (t.waypoint) {
+      const a = ((t.waypoint.bearingDeg - t.headingDeg) * Math.PI) / 180 - Math.PI * 0.5;
+      const d = radius * 0.86;
+      const wx = cx + Math.cos(a) * d;
+      const wy = cy + Math.sin(a) * d;
+      c.strokeStyle = CYAN;
+      c.lineWidth = 1.8;
+      c.strokeRect(wx - 4, wy - 4, 8, 8);
+    }
+    c.restore();
+
+    // Header
+    c.fillStyle = MINT;
+    c.font = `700 13px ${MONO}`;
+    c.textAlign = 'left';
+    c.fillText(`NAV · ${t.anchor.toUpperCase()}`, r.x + 10, r.y + 22);
+    c.textAlign = 'right';
+    c.fillStyle = t.hasHorizon ? MINT : MINT_DIM;
+    c.fillText(t.hasHorizon ? `HDG ${String(Math.round(((t.headingDeg % 360) + 360) % 360)).padStart(3, '0')}°` : 'DEEP SPACE', r.x + r.w - 10, r.y + 22);
+
+    // Bottom Intercept / Waypoint Data Strip
+    const by = r.y + r.h - 28;
+    c.textAlign = 'left';
+    c.font = `700 11px ${MONO}`;
+    c.fillStyle = AMBER;
+    c.fillText(
+      `TGT ${t.target.toUpperCase()} · ${formatDistance(t.targetDistKm)} · ${formatEta(t.targetEtaS)}`,
+      r.x + 10,
+      by,
+    );
+    if (t.waypoint) {
+      c.fillStyle = CYAN;
+      c.font = `600 10px ${MONO}`;
+      c.fillText(
+        `WPT ${t.waypoint.name.toUpperCase()} · ${formatDistance(t.waypoint.distKm)} · BRG ${String(Math.round(t.waypoint.bearingDeg)).padStart(3, '0')}°`,
+        r.x + 10,
+        by + 16,
+      );
+    } else if (t.lat !== undefined && t.lon !== undefined) {
+      c.fillStyle = MINT_DIM;
+      c.font = `600 10px ${MONO}`;
+      c.fillText(
+        `${Math.abs(t.lat).toFixed(2)}°${t.lat >= 0 ? 'N' : 'S'} ${Math.abs(t.lon).toFixed(2)}°${t.lon >= 0 ? 'E' : 'W'}`,
+        r.x + 10,
+        by + 16,
+      );
+    }
+
+    c.textAlign = 'right';
+    c.fillStyle = MINT_DIM;
+    c.font = `600 10px ${MONO}`;
+    c.fillText(`CLS ${formatSpeed(t.closingMps)}`, r.x + r.w - 10, by);
+    c.fillText(t.weather.toUpperCase(), r.x + r.w - 10, by + 16);
   }
 }

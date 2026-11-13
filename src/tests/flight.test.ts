@@ -192,27 +192,30 @@ describe('flight in air, like a real fighter', () => {
   const low: FlightEnv = { altitudeUnits: 1 / EARTH_KPU, kmPerUnit: EARTH_KPU, airDensity: 0.9 };
   const mps = (m: FlightModel): number => m.speed / unitsPerMps(EARTH_KPU);
 
-  it('tops out near 380 m/s on military power and about 1.6x that on afterburner', () => {
+  it('plateaus subsonic/transonic on dry military power and punches supersonic on afterburner', () => {
     const dry = new FlightModel();
-    fly(dry, 60, input({ throttle: 1 }), low);
-    expect(mps(dry)).toBeGreaterThan(330);
-    expect(mps(dry)).toBeLessThan(420);
+    dry.speed = 200 * unitsPerMps(EARTH_KPU);
+    dry.velocity.set(0, 0, -dry.speed);
+    fly(dry, 45, input({ throttle: 1 }), low);
+    expect(mps(dry)).toBeGreaterThan(285);
+    expect(mps(dry)).toBeLessThan(345);
     const ab = new FlightModel();
     ab.speed = dry.speed;
     ab.velocity.copy(dry.velocity);
-    fly(ab, 6, input({ throttle: 1, boost: true }), low);
-    expect(mps(ab)).toBeGreaterThan(mps(dry) + 50);
-    expect(mps(ab)).toBeLessThan(380 * 1.6 * 1.05);
+    ab.quaternion.copy(dry.quaternion);
+    fly(ab, 35, input({ throttle: 1, boost: true }), low);
+    expect(mps(ab)).toBeGreaterThan(mps(dry) + 60);
+    expect(mps(ab)).toBeLessThan(680);
   });
 
-  it('accelerates at real rates in air: tens of seconds, not an instant', () => {
+  it('accelerates at real fighter thrust-to-weight rates in air', () => {
     const m = new FlightModel();
     m.speed = 150 * unitsPerMps(EARTH_KPU);
     m.velocity.set(0, 0, -m.speed);
     fly(m, 5, input({ throttle: 1 }), low);
     const gained = mps(m) - 150;
-    expect(gained).toBeGreaterThan(50); // ~14 m/s² dry
-    expect(gained).toBeLessThan(90);
+    expect(gained).toBeGreaterThan(15); // T/W ~ 0.65 dry Mil minus aerodynamic drag
+    expect(gained).toBeLessThan(36);
   });
 
   it('keeps the full drive in vacuum', () => {

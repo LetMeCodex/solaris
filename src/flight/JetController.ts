@@ -6,7 +6,13 @@ import { PhotorealEarth } from '../rendering/PhotorealEarth';
 import type { PlanetMeshBundle } from '../rendering/PlanetFactory';
 import { FlightModel, FlightInput, airDensity, gapKm, localKmPerUnit, resolveSurfaceContact, unitsPerMps, UNIVERSE_RADIUS_UNITS } from './FlightModel';
 import { AIRFRAMES, chosenAirframe, JetModel, JET_LENGTH_M } from './JetModel';
-import { SpeedField, Trail, ShockEffects, ExhaustSmoke } from './SpeedEffects';
+import { SpeedField, ShockEffects, ExhaustSmoke, VortexRig } from './SpeedEffects';
+import {
+  type JetView,
+  type JetMarker,
+  type JetTelemetry,
+  createDefaultJetTelemetry,
+} from './JetTelemetry';
 import { JetAudio } from './JetAudio';
 import { AIR } from './worlds';
 import { Cockpit, NavPoint } from './Cockpit';
@@ -48,105 +54,7 @@ const NAV_WORLDS = ['Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'U
  * reflects the jet: the planet below, the Sun, the Milky Way.
  */
 
-export type JetView = 'chase' | 'cockpit' | 'gopro' | 'flyby';
-
-export interface JetMarker {
-  name: string;
-  x: number;
-  y: number;
-  distKm: number;
-  target: boolean;
-}
-
-export interface JetTelemetry {
-  active: boolean;
-  speedMps: number;
-  /** Speed along the line to the target (positive = closing), m/s. */
-  closingMps: number;
-  altKm: number;
-  nearest: string;
-  anchor: string;
-  /** World whose air the jet is in ('' in vacuum). */
-  airWorld: string;
-  airDensity: number;
-  mach: number;
-  gLoad: number;
-  throttle: number;
-  boost: number;
-  boostEnergy: number;
-  assist: boolean;
-  aligning: boolean;
-  view: JetView;
-  hasHorizon: boolean;
-  pitchDeg: number;
-  rollDeg: number;
-  headingDeg: number;
-  /** Pixels per degree at the screen centre (pitch ladder). */
-  pxPerDeg: number;
-  /** Where the nose points and where the jet is going, screen px (null if off screen). */
-  nose: { x: number; y: number } | null;
-  fpv: { x: number; y: number } | null;
-  target: string;
-  targetDistKm: number;
-  targetEtaS: number;
-  targetScreen: { x: number; y: number; on: boolean; angle: number } | null;
-  markers: JetMarker[];
-  /** 0 none, 1 terrain, 2 heat. */
-  warning: number;
-  heat: number;
-  helpOpen: boolean;
-  muted: boolean;
-  fullHud: boolean;
-  /** Speed blur strength and its centre (output NDC), for the lens pipeline. */
-  blur: number;
-  blurNdc: { x: number; y: number };
-  /** The camera's own lens: 'gopro' fits a wide fisheye; null keeps the chosen profile. */
-  lens: 'gopro' | null;
-  /** The Sun in the frame (0..1): drives auto-exposure. */
-  sunInView: number;
-  /** The Sun on screen (NDC x, y) and its light on the canopy from inside (0..1). */
-  canopySun: { x: number; y: number; k: number };
-  /** The Sun in scene NDC, whether it is in front, and how much the air glows round it (god rays). */
-  sunNdc: { x: number; y: number; k: number };
-  /** Grey-out of the pilot's eyes under G (cockpit view), 0..1. */
-  greyOut: number;
-  /** What the sky is doing (an eclipse, a flare, a comet, meteors), or empty. */
-  skyEvent: string;
-  /** Airframe vibration reaching the camera (0..1): rolling-shutter shear. */
-  vibration: number;
-  /** A radio call shown as a subtitle (empty when none), and whether to ask the pitch question. */
-  radio: string;
-  askPitch: boolean;
-  /** Earth travel: the speed tier, the transit under way (name, km left), the destination and home. */
-  speedTier: string;
-  transitName: string;
-  transitKm: number;
-  destinationName: string;
-  hasHome: boolean;
-  /** Landing autopilot: the landmark and the distance left, km. */
-  landingName: string;
-  /** A place on Earth chosen as the target to fly to by hand (marker, distance, bearing). */
-  waypoint: { name: string; distKm: number; bearingDeg: number; etaS: number; x: number; y: number; on: boolean; angle: number } | null;
-  landingDistKm: number;
-  landMenu: boolean;
-  gearDown: boolean;
-  abArmed: boolean;
-  weather: string;
-  weatherMode: string;
-  localTime: number;
-  invertPitch: boolean;
-  width: number;
-  height: number;
-  timeSec: number;
-  lat?: number;
-  lon?: number;
-  /** Over any world with a surface: the point under the jet (planetocentric degrees). */
-  bodyLat?: number;
-  bodyLon?: number;
-  /** Distance from the Sun's and from Earth's centre, km. */
-  sunDistKm: number;
-  earthDistKm: number;
-}
+export type { JetView, JetMarker, JetTelemetry };
 
 /** Projects scene NDC to screen pixels (through the lens model), or null when masked. */
 export type NdcToScreen = (x: number, y: number) => { x: number; y: number } | null;
@@ -171,7 +79,8 @@ interface BodyInfo {
 
 const FLY_KEYS = new Set([
   'w', 's', 'a', 'd', 'q', 'e', 'r', 'f', 'x', 'c', 'v', 't', 'z', 'g', 'h', 'n', 'i', ' ',
-  'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'escape', 'shift', 'u', 'l', 'b', 'k', '[', ']', 'y',
+  'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'escape', 'shift', 'tab', 'u', 'l', 'b', 'k',
+  '[', ']', 'y', '`', ';', ',', '.', "'",
   '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
 ]);
 const TARGET_ORDER = ['Mercury', 'Venus', 'Earth', 'Moon', 'Mars', 'Phobos', 'Ceres', 'Jupiter', 'Io', 'Europa', 'Ganymede', 'Callisto',
@@ -211,13 +120,13 @@ export class JetController {
   private subLon = 0;
   private subSunUp = 0;
 
-  private flight = new FlightModel();
+  private flight = new FlightModel(this.airframeId);
   private model: JetModel | null = null;
   private cockpit: Cockpit | null = null;
   private navPoints: NavPoint[] = [];
   private jetGroup = new THREE.Group();
   private field = new SpeedField();
-  private trails: Trail[] = [];
+  private vortex = new VortexRig();
   private shock = new ShockEffects();
   private flare = new SunFlare();
   /** Eclipses, solar flares, comets, meteors (src/flight/SkyEvents). */
@@ -260,8 +169,21 @@ export class JetController {
   /** The pilot's head: lags the airframe slightly and sinks under G (cockpit view). */
   private headQuat = new THREE.Quaternion();
   private headDrop = 0;
+  private headOffset = { x: 0, y: 0, z: 0 };
   private smoke = new ExhaustSmoke();
   private wasBoosting = false;
+  private prevAbStage = 0;
+  private wasOnGround = false;
+  private gpPrevButtons = new Map<number, boolean[]>();
+  private gpDownHoldSec = 0;
+  private gpDownFpvHandled = false;
+  private wTipL = new THREE.Vector3();
+  private wTipR = new THREE.Vector3();
+  private wStrkL = new THREE.Vector3();
+  private wStrkR = new THREE.Vector3();
+  private wNozL = new THREE.Vector3();
+  private wNozR = new THREE.Vector3();
+  private vWheel = new THREE.Vector3();
   private lastNozzleWorld = [{ p: new THREE.Vector3(), valid: false }, { p: new THREE.Vector3(), valid: false }];
   private sun = new THREE.DirectionalLight(0xfff4e6, 3.2);
   private planetShine = new THREE.HemisphereLight(0x0b0d14, 0x000000, 0.0);
@@ -360,6 +282,8 @@ export class JetController {
   private insideFovNow = 76;
   private lastMouse = new THREE.Vector2();
   private aligning = false;
+  /** Latches Shift+Z FPV-hold presses so releasing Shift a frame before Z never triggers align. */
+  private zFpvHoldLatched = false;
   private dom: HTMLElement | null = null;
   /** The landmark the landing autopilot is flying to, or null. */
   public landing: Landmark | null = null;
@@ -477,12 +401,18 @@ export class JetController {
   private warning = 0;
 
   private listeners = new Set<(t: JetTelemetry) => void>();
-  public readonly telemetry: JetTelemetry = {
-    active: false, sunDistKm: 0, earthDistKm: 0, speedMps: 0, closingMps: 0, altKm: 0, nearest: '', anchor: '', airWorld: '', airDensity: 0, mach: 0, gLoad: 1,
-    throttle: 0, boost: 0, boostEnergy: 1, assist: true, aligning: false, view: 'chase', hasHorizon: false, pitchDeg: 0, rollDeg: 0,
-    headingDeg: 0, pxPerDeg: 10, nose: null, fpv: null, target: 'Mars', targetDistKm: 0, targetEtaS: 0, targetScreen: null, markers: [],
-    warning: 0, heat: 0, helpOpen: true, muted: false, fullHud: false, blur: 0, blurNdc: { x: 0, y: 0 }, lens: null, skyEvent: '', canopySun: { x: 0, y: 0, k: 0 }, sunNdc: { x: 0, y: 0, k: 0 }, greyOut: 0, sunInView: 0, vibration: 0, radio: '', askPitch: false, speedTier: 'Jet', transitName: '', transitKm: 0, destinationName: '', waypoint: null, hasHome: false, landingName: '', landingDistKm: 0, landMenu: false, gearDown: false, abArmed: true, weather: 'Clear', weatherMode: 'auto', localTime: 12, invertPitch: false, width: 1, height: 1, timeSec: 0,
-  };
+  public readonly telemetry: JetTelemetry = createDefaultJetTelemetry({
+    active: false, sunDistKm: 0, earthDistKm: 0, speedMps: 0, closingMps: 0, altKm: 0, nearest: '', anchor: '',
+    airWorld: '', airDensity: 0, mach: 0, gLoad: 1, throttle: 0, boost: 0, boostEnergy: 1, assist: true,
+    aligning: false, view: 'chase', hasHorizon: false, pitchDeg: 0, rollDeg: 0, headingDeg: 0, pxPerDeg: 10,
+    nose: null, fpv: null, target: 'Mars', targetDistKm: 0, targetEtaS: 0, targetScreen: null, markers: [],
+    warning: 0, heat: 0, helpOpen: true, muted: false, fullHud: false, blur: 0, blurNdc: { x: 0, y: 0 },
+    lens: null, skyEvent: '', canopySun: { x: 0, y: 0, k: 0 }, sunNdc: { x: 0, y: 0, k: 0 }, greyOut: 0,
+    sunInView: 0, vibration: 0, radio: '', askPitch: false, speedTier: 'Jet', transitName: '', transitKm: 0,
+    destinationName: '', waypoint: null, hasHome: false, landingName: '', landingDistKm: 0, landMenu: false,
+    gearDown: false, abArmed: true, weather: 'Clear', weatherMode: 'auto', localTime: 12, invertPitch: false,
+    width: 1, height: 1, timeSec: 0, airframeId: this.airframeId, airframeName: this.airframe.anchors.name,
+  });
 
   // scratch
   private v1 = new THREE.Vector3();
@@ -504,9 +434,7 @@ export class JetController {
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.normalBias = 0.02;
     this.overlayScene.environment = this.envTarget.texture;
-    for (let i = 0; i < 2; i++) this.trails.push(new Trail(0.5, 2.6, 0xffffff));
-    for (let i = 0; i < 2; i++) this.trails.push(new Trail(1.2, 6.0, 0xeef3ff));
-    for (const t of this.trails) this.overlayScene.add(t.mesh);
+    this.vortex.addTo(this.overlayScene);
     this.overlayScene.add(this.smoke.mesh, this.flare.group, this.asteroids.group, this.weather.group, this.sky.group);
     // (development: the jet from the console, e.g. __jet.director.event('awe'))
     if (import.meta.env.DEV) (window as unknown as { __jet?: JetController }).__jet = this;
@@ -647,9 +575,20 @@ export class JetController {
     this.look.set(0, 0);
     this.flybyValid = false;
     this.target = start.name === 'Earth' ? 'Moon' : 'Earth';
+    this.flight.setAirframe(this.airframeId, true);
+    this.flight.setFbwMode('norm');
+    this.flight.setFlapMode('auto');
+    if (this.flight.fpvHoldActive) this.flight.toggleFpvHold();
+    this.flight.resetEnvelopePeaks();
+    this.gpPrevButtons.clear();
+    this.gpDownHoldSec = 0;
+    this.gpDownFpvHandled = false;
+    this.zFpvHoldLatched = false;
+    this.wasOnGround = false;
+    this.prevAbStage = 0;
     this.localGroundKm = 0;
     if (options.takeOffFrom) this.placeAtLandmark(options.takeOffFrom);
-    for (const t of this.trails) t.clear();
+    this.vortex.clear();
     this.smoke.clear();
 
     this.active = true;
@@ -929,12 +868,14 @@ export class JetController {
       this.exitRequest?.();
     }
     else if (k === 'c') this.cycleView();
+    else if (k === '`' || (k === 'g' && e.shiftKey)) this.flight.cycleFbwMode();
     else if (k === 'g') this.toggleAssist();
     else if (k === 't') this.cycleTarget(e.shiftKey ? -1 : 1);
     else if (k === 'n') this.audio.muted = !this.audio.muted;
     else if (k === 'h') this.helpOpen = !this.helpOpen;
     else if (k === 'u') this.fullHud = !this.fullHud;
     else if (k === 'l') this.landMenu = !this.landMenu;
+    else if (k === '.' || (k === 'b' && e.shiftKey)) this.flight.cycleFlapMode();
     else if (k === 'b') this.gearDown = !this.gearDown;
     else if (k === '[') this.shiftTime(-1);
     else if (k === ']') this.shiftTime(1);
@@ -948,6 +889,10 @@ export class JetController {
     else if (k === 'j') this.cycleSpeedTier();
     else if (k === 'p') this.transitToDestination();
     else if (k === 'm') this.landMenu = !this.landMenu;
+    else if (k === "'" || (k === 'z' && e.shiftKey)) {
+      if (k === 'z') this.zFpvHoldLatched = true;
+      this.flight.toggleFpvHold();
+    }
     else if (k >= '0' && k <= '9') this.throttle = k === '0' ? 1 : Number(k) / 10;
   };
 
@@ -958,11 +903,13 @@ export class JetController {
     e.preventDefault();
     e.stopPropagation();
     this.keys.delete(k);
+    if (k === 'z') this.zFpvHoldLatched = false;
     if (k === 'shift' && this.mouseHead) this.steer.set(0, 0);
   };
 
   private onBlur = (): void => {
     this.keys.clear();
+    this.zFpvHoldLatched = false;
     this.dragSteer = false;
     this.lookDrag = false;
   };
@@ -1065,7 +1012,7 @@ export class JetController {
   /** Move everything left hanging in the air (smoke, trails) with the world the jet rides. */
   private shiftAir(delta: THREE.Vector3, rot: THREE.Quaternion | null, centre: THREE.Vector3): void {
     this.smoke.shift(delta, rot, centre);
-    for (const t of this.trails) t.shift(delta, rot, centre);
+    this.vortex.shift(delta, rot, centre);
     for (const l of this.lastNozzleWorld) {
       if (rot) l.p.sub(centre).applyQuaternion(rot).add(centre);
       else l.p.add(delta);
@@ -1138,25 +1085,27 @@ export class JetController {
   private camLookQuat = new THREE.Quaternion();
   private localGroundKm = 0;
 
-  /** A click inside the cockpit: operate a control or the destination display if one is under it. */
+  /** A click inside the cockpit: operate a switch, destination display, or any MFD bezel tab. */
   private clickCockpit(cx: number, cy: number): boolean {
-    if (!this.controls || (this.view !== 'cockpit' && this.view !== 'gopro')) return false;
+    if (this.view !== 'cockpit' && this.view !== 'gopro') return false;
     const r = this.dom?.getBoundingClientRect();
     if (!r) return false;
     const [nx, ny] = this.toSceneNdc(((cx - r.left) / r.width) * 2 - 1, -(((cy - r.top) / r.height) * 2 - 1));
     const ray = new THREE.Raycaster();
     ray.setFromCamera(new THREE.Vector2(nx, ny), this.overlayCamera);
-    const a = this.controls.pick(ray);
-    if (!a) return false;
-    if (a.kind === 'gear') this.gearDown = !this.gearDown;
-    else if (a.kind === 'arm') this.abArmed = !this.abArmed;
-    else {
-      const list = this.destinations();
-      const item = list.items[a.index + this.destScroll];
-      if (item?.landmark) this.startLanding(item.landmark);
-      else if (item?.world) this.setTarget(item.world);
+    const a = this.controls?.pick(ray);
+    if (a) {
+      if (a.kind === 'gear') this.gearDown = !this.gearDown;
+      else if (a.kind === 'arm') this.abArmed = !this.abArmed;
+      else {
+        const list = this.destinations();
+        const item = list.items[a.index + this.destScroll];
+        if (item?.landmark) this.startLanding(item.landmark);
+        else if (item?.world) this.setTarget(item.world);
+      }
+      return true;
     }
-    return true;
+    return this.mfdCount > 0 && this.mfd.handleRayClick(ray);
   }
 
   /** What the destination display lists: the landmarks of the world below when close, else the worlds. */
@@ -1910,26 +1859,72 @@ export class JetController {
     roll += this.steer.x + this.touchSteer.x;
     if (k.has('r')) this.throttle = Math.min(1, this.throttle + dt * 0.45);
     if (k.has('f')) this.throttle = Math.max(0, this.throttle - dt * 0.45);
-    let boost = (k.has(' ') || k.has('shift') || this.touchBoost) && this.abArmed;
 
-    // Gamepad (standard mapping)
+    const kbdBrake = k.has('tab') || k.has(';');
+    let boost = (k.has(' ') || this.touchBoost) && this.abArmed;
+    let brake = kbdBrake;
+    let highG = (k.has(' ') && kbdBrake) || k.has(',');
+    let psm = k.has('v');
+
+    // Gamepad (standard mapping: LS stick, LB/RB yaw & LB+RB brake, RS/R3 look, A boost, X cobra/PSM, D-Pad FBW/Flaps/Gear/FPV)
     const pads = typeof navigator !== 'undefined' && navigator.getGamepads ? navigator.getGamepads() : [];
     for (const p of pads) {
       if (!p || !p.connected) continue;
       const dz = (v: number): number => (Math.abs(v) < 0.12 ? 0 : v);
       roll += dz(p.axes[0] ?? 0);
       pitch += dz(p.axes[1] ?? 0); // stick back (positive) = nose up
-      yaw += dz(p.axes[2] ?? 0);
+
+      const rsX = dz(p.axes[2] ?? 0);
+      const rsY = dz(p.axes[3] ?? 0);
+      if (rsX !== 0 || rsY !== 0) {
+        this.look.x = THREE.MathUtils.clamp(this.look.x - rsX * dt * 2.1, -2.5, 2.5);
+        this.look.y = THREE.MathUtils.clamp(this.look.y - rsY * dt * 1.6, -0.7, 1.35);
+        this.lastHeadMove = performance.now();
+      }
+
+      const prev = this.gpPrevButtons.get(p.index) ?? [];
+      const cur = p.buttons.map((b) => !!b?.pressed);
+      const edge = (idx: number): boolean => !!cur[idx] && !prev[idx];
+
       // Triggers measured from where they rest (worn ones never read zero: see PadTrigger)
       const rt = this.trigger(p.index, 7, p.buttons[7]?.value ?? 0);
       const lt = this.trigger(p.index, 6, p.buttons[6]?.value ?? 0);
       if (rt !== 0 || lt !== 0) this.throttle = THREE.MathUtils.clamp(this.throttle + (rt - lt) * dt * 0.6, 0, 1);
-      if (p.buttons[0]?.pressed) boost = true;
-      this.aligning = this.aligning || !!p.buttons[1]?.pressed;
+
+      const lb = !!cur[4];
+      const rb = !!cur[5];
+      const gpBrake = lb && rb;
+      if (gpBrake) brake = true;
+      else yaw += (rb ? 1 : 0) - (lb ? 1 : 0);
+
+      const gpBoost = !!cur[0];
+      if (gpBoost && this.abArmed) boost = true;
+      if (gpBoost && gpBrake) highG = true;
+      this.aligning = this.aligning || !!cur[1];
+
+      if (edge(2)) this.cobraQueued = true;
+      if (cur[2]) psm = true;
+      if (edge(11)) this.look.set(0, 0);
+      if (edge(12)) this.flight.cycleFbwMode();
+      if (edge(14) || edge(15)) this.flight.cycleFlapMode();
+
+      if (cur[13]) {
+        this.gpDownHoldSec += dt;
+        if (this.gpDownHoldSec >= 0.45 && !this.gpDownFpvHandled) {
+          this.flight.toggleFpvHold();
+          this.gpDownFpvHandled = true;
+        }
+      } else if (prev[13]) {
+        if (!this.gpDownFpvHandled) this.gearDown = !this.gearDown;
+        this.gpDownHoldSec = 0;
+        this.gpDownFpvHandled = false;
+      }
+
+      this.gpPrevButtons.set(p.index, cur);
       break;
     }
     if (this.invertPitch) pitch = -pitch;
-    this.aligning = k.has('z') || this.touchAlign || this.aligning;
+    this.aligning = (k.has('z') && !k.has('shift') && !this.zFpvHoldLatched) || this.touchAlign || this.aligning;
     return {
       pitch: THREE.MathUtils.clamp(pitch, -1, 1),
       roll: THREE.MathUtils.clamp(roll, -1, 1),
@@ -1938,6 +1933,14 @@ export class JetController {
       boost,
       assist: this.assist,
       cobra: this.cobraQueued,
+      airbrake: brake,
+      wheelBrake: brake,
+      gearDown: this.gearDown,
+      highG,
+      psm,
+      fbwMode: this.flight.fbwMode,
+      flapMode: this.flight.flapMode,
+      fpvHold: this.flight.fpvHoldActive,
     };
   }
 
@@ -2136,6 +2139,18 @@ export class JetController {
     // The autopilot's hop and landing are scripted: no physics step this frame
     // Earth's speed tiers lift the jet's air limit and its low-level drive (see EarthTransit)
     const tier = nearest.name === 'Earth' ? SPEED_TIERS[this.speedTier] : SPEED_TIERS[0];
+    const isSun = nearest.bundle.definition.category === 'star';
+    const vMps = 1 / unitsPerMps(kmPerUnit);
+    const clearance = isSun ? nearest.radius * 0.08 : nearest.cloud ? nearest.radius * 0.002 : nearest.noSurface ? nearest.radius * 0.5 : 0.003 / kmNear;
+    const radialSpeedMps = f.velocity.dot(this.vVertical) * vMps;
+    const onGround =
+      !isSun &&
+      !nearest.cloud &&
+      !nearest.noSurface &&
+      nearestAlt <= clearance + 0.0012 / kmNear &&
+      radialSpeedMps < 6;
+    const sinkRateMps = Math.max(0, -radialSpeedMps);
+    const tierKind = this.speedTier === 2 ? 'scramjet' : this.speedTier === 1 ? 'hypersonic' : 'jet';
     if (!this.scripted) {
       let inspectFloorUnitsPerS: number | undefined;
       let inspectCeilingUnitsPerS: number | undefined;
@@ -2156,6 +2171,15 @@ export class JetController {
         inspectFloorUnitsPerS,
         inspectCeilingUnitsPerS,
         inspectBlend,
+        airframeId: this.airframeId,
+        bodyName: nearest.name,
+        altKm,
+        upWorld: this.vVertical,
+        groundClearanceM: altKm * 1000,
+        onGround,
+        sinkRateMps,
+        unlimitedFuel: this.speedTier > 0,
+        speedTier: tierKind,
       });
     }
     // Home: where the jet first came into Earth's air
@@ -2175,29 +2199,21 @@ export class JetController {
     }
 
     // --- Contact & Solid Physics Collision ---
-    const isSun = nearest.bundle.definition.category === 'star';
-    // On solid ground the jet may skim 3 m above it (low enough to feel the size of everything)
-    const clearance = isSun ? nearest.radius * 0.08 : nearest.cloud ? nearest.radius * 0.002 : nearest.noSurface ? nearest.radius * 0.5 : 0.003 / kmNear;
-    const vMps = 1 / unitsPerMps(kmPerUnit);
     const contactSurfR = this.surfaceRadius(nearest, f.position);
     const hit = resolveSurfaceContact(f.position, f.velocity, nearest.center, contactSurfR, clearance) * vMps;
     if (hit > 0 && hit < 30) {
-      // A glancing touch: the jet skims along the ground instead of bouncing off it (the descent is
-      // taken away, the nose eases level, a light rumble). Bouncing off every touch made flying
-      // at ground level impossible: the jet was thrown back up to 40 m each time
+      // A glancing touch or wheeled touchdown: keep skimming smoothly; nose only nudges if gear retracted or nose buried
       const upNorm = this.v1.subVectors(f.position, nearest.center).normalize();
-      // The nose brought up to level (a share each frame) and its downward turn stopped; no upward
-      // kick, so it does not overshoot into a climb
       const fwdNow = f.forward(this.v2);
       const down = Math.asin(THREE.MathUtils.clamp(-fwdNow.dot(upNorm), -1, 1));
-      if (down > 0) {
+      if (down > 0 && (!this.gearDown || hit > 4.5)) {
         const right = this.v3.crossVectors(fwdNow, upNorm).normalize();
         f.quaternion.premultiply(this.q1.setFromAxisAngle(right, down * 0.35)).normalize();
         f.rates.x = Math.max(f.rates.x, 0);
       }
-      f.velocity.multiplyScalar(0.997);
+      if (!this.gearDown) f.velocity.multiplyScalar(0.997);
       f.speed = f.velocity.length();
-      this.shake = Math.min(0.6, this.shake + 0.04 + hit / 300);
+      if (!this.gearDown || hit > 4.5) this.shake = Math.min(0.6, this.shake + 0.04 + hit / 300);
       const currentDist = f.position.distanceTo(nearest.center);
       if (currentDist < contactSurfR + clearance) {
         f.position.copy(nearest.center).addScaledVector(upNorm, contactSurfR + clearance);
@@ -2234,11 +2250,14 @@ export class JetController {
     this.heat += (Math.max(heatTarget, plasma) - this.heat) * (1 - Math.exp(-3 * dt));
     this.warning = tti < 6 && altKm < nearest.radiusKm * 0.3 && !isSun ? 1 : heatTarget > 0.4 ? 2 : 0;
 
-    // Sonic boom vapour cone on the way through Mach 1
-    const sound = air?.soundMps ?? 343;
-    const mach = (nearest.name === 'Earth' || density > 0) ? speedMps / (sound || 343) : 0;
+    // Sonic boom vapour cone + expanding shock collar on Mach 1 crossing
+    const sound = f.soundMps > 1 ? f.soundMps : (air?.soundMps ?? 340.3);
+    const mach = !this.scripted && density > 0 ? f.mach : (nearest.name === 'Earth' || density > 0 ? speedMps / (sound || 340.3) : 0);
     const supersonic = mach > 1;
-    if (supersonic !== this.wasSupersonic && density > 0.08 && mach > 0.9 && mach < 1.25) this.shock.triggerVapourCone();
+    if (supersonic !== this.wasSupersonic && density > 0.08 && mach > 0.9 && mach < 1.25) {
+      this.shock.triggerVapourCone();
+      this.shock.triggerShockCollar();
+    }
     this.wasSupersonic = supersonic;
 
     // --- Camera
@@ -2351,27 +2370,76 @@ export class JetController {
 
     // The sky from inside the air is the world's own atmosphere shell (AtmosphereShader)
 
-    // --- Engines, motes, trails, plasma
+    // --- Engines, motes, vortex ribbons, shock cones, tire & exhaust smoke
     const boost = f.boosting ? 1 : 0;
-    this.model.update(timeSec, this.throttle, boost, 1 - Math.min(1, density * 8));
-    this.shock.update(dt, timeSec, this.heat * (isSun ? 0.6 : 1), mach, density);
+    this.model.update(timeSec, this.throttle, boost, 1 - Math.min(1, density * 8), {
+      dt,
+      surfaces: f.surfaces,
+      aoaDeg: f.aoaDeg,
+      mach,
+      gLoad: f.gLoad,
+      airDensity: density,
+      qPa: f.dynamicPressurePa,
+      abStage: f.abStage,
+      onGround: f.onGround,
+      groundSpeedMs: speedMps,
+    });
+    this.shock.update(dt, timeSec, this.heat * (isSun ? 0.6 : 1), mach, density, f.aoaDeg);
+    if (f.abStage === 3 && this.prevAbStage < 3 && density > 0.05) {
+      this.shock.triggerShockCollar();
+    }
+    this.prevAbStage = f.abStage;
+
     // Motes stream past at the jet's speed relative to the air (or to the world it rides)
     this.field.update(dt, this.v1.copy(f.velocity).multiplyScalar(mpu), Math.min(1, density * 3), 0.25 + 0.75 * lit, mach, f.boosting);
     const camFwd = this.v2.set(0, 0, -1).applyQuaternion(camera.quaternion);
-    const vapour = density > 0.02 ? THREE.MathUtils.smoothstep(f.gLoad, 3.5, 7.5) * Math.min(1, density * 3) : 0;
-    const contrail = density > 0.08 && density < 0.45 && altKm > 7 ? Math.min(1, this.throttle * 1.4) : 0;
-    const emit = (local: THREE.Vector3): THREE.Vector3 =>
-      this.v3.copy(local).applyQuaternion(f.quaternion).divideScalar(mpu).add(f.position);
-    this.trails[0].update(dt, emit(this.model.wingtips[0]), vapour, camera.position, mpu, camFwd);
-    this.trails[1].update(dt, emit(this.model.wingtips[1]), vapour, camera.position, mpu, camFwd);
-    this.trails[2].update(dt, emit(this.model.nozzles[0]), contrail, camera.position, mpu, camFwd);
-    this.trails[3].update(dt, emit(this.model.nozzles[1]), contrail, camera.position, mpu, camFwd);
+    const airVis = Math.min(1, density * 3);
+    const wingtipStrength = density > 0.02
+      ? Math.max(THREE.MathUtils.smoothstep(f.gLoad, 3.2, 7.5) * airVis, f.vortexStrength * 0.65 * airVis)
+      : 0;
+    const strakeStrength = density > 0.02
+      ? Math.max(THREE.MathUtils.smoothstep(Math.abs(f.aoaDeg), 11, 28) * airVis, f.vortexStrength * airVis)
+      : 0;
+    const contrailStrength = density > 0.08 && density < 0.45 && altKm > 7 ? Math.min(1, this.throttle * 1.4) : 0;
+    const emitTo = (local: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 =>
+      out.copy(local).applyQuaternion(f.quaternion).divideScalar(mpu).add(f.position);
+    const emit = (local: THREE.Vector3): THREE.Vector3 => emitTo(local, this.v3);
+    const noz0 = this.model.nozzles[0];
+    const noz1 = this.model.nozzles.length > 1 ? this.model.nozzles[1] : noz0;
+    this.vortex.update(
+      dt,
+      {
+        wingtips: [emitTo(this.model.wingtips[0], this.wTipL), emitTo(this.model.wingtips[1], this.wTipR)],
+        strakes: [emitTo(this.model.strakes[0], this.wStrkL), emitTo(this.model.strakes[1], this.wStrkR)],
+        nozzles: [emitTo(noz0, this.wNozL), emitTo(noz1, this.wNozR)],
+        wingtipStrength,
+        strakeStrength,
+        contrailStrength,
+      },
+      camera.position,
+      mpu,
+      camFwd,
+    );
+
+    // Touchdown main-gear tire smoke burst on runway / terrain contact
+    if (f.onGround && !this.wasOnGround && speedMps > 15 && density > 0.02) {
+      for (const idx of [1, 2] as const) {
+        const w = this.model.wheels[idx];
+        if (!w) continue;
+        emitTo(w, this.vWheel);
+        for (let k = 0; k < 4; k++) {
+          this.smoke.emit(this.vWheel, 0.55 + k * 0.14, 2.2, 1.35, 0.34, 0xdde2ea);
+        }
+      }
+    }
+    this.wasOnGround = f.onGround;
 
     // Exhaust smoke: only where there is air to hold it; a burst when the afterburner lights
     if (density > 0.02 && speedMps < 3000) {
       const lightOff = f.boosting && !this.wasBoosting;
       const haze = (0.05 + 0.1 * this.throttle) * (f.boosting ? 2.6 : 1) * Math.min(1, density * 3);
-      for (let n = 0; n < this.model.nozzles.length; n++) {
+      const nCount = Math.min(this.model.nozzles.length, this.lastNozzleWorld.length);
+      for (let n = 0; n < nCount; n++) {
         const now = emit(this.model.nozzles[n]).clone();
         const last = this.lastNozzleWorld[n];
         if (!last.valid) {
@@ -2453,8 +2521,21 @@ export class JetController {
     }
 
     this.audio.update(timeSec, {
-      throttle: this.throttle, boost, air: density, speedMps, inside, warning: this.scripted ? 0 : this.warning, gLoad: f.gLoad,
-      altKm, greyOut: this.telemetry.greyOut, inCloud: this.weather.cloudInside > 0.3,
+      throttle: this.throttle,
+      boost,
+      abStage: f.abStage,
+      air: density,
+      speedMps,
+      inside,
+      warning: this.scripted ? 0 : this.warning,
+      gLoad: f.gLoad,
+      altKm,
+      greyOut: this.telemetry.greyOut,
+      inCloud: this.weather.cloudInside > 0.3,
+      airbrake: f.surfaces.airbrake,
+      gearDown: this.gearDown,
+      buffet: f.buffetFactor,
+      touchdownImpulse: f.touchdownImpulse,
     });
 
     // --- Telemetry for the HUD, then the cockpit displays
@@ -2477,7 +2558,12 @@ export class JetController {
       this.destScroll = THREE.MathUtils.clamp(active - 4, 0, Math.max(0, dest.items.length - 9));
       const rows = dest.items.slice(this.destScroll, this.destScroll + 9).map((d) => d.row);
       const inp = this.lastInput;
-      this.controls.update(dt, timeSec, inp.pitch, inp.roll, this.throttle, this.gearDown, this.abArmed, dest.title, rows, inside);
+      this.controls.update(dt, timeSec, inp.pitch, inp.roll, this.throttle, this.gearDown, this.abArmed, dest.title, rows, inside, {
+        airbrake: f.airbrakeActive,
+        fbwMode: f.fbwMode,
+        flapMode: f.flapMode,
+        buffet: f.buffetFactor,
+      });
     }
     if (this.cockpit?.group.visible) {
       if (!this.navPoints.length) {
@@ -2509,9 +2595,9 @@ export class JetController {
     }
     this.shake = Math.max(0, this.shake - dt * 1.5);
     const speedMps = f.velocity.length() / unitsPerMps(kmPerUnit);
-    const buffet = density > 0 ? Math.min(0.6, density * (speedMps / 900) ** 2 * 0.4) : 0;
+    const buffet = Math.max(f.buffetFactor, density > 0 ? Math.min(0.6, density * (speedMps / 900) ** 2 * 0.4) : 0);
     const shakeAmp = (this.shake + buffet + (f.boosting ? 0.35 : 0)) * 0.004;
-    const machVal = speedMps / 343;
+    const machVal = f.mach > 0 ? f.mach : speedMps / (f.soundMps > 1 ? f.soundMps : 340.3);
     const machKick = THREE.MathUtils.clamp((machVal - 0.7) * 2.2, 0, 48);
     const boostKick = f.boosting ? 12 : 0;
     const targetFovKick = boostKick + machKick + Math.min(8, Math.log10(1 + speedMps / 1000) * 1.6);
@@ -2540,11 +2626,16 @@ export class JetController {
       if (this.headQuat.angleTo(f.quaternion) > 0.25) this.headQuat.copy(f.quaternion);
       const turn = Math.abs(Math.sin(this.head.x));
       const back = Math.max(0, -Math.cos(this.head.x));
+      const aosSway = THREE.MathUtils.clamp(-f.aosDeg * 0.0028, -0.045, 0.045);
+      const lonShift = THREE.MathUtils.clamp(this.throttle * 0.014 - (f.boosting ? 0.018 : 0) + (f.airbrakeActive ? -0.012 : 0), -0.025, 0.025);
+      const buffetTremorX = buffet > 0.05 ? Math.sin(timeSec * 53) * buffet * 0.008 : 0;
+      const buffetTremorY = buffet > 0.05 ? Math.cos(timeSec * 61) * buffet * 0.007 : 0;
       const lean = this.v3.set(
-        -Math.sin(this.head.x) * 0.11,
-        -this.headDrop + 0.05 * back + 0.03 * Math.max(0, this.head.y),
-        0.05 * turn - 0.04 * Math.max(0, this.head.y),
+        -Math.sin(this.head.x) * 0.11 + aosSway + buffetTremorX,
+        -this.headDrop + 0.05 * back + 0.03 * Math.max(0, this.head.y) + buffetTremorY,
+        0.05 * turn - 0.04 * Math.max(0, this.head.y) + lonShift,
       );
+      this.headOffset = { x: lean.x, y: lean.y, z: lean.z };
       const eye = this.v2.copy(this.model!.eye).add(lean).applyQuaternion(f.quaternion).multiplyScalar(upm);
       camera.position.copy(f.position).add(eye);
       camera.quaternion.copy(this.headQuat);
@@ -2846,7 +2937,7 @@ export class JetController {
     t.boost = f.boosting ? 1 : 0;
     t.boostEnergy = f.boostEnergy;
     t.assist = this.assist;
-    t.aligning = this.keys.has('z');
+    t.aligning = (this.keys.has('z') && !this.keys.has('shift') && !this.zFpvHoldLatched) || this.touchAlign;
     t.view = this.view;
     t.landingName = this.landing?.name ?? '';
     t.speedTier = SPEED_TIERS[this.speedTier].label;
@@ -2891,11 +2982,15 @@ export class JetController {
       const near = sc.z > 0 && Math.abs(sc.x) < 1.8 && Math.abs(sc.y) < 1.8;
       const airK = Math.min(1, t.airDensity * 6);
       t.sunNdc = { x: sc.x, y: sc.y, k: near ? this.lastLit * airK * Math.max(0, 1 - Math.hypot(sc.x, sc.y) / 2.2) : 0 };
-      // Grey-out: the pilot's eyes in the air, from about 5 g; held back in the GoPro (a camera does not black out)
-      const gTarget = this.view === 'cockpit' && !this.cutscene && t.airDensity > 0 ? THREE.MathUtils.smoothstep(f.gLoad, 5, 9) : 0;
+      // Signed G-effect: +5..+9 G greys/blacks out; -1.8..-3.8 G induces arterial redout (cockpit pilot eyes only)
+      const activeGWindow = this.view === 'cockpit' && !this.cutscene && t.airDensity > 0;
+      const posG = activeGWindow ? THREE.MathUtils.smoothstep(f.gLoad, 5, 9) : 0;
+      const negG = activeGWindow ? THREE.MathUtils.smoothstep(-f.gLoad, 1.8, 3.8) : 0;
+      const gTarget = posG - negG;
       const dtT = Math.min(0.1, Math.max(0, timeSec - this.lastTelemetrySec));
       this.lastTelemetrySec = timeSec;
-      t.greyOut += (gTarget - t.greyOut) * Math.min(1, dtT * (gTarget > t.greyOut ? 0.8 : 1.6));
+      const gRate = Math.abs(gTarget) > Math.abs(t.greyOut) ? 0.9 : 1.7;
+      t.greyOut += (gTarget - t.greyOut) * Math.min(1, dtT * gRate);
     }
     t.skyEvent = this.sky.label;
     if (!t.skyEvent) {
@@ -2910,6 +3005,63 @@ export class JetController {
     t.muted = this.audio.muted;
     t.invertPitch = this.invertPitch;
     t.pxPerDeg = (height / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * Math.tan(THREE.MathUtils.degToRad(1));
+
+    // Phase 2 propulsion, aerodynamic, FBW, maneuver & cockpit state
+    t.airframeId = f.airframeId;
+    t.airframeName = this.airframe.anchors.name;
+    t.massKg = f.massKg;
+    t.dryMassKg = f.dryMassKg;
+    t.fuelKg = f.fuelKg;
+    t.maxFuelKg = f.maxFuelKg;
+    t.fuelFrac = f.maxFuelKg > 0 ? THREE.MathUtils.clamp(f.fuelKg / f.maxFuelKg, 0, 1) : 1;
+    t.fuelFlowKgS = f.fuelFlowKgS;
+    t.thrustN = f.thrustN;
+    t.maxDryThrustN = f.maxDryThrustN;
+    t.maxWetThrustN = f.maxWetThrustN;
+    t.abStage = f.abStage;
+    t.supercruise = f.supercruise;
+    t.twRatio = f.twRatio;
+    t.gravityMps2 = f.gravityMps2;
+    t.iasMps = f.iasMps;
+    t.tasMps = f.tasMps > 0 ? f.tasMps : speedMps;
+    t.dynamicPressurePa = f.dynamicPressurePa;
+    t.ambientTempK = f.ambientTempK;
+    t.ambientPressurePa = f.ambientPressurePa;
+    t.soundMps = f.soundMps;
+    t.aoaDeg = f.aoaDeg;
+    t.aosDeg = f.aosDeg;
+    t.fpvAngleDeg = f.fpvAngleDeg;
+    t.verticalSpeedMps = f.verticalSpeedMps;
+    t.specificExcessPowerMps = f.specificExcessPowerMps;
+    t.gPeak = f.gPeak;
+    t.gMin = f.gMin;
+    t.gEffect = t.greyOut;
+    t.cornerSpeedMps = f.cornerSpeedMps;
+    t.stallSpeedMps = f.stallSpeedMps;
+    t.cl = f.cl;
+    t.cd = f.cd;
+    t.liftN = f.liftN;
+    t.dragN = f.dragN;
+    t.stallFactor = f.stallFactor;
+    t.vortexStrength = f.vortexStrength;
+    t.groundEffect = f.groundEffect;
+    t.onGround = f.onGround;
+    t.touchdownImpulse = f.touchdownImpulse;
+    t.fbwMode = f.fbwMode;
+    t.flapMode = f.flapMode;
+    t.airbrakeActive = f.airbrakeActive;
+    t.wheelBrakeActive = f.wheelBrakeActive;
+    t.highGActive = f.highGActive;
+    t.fpvHoldActive = f.fpvHoldActive;
+    t.tvcActive = f.tvcActive;
+    t.maneuver = f.maneuver;
+    t.maneuverTimerSec = f.maneuverTimerSec;
+    t.spinWarning = f.spinWarning;
+    t.alphaWarning = f.alphaWarning;
+    t.overGWarning = f.overGWarning;
+    t.surfaces = f.surfaces;
+    t.headOffset = (this.view === 'cockpit' || this.view === 'gopro') ? this.headOffset : { x: 0, y: 0, z: 0 };
+    t.mfdPages = this.mfd.getPages();
 
     // Attitude against the local horizon (or the ecliptic far from any world)
     const fwd = f.forward(new THREE.Vector3());
@@ -3042,7 +3194,7 @@ export class JetController {
     this.cockpit?.dispose();
     this.field.dispose();
     this.shock.dispose();
-    for (const t of this.trails) t.dispose();
+    this.vortex.dispose();
     this.smoke.dispose();
     this.flare.dispose();
     this.sky.dispose();

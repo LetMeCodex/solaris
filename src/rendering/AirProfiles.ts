@@ -33,12 +33,12 @@ export const AIR: Record<string, AirProfile> = {
   Earth: {
     scaleHeightKm: 8.5, topKm: 100, surfaceDensity: 1,
     rayleigh: [5.8e-3, 13.5e-3, 33.1e-3], mie: 4e-3, mieTint: [1, 1, 1], mieScaleHeightKm: 1.2, mieG: 0.76,
-    absorption: [0.65e-3, 1.88e-3, 0.085e-3], soundMps: 343,
+    absorption: [0.65e-3, 1.88e-3, 0.085e-3], soundMps: 340.3,
   },
   Mars: {
     scaleHeightKm: 11.1, topKm: 80, surfaceDensity: 0.0163,
     rayleigh: [19.9e-3, 13.6e-3, 5.75e-3], mie: 8e-3, mieTint: [1.0, 0.62, 0.38], mieScaleHeightKm: 11, mieG: 0.65,
-    absorption: [0, 0, 0], soundMps: 240,
+    absorption: [0, 0, 0], soundMps: 232,
   },
   Venus: {
     scaleHeightKm: 15.9, topKm: 250, surfaceDensity: 54.4,
@@ -48,27 +48,27 @@ export const AIR: Record<string, AirProfile> = {
   Titan: {
     scaleHeightKm: 21, topKm: 600, surfaceDensity: 4.4,
     rayleigh: [0.25e-3, 0.4e-3, 0.8e-3], mie: 0.55e-3, mieTint: [1.0, 0.62, 0.25], mieScaleHeightKm: 40, mieG: 0.6,
-    absorption: [0.02e-3, 0.09e-3, 0.3e-3], soundMps: 194,
+    absorption: [0.02e-3, 0.09e-3, 0.3e-3], soundMps: 195,
   },
   Jupiter: {
     scaleHeightKm: 27, topKm: 350, surfaceDensity: 0.13,
     rayleigh: [0.7e-3, 1.5e-3, 3.4e-3], mie: 0.6e-3, mieTint: [1.0, 0.9, 0.75], mieScaleHeightKm: 20, mieG: 0.7,
-    absorption: [0, 0, 0], soundMps: 1000,
+    absorption: [0, 0, 0], soundMps: 942,
   },
   Saturn: {
     scaleHeightKm: 59.5, topKm: 600, surfaceDensity: 0.16,
     rayleigh: [0.5e-3, 1.1e-3, 2.2e-3], mie: 0.4e-3, mieTint: [1.0, 0.92, 0.7], mieScaleHeightKm: 45, mieG: 0.7,
-    absorption: [0, 0, 0], soundMps: 800,
+    absorption: [0, 0, 0], soundMps: 863,
   },
   Uranus: {
     scaleHeightKm: 27.7, topKm: 400, surfaceDensity: 0.34,
     rayleigh: [0.8e-3, 1.8e-3, 3.8e-3], mie: 0.25e-3, mieTint: [0.85, 1.0, 1.0], mieScaleHeightKm: 25, mieG: 0.7,
-    absorption: [1.2e-3, 0.15e-3, 0.05e-3], soundMps: 900,
+    absorption: [1.2e-3, 0.15e-3, 0.05e-3], soundMps: 576,
   },
   Neptune: {
-    scaleHeightKm: 19.7, topKm: 300, surfaceDensity: 0.45,
+    scaleHeightKm: 19.7, topKm: 300, surfaceDensity: 0.367,
     rayleigh: [0.85e-3, 1.9e-3, 4e-3], mie: 0.25e-3, mieTint: [0.8, 0.95, 1.0], mieScaleHeightKm: 20, mieG: 0.7,
-    absorption: [1.5e-3, 0.2e-3, 0.04e-3], soundMps: 900,
+    absorption: [1.5e-3, 0.2e-3, 0.04e-3], soundMps: 559,
   },
 };
 

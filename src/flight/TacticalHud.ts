@@ -9,7 +9,7 @@
  *
  * Drawn on the HUD canvas every frame (desktop and tablet; a phone keeps its compact corners).
  */
-import type { JetTelemetry } from './JetController';
+import type { JetTelemetry } from './JetTelemetry';
 import { formatDistance, formatSpeed } from './worlds';
 
 const MINT = (a: number): string => `rgba(109, 252, 192, ${a})`;
@@ -375,8 +375,8 @@ function locationCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, p: Place, 
 }
 
 function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number, right: number, bottom: number): number {
-  const w = 320;
-  const h = 140;
+  const w = 328;
+  const h = 160;
   const x = right - w;
   const y = bottom - h;
   const space = !t.airWorld;
@@ -406,22 +406,33 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
     chamferPanel(ctx, x, y, w, h, 14, true);
     ctx.fill();
   }
-  // Load factor, and its peak (held a few seconds, then easing back)
+  // Load factor, peak G, AoA & T/W in header bar
   const g = Math.abs(t.gLoad);
-  if (g >= gPeak.value) {
+  const livePeak = t.gPeak !== undefined ? Math.max(gPeak.value, t.gPeak) : gPeak.value;
+  if (g >= livePeak) {
     gPeak.value = g;
     gPeak.at = now;
-  } else if (now - gPeak.at > 4) gPeak.value += (g - gPeak.value) * 0.02;
+  } else if (now - gPeak.at > 4) {
+    gPeak.value += (g - gPeak.value) * 0.02;
+  } else {
+    gPeak.value = livePeak;
+  }
   if (!space) {
-    const gc = g > 7 ? AMBER(0.95) : g > 4 ? WHITE(0.9) : WHITE(0.55);
+    const gc = g > 9 ? 'rgba(255, 108, 108, 0.96)' : g > 7 ? AMBER(0.95) : g > 4 ? WHITE(0.9) : WHITE(0.62);
     text(ctx, `G ${t.gLoad.toFixed(1)}`, x + 16, y + 14, `600 10px ${MONO}`, gc, 'left', 1);
-    text(ctx, `PEAK ${gPeak.value.toFixed(1)}`, x + 66, y + 14, `500 10px ${MONO}`, WHITE(0.4), 'left', 1);
+    text(ctx, `PK ${gPeak.value.toFixed(1)}`, x + 64, y + 14, `500 10px ${MONO}`, WHITE(0.45), 'left', 1);
+    if (t.aoaDeg !== undefined) {
+      text(ctx, `α ${t.aoaDeg.toFixed(1)}°`, x + 122, y + 14, `600 10px ${MONO}`, t.alphaWarning ? AMBER(0.95) : MINT(0.85), 'left', 0.5);
+    }
+    if (t.twRatio !== undefined) {
+      text(ctx, `T/W ${t.twRatio.toFixed(2)}`, right - 50, y + 14, `600 10px ${MONO}`, t.twRatio >= 1 ? CYAN(0.92) : WHITE(0.55), 'right', 0.5);
+    }
   }
 
   // Altitude tape on the right edge: ticks scroll with the height
   const tapeX = right - 34;
-  const tapeTop = y + 12;
-  const tapeH = h - 24;
+  const tapeTop = y + 14;
+  const tapeH = h - 42;
   const altM = t.altKm * 1000;
   const step = altM < 20000 ? 100 : altM < 2e6 ? 10000 : 1e6;
   const pxPer = 9 / step;
@@ -435,7 +446,6 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
     const v = base + i * step;
     const ty = midY - (v - altM) * pxPer;
     const major = Math.round(v / step) % 5 === 0;
-    // Fading out towards the tape's ends
     const edge = 1 - Math.min(1, Math.abs(ty - midY) / (tapeH / 2)) ** 2;
     ctx.fillStyle = WHITE((major ? 0.65 : 0.3) * edge);
     ctx.fillRect(tapeX, ty, major ? 12 : 6, 1);
@@ -459,29 +469,37 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
   }
 
   const vx = tapeX - 16;
-  // A row: label, then the value (rolling drums when it is a plain count) and its unit
   const row = (label: string, value: string | number, unit: string, yy: number, size: number, colour: string): void => {
     text(ctx, label, x + 16, yy, `600 12px ${HEAD}`, WHITE(0.58), 'left', 2.5);
     const uw = unit ? text(ctx, unit, vx, yy, `600 12px ${HEAD}`, WHITE(0.62), 'right', 1.5) + 5 : 0;
     if (typeof value === 'number') rollingNumber(ctx, value, vx - uw, yy, size, colour);
     else text(ctx, value, vx - uw, yy, `700 ${size}px ${HEAD}`, colour, 'right', 1);
   };
-  if (t.altKm < 100) row(space ? 'RANGE' : 'ALT', altM, 'M', y + 36, 25, WHITE(0.97));
+  if (t.altKm < 100) row(space ? 'RANGE' : 'ALT', altM, 'M', y + 38, 25, WHITE(0.97));
   else {
     const alt = formatDistance(t.altKm).toUpperCase().split(' ');
-    row(space ? 'RANGE' : 'ALT', alt[0], alt[1] ?? '', y + 36, 25, WHITE(0.97));
+    row(space ? 'RANGE' : 'ALT', alt[0], alt[1] ?? '', y + 38, 25, WHITE(0.97));
   }
   const vs = Math.abs(climb.rate) < 1e5 ? `${climb.rate >= 0 ? '+' : '−'}${Math.round(Math.abs(climb.rate)).toLocaleString('en-US')} M/MIN` : '';
-  if (vs && !space) text(ctx, `VS ${vs}`, vx, y + 50, `500 10px ${MONO}`, climb.rate >= 0 ? MINT(0.75) : AMBER(0.8), 'right', 0.5);
+  const psStr =
+    !space && t.specificExcessPowerMps !== undefined
+      ? `  ·  Ps ${t.specificExcessPowerMps >= 0 ? '+' : ''}${Math.round(t.specificExcessPowerMps)}${t.specificExcessPowerMps >= 2 ? '▲' : t.specificExcessPowerMps <= -2 ? '▼' : ''}`
+      : '';
+  if ((vs || psStr) && !space) {
+    text(ctx, `${vs ? 'VS ' + vs : ''}${psStr}`, vx, y + 52, `500 10px ${MONO}`, climb.rate >= 0 ? MINT(0.75) : AMBER(0.8), 'right', 0.4);
+  }
   if (space) {
     const [num, unit] = formatSpeed(t.speedMps).toUpperCase().split(' ');
-    row('VEL', num, unit ?? '', y + 74, 25, WHITE(0.97));
-    text(ctx, `SUN ${(t.sunDistKm / AU_KM).toFixed(3)} AU`, x + 16, y + 102, `500 11px ${MONO}`, AMBER(0.88), 'left', 0.5);
-    text(ctx, t.earthDistKm > 50000 ? `LIGHT-TIME TO EARTH ${lightTime(t.earthDistKm)}` : `EARTH ${formatDistance(t.earthDistKm).toUpperCase()}`, x + 16, y + 122, `500 11px ${MONO}`, CYAN(0.88), 'left', 0.5);
+    row('VEL', num, unit ?? '', y + 76, 25, WHITE(0.97));
+    text(ctx, `SUN ${(t.sunDistKm / AU_KM).toFixed(3)} AU`, x + 16, y + 104, `500 11px ${MONO}`, AMBER(0.88), 'left', 0.5);
+    text(ctx, t.earthDistKm > 50000 ? `LIGHT-TIME TO EARTH ${lightTime(t.earthDistKm)}` : `EARTH ${formatDistance(t.earthDistKm).toUpperCase()}`, x + 16, y + 124, `500 11px ${MONO}`, CYAN(0.88), 'left', 0.5);
   } else {
-    row('SPD', t.speedMps * 3.6, 'KM/H', y + 74, 25, WHITE(0.97));
-    text(ctx, `${Math.round(t.speedMps * 1.94384).toLocaleString('en-US')} KT`, vx, y + 89, `500 10px ${MONO}`, WHITE(0.55), 'right', 0.5);
-    // Mach: a segmented scale to 3, marks at 1 and 2; green once supersonic
+    const shownSpdMps = t.iasMps ?? t.speedMps;
+    row(t.iasMps !== undefined ? 'IAS' : 'SPD', shownSpdMps * 3.6, 'KM/H', y + 76, 25, WHITE(0.97));
+    const kt = Math.round(shownSpdMps * 1.94384).toLocaleString('en-US');
+    const tasTxt = t.tasMps !== undefined && Math.abs(t.tasMps - shownSpdMps) > 5 ? `TAS ${Math.round(t.tasMps)} M/S · ` : '';
+    text(ctx, `${tasTxt}${kt} KT`, vx, y + 90, `500 10px ${MONO}`, WHITE(0.55), 'right', 0.4);
+    // Mach scale to 3
     const segs = 30;
     const sx = x + 16;
     const sw = vx - sx - 70;
@@ -491,12 +509,11 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
       const sup = i >= 10;
       ctx.fillStyle = on ? (sup ? MINT(0.9) : WHITE(0.85)) : WHITE(0.12);
       const hh = i % 10 === 9 ? 9 : 6;
-      ctx.fillRect(sx + (i * sw) / segs, y + 124 - hh, sw / segs - 2, hh);
+      ctx.fillRect(sx + (i * sw) / segs, y + 125 - hh, sw / segs - 2, hh);
     }
-    text(ctx, 'MACH', sx, y + 109, `600 12px ${HEAD}`, WHITE(0.58), 'left', 2.5);
-    text(ctx, t.mach.toFixed(2), vx, y + 127, `700 30px ${HEAD}`, t.mach >= 1 ? MINT(0.98) : WHITE(0.97), 'right', 1);
+    text(ctx, t.supercruise ? 'SUPERCRUISE' : 'MACH', sx, y + 111, `600 11px ${HEAD}`, t.supercruise ? CYAN(0.92) : WHITE(0.58), 'left', 2);
+    text(ctx, t.mach.toFixed(2), vx, y + 128, `700 28px ${HEAD}`, t.mach >= 1 ? MINT(0.98) : WHITE(0.97), 'right', 1);
     if (burst < 2.4) {
-      // The shock ring from the Mach figure, and the word sliding out above the card
       const r = 10 + burst * 260;
       ctx.strokeStyle = WHITE(Math.max(0, 0.7 - burst * 0.9));
       ctx.lineWidth = 2;
@@ -512,6 +529,25 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
       ctx.restore();
     }
   }
+
+  // Bottom FBW / Flaps / Brake / AB / Fuel telemetry strip inside the card
+  const fy = y + h - 10;
+  const fbw = (t.fbwMode ?? 'norm').toUpperCase();
+  const flp = (t.flapMode ?? 'auto').toUpperCase();
+  const ab = t.abStage ?? (t.boost > 0.66 ? 3 : t.boost > 0.33 ? 2 : t.boost > 0 ? 1 : 0);
+  const fuelPct = Math.round(Math.max(0, Math.min(1, t.fuelFrac ?? t.boostEnergy)) * 100);
+  const pills = [
+    `${fbw}${t.tvcActive ? '+TVC' : ''}`,
+    `FLP ${flp === 'COMBAT' ? 'CMB' : flp === 'LAND' ? 'LND' : 'AUTO'}`,
+    t.airbrakeActive ? 'BRK' : t.wheelBrakeActive ? 'W-BRK' : '',
+    t.supercruise ? 'SUPR' : ab > 0 ? `AB${ab}` : t.abArmed ? 'ARM' : '',
+    t.maneuver && t.maneuver !== 'none' ? t.maneuver.toUpperCase() : '',
+    `FUEL ${fuelPct}%`,
+  ].filter(Boolean);
+  ctx.fillStyle = WHITE(0.08);
+  ctx.fillRect(x + 14, y + h - 24, w - 28, 1);
+  text(ctx, pills.join(' · '), x + 16, fy, `600 10px ${MONO}`, t.maneuver && t.maneuver !== 'none' ? CYAN(0.92) : fuelPct <= 15 ? AMBER(0.95) : MINT(0.82), 'left', 0.8);
+
   ctx.restore();
   return burst < 2.4 && !space ? y - 50 : y;
 }
@@ -680,11 +716,11 @@ function centreReveal(ctx: CanvasRenderingContext2D, t: JetTelemetry, place: Pla
 
 /** Ground ahead / heat: a tactical warning box, hazard-striped, pulsing. Returns whether drawn. */
 function warning(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number): boolean {
-  if (!t.warning) return false;
+  if (!t.warning && !t.spinWarning) return false;
   const w = t.width;
   const h = t.height;
-  const label = t.warning === 1 ? 'PULL UP' : 'HEAT  ·  SOLAR CORONA';
-  const pulse = 0.55 + 0.45 * Math.abs(Math.sin(now * (t.warning === 1 ? 9 : 5)));
+  const label = t.warning === 1 ? 'PULL UP' : t.warning === 2 ? 'HEAT  ·  SOLAR CORONA' : 'SPIN  ·  STICK FWD + OPP Q/E';
+  const pulse = 0.55 + 0.45 * Math.abs(Math.sin(now * (t.warning === 1 || t.spinWarning ? 9 : 5)));
   const cx = w / 2;
   const cy = h * 0.64;
   ctx.save();
@@ -783,7 +819,7 @@ export function drawTactical(ctx: CanvasRenderingContext2D, t: JetTelemetry, ear
   const place = describePlace(t, earth);
   // Each card is drawn about its own anchor corner, scaled
   const LOC_H = 122;
-  const FLT_H = 140;
+  const FLT_H = 160;
   const tapeTop = 58 * Math.max(0.8, Math.min(1.2, L.k));
   const topY = (L.tape ? tapeTop + 64 * L.k : 70) + 8;
   const locBottom = L.top ? topY + LOC_H * L.k : h - Math.max(40, bottomInset + 12);

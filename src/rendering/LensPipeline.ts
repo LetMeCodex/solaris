@@ -299,14 +299,21 @@ const LensShader = {
         color *= 1.0 - smoothstep(uFisheyeMask - 0.05, uFisheyeMask, rho);
       }
 
-      // The pilot's eyes under G: grey-out creeps in from the edges (colour first, then light),
-      //    and the view tunnels towards a clear centre, always a soft gradient
+      // The pilot's eyes under signed G:
+      //  - +G (> 0): grey-out peripheral desaturation followed by tunnel blackout
+      //  - -G (< 0): arterial red-out blood wash creeping in from periphery
       if (uGrey > 0.001) {
         float rr = length(p) / aspect;
         float edge = smoothstep(mix(1.2, 0.18, uGrey), mix(1.6, 0.85, uGrey), rr);
         float l0 = dot(color, vec3(0.2126, 0.7152, 0.0722));
         color = mix(color, vec3(l0), clamp(edge * 1.6, 0.0, 1.0));
         color *= 1.0 - edge * smoothstep(0.35, 1.0, uGrey);
+      } else if (uGrey < -0.001) {
+        float red = clamp(-uGrey, 0.0, 1.0);
+        float rr = length(p) / aspect;
+        float edge = smoothstep(mix(1.15, 0.22, red), mix(1.55, 0.88, red), rr);
+        color = mix(color, vec3(0.62, 0.03, 0.03), clamp(edge * red * 1.5, 0.0, 0.88));
+        color *= 1.0 - edge * smoothstep(0.45, 1.0, red) * 0.45;
       }
 
       // 6. Grain, strongest in the mid-tones like film
@@ -879,9 +886,12 @@ export class LensPipeline {
     u.uSrcTan.value = srcTan;
   }
 
-  /** Grey-out / tunnel vision of the pilot's eyes under G, 0..1. */
+  /** Signed G-effect: 0..+1 positive-G greyout/blackout, 0..-1 negative-G redout. */
   public setGrey(level: number): void {
-    this.lensPass.uniforms.uGrey.value = this.reducedMotion ? Math.min(level, 0.5) : level;
+    const clamped = THREE.MathUtils.clamp(level, -1, 1);
+    this.lensPass.uniforms.uGrey.value = this.reducedMotion
+      ? Math.sign(clamped) * Math.min(Math.abs(clamped), 0.5)
+      : clamped;
   }
 
   /** God rays from the Sun at scene NDC (x, y), strength 0..1 (0 off). */

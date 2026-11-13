@@ -52,10 +52,20 @@ export interface JetAudioState {
   gLoad: number;
   /** Height over the ground (km): the engine sinks away as you climb. */
   altKm?: number;
-  /** The pilot's grey-out (0..1): the world's sound narrows and dims. */
+  /** Pilot G vision strain (-1 redout .. +1 blackout): the world's sound narrows and dims. */
   greyOut?: number;
   /** Inside a cloud: the outside sound is muffled. */
   inCloud?: boolean;
+  /** Afterburner stage 0..3. */
+  abStage?: number;
+  /** Airbrake deployment [0..1]. */
+  airbrake?: number;
+  /** Gear extension [0..1] or down state. */
+  gearDown?: boolean;
+  /** Aerodynamic stall/high-AoA buffet factor [0..1]. */
+  buffet?: number;
+  /** Landing gear touchdown impact proxy (>0 triggers oleo thud). */
+  touchdownImpulse?: number;
 }
 
 // Levels of the recordings in the mix (they are levelled to about -20..-26 LUFS when cut)
@@ -104,6 +114,7 @@ export class JetAudio {
   private rough!: { gain: GainNode };
   private burner!: { gain: GainNode; filter: BiquadFilterNode };
   private wind!: { gain: GainNode; filter: BiquadFilterNode };
+  private dragBuffet!: { gain: GainNode; filter: BiquadFilterNode };
   private ecs!: { gain: GainNode };
   private suit!: { gain: GainNode };
   private warn!: { osc: OscillatorNode; gain: GainNode };
@@ -111,6 +122,8 @@ export class JetAudio {
   private noise: AudioBuffer | null = null;
   private brown: AudioBuffer | null = null;
   private wasBoosting = false;
+  private prevAbStage = 0;
+  private lastTouchThud = -10;
   public muted = false;
   /** The recordings (public/audio/jet/), by name, once loaded. */
   private rec = new Map<string, AudioBuffer>();
@@ -357,6 +370,14 @@ export class JetAudio {
     wg.connect(this.world);
     this.wind = { gain: wg, filter: wf };
 
+    // Airbrake, landing gear drag, and high-AoA stall buffet low-frequency rumble
+    const dbg = gain();
+    const dbf = filter('lowpass', 240, 0.9);
+    loop(bbuf).connect(dbf);
+    dbf.connect(dbg);
+    dbg.connect(this.world);
+    this.dragBuffet = { gain: dbg, filter: dbf };
+
     // Cockpit air: the conditioning hiss
     const eg = gain();
     const eb = filter('bandpass', 2200, 0.6);
@@ -402,8 +423,9 @@ export class JetAudio {
     const atmos = Math.min(1, s.air * 6);
     this.hull.frequency.setTargetAtTime(500 + 9000 * atmos, t, 0.3);
 
-    // --- Spool: the rotors lag the lever (about 1.6 s up, 2.4 s down)
-    const want = 0.35 + 0.65 * s.throttle + 0.08 * s.boost;
+    // Spool: the rotors lag the lever; AB stage 1..3 adds injector ramp
+    const abLvl = s.abStage !== undefined ? Math.max(s.boost, s.abStage / 3) : s.boost;
+    const want = 0.35 + 0.65 * s.throttle + 0.08 * abLvl;
     const tau = want > this.spool ? 1.6 : 2.4;
     this.spool += (want - this.spool) * (1 - Math.exp(-dt / tau));
     const n = this.spool;
@@ -416,9 +438,8 @@ export class JetAudio {
     // 5 km): behind a sealed canopy and a helmet's earcups the jet is a texture, not a roar
     const high = s.inside ? 1 - 0.65 * smooth01((s.altKm ?? 0) / 5) : 1;
     this.engineBus.gain.setTargetAtTime(masking * high, t, 0.6);
-    // Grey-out: the world slides down to ~280 Hz and loses 6 dB; in cloud it closes to ~900 Hz.
-    // While the radio talks, the world ducks 6 dB (quick down, slow back)
-    const grey = Math.min(1, Math.max(0, s.greyOut ?? 0));
+    // Grey-out / Red-out: extreme positive or negative G narrows and dims outside sound
+    const grey = Math.min(1, Math.abs(s.greyOut ?? 0));
     const openHz = s.inCloud ? 900 : 20000;
     this.world.frequency.setTargetAtTime(Math.exp(Math.log(openHz) + (Math.log(280) - Math.log(openHz)) * grey), t, 0.25);
     const talking = t < this.radioUntil;
@@ -456,14 +477,27 @@ export class JetAudio {
     this.roar.gain.gain.setTargetAtTime((s.inside ? 0.35 : 0.6) * (0.2 + 0.8 * g) * (1 + s.boost * 0.6) * (0.4 + 0.6 * synth), t, tc);
     this.rough.gain.gain.setTargetAtTime(0.18 * (0.3 + 0.7 * g + 0.4 * s.boost), t, 0.25);
 
-    this.burner.filter.frequency.setTargetAtTime(110 + 160 * s.boost, t, 0.2);
-    this.burner.gain.gain.setTargetAtTime(s.boost * (s.inside ? 0.9 : 1.4), t, 0.08);
-    if (s.boost > 0.5 && !this.wasBoosting) this.whump(t);
+    this.burner.filter.frequency.setTargetAtTime(110 + 180 * abLvl, t, 0.2);
+    this.burner.gain.gain.setTargetAtTime(abLvl * (s.inside ? 0.9 : 1.4), t, 0.08);
+    const stageNow = s.abStage ?? (s.boost > 0.5 ? 3 : 0);
+    if ((s.boost > 0.5 && !this.wasBoosting) || (stageNow > this.prevAbStage && stageNow >= 1)) this.whump(t);
     this.wasBoosting = s.boost > 0.5;
+    this.prevAbStage = stageNow;
 
-    const buffet = 1 + 0.25 * Math.sin(timeSec * 23) * Math.sin(timeSec * 7.1) + 0.2 * Math.min(1, Math.max(0, s.gLoad - 5) / 4) * Math.sin(timeSec * 31);
+    const buffet = 1 + 0.25 * Math.sin(timeSec * 23) * Math.sin(timeSec * 7.1) + 0.2 * Math.min(1, Math.max(0, Math.abs(s.gLoad) - 5) / 4) * Math.sin(timeSec * 31);
     this.wind.gain.gain.setTargetAtTime(Math.min(0.9, q * 0.9) * buffet * (s.inside ? 0.85 : 1), t, 0.1);
     this.wind.filter.frequency.setTargetAtTime(350 + Math.min(s.speedMps, 1500) * 1.6, t, 0.2);
+
+    // Speedbrake / landing gear turbulence + high-AoA stall buffet rumble
+    const dragStrength = Math.min(1, q * ((s.airbrake ?? 0) * 0.85 + (s.gearDown ? 0.45 : 0) + (s.buffet ?? 0) * 1.15));
+    this.dragBuffet.gain.gain.setTargetAtTime(dragStrength * (s.inside ? 0.5 : 0.75), t, 0.08);
+    this.dragBuffet.filter.frequency.setTargetAtTime(160 + 280 * dragStrength, t, 0.12);
+
+    // Oleo landing gear touchdown thump
+    if ((s.touchdownImpulse ?? 0) > 0.05 && t - this.lastTouchThud > 0.8) {
+      this.lastTouchThud = t;
+      this.creak(t, Math.min(1.2, 0.5 + (s.touchdownImpulse ?? 0) * 0.18));
+    }
 
     this.ecs.gain.gain.setTargetAtTime(s.inside ? 0.035 : 0, t, 0.4);
     // The canopy's rumble: the airframe in the airstream (a hum of the systems in vacuum)

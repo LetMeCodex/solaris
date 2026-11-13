@@ -2,6 +2,31 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import type { CockpitLayout } from './CockpitControls';
+import { createJetSurfaceState, type JetAirframeId, type JetSurfaceState } from './JetTelemetry';
+
+/** Optional real-time aerodynamic and surface telemetry fed from FlightModel / JetController. */
+export interface JetVisualState {
+  /** Frame step (s) for surface actuator lag smoothing and vapor advection. */
+  dt?: number;
+  /** Target aerodynamic surface deflections, airbrake, gear, and iris state. */
+  surfaces?: JetSurfaceState;
+  /** Angle of attack (deg) driving over-wing/LERX condensation sheet intensity. */
+  aoaDeg?: number;
+  /** Current Mach number for transonic vapor surge. */
+  mach?: number;
+  /** Normal load factor (G) driving subtle outboard wing aeroelastic flex. */
+  gLoad?: number;
+  /** Relative atmospheric density [0..1] (0 in vacuum). */
+  airDensity?: number;
+  /** Dynamic pressure (Pa). */
+  qPa?: number;
+  /** Discrete afterburner zone [0..3]. */
+  abStage?: 0 | 1 | 2 | 3;
+  /** Weight-on-wheels flag for oleo strut compression and taxi light glow. */
+  onGround?: boolean;
+  /** Forward ground roll speed (m/s). */
+  groundSpeedMs?: number;
+}
 
 /**
  * The Solaris jet, SX-1 "Kestrel": an original single-seat interceptor built from code, in metres.
@@ -388,6 +413,12 @@ export interface AirframeAnchors {
   hudWidthM: number;
   /** Where the moving stick and throttle are, and room on the console for added controls. */
   cockpit?: CockpitLayout;
+  /** Airframe archetype identifier driving articulated surface & vapor geometry. */
+  airframeId?: JetAirframeId;
+  /** Canard/LERX strake vortex shedding anchor points, port then starboard (jet frame). */
+  strakeVortex?: [THREE.Vector3, THREE.Vector3];
+  /** Extended landing gear contact centres (nose, port main, stbd main) and strut stroke. */
+  wheelAnchors?: { nose: THREE.Vector3; mainL: THREE.Vector3; mainR: THREE.Vector3; bayY: number };
 }
 
 /**
@@ -420,6 +451,14 @@ export const SU30_ANCHORS: AirframeAnchors = {
     throttleBox: new THREE.Box3(new THREE.Vector3(-0.395, 0.455, -8.15), new THREE.Vector3(-0.295, 0.7, -8.0)),
     throttlePivot: new THREE.Vector3(-0.345, 0.44, -8.075),
     console: new THREE.Vector3(-0.35, 0.425, -7.74),
+  },
+  airframeId: 'su30',
+  strakeVortex: [new THREE.Vector3(-2.05, 0.22, -2.55), new THREE.Vector3(2.05, 0.22, -2.55)],
+  wheelAnchors: {
+    nose: new THREE.Vector3(0, -2.25, -7.65),
+    mainL: new THREE.Vector3(-2.05, -2.25, 0.85),
+    mainR: new THREE.Vector3(2.05, -2.25, 0.85),
+    bayY: -1.18,
   },
 };
 
@@ -499,6 +538,22 @@ export const GRIPEN_ANCHORS: AirframeAnchors = {
   canopyMaterial: 'empty_glass',
   hudCentre: new THREE.Vector3(0, 0.47, -5.18),
   hudWidthM: 0.2,
+  cockpit: {
+    stickBox: new THREE.Box3(new THREE.Vector3(-0.06, -0.03, -5.02), new THREE.Vector3(0.05, 0.22, -4.87)),
+    stickPivot: new THREE.Vector3(-0.008, -0.02, -4.95),
+    throttleBox: new THREE.Box3(new THREE.Vector3(-0.425, 0.02, -4.92), new THREE.Vector3(-0.315, 0.18, -4.68)),
+    throttlePivot: new THREE.Vector3(-0.37, 0.0, -4.78),
+    console: new THREE.Vector3(-0.31, 0.045, -4.55),
+    consoleScale: 0.78,
+  },
+  airframeId: 'gripen',
+  strakeVortex: [new THREE.Vector3(-2.14, 0.2, -1.68), new THREE.Vector3(2.14, 0.2, -1.68)],
+  wheelAnchors: {
+    nose: new THREE.Vector3(0, -1.55, -4.35),
+    mainL: new THREE.Vector3(-1.15, -1.55, 0.85),
+    mainR: new THREE.Vector3(1.15, -1.55, 0.85),
+    bayY: -0.62,
+  },
 };
 
 /** The airframes there are to fly, and the one chosen (a setting kept in the browser). */
@@ -571,11 +626,204 @@ function sweep(stations: Array<{ p: THREE.Vector3; across: THREE.Vector3; up: TH
   return g;
 }
 
+/** Half-space plane separating a movable control surface from stationary structure (`normal·p >= dist`). */
+interface ClipPlane {
+  normal: THREE.Vector3;
+  dist: number;
+}
+
+interface TriVert {
+  p: THREE.Vector3;
+  n: THREE.Vector3;
+  u: THREE.Vector2;
+}
+
+interface SlicePartSpec {
+  id: string;
+  pivot: THREE.Vector3;
+  planes: ClipPlane[];
+  materialPrefixes?: string[];
+  bounds?: THREE.Box3;
+  addHingeSpar?: { start: THREE.Vector3; end: THREE.Vector3; radius: number };
+}
+
+interface CarvedPart {
+  id: string;
+  group: THREE.Group;
+  triangleCount: number;
+}
+
+/** Clip convex polygon `poly` against half-space `plane`, outputting `inside` (`>=0`) and `outside` (`<=0`). */
+function splitPolygonHalfSpace(poly: TriVert[], plane: ClipPlane): { inside: TriVert[]; outside: TriVert[] } {
+  const inside: TriVert[] = [];
+  const outside: TriVert[] = [];
+  const eps = 1e-5;
+  const dists = poly.map((v) => plane.normal.dot(v.p) - plane.dist);
+
+  for (let i = 0; i < poly.length; i++) {
+    const j = (i + 1) % poly.length;
+    const a = poly[i];
+    const b = poly[j];
+    const da = dists[i];
+    const db = dists[j];
+    const aIn = da >= -eps;
+    const bIn = db >= -eps;
+    const aOut = da <= eps;
+    const bOut = db <= eps;
+
+    if (aIn) inside.push(a);
+    if (aOut) outside.push(a);
+
+    if ((da > eps && db < -eps) || (da < -eps && db > eps)) {
+      const t = THREE.MathUtils.clamp(da / (da - db), 0, 1);
+      const mid: TriVert = {
+        p: new THREE.Vector3().lerpVectors(a.p, b.p, t),
+        n: new THREE.Vector3().lerpVectors(a.n, b.n, t).normalize(),
+        u: new THREE.Vector2().lerpVectors(a.u, b.u, t),
+      };
+      inside.push(mid);
+      outside.push({ p: mid.p.clone(), n: mid.n.clone(), u: mid.u.clone() });
+    } else if (aIn && !bIn && Math.abs(da) <= eps && !aOut) {
+      outside.push({ p: a.p.clone(), n: a.n.clone(), u: a.u.clone() });
+    } else if (!aIn && bIn && Math.abs(db) <= eps && !bOut) {
+      outside.push({ p: b.p.clone(), n: b.n.clone(), u: b.u.clone() });
+    }
+  }
+  return { inside: inside.length >= 3 ? inside : [], outside: outside.length >= 3 ? outside : [] };
+}
+
+/** Emit non-degenerate triangle fan vertices from a convex polygon into `out`. */
+function pushPolygonFan(poly: TriVert[], out: TriVert[][]): void {
+  if (poly.length < 3) return;
+  const e1 = new THREE.Vector3();
+  const e2 = new THREE.Vector3();
+  const cr = new THREE.Vector3();
+  for (let k = 1; k < poly.length - 1; k++) {
+    e1.subVectors(poly[k].p, poly[0].p);
+    e2.subVectors(poly[k + 1].p, poly[0].p);
+    if (cr.crossVectors(e1, e2).lengthSq() < 1e-12) continue;
+    out.push([poly[0], poly[k], poly[k + 1]]);
+  }
+}
+
+/** Build a convex clip half-space from a hinge segment `(start -> end)` and an in-surface direction point. */
+function makeClipPlaneFromPoints(a: THREE.Vector3, b: THREE.Vector3, upApprox: THREE.Vector3, insideSample: THREE.Vector3): ClipPlane {
+  const edge = new THREE.Vector3().subVectors(b, a);
+  const normal = new THREE.Vector3().crossVectors(edge, upApprox).normalize();
+  if (normal.dot(new THREE.Vector3().subVectors(insideSample, a)) < 0) normal.negate();
+  return { normal, dist: normal.dot(a) };
+}
+
+function makeAxisPlane(axis: 'x' | 'y' | 'z', value: number, keepGreater: boolean): ClipPlane {
+  const s = keepGreater ? 1 : -1;
+  const normal = new THREE.Vector3(axis === 'x' ? s : 0, axis === 'y' ? s : 0, axis === 'z' ? s : 0);
+  return { normal, dist: value * s };
+}
+
+const VAPOR_VERT = /* glsl */ `
+  varying vec2 vUv;
+  varying float vViewGrazing;
+  void main() {
+    vUv = uv;
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vec3 nV = normalize(normalMatrix * normal);
+    vec3 vDir = normalize(-mv.xyz);
+    vViewGrazing = mix(0.65, 1.25, pow(1.0 - abs(dot(nV, vDir)), 1.5));
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+const VAPOR_FRAG = /* glsl */ `
+  uniform float uIntensity;
+  uniform float uTime;
+  varying vec2 vUv;
+  varying float vViewGrazing;
+
+  float hash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float noise2(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash2(i), hash2(i + vec2(1.0, 0.0)), f.x), mix(hash2(i + vec2(0.0, 1.0)), hash2(i + vec2(1.0, 1.0)), f.x), f.y);
+  }
+  float fbm2(vec2 p) {
+    return noise2(p) * 0.62 + noise2(p * 2.13 + vec2(3.7, 1.9)) * 0.38;
+  }
+
+  void main() {
+    if (uIntensity < 0.005) discard;
+    // vUv.x: spanwise [0..1] (root -> tip); vUv.y: chordwise [0..1] (LE -> TE)
+    float spanMask = smoothstep(0.0, 0.22, vUv.x) * (1.0 - smoothstep(0.76, 1.0, vUv.x));
+    float chordMask = smoothstep(0.03, 0.24, vUv.y) * (1.0 - smoothstep(0.62, 1.0, vUv.y));
+    float flow = fbm2(vec2(vUv.x * 7.5 + sin(vUv.y * 5.0) * 0.35, vUv.y * 4.5 - uTime * 9.5));
+    float streaks = smoothstep(0.28, 0.84, flow);
+    float alpha = clamp(spanMask * chordMask * streaks * uIntensity * vViewGrazing * 0.62, 0.0, 0.78);
+    if (alpha < 0.005) discard;
+    gl_FragColor = vec4(vec3(0.92, 0.96, 1.0), alpha);
+  }
+`;
+
+interface HingeSurface {
+  group: THREE.Group;
+  axis: THREE.Vector3;
+  sign: number;
+}
+
+interface AirbrakeUnit {
+  pivot: THREE.Group;
+  axis: THREE.Vector3;
+  maxRad: number;
+  piston?: { mesh: THREE.Mesh; baseLen: number };
+}
+
+interface GearLegRig {
+  strut: THREE.Group;
+  doors: THREE.Group[];
+  doorAxis: THREE.Vector3;
+  doorSigns: number[];
+  piston: THREE.Group;
+  pistonBaseY: number;
+  wheelAnchor: THREE.Vector3;
+  retractAxis: THREE.Vector3;
+  retractRad: number;
+  isNose: boolean;
+}
+
+interface ArticulatedRig {
+  canards: [HingeSurface | null, HingeSurface | null];
+  flaps: [HingeSurface | null, HingeSurface | null];
+  ailerons: [HingeSurface | null, HingeSurface | null];
+  slats: [HingeSurface | null, HingeSurface | null];
+  stabs: [HingeSurface | null, HingeSurface | null];
+  rudders: HingeSurface[];
+  wingFlex: [THREE.Group | null, THREE.Group | null];
+  tvcPivots: THREE.Group[];
+  irisPetals: THREE.Group[][];
+  airbrakes: AirbrakeUnit[];
+  gear: GearLegRig[];
+  taxiLight: THREE.Sprite | null;
+  vaporMat: THREE.ShaderMaterial | null;
+  smooth: JetSurfaceState;
+  smoothFlexRad: number;
+  smoothOleoM: number;
+}
+
 export class JetModel {
   public readonly root = new THREE.Group();
   public readonly eye = new THREE.Vector3(0, 0.98, -4.55);
   public readonly nozzles = [new THREE.Vector3(-0.56, 0, 8.2), new THREE.Vector3(0.56, 0, 8.2)];
   public readonly wingtips = [new THREE.Vector3(-5.45, -0.02, 4.4), new THREE.Vector3(5.45, -0.02, 4.4)];
+  /** LERX / canard-strake vortex shedding anchors, port then starboard (jet frame). */
+  public readonly strakes = [new THREE.Vector3(-1.35, 0.08, -2.4), new THREE.Vector3(1.35, 0.08, -2.4)];
+  /** Extended landing gear contact centres: [nose, port main, starboard main] in jet frame. */
+  public readonly wheels = [
+    new THREE.Vector3(0, -1.62, -4.4),
+    new THREE.Vector3(-1.55, -1.62, 1.35),
+    new THREE.Vector3(1.55, -1.62, 1.35),
+  ];
+  /** Active airframe identifier (`kestrel`, `gripen`, or `su30`). */
+  public airframeId: JetAirframeId = 'kestrel';
+  /** Smoothed surface/iris/gear state applied this frame. */
+  public readonly surfaceState: JetSurfaceState = createJetSurfaceState();
   /** Meshes hidden in the cockpit view (the pilot's own helmet). */
   public readonly pilot = new THREE.Group();
   /** The pilot's helmet: hidden when the camera is on it (the helmet-mounted GoPro). */
@@ -982,6 +1230,35 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
   private strobes: THREE.Sprite[] = [];
   private navLights: THREE.Sprite[] = [];
   private disposables: Array<{ dispose(): void }> = [];
+  private readonly tvcAnchors: [THREE.Group, THREE.Group] = [new THREE.Group(), new THREE.Group()];
+  private readonly kestrelExtras = new THREE.Group();
+  private readonly loadedExtras = new THREE.Group();
+  private kestrelRig!: ArticulatedRig;
+  private rig!: ArticulatedRig;
+  private readonly rigQuat = new THREE.Quaternion();
+  private readonly tmpVecA = new THREE.Vector3();
+  private readonly tmpVecB = new THREE.Vector3();
+
+  private createEmptyRig(): ArticulatedRig {
+    return {
+      canards: [null, null],
+      flaps: [null, null],
+      ailerons: [null, null],
+      slats: [null, null],
+      stabs: [null, null],
+      rudders: [],
+      wingFlex: [null, null],
+      tvcPivots: [...this.tvcAnchors],
+      irisPetals: [[], []],
+      airbrakes: [],
+      gear: [],
+      taxiLight: null,
+      vaporMat: null,
+      smooth: createJetSurfaceState(),
+      smoothFlexRad: 0,
+      smoothOleoM: 0,
+    };
+  }
 
   constructor() {
     this.root.add(this.body);
@@ -1032,8 +1309,13 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
     // Fuselage
     add(loft(FUSELAGE, 72), hull);
 
-    // Wings: cranked arrow, a little anhedral
-    const wingR: Array<[number, number]> = [[1.0, -2.8], [2.6, 0.4], [5.45, 3.7], [5.45, 5.15], [3.0, 5.55], [1.0, 6.0]];
+    this.kestrelRig = this.createEmptyRig();
+    this.rig = this.kestrelRig;
+    this.body.add(this.kestrelExtras);
+    this.root.add(this.loadedExtras);
+
+    // Wings: cranked arrow, a little anhedral, with articulated trailing-edge flaperons
+    const wingR: Array<[number, number]> = [[1.0, -2.8], [2.6, 0.4], [5.45, 3.7], [5.45, 4.9], [3.0, 5.25], [1.0, 5.65]];
     const wingL = wingR.map(([x, z]) => [-x, z] as [number, number]).reverse();
     const wr = add(planform(wingR, 0.16, 0.05), hull);
     const wl = add(planform(wingL, 0.16, 0.05), hull);
@@ -1041,6 +1323,30 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
     wl.position.y = -0.08;
     wr.rotation.z = -0.035;
     wl.rotation.z = 0.035;
+
+    for (const side of [-1, 1] as const) {
+      const flapPts: Array<[number, number]> =
+        side > 0
+          ? [[1.15, 0], [5.25, -0.58], [5.25, 0.05], [1.15, 0.52]]
+          : [[-5.25, -0.58], [-1.15, 0], [-1.15, 0.52], [-5.25, 0.05]];
+      const fpGeo = planform(flapPts, 0.09, 0.025);
+      this.disposables.push(fpGeo);
+      const mount = new THREE.Group();
+      mount.position.set(0, -0.08, 5.45);
+      mount.rotation.z = -side * 0.035;
+      const piv = new THREE.Group();
+      const fp = new THREE.Mesh(fpGeo, darkHull);
+      fp.castShadow = fp.receiveShadow = true;
+      piv.add(fp);
+      mount.add(piv);
+      this.body.add(mount);
+      this.kestrelRig.ailerons[side < 0 ? 0 : 1] = {
+        group: piv,
+        axis: new THREE.Vector3(1, 0, -side * 0.14).normalize(),
+        sign: 1,
+      };
+    }
+
     // Dark leading-edge strips (radar-absorbent treatment)
     const leR: Array<[number, number]> = [[1.0, -2.8], [2.6, 0.4], [5.45, 3.7], [5.45, 3.95], [2.55, 0.75], [1.0, -2.3]];
     const leL = leR.map(([x, z]) => [-x, z] as [number, number]).reverse();
@@ -1051,28 +1357,51 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
     ler.rotation.z = -0.035;
     lel.rotation.z = 0.035;
 
-    // Stabilators
-    const stabR: Array<[number, number]> = [[1.25, 5.3], [3.35, 6.9], [3.35, 7.75], [1.25, 7.9]];
-    const stabL = stabR.map(([x, z]) => [-x, z] as [number, number]).reverse();
-    add(planform(stabR, 0.1, 0.03), darkHull).position.y = 0.02;
-    add(planform(stabL, 0.1, 0.03), darkHull).position.y = 0.02;
+    // All-moving differential stabilators
+    for (const side of [-1, 1] as const) {
+      const zSpindle = 6.55;
+      const stPts: Array<[number, number]> =
+        side > 0
+          ? [[1.25, 5.3 - zSpindle], [3.35, 6.9 - zSpindle], [3.35, 7.75 - zSpindle], [1.25, 7.9 - zSpindle]]
+          : [[-3.35, 6.9 - zSpindle], [-1.25, 5.3 - zSpindle], [-1.25, 7.9 - zSpindle], [-3.35, 7.75 - zSpindle]];
+      const stGeo = planform(stPts, 0.1, 0.03);
+      this.disposables.push(stGeo);
+      const piv = new THREE.Group();
+      piv.position.set(0, 0.02, zSpindle);
+      const sm = new THREE.Mesh(stGeo, darkHull);
+      sm.castShadow = sm.receiveShadow = true;
+      piv.add(sm);
+      this.body.add(piv);
+      this.kestrelRig.stabs[side < 0 ? 0 : 1] = { group: piv, axis: new THREE.Vector3(1, 0, 0), sign: 1 };
+    }
 
-    // Twin canted fins with the tail art
-    const finShape: Array<[number, number]> = [[3.2, 0], [5.9, 2.35], [7.15, 2.35], [7.4, 0]];
+    // Twin canted fins with the tail art + articulated rudder trailing edges
+    const finShape: Array<[number, number]> = [[3.2, 0], [5.9, 2.35], [6.65, 2.35], [6.88, 0]];
     const decal = tailDecal();
     this.disposables.push(decal);
     const decalMat = new THREE.MeshStandardMaterial({ map: decal, transparent: true, roughness: 0.6, metalness: 0.2, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 });
     this.disposables.push(decalMat);
-    for (const side of [-1, 1]) {
+    for (const side of [-1, 1] as const) {
       const f = add(fin(finShape, 0.12, 0.035), hull);
       f.position.set(side * 0.95, 0.42, 0);
       f.rotation.z = -side * 0.4;
       const plane = new THREE.PlaneGeometry(2.2, 1.1);
       this.disposables.push(plane);
       const d = new THREE.Mesh(plane, decalMat);
-      d.position.set(side * 0.1, 1.2, 6.05);
+      d.position.set(side * 0.1, 1.2, 5.8);
       d.rotation.y = side > 0 ? Math.PI / 2 : -Math.PI / 2;
       f.add(d);
+
+      const rudPts: Array<[number, number]> = [[0, 0.1], [-0.08, 2.25], [0.48, 2.25], [0.58, 0.1]];
+      const rudGeo = fin(rudPts, 0.085, 0.02);
+      this.disposables.push(rudGeo);
+      const rpiv = new THREE.Group();
+      rpiv.position.set(0, 0, 6.82);
+      const rm = new THREE.Mesh(rudGeo, darkHull);
+      rm.castShadow = rm.receiveShadow = true;
+      rpiv.add(rm);
+      f.add(rpiv);
+      this.kestrelRig.rudders.push({ group: rpiv, axis: new THREE.Vector3(0, 1, 0.04).normalize(), sign: 1 });
     }
 
     // Intakes: chined boxes under the wing roots, with dark mouths
@@ -1092,27 +1421,9 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
       this.body.add(mouth);
     }
 
-    // Nozzles: titanium petals with heat tint, and a glowing turbine face inside
+    // Nozzles inside TVC pivots: titanium shroud, 14-petal iris, turbine face & vectored plume
     this.nozzleGlowMat = new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
     this.disposables.push(this.nozzleGlowMat);
-    for (const n of this.nozzles) {
-      const prof = [
-        new THREE.Vector2(0.5, 0), new THREE.Vector2(0.53, 0.35), new THREE.Vector2(0.5, 0.75),
-        new THREE.Vector2(0.43, 1.05), new THREE.Vector2(0.4, 1.06), new THREE.Vector2(0.44, 0.7), new THREE.Vector2(0.45, 0.1),
-      ];
-      const lathe = new THREE.LatheGeometry(prof, 18);
-      lathe.rotateX(Math.PI / 2);
-      const nz = add(lathe, titanium);
-      nz.position.set(n.x, n.y, n.z - 1.05);
-      const faceGeo = new THREE.CircleGeometry(0.42, 24);
-      this.disposables.push(faceGeo);
-      const face = new THREE.Mesh(faceGeo, this.nozzleGlowMat);
-      face.position.set(n.x, n.y, n.z - 0.7);
-      this.root.add(face);
-      this.nozzleFaces.push(face);
-    }
-
-    // Exhaust: an outer flame and a short white-hot core per nozzle, sharing one set of uniforms
     const plumeUniforms = {
       uThrottle: { value: 0.5 }, uBoost: { value: 0 }, uVacuum: { value: 1 }, uTime: { value: 0 }, uLength: { value: 9 },
     };
@@ -1129,7 +1440,32 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
     this.plumeMat = plumeMaterial(0);
     const coreMat = plumeMaterial(1);
     this.disposables.push(this.plumeMat, coreMat);
-    for (const n of this.nozzles) {
+
+    this.nozzles.forEach((n, i) => {
+      const anchor = this.tvcAnchors[i];
+      anchor.position.set(n.x, n.y, n.z - 1.05);
+      this.root.add(anchor);
+
+      const prof = [
+        new THREE.Vector2(0.5, 0), new THREE.Vector2(0.53, 0.35), new THREE.Vector2(0.5, 0.75),
+        new THREE.Vector2(0.43, 1.05), new THREE.Vector2(0.4, 1.06), new THREE.Vector2(0.44, 0.7), new THREE.Vector2(0.45, 0.1),
+      ];
+      const lathe = new THREE.LatheGeometry(prof, 18);
+      lathe.rotateX(Math.PI / 2);
+      this.disposables.push(lathe);
+      const nz = new THREE.Mesh(lathe, titanium);
+      nz.castShadow = nz.receiveShadow = true;
+      nz.name = `kestrel_nozzle_${i}`;
+      anchor.add(nz);
+      this.kestrelRig.irisPetals[i] = this.buildNozzleIris(anchor, 0.44, 0.55, 0.42, titanium);
+
+      const faceGeo = new THREE.CircleGeometry(0.42, 24);
+      this.disposables.push(faceGeo);
+      const face = new THREE.Mesh(faceGeo, this.nozzleGlowMat);
+      face.position.set(0, 0, 0.35);
+      anchor.add(face);
+      this.nozzleFaces.push(face);
+
       const g = new THREE.CylinderGeometry(0.36, 0.22, 9, 28, 48, true);
       g.rotateX(-Math.PI / 2); // along +Z
       g.translate(0, 0, 4.5);
@@ -1141,14 +1477,31 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
       const c = new THREE.Mesh(gc, coreMat);
       c.scale.set(1, 1, 0.38);
       p.add(c);
-      p.position.copy(n);
+      p.position.set(0, 0, 1.05);
       p.renderOrder = 5;
       c.renderOrder = 6;
       p.frustumCulled = false;
       c.frustumCulled = false;
-      this.root.add(p);
+      anchor.add(p);
       this.plumes.push(p);
-    }
+    });
+
+    // Kestrel dorsal airbrake, retractable oleo landing gear, and over-wing condensation vapor
+    this.buildAirbrakeUnits(this.kestrelRig, this.kestrelExtras, [
+      { pos: new THREE.Vector3(0, 0.64, -2.0), size: new THREE.Vector3(0.82, 0.05, 1.65), axis: new THREE.Vector3(1, 0, 0), maxRad: -0.92, bayColor: 0x101318, flapColor: 0x626b76 },
+    ]);
+    this.buildGearRig(this.kestrelRig, this.kestrelExtras, {
+      nose: new THREE.Vector3(0, -1.62, -4.4),
+      mainL: new THREE.Vector3(-1.55, -1.62, 1.35),
+      mainR: new THREE.Vector3(1.55, -1.62, 1.35),
+      bayY: -0.58,
+    });
+    this.kestrelRig.vaporMat = this.buildWingVapor(this.kestrelExtras, [
+      new THREE.Vector3(1.05, 0.08, -2.2),
+      new THREE.Vector3(5.25, -0.1, 3.85),
+      new THREE.Vector3(5.25, -0.1, 5.15),
+      new THREE.Vector3(1.1, 0.08, 5.3),
+    ]);
 
     // Canopy (gold-film glass) and the pilot
     const canopyGeo = new THREE.SphereGeometry(1, 48, 24, 0, Math.PI * 2, 0, Math.PI / 2);
@@ -1298,25 +1651,26 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
     }
     this.body.visible = false;
     this.root.visible = true;
+    this.airframeId = anchors.airframeId ?? (anchors.nozzles.length === 1 ? 'gripen' : 'su30');
     this.hasInterior = anchors.hasInterior;
     this.length = anchors.lengthM;
     this.plumeScale = anchors.nozzleRadiusM / 0.36;
 
     this.eye.copy(anchors.eye);
     anchors.nozzles.forEach((n, i) => this.nozzles[i]?.copy(n));
-    // One engine: both exhaust slots on the one nozzle, the second flame and glow put away
     const single = anchors.nozzles.length === 1;
     if (single) this.nozzles[1]?.copy(anchors.nozzles[0]);
     anchors.wingtips.forEach((w, i) => this.wingtips[i]?.copy(w));
-    this.plumes.forEach((p, i) => {
-      p.position.copy(this.nozzles[i]);
-      if (single && i > 0) p.visible = false;
-    });
-    this.nozzleFaces.forEach((f, i) => {
-      f.position.copy(this.nozzles[i]).add(new THREE.Vector3(0, 0, -anchors.nozzleRadiusM * 0.6));
-      f.scale.setScalar(anchors.nozzleRadiusM / 0.42);
-      if (single && i > 0) f.visible = false;
-    });
+    if (anchors.strakeVortex) {
+      this.strakes[0].copy(anchors.strakeVortex[0]);
+      this.strakes[1].copy(anchors.strakeVortex[1]);
+    }
+    if (anchors.wheelAnchors) {
+      this.wheels[0].copy(anchors.wheelAnchors.nose);
+      this.wheels[1].copy(anchors.wheelAnchors.mainL);
+      this.wheels[2].copy(anchors.wheelAnchors.mainR);
+    }
+
     // Port red, starboard green, tail white; strobes on the fin tips
     this.navLights[0]?.position.copy(this.wingtips[0]).add(new THREE.Vector3(-0.05, 0, 0));
     this.navLights[1]?.position.copy(this.wingtips[1]).add(new THREE.Vector3(0.05, 0, 0));
@@ -1325,6 +1679,7 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
     this.goproMount.copy(anchors.goproMount);
     this.hud = { centre: anchors.hudCentre.clone(), widthM: anchors.hudWidthM };
     this.buildCrew();
+    this.setupLoadedRig(model, anchors);
   }
 
   /**
@@ -1499,6 +1854,1099 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
     this.root.add(this.crew);
   }
 
+  private readonly rigAxisZ = new THREE.Vector3(0, 0, 1);
+
+  private readonly baseWingtips: [THREE.Vector3, THREE.Vector3] = [
+    new THREE.Vector3(-5.45, -0.02, 4.4),
+    new THREE.Vector3(5.45, -0.02, 4.4),
+  ];
+
+  /** World position of landing gear contact [0 = nose, 1 = port main, 2 = stbd main]. */
+  public getWheelWorld(index: 0 | 1 | 2, out = new THREE.Vector3()): THREE.Vector3 {
+    return out.copy(this.wheels[index]).applyMatrix4(this.root.matrixWorld);
+  }
+
+  /** Build 14 overlapping titanium iris petals (convergent-divergent AB nozzle). */
+  private buildNozzleIris(
+    parent: THREE.Group,
+    innerR: number,
+    lengthM: number,
+    hingeZ: number,
+    mat?: THREE.Material,
+  ): THREE.Group[] {
+    const petalMat =
+      mat ??
+      new THREE.MeshPhysicalMaterial({
+        color: 0x45434c,
+        roughness: 0.36,
+        metalness: 0.92,
+        iridescence: 0.65,
+        iridescenceIOR: 1.55,
+        iridescenceThicknessRange: [280, 680],
+        side: THREE.DoubleSide,
+      });
+    if (!mat) this.disposables.push(petalMat);
+
+    const petalLen = Math.max(0.28, lengthM * 0.72);
+    const petalW = ((Math.PI * 2 * innerR) / 14) * 1.24;
+    const petalGeo = new THREE.BoxGeometry(petalW, 0.022, petalLen);
+    petalGeo.translate(0, 0, petalLen * 0.5);
+    this.disposables.push(petalGeo);
+
+    const petals: THREE.Group[] = [];
+    const ring = new THREE.Group();
+    ring.position.set(0, 0, hingeZ);
+    parent.add(ring);
+
+    for (let k = 0; k < 14; k++) {
+      const ang = (k / 14) * Math.PI * 2;
+      const radialR = innerR * (k % 2 === 0 ? 1.0 : 0.96);
+      const carrier = new THREE.Group();
+      carrier.position.set(Math.cos(ang) * radialR, Math.sin(ang) * radialR, 0);
+      // Local +Y of carrier points radially outward; +X is tangential clockwise.
+      carrier.rotation.z = ang - Math.PI / 2;
+      const pivot = new THREE.Group();
+      const mesh = new THREE.Mesh(petalGeo, petalMat);
+      mesh.castShadow = mesh.receiveShadow = true;
+      pivot.add(mesh);
+      carrier.add(pivot);
+      ring.add(carrier);
+      petals.push(pivot);
+    }
+    return petals;
+  }
+
+  /** Build conformal dorsal or fuselage airbrakes with dark hydraulic bays and telescoping struts. */
+  private buildAirbrakeUnits(
+    rig: ArticulatedRig,
+    parent: THREE.Group,
+    specs: Array<{
+      pos: THREE.Vector3;
+      size: THREE.Vector3;
+      axis: THREE.Vector3;
+      maxRad: number;
+      bayColor: number;
+      flapColor: number;
+      tiltY?: number;
+      tiltZ?: number;
+    }>,
+  ): void {
+    const bayMat = new THREE.MeshStandardMaterial({ color: specs[0]?.bayColor ?? 0x101318, roughness: 0.85, metalness: 0.35 });
+    const pistonMat = new THREE.MeshStandardMaterial({ color: 0xb8c0c8, roughness: 0.25, metalness: 0.9 });
+    this.disposables.push(bayMat, pistonMat);
+
+    for (const sp of specs) {
+      const mat = new THREE.MeshPhysicalMaterial({
+        color: sp.flapColor,
+        roughness: 0.55,
+        metalness: 0.38,
+        clearcoat: 0.25,
+      });
+      this.disposables.push(mat);
+
+      const mount = new THREE.Group();
+      mount.position.copy(sp.pos);
+      if (sp.tiltY) mount.rotation.y = sp.tiltY;
+      if (sp.tiltZ) mount.rotation.z = sp.tiltZ;
+      parent.add(mount);
+
+      const bayGeo = new THREE.BoxGeometry(sp.size.x * 0.92, sp.size.y * 0.55, sp.size.z * 0.94);
+      bayGeo.translate(0, -sp.size.y * 0.45, sp.size.z * 0.5);
+      const flapGeo = new THREE.BoxGeometry(sp.size.x, sp.size.y, sp.size.z);
+      flapGeo.translate(0, 0, sp.size.z * 0.5);
+      const baseLen = sp.size.z * 0.45;
+      const rodGeo = new THREE.CylinderGeometry(0.022, 0.026, baseLen, 8);
+      rodGeo.rotateX(Math.PI / 2);
+      rodGeo.translate(0, 0, baseLen * 0.5);
+      this.disposables.push(bayGeo, flapGeo, rodGeo);
+
+      const bay = new THREE.Mesh(bayGeo, bayMat);
+      bay.receiveShadow = true;
+      mount.add(bay);
+
+      const pivot = new THREE.Group();
+      const flap = new THREE.Mesh(flapGeo, mat);
+      flap.castShadow = flap.receiveShadow = true;
+      pivot.add(flap);
+      mount.add(pivot);
+
+      const piston = new THREE.Mesh(rodGeo, pistonMat);
+      piston.position.set(0, 0.01, sp.size.z * 0.14);
+      mount.add(piston);
+
+      rig.airbrakes.push({ pivot, axis: sp.axis.clone().normalize(), maxRad: sp.maxRad, piston: { mesh: piston, baseLen } });
+    }
+  }
+
+  /** Build 3-strut retractable oleo-pneumatic landing gear with articulated doors and nose taxi light. */
+  private buildGearRig(
+    rig: ArticulatedRig,
+    parent: THREE.Group,
+    cfg: { nose: THREE.Vector3; mainL: THREE.Vector3; mainR: THREE.Vector3; bayY: number },
+  ): void {
+    const legMat = new THREE.MeshStandardMaterial({ color: 0xc2c8ce, roughness: 0.48, metalness: 0.55 });
+    const chromeMat = new THREE.MeshStandardMaterial({ color: 0xe6ecf2, roughness: 0.14, metalness: 0.95 });
+    const tireMat = new THREE.MeshStandardMaterial({ color: 0x16181c, roughness: 0.92, metalness: 0.05 });
+    const hubMat = new THREE.MeshStandardMaterial({ color: 0xd0d4da, roughness: 0.42, metalness: 0.65 });
+    const bayMat = new THREE.MeshStandardMaterial({ color: 0x12151a, roughness: 0.85, metalness: 0.25 });
+    const doorMat = new THREE.MeshStandardMaterial({ color: 0x626b75, roughness: 0.6, metalness: 0.35 });
+    this.disposables.push(legMat, chromeMat, tireMat, hubMat, bayMat, doorMat);
+
+    const legs = [
+      { pos: cfg.nose, isNose: true, retractAxis: new THREE.Vector3(1, 0, 0), retractRad: 1.52 },
+      { pos: cfg.mainL, isNose: false, retractAxis: new THREE.Vector3(0, 0, 1), retractRad: 1.48 },
+      { pos: cfg.mainR, isNose: false, retractAxis: new THREE.Vector3(0, 0, 1), retractRad: -1.48 },
+    ];
+
+    for (const lg of legs) {
+      const lengthM = Math.max(0.55, cfg.bayY - lg.pos.y);
+      const wheelR = lg.isNose ? 0.22 : 0.34;
+      const wheelW = lg.isNose ? 0.13 : 0.22;
+      const mount = new THREE.Group();
+      mount.position.set(lg.pos.x, cfg.bayY, lg.pos.z);
+      parent.add(mount);
+
+      const bayGeo = new THREE.BoxGeometry(lg.isNose ? 0.44 : 0.56, 0.04, lg.isNose ? 0.95 : 1.05);
+      this.disposables.push(bayGeo);
+      const bay = new THREE.Mesh(bayGeo, bayMat);
+      bay.position.y = 0.01;
+      mount.add(bay);
+
+      const doorGeo = new THREE.BoxGeometry(lg.isNose ? 0.21 : 0.27, 0.025, lg.isNose ? 0.92 : 1.02);
+      this.disposables.push(doorGeo);
+      const doors: THREE.Group[] = [];
+      const doorSigns = [-1, 1];
+      for (const s of doorSigns) {
+        const dp = new THREE.Group();
+        dp.position.set(s * (lg.isNose ? 0.21 : 0.27), -0.01, 0);
+        const dm = new THREE.Mesh(doorGeo, doorMat);
+        dm.position.x = -s * (lg.isNose ? 0.105 : 0.135);
+        dp.add(dm);
+        mount.add(dp);
+        doors.push(dp);
+      }
+
+      const strut = new THREE.Group();
+      mount.add(strut);
+      const upperLen = Math.max(0.28, lengthM - wheelR - 0.24);
+      const upperGeo = new THREE.CylinderGeometry(lg.isNose ? 0.045 : 0.06, lg.isNose ? 0.05 : 0.065, upperLen, 10);
+      upperGeo.translate(0, -upperLen * 0.5, 0);
+      const braceGeo = new THREE.CylinderGeometry(0.022, 0.022, upperLen * 0.9, 8);
+      braceGeo.translate(0, -upperLen * 0.45, 0);
+      const brace = new THREE.Mesh(braceGeo, legMat);
+      brace.position.set(0, -0.02, lg.isNose ? -0.18 : 0.18);
+      brace.rotation.x = lg.isNose ? -0.42 : 0.42;
+      strut.add(new THREE.Mesh(upperGeo, legMat), brace);
+      this.disposables.push(upperGeo, braceGeo);
+
+      const piston = new THREE.Group();
+      piston.position.y = -upperLen;
+      strut.add(piston);
+      const oleoGeo = new THREE.CylinderGeometry(lg.isNose ? 0.032 : 0.044, lg.isNose ? 0.032 : 0.044, 0.34, 10);
+      oleoGeo.translate(0, -0.12, 0);
+      const tireGeo = new THREE.CylinderGeometry(wheelR, wheelR, wheelW, 18);
+      tireGeo.rotateZ(Math.PI / 2);
+      const hubGeo = new THREE.CylinderGeometry(wheelR * 0.56, wheelR * 0.56, wheelW * 1.04, 12);
+      hubGeo.rotateZ(Math.PI / 2);
+      this.disposables.push(oleoGeo, tireGeo, hubGeo);
+      piston.add(new THREE.Mesh(oleoGeo, chromeMat));
+
+      const offsets = lg.isNose ? [-0.1, 0.1] : [0];
+      for (const ox of offsets) {
+        const w = new THREE.Mesh(tireGeo, tireMat);
+        const h = new THREE.Mesh(hubGeo, hubMat);
+        w.position.set(ox, -(lengthM - upperLen - wheelR), 0);
+        h.position.copy(w.position);
+        w.castShadow = true;
+        piston.add(w, h);
+      }
+
+      if (lg.isNose) {
+        const lampGlow = glowTexture();
+        this.disposables.push(lampGlow);
+        const sm = new THREE.SpriteMaterial({
+          map: lampGlow,
+          color: 0xf7fbff,
+          blending: THREE.AdditiveBlending,
+          transparent: true,
+          depthWrite: false,
+        });
+        this.disposables.push(sm);
+        const taxi = new THREE.Sprite(sm);
+        taxi.position.set(0, -0.22, -0.12);
+        taxi.scale.setScalar(0.52);
+        strut.add(taxi);
+        rig.taxiLight = taxi;
+      }
+
+      rig.gear.push({
+        strut,
+        doors,
+        doorAxis: new THREE.Vector3(0, 0, 1),
+        doorSigns,
+        piston,
+        pistonBaseY: -upperLen,
+        wheelAnchor: lg.pos.clone(),
+        retractAxis: lg.retractAxis,
+        retractRad: lg.retractRad,
+        isNose: lg.isNose,
+      });
+    }
+  }
+
+  /** Build symmetrical conformal upper-wing / LERX condensation vapor sheets driven by AoA, q and Mach. */
+  private buildWingVapor(
+    parent: THREE.Group,
+    quadR: [THREE.Vector3, THREE.Vector3, THREE.Vector3, THREE.Vector3],
+  ): THREE.ShaderMaterial {
+    const segU = 12;
+    const segV = 12;
+    const pos: number[] = [];
+    const uv: number[] = [];
+    const idx: number[] = [];
+    const [rLE, tLE, tTE, rTE] = quadR;
+    const pA = new THREE.Vector3();
+    const pB = new THREE.Vector3();
+    const pC = new THREE.Vector3();
+
+    for (const side of [-1, 1]) {
+      const base = pos.length / 3;
+      for (let j = 0; j <= segV; j++) {
+        const v = j / segV;
+        pA.lerpVectors(rLE, rTE, v);
+        pB.lerpVectors(tLE, tTE, v);
+        for (let i = 0; i <= segU; i++) {
+          const u = i / segU;
+          pC.lerpVectors(pA, pB, u);
+          // Slight aerodynamic suction bow along middle chord
+          const arch = Math.sin(v * Math.PI) * (1 - u * 0.45) * 0.14;
+          pos.push(pC.x * side, pC.y + arch, pC.z);
+          uv.push(u, v);
+        }
+      }
+      for (let j = 0; j < segV; j++) {
+        for (let i = 0; i < segU; i++) {
+          const a = base + j * (segU + 1) + i;
+          const b = a + 1;
+          const c = a + segU + 1;
+          const d = c + 1;
+          idx.push(a, c, b, b, c, d);
+        }
+      }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { uIntensity: { value: 0 }, uTime: { value: 0 } },
+      vertexShader: VAPOR_VERT,
+      fragmentShader: VAPOR_FRAG,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.disposables.push(geo, mat);
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.renderOrder = 4;
+    mesh.frustumCulled = false;
+    parent.add(mesh);
+    return mat;
+  }
+
+  /**
+   * Partition straddling & interior triangles of merged GLB meshes along exact convex hinge planes
+   * into independent pivoted `THREE.Group` parts without holes or jagged borders.
+   */
+  private carveAirframeParts(
+    model: THREE.Object3D,
+    specs: SlicePartSpec[],
+    targetParent: THREE.Group,
+  ): Map<string, CarvedPart> {
+    const out = new Map<string, CarvedPart>();
+    if (!specs.length) return out;
+    this.root.updateMatrixWorld(true);
+    const toJet = new THREE.Matrix4().copy(this.root.matrixWorld).invert();
+    const meshes: THREE.Mesh[] = [];
+    model.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh && m.visible) meshes.push(m);
+    });
+
+    const states = new Map<
+      THREE.Mesh,
+      {
+        tris: TriVert[][];
+        dirty: boolean;
+        invM: THREE.Matrix4;
+        invNormalM: THREE.Matrix3;
+        matName: string;
+        mat: THREE.Material | THREE.Material[];
+      }
+    >();
+
+    for (const spec of specs) {
+      const g = new THREE.Group();
+      g.position.copy(spec.pivot);
+      targetParent.add(g);
+      if (spec.addHingeSpar) {
+        const s = spec.addHingeSpar;
+        const len = s.start.distanceTo(s.end);
+        const sparGeo = new THREE.CylinderGeometry(s.radius, s.radius, len, 8);
+        const sparMat = new THREE.MeshStandardMaterial({ color: 0x1a1e24, roughness: 0.78, metalness: 0.5 });
+        this.disposables.push(sparGeo, sparMat);
+        const spar = new THREE.Mesh(sparGeo, sparMat);
+        const mid = new THREE.Vector3().addVectors(s.start, s.end).multiplyScalar(0.5).sub(spec.pivot);
+        const dir = new THREE.Vector3().subVectors(s.end, s.start).normalize();
+        spar.position.copy(mid);
+        spar.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+        g.add(spar);
+      }
+      out.set(spec.id, { id: spec.id, group: g, triangleCount: 0 });
+    }
+
+    const triBox = new THREE.Box3();
+    for (const mesh of meshes) {
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      const matName = mats[0]?.name ?? '';
+      const relevant = specs.filter((sp) => !sp.materialPrefixes || sp.materialPrefixes.some((p) => matName.startsWith(p)));
+      if (!relevant.length) continue;
+
+      const geo = mesh.geometry;
+      const pos = geo.attributes.position;
+      if (!pos) continue;
+      const nor = geo.attributes.normal;
+      const uv = geo.attributes.uv;
+      const idx = geo.index;
+
+      const m = new THREE.Matrix4().multiplyMatrices(toJet, mesh.matrixWorld);
+      const normalM = new THREE.Matrix3().getNormalMatrix(m);
+      const invM = new THREE.Matrix4().copy(m).invert();
+      const invNormalM = new THREE.Matrix3().getNormalMatrix(invM);
+
+      // Quick mesh AABB reject in jet space
+      if (!geo.boundingBox) geo.computeBoundingBox();
+      const meshJetBox = geo.boundingBox!.clone().applyMatrix4(m);
+      const activeSpecs = relevant.filter((sp) => !sp.bounds || meshJetBox.intersectsBox(sp.bounds));
+      if (!activeSpecs.length) continue;
+
+      const cnt = idx ? idx.count : pos.count;
+      const tris: TriVert[][] = [];
+      for (let t = 0; t < cnt; t += 3) {
+        const tri: TriVert[] = [];
+        for (let k = 0; k < 3; k++) {
+          const vi = idx ? idx.getX(t + k) : t + k;
+          tri.push({
+            p: new THREE.Vector3().fromBufferAttribute(pos, vi).applyMatrix4(m),
+            n: nor
+              ? new THREE.Vector3().fromBufferAttribute(nor, vi).applyMatrix3(normalM).normalize()
+              : new THREE.Vector3(0, 1, 0),
+            u: uv ? new THREE.Vector2(uv.getX(vi), uv.getY(vi)) : new THREE.Vector2(),
+          });
+        }
+        tris.push(tri);
+      }
+
+      const st = { tris, dirty: false, invM, invNormalM, matName, mat: mesh.material };
+      states.set(mesh, st);
+
+      for (const spec of activeSpecs) {
+        const entry = out.get(spec.id)!;
+        const captured: TriVert[][] = [];
+        const remainder: TriVert[][] = [];
+
+        for (const tri of st.tris) {
+          if (spec.bounds) {
+            triBox.makeEmpty();
+            triBox.expandByPoint(tri[0].p).expandByPoint(tri[1].p).expandByPoint(tri[2].p);
+            if (!triBox.intersectsBox(spec.bounds)) {
+              remainder.push(tri);
+              continue;
+            }
+          }
+
+          let allOut = false;
+          let allIn = true;
+          for (const pl of spec.planes) {
+            let anyIn = false;
+            for (let k = 0; k < 3; k++) {
+              const d = pl.normal.dot(tri[k].p) - pl.dist;
+              if (d >= -1e-5) anyIn = true;
+              if (d < 1e-5) allIn = false;
+            }
+            if (!anyIn) {
+              allOut = true;
+              break;
+            }
+          }
+
+          if (allOut) {
+            remainder.push(tri);
+            continue;
+          }
+          if (allIn) {
+            captured.push(tri);
+            continue;
+          }
+
+          // Straddler: sequential convex half-space partition cleanly into captured vs remainder
+          let cur: TriVert[][] = [tri];
+          for (const pl of spec.planes) {
+            const nextCur: TriVert[][] = [];
+            for (const sub of cur) {
+              const { inside, outside } = splitPolygonHalfSpace(sub, pl);
+              if (outside.length >= 3) pushPolygonFan(outside, remainder);
+              if (inside.length >= 3) pushPolygonFan(inside, nextCur);
+            }
+            cur = nextCur;
+            if (!cur.length) break;
+          }
+          for (const c of cur) captured.push(c);
+        }
+
+        if (captured.length) {
+          st.tris = remainder;
+          st.dirty = true;
+          const outP: number[] = [];
+          const outN: number[] = [];
+          const outU: number[] = [];
+          for (const tri of captured) {
+            for (let k = 0; k < 3; k++) {
+              outP.push(tri[k].p.x - spec.pivot.x, tri[k].p.y - spec.pivot.y, tri[k].p.z - spec.pivot.z);
+              outN.push(tri[k].n.x, tri[k].n.y, tri[k].n.z);
+              outU.push(tri[k].u.x, tri[k].u.y);
+            }
+          }
+          const partGeo = new THREE.BufferGeometry();
+          partGeo.setAttribute('position', new THREE.Float32BufferAttribute(outP, 3));
+          partGeo.setAttribute('normal', new THREE.Float32BufferAttribute(outN, 3));
+          partGeo.setAttribute('uv', new THREE.Float32BufferAttribute(outU, 2));
+          if (!nor) partGeo.computeVertexNormals();
+          const pm = new THREE.Mesh(partGeo, mesh.material);
+          pm.castShadow = pm.receiveShadow = true;
+          pm.frustumCulled = false;
+          entry.group.add(pm);
+          entry.triangleCount += captured.length;
+          this.disposables.push(partGeo);
+        }
+      }
+    }
+
+    // Write back compacted remainder geometries once per touched source mesh
+    for (const [mesh, st] of states) {
+      if (!st.dirty) continue;
+      const outP: number[] = [];
+      const outN: number[] = [];
+      const outU: number[] = [];
+      const lp = new THREE.Vector3();
+      const ln = new THREE.Vector3();
+      for (const tri of st.tris) {
+        for (let k = 0; k < 3; k++) {
+          lp.copy(tri[k].p).applyMatrix4(st.invM);
+          ln.copy(tri[k].n).applyMatrix3(st.invNormalM).normalize();
+          outP.push(lp.x, lp.y, lp.z);
+          outN.push(ln.x, ln.y, ln.z);
+          outU.push(tri[k].u.x, tri[k].u.y);
+        }
+      }
+      const nextGeo = new THREE.BufferGeometry();
+      nextGeo.setAttribute('position', new THREE.Float32BufferAttribute(outP, 3));
+      nextGeo.setAttribute('normal', new THREE.Float32BufferAttribute(outN, 3));
+      nextGeo.setAttribute('uv', new THREE.Float32BufferAttribute(outU, 2));
+      mesh.geometry.dispose();
+      mesh.geometry = nextGeo;
+      this.disposables.push(nextGeo);
+    }
+    return out;
+  }
+
+  /** Build a flush 3-screen `dynamic_mfd` cluster & bezel frames inside the Su-30MKK front cockpit. */
+  private buildSu30MfdCluster(parent: THREE.Group): void {
+    const pos: number[] = [];
+    const nor: number[] = [];
+    const uv: number[] = [];
+    const idx: number[] = [];
+
+    const bezelMat = new THREE.MeshStandardMaterial({ color: 0x11151b, roughness: 0.65, metalness: 0.45 });
+    const screenMat = new THREE.MeshStandardMaterial({
+      color: 0x0a0f0d,
+      roughness: 0.12,
+      emissive: 0x0b2416,
+      emissiveIntensity: 1,
+    });
+    screenMat.name = 'dynamic_mfd';
+    this.disposables.push(bezelMat, screenMat);
+
+    // Exact atlas rectangles matching MfdDisplays.ts SLOT_RECTS (1024x1024 top-left -> Three.js bottom-left V = 1 - y/1024)
+    const slots = [
+      {
+        cx: -0.215,
+        cy: 0.785,
+        cz: -8.47,
+        w: 0.156,
+        h: 0.1195,
+        rx: -0.18,
+        ry: 0.1,
+        u0: 8 / 1024,
+        u1: 504 / 1024,
+        vTop: 1 - 66 / 1024,
+        vBot: 1 - 446 / 1024,
+      },
+      {
+        cx: 0.0,
+        cy: 0.835,
+        cz: -8.296,
+        w: 0.128,
+        h: 0.166,
+        rx: -0.17,
+        ry: 0.0,
+        u0: 66 / 1024,
+        u1: 450 / 1024,
+        vTop: 1 - 520 / 1024,
+        vBot: 1 - 1020 / 1024,
+      },
+      {
+        cx: 0.215,
+        cy: 0.785,
+        cz: -8.47,
+        w: 0.156,
+        h: 0.1195,
+        rx: -0.18,
+        ry: -0.1,
+        u0: 520 / 1024,
+        u1: 1016 / 1024,
+        vTop: 1 - 578 / 1024,
+        vBot: 1 - 958 / 1024,
+      },
+    ];
+
+    const euler = new THREE.Euler(0, 0, 0, 'YXZ');
+    const q = new THREE.Quaternion();
+    const p = new THREE.Vector3();
+    const n = new THREE.Vector3();
+
+    for (const s of slots) {
+      euler.set(s.rx, s.ry, 0, 'YXZ');
+      q.setFromEuler(euler);
+      n.set(0, 0, 1).applyQuaternion(q).normalize();
+
+      // Matte anodized bezel backing behind the glass
+      const bGeo = new THREE.BoxGeometry(s.w + 0.016, s.h + 0.016, 0.014);
+      this.disposables.push(bGeo);
+      const bezel = new THREE.Mesh(bGeo, bezelMat);
+      bezel.quaternion.copy(q);
+      bezel.position.set(s.cx, s.cy, s.cz).addScaledVector(n, -0.008);
+      parent.add(bezel);
+
+      const hw = s.w * 0.5;
+      const hh = s.h * 0.5;
+      const base = pos.length / 3;
+      const corners: Array<[number, number, number, number]> = [
+        [-hw, hh, s.u0, s.vTop],
+        [hw, hh, s.u1, s.vTop],
+        [-hw, -hh, s.u0, s.vBot],
+        [hw, -hh, s.u1, s.vBot],
+      ];
+      for (const [lx, ly, cu, cv] of corners) {
+        p.set(lx, ly, 0).applyQuaternion(q).add(new THREE.Vector3(s.cx, s.cy, s.cz));
+        pos.push(p.x, p.y, p.z);
+        nor.push(n.x, n.y, n.z);
+        uv.push(cu, cv);
+      }
+      // CCW winding facing +Z (pilot)
+      idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+    }
+
+    const screenGeo = new THREE.BufferGeometry();
+    screenGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    screenGeo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    screenGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    screenGeo.setIndex(idx);
+    this.disposables.push(screenGeo);
+
+    const mesh = new THREE.Mesh(screenGeo, screenMat);
+    mesh.name = 'Su30DynamicMfd';
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 2;
+    parent.add(mesh);
+  }
+
+  /** Slice articulated GLB control surfaces, wire TVC/iris, airbrakes, landing gear, and vapor sheets. */
+  private setupLoadedRig(model: THREE.Object3D, anchors: AirframeAnchors): void {
+    this.loadedExtras.clear();
+    const rig = this.createEmptyRig();
+    const id = this.airframeId;
+    const single = anchors.nozzles.length === 1;
+
+    // Position TVC anchors & move plumes/faces cleanly under them so exhaust gimbal tracks nozzles
+    const tvcPivotsZ = id === 'gripen' ? 4.86 : 5.82;
+    this.nozzles.forEach((n, i) => {
+      const anchor = this.tvcAnchors[i];
+      const kestrelNz = anchor.getObjectByName(`kestrel_nozzle_${i}`);
+      if (kestrelNz) kestrelNz.visible = false;
+      anchor.position.set(n.x, n.y, tvcPivotsZ);
+      anchor.quaternion.identity();
+      const active = !(single && i > 0);
+      anchor.visible = active;
+      const dz = n.z - tvcPivotsZ;
+      const p = this.plumes[i];
+      if (p) {
+        p.position.set(0, 0, dz);
+        p.visible = active;
+      }
+      const f = this.nozzleFaces[i];
+      if (f) {
+        f.position.set(0, 0, dz - anchors.nozzleRadiusM * 0.6);
+        f.scale.setScalar(anchors.nozzleRadiusM / 0.42);
+        f.visible = active;
+      }
+    });
+
+    const specs: SlicePartSpec[] = [];
+    const pass2Specs: SlicePartSpec[] = [];
+    const up = new THREE.Vector3(0, 1, 0);
+    const axisBind = new Map<string, { role: 'canard' | 'flap' | 'aileron' | 'slat' | 'stab' | 'rudder' | 'tvc' | 'flex'; side: 0 | 1; axis: THREE.Vector3; sign: number }>();
+
+    if (id === 'gripen') {
+      const gMat = ['saab_jas39a_aircraft_normal_detail'];
+      for (const side of [0, 1] as const) {
+        const s = side === 0 ? -1 : 1;
+        const canId = `canard_${side}`;
+        specs.push({
+          id: canId,
+          pivot: new THREE.Vector3(s * 0.74, 0.21, -2.62),
+          planes: [makeAxisPlane('x', s * 0.735, s > 0)],
+          materialPrefixes: gMat,
+          bounds: new THREE.Box3(
+            new THREE.Vector3(s > 0 ? 0.72 : -2.25, -0.08, -4.18),
+            new THREE.Vector3(s > 0 ? 2.25 : -0.72, 0.44, -1.42),
+          ),
+        });
+        axisBind.set(canId, { role: 'canard', side, axis: new THREE.Vector3(1, 0, 0), sign: 1 });
+
+        const fA = new THREE.Vector3(s * 0.85, -0.14, 1.82);
+        const fB = new THREE.Vector3(s * 2.02, -0.15, 1.88);
+        const flapId = `flap_${side}`;
+        specs.push({
+          id: flapId,
+          pivot: fA.clone().lerp(fB, 0.5),
+          planes: [
+            makeClipPlaneFromPoints(fA, fB, up, new THREE.Vector3(s * 1.4, -0.15, 2.45)),
+            makeAxisPlane('x', s > 0 ? 0.85 : -2.02, true),
+            makeAxisPlane('x', s > 0 ? 2.02 : -0.85, false),
+            makeAxisPlane('y', -0.37, true),
+            makeAxisPlane('y', 0.08, false),
+          ],
+          materialPrefixes: gMat,
+          bounds: new THREE.Box3(
+            new THREE.Vector3(s > 0 ? 0.82 : -2.06, -0.4, 1.7),
+            new THREE.Vector3(s > 0 ? 2.06 : -0.82, 0.12, 2.68),
+          ),
+          addHingeSpar: { start: fA, end: fB, radius: 0.018 },
+        });
+        const fAxis = new THREE.Vector3().subVectors(side === 1 ? fB : fA, side === 1 ? fA : fB).normalize();
+        axisBind.set(flapId, { role: 'flap', side, axis: fAxis, sign: 1 });
+
+        const aA = new THREE.Vector3(s * 2.04, -0.16, 1.88);
+        const aB = new THREE.Vector3(s * 3.48, -0.18, 2.02);
+        const ailId = `aileron_${side}`;
+        specs.push({
+          id: ailId,
+          pivot: aA.clone().lerp(aB, 0.5),
+          planes: [
+            makeClipPlaneFromPoints(aA, aB, up, new THREE.Vector3(s * 2.75, -0.17, 2.55)),
+            makeAxisPlane('x', s > 0 ? 2.04 : -3.48, true),
+            makeAxisPlane('x', s > 0 ? 3.48 : -2.04, false),
+            makeAxisPlane('y', -0.38, true),
+            makeAxisPlane('y', 0.06, false),
+          ],
+          materialPrefixes: gMat,
+          bounds: new THREE.Box3(
+            new THREE.Vector3(s > 0 ? 2.01 : -3.52, -0.42, 1.75),
+            new THREE.Vector3(s > 0 ? 3.52 : -2.01, 0.1, 2.68),
+          ),
+          addHingeSpar: { start: aA, end: aB, radius: 0.016 },
+        });
+        const aAxis = new THREE.Vector3().subVectors(side === 1 ? aB : aA, side === 1 ? aA : aB).normalize();
+        axisBind.set(ailId, { role: 'aileron', side, axis: aAxis, sign: 1 });
+
+        pass2Specs.push({
+          id: `flex_${side}`,
+          pivot: new THREE.Vector3(s * 2.04, -0.16, 1.3),
+          planes: [makeAxisPlane('x', s * 2.04, s > 0)],
+          materialPrefixes: ['saab_jas39a_aircraft_normal_detail', 'lau_7', 'bol_451_container'],
+          bounds: new THREE.Box3(
+            new THREE.Vector3(s > 0 ? 2.0 : -4.15, -0.78, -0.8),
+            new THREE.Vector3(s > 0 ? 4.15 : -2.0, 0.22, 3.72),
+          ),
+        });
+      }
+
+      const rA = new THREE.Vector3(0, 1.02, 3.74);
+      const rB = new THREE.Vector3(0, 2.52, 4.18);
+      specs.push({
+        id: 'rudder_0',
+        pivot: rA.clone().lerp(rB, 0.5),
+        planes: [
+          makeClipPlaneFromPoints(rA, rB, new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 1.8, 4.5)),
+          makeAxisPlane('y', 1.02, true),
+          makeAxisPlane('y', 2.54, false),
+          makeAxisPlane('x', -0.14, true),
+          makeAxisPlane('x', 0.14, false),
+        ],
+        materialPrefixes: gMat,
+        bounds: new THREE.Box3(new THREE.Vector3(-0.16, 0.98, 3.68), new THREE.Vector3(0.16, 2.58, 4.75)),
+        addHingeSpar: { start: rA, end: rB, radius: 0.018 },
+      });
+      axisBind.set('rudder_0', { role: 'rudder', side: 0, axis: new THREE.Vector3().subVectors(rB, rA).normalize(), sign: 1 });
+
+      specs.push({
+        id: 'tvc_0',
+        pivot: new THREE.Vector3(0, 0, tvcPivotsZ),
+        planes: [makeAxisPlane('z', tvcPivotsZ, true)],
+        materialPrefixes: gMat,
+        bounds: new THREE.Box3(new THREE.Vector3(-0.48, -0.48, tvcPivotsZ - 0.05), new THREE.Vector3(0.48, 0.48, 5.55)),
+      });
+    } else {
+      // Su-30MKK
+      const sMat = ['0c5b', '1718', 'a04b'];
+      for (const side of [0, 1] as const) {
+        const s = side === 0 ? -1 : 1;
+        const fA = new THREE.Vector3(s * 2.35, -0.01, 2.28);
+        const fB = new THREE.Vector3(s * 4.82, -0.02, 2.66);
+        const flapId = `flap_${side}`;
+        specs.push({
+          id: flapId,
+          pivot: fA.clone().lerp(fB, 0.5),
+          planes: [
+            makeClipPlaneFromPoints(fA, fB, up, new THREE.Vector3(s * 3.5, -0.02, 3.2)),
+            makeAxisPlane('x', s > 0 ? 2.35 : -4.82, true),
+            makeAxisPlane('x', s > 0 ? 4.82 : -2.35, false),
+            makeAxisPlane('y', -0.24, true),
+            makeAxisPlane('y', 0.2, false),
+          ],
+          materialPrefixes: sMat,
+          bounds: new THREE.Box3(
+            new THREE.Vector3(s > 0 ? 2.3 : -4.88, -0.28, 2.0),
+            new THREE.Vector3(s > 0 ? 4.88 : -2.3, 0.25, 3.6),
+          ),
+          addHingeSpar: { start: fA, end: fB, radius: 0.022 },
+        });
+        axisBind.set(flapId, {
+          role: 'flap',
+          side,
+          axis: new THREE.Vector3().subVectors(side === 1 ? fB : fA, side === 1 ? fA : fB).normalize(),
+          sign: 1,
+        });
+
+        const aA = new THREE.Vector3(s * 5.18, -0.02, 2.75);
+        const aB = new THREE.Vector3(s * 7.18, -0.01, 3.38);
+        const ailId = `aileron_${side}`;
+        specs.push({
+          id: ailId,
+          pivot: aA.clone().lerp(aB, 0.5),
+          planes: [
+            makeClipPlaneFromPoints(aA, aB, up, new THREE.Vector3(s * 6.2, -0.02, 3.8)),
+            makeAxisPlane('x', s > 0 ? 5.18 : -7.22, true),
+            makeAxisPlane('x', s > 0 ? 7.22 : -5.18, false),
+            makeAxisPlane('y', -0.24, true),
+            makeAxisPlane('y', 0.2, false),
+          ],
+          materialPrefixes: sMat,
+          bounds: new THREE.Box3(
+            new THREE.Vector3(s > 0 ? 5.14 : -7.28, -0.28, 2.55),
+            new THREE.Vector3(s > 0 ? 7.28 : -5.14, 0.25, 4.25),
+          ),
+          addHingeSpar: { start: aA, end: aB, radius: 0.02 },
+        });
+        axisBind.set(ailId, {
+          role: 'aileron',
+          side,
+          axis: new THREE.Vector3().subVectors(side === 1 ? aB : aA, side === 1 ? aA : aB).normalize(),
+          sign: 1,
+        });
+
+        const slA = new THREE.Vector3(s * 2.65, 0.0, -1.35);
+        const slB = new THREE.Vector3(s * 5.12, -0.01, 0.9);
+        const slatId = `slat_${side}`;
+        specs.push({
+          id: slatId,
+          pivot: slA.clone().lerp(slB, 0.5),
+          planes: [
+            makeClipPlaneFromPoints(slA, slB, up, new THREE.Vector3(s * 4.0, 0.0, -0.8)),
+            makeAxisPlane('x', s > 0 ? 2.65 : -5.12, true),
+            makeAxisPlane('x', s > 0 ? 5.12 : -2.65, false),
+            makeAxisPlane('y', -0.2, true),
+            makeAxisPlane('y', 0.22, false),
+          ],
+          materialPrefixes: sMat,
+          bounds: new THREE.Box3(
+            new THREE.Vector3(s > 0 ? 2.6 : -5.18, -0.24, -1.8),
+            new THREE.Vector3(s > 0 ? 5.18 : -2.6, 0.25, 1.4),
+          ),
+        });
+        axisBind.set(slatId, {
+          role: 'slat',
+          side,
+          axis: new THREE.Vector3().subVectors(side === 1 ? slB : slA, side === 1 ? slA : slB).normalize(),
+          sign: 1,
+        });
+
+        const stabId = `stab_${side}`;
+        specs.push({
+          id: stabId,
+          pivot: new THREE.Vector3(s * 2.15, -0.46, 5.6),
+          planes: [makeAxisPlane('x', s * 2.06, s > 0), makeAxisPlane('z', 4.2, true)],
+          materialPrefixes: ['0c5b', 'a04b'],
+          bounds: new THREE.Box3(
+            new THREE.Vector3(s > 0 ? 2.04 : -5.08, -0.82, 4.18),
+            new THREE.Vector3(s > 0 ? 5.08 : -2.04, 0.14, 7.42),
+          ),
+        });
+        axisBind.set(stabId, { role: 'stab', side, axis: new THREE.Vector3(1, 0, 0), sign: 1 });
+
+        const rA = new THREE.Vector3(s * 2.18, 1.65, 4.9);
+        const rB = new THREE.Vector3(s * 2.18, 3.85, 5.38);
+        const rudId = `rudder_${side}`;
+        specs.push({
+          id: rudId,
+          pivot: rA.clone().lerp(rB, 0.5),
+          planes: [
+            makeClipPlaneFromPoints(rA, rB, new THREE.Vector3(1, 0, 0), new THREE.Vector3(s * 2.18, 2.8, 5.6)),
+            makeAxisPlane('x', s * 2.18 - 0.26, true),
+            makeAxisPlane('x', s * 2.18 + 0.26, false),
+            makeAxisPlane('y', 1.65, true),
+            makeAxisPlane('y', 3.9, false),
+          ],
+          materialPrefixes: ['0c5b', 'a04b'],
+          bounds: new THREE.Box3(
+            new THREE.Vector3(s * 2.18 - 0.3, 1.6, 4.75),
+            new THREE.Vector3(s * 2.18 + 0.3, 3.95, 5.8),
+          ),
+          addHingeSpar: { start: rA, end: rB, radius: 0.02 },
+        });
+        axisBind.set(rudId, { role: 'rudder', side, axis: new THREE.Vector3().subVectors(rB, rA).normalize(), sign: 1 });
+
+        specs.push({
+          id: `tvc_${side}`,
+          pivot: new THREE.Vector3(s * 1.22, -0.51, tvcPivotsZ),
+          planes: [makeAxisPlane('z', tvcPivotsZ, true)],
+          materialPrefixes: ['0c5b', 'a04b'],
+          bounds: new THREE.Box3(
+            new THREE.Vector3(s > 0 ? 0.55 : -1.88, -1.16, tvcPivotsZ - 0.05),
+            new THREE.Vector3(s > 0 ? 1.88 : -0.55, 0.1, 6.92),
+          ),
+        });
+
+        pass2Specs.push({
+          id: `flex_${side}`,
+          pivot: new THREE.Vector3(s * 5.16, -0.02, 2.15),
+          planes: [makeAxisPlane('x', s * 5.16, s > 0)],
+          bounds: new THREE.Box3(
+            new THREE.Vector3(s > 0 ? 5.12 : -7.5, -0.45, -0.4),
+            new THREE.Vector3(s > 0 ? 7.5 : -5.12, 0.25, 4.4),
+          ),
+        });
+      }
+    }
+
+    const parts = this.carveAirframeParts(model, specs, this.loadedExtras);
+    const flexParts = this.carveAirframeParts(model, pass2Specs, this.loadedExtras);
+
+    for (const side of [0, 1] as const) {
+      const fp = flexParts.get(`flex_${side}`);
+      if (fp && fp.triangleCount > 0) rig.wingFlex[side] = fp.group;
+    }
+
+    for (const [partId, info] of axisBind) {
+      const carved = parts.get(partId);
+      if (!carved || carved.triangleCount === 0) continue;
+      const hs: HingeSurface = { group: carved.group, axis: info.axis, sign: info.sign };
+      if (info.role === 'canard') rig.canards[info.side] = hs;
+      else if (info.role === 'flap') rig.flaps[info.side] = hs;
+      else if (info.role === 'aileron') {
+        const wf = rig.wingFlex[info.side];
+        if (wf) {
+          carved.group.position.sub(wf.position);
+          wf.add(carved.group);
+        }
+        rig.ailerons[info.side] = hs;
+      } else if (info.role === 'slat') rig.slats[info.side] = hs;
+      else if (info.role === 'stab') rig.stabs[info.side] = hs;
+      else if (info.role === 'rudder') rig.rudders.push(hs);
+    }
+
+    const activeCount = single ? 1 : 2;
+    for (let i = 0; i < activeCount; i++) {
+      const tvc = parts.get(`tvc_${i}`);
+      if (tvc && tvc.triangleCount > 0) {
+        tvc.group.position.set(0, 0, 0);
+        this.tvcAnchors[i].add(tvc.group);
+      }
+      const dz = this.nozzles[i].z - tvcPivotsZ;
+      rig.irisPetals[i] = this.buildNozzleIris(
+        this.tvcAnchors[i],
+        anchors.nozzleRadiusM * 0.96,
+        anchors.nozzleRadiusM * 1.1,
+        Math.max(0.08, dz - anchors.nozzleRadiusM * 0.62),
+      );
+    }
+
+    // Airbrakes, retractable gear, and over-wing condensation vapor
+    if (id === 'gripen') {
+      this.buildAirbrakeUnits(rig, this.loadedExtras, [
+        { pos: new THREE.Vector3(-0.44, 0.04, 3.72), size: new THREE.Vector3(0.32, 0.04, 0.85), axis: new THREE.Vector3(0, 1, 0), maxRad: -0.68, bayColor: 0x101318, flapColor: 0x6c727a, tiltZ: 0.42 },
+        { pos: new THREE.Vector3(0.44, 0.04, 3.72), size: new THREE.Vector3(0.32, 0.04, 0.85), axis: new THREE.Vector3(0, 1, 0), maxRad: 0.68, bayColor: 0x101318, flapColor: 0x6c727a, tiltZ: -0.42 },
+      ]);
+      rig.vaporMat = this.buildWingVapor(this.loadedExtras, [
+        new THREE.Vector3(0.82, 0.04, -2.0),
+        new THREE.Vector3(3.75, -0.1, 1.95),
+        new THREE.Vector3(3.75, -0.1, 2.55),
+        new THREE.Vector3(0.85, 0.04, 2.38),
+      ]);
+    } else {
+      this.buildAirbrakeUnits(rig, this.loadedExtras, [
+        { pos: new THREE.Vector3(0, 1.46, -4.3), size: new THREE.Vector3(0.96, 0.055, 1.75), axis: new THREE.Vector3(1, 0, 0), maxRad: -0.92, bayColor: 0x10141b, flapColor: 0x627488 },
+      ]);
+      rig.vaporMat = this.buildWingVapor(this.loadedExtras, [
+        new THREE.Vector3(1.55, 0.22, -4.2),
+        new THREE.Vector3(7.05, 0.04, 2.45),
+        new THREE.Vector3(7.05, 0.04, 3.95),
+        new THREE.Vector3(2.2, 0.12, 3.15),
+      ]);
+      if (id === 'su30') {
+        this.buildSu30MfdCluster(this.loadedExtras);
+      }
+    }
+
+    if (anchors.wheelAnchors) {
+      this.buildGearRig(rig, this.loadedExtras, anchors.wheelAnchors);
+    }
+
+    this.baseWingtips[0].copy(this.wingtips[0]);
+    this.baseWingtips[1].copy(this.wingtips[1]);
+    this.rig = rig;
+  }
+
+  /** Smoothly animate all articulated surfaces, TVC nozzles, iris petals, airbrakes, gear and vapor. */
+  private applyRigAnimation(dt: number, timeSec: number, visual?: JetVisualState): void {
+    const rig = this.rig;
+    const target = visual?.surfaces;
+    const sm = rig.smooth;
+    const kSurf = dt > 0 ? 1 - Math.exp(-16 * dt) : 1;
+    const kSlow = dt > 0 ? 1 - Math.exp(-8 * dt) : 1;
+    const damp = (cur: number, dst: number, k = kSurf): number => cur + (dst - cur) * k;
+
+    sm.canardRad = damp(sm.canardRad, target?.canardRad ?? 0);
+    sm.elevonLeftRad = damp(sm.elevonLeftRad, target?.elevonLeftRad ?? 0);
+    sm.elevonRightRad = damp(sm.elevonRightRad, target?.elevonRightRad ?? 0);
+    sm.flapLeftRad = damp(sm.flapLeftRad, target?.flapLeftRad ?? 0);
+    sm.flapRightRad = damp(sm.flapRightRad, target?.flapRightRad ?? 0);
+    sm.rudderRad = damp(sm.rudderRad, target?.rudderRad ?? 0);
+    sm.tvcPitchLeftRad = damp(sm.tvcPitchLeftRad, target?.tvcPitchLeftRad ?? 0);
+    sm.tvcPitchRightRad = damp(sm.tvcPitchRightRad, target?.tvcPitchRightRad ?? 0);
+    sm.tvcYawLeftRad = damp(sm.tvcYawLeftRad, target?.tvcYawLeftRad ?? 0);
+    sm.tvcYawRightRad = damp(sm.tvcYawRightRad, target?.tvcYawRightRad ?? 0);
+    sm.slat = damp(sm.slat, target?.slat ?? 0, kSlow);
+    sm.airbrake = damp(sm.airbrake, target?.airbrake ?? 0, kSlow);
+    sm.gear = damp(sm.gear, target?.gear ?? 0, kSlow);
+    sm.nozzleIris = damp(sm.nozzleIris, target?.nozzleIris ?? 0, kSlow);
+
+    const gLoad = visual?.gLoad ?? 1;
+    const flexTarget = THREE.MathUtils.clamp((gLoad - 1) * (this.airframeId === 'gripen' ? 0.0045 : 0.0075), -0.025, 0.07);
+    rig.smoothFlexRad = damp(rig.smoothFlexRad, flexTarget, kSlow);
+    const oleoTarget = visual?.onGround && sm.gear > 0.85 ? 0.06 : 0;
+    rig.smoothOleoM = damp(rig.smoothOleoM, oleoTarget, kSurf);
+
+    const rotHinge = (hs: HingeSurface | null, rad: number): void => {
+      if (!hs) return;
+      hs.group.quaternion.setFromAxisAngle(hs.axis, rad * hs.sign);
+    };
+
+    rotHinge(rig.canards[0], sm.canardRad);
+    rotHinge(rig.canards[1], sm.canardRad);
+    rotHinge(rig.flaps[0], sm.flapLeftRad);
+    rotHinge(rig.flaps[1], sm.flapRightRad);
+    rotHinge(rig.ailerons[0], sm.elevonLeftRad);
+    rotHinge(rig.ailerons[1], sm.elevonRightRad);
+    rotHinge(rig.stabs[0], sm.elevonLeftRad);
+    rotHinge(rig.stabs[1], sm.elevonRightRad);
+    rotHinge(rig.slats[0], -sm.slat * 0.34);
+    rotHinge(rig.slats[1], -sm.slat * 0.34);
+    for (const r of rig.rudders) rotHinge(r, sm.rudderRad);
+
+    for (const side of [0, 1] as const) {
+      const wf = rig.wingFlex[side];
+      if (wf) wf.rotation.z = (side === 0 ? -1 : 1) * rig.smoothFlexRad;
+      const tipShiftY = Math.sin(rig.smoothFlexRad) * (this.airframeId === 'gripen' ? 1.95 : 2.25);
+      this.wingtips[side].copy(this.baseWingtips[side]);
+      this.wingtips[side].y += tipShiftY;
+      this.navLights[side]?.position.set(this.wingtips[side].x + (side === 0 ? -0.05 : 0.05), this.wingtips[side].y, this.wingtips[side].z);
+    }
+
+    // TVC nozzle 3D gimbal & 14-petal variable titanium iris
+    const tvcP = [sm.tvcPitchLeftRad, sm.tvcPitchRightRad];
+    const tvcY = [sm.tvcYawLeftRad, sm.tvcYawRightRad];
+    const irisAng = THREE.MathUtils.lerp(0.24, -0.08, THREE.MathUtils.clamp(sm.nozzleIris, 0, 1));
+    for (let i = 0; i < 2; i++) {
+      const anch = rig.tvcPivots[i];
+      if (!anch || !anch.visible) continue;
+      // Rotate Y (+tvcYaw = right) then X (-tvcPitch = up)
+      anch.rotation.order = 'YXZ';
+      anch.rotation.set(-tvcP[i], tvcY[i], 0);
+      for (const petal of rig.irisPetals[i]) petal.rotation.x = irisAng;
+    }
+
+    // Airbrake panels & telescoping hydraulic actuators
+    for (const ab of rig.airbrakes) {
+      const ang = ab.maxRad * sm.airbrake;
+      ab.pivot.quaternion.setFromAxisAngle(ab.axis, ang);
+      if (ab.piston) {
+        this.tmpVecA.set(0, 0.02, ab.piston.baseLen * 1.1).applyQuaternion(ab.pivot.quaternion);
+        const start = this.tmpVecB.copy(ab.piston.mesh.position);
+        const dir = this.tmpVecA.sub(start);
+        const dist = Math.max(0.05, dir.length());
+        ab.piston.mesh.scale.set(1, 1, dist / ab.piston.baseLen);
+        if (dist > 1e-4) {
+          this.rigQuat.setFromUnitVectors(this.rigAxisZ, dir.normalize());
+          ab.piston.mesh.quaternion.copy(this.rigQuat);
+        }
+      }
+    }
+
+    // Landing gear doors (0..0.35), strut deployment (0.15..1.0), oleo compression, nosewheel steering
+    const doorOpen = THREE.MathUtils.smoothstep(sm.gear, 0.0, 0.35);
+    const strutOut = THREE.MathUtils.smoothstep(sm.gear, 0.15, 1.0);
+    for (const lg of rig.gear) {
+      lg.strut.visible = sm.gear > 0.02;
+      lg.strut.quaternion.setFromAxisAngle(lg.retractAxis, lg.retractRad * (1 - strutOut));
+      lg.piston.position.y = lg.pistonBaseY + rig.smoothOleoM;
+      for (let d = 0; d < lg.doors.length; d++) {
+        lg.doors[d].quaternion.setFromAxisAngle(lg.doorAxis, lg.doorSigns[d] * doorOpen * 1.48);
+      }
+      if (lg.isNose) lg.piston.rotation.y = sm.rudderRad * 0.45 * strutOut;
+    }
+    if (rig.taxiLight) rig.taxiLight.visible = sm.gear > 0.7;
+
+    // Expose smoothed control deflections for telemetry/verification
+    Object.assign(this.surfaceState, sm);
+
+    // Over-wing/LERX condensation sheet driven by |AoA|, dynamic pressure qPa, density and Mach
+    if (rig.vaporMat) {
+      const absAoa = Math.abs(visual?.aoaDeg ?? 0);
+      const rho = visual?.airDensity ?? 1;
+      const qPa = visual?.qPa ?? 0;
+      const mach = visual?.mach ?? 0;
+      const aoaK = THREE.MathUtils.smoothstep(absAoa, 7.5, 21.0);
+      const qK = THREE.MathUtils.clamp((qPa - 3200) / 14000, 0, 1);
+      const transonic = 1 + 0.55 * Math.exp(-Math.pow((mach - 0.96) / 0.12, 2));
+      rig.vaporMat.uniforms.uIntensity.value = THREE.MathUtils.clamp(aoaK * qK * rho * transonic, 0, 1);
+      rig.vaporMat.uniforms.uTime.value = timeSec;
+    }
+  }
+
   /**
    * Cut a moving part (a stick, a throttle grip) out of the loaded airframe's merged meshes: every
    * triangle lying inside `box` (jet frame) moves into a new mesh hung from a pivot at `pivot`,
@@ -1568,26 +3016,48 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
 
   /** The model could not load: fly the built-in airframe instead. */
   public showBuiltIn(): void {
+    this.airframeId = 'kestrel';
     this.body.visible = true;
     this.root.visible = true;
+    this.rig = this.kestrelRig;
+    this.loadedExtras.clear();
+    this.nozzles.forEach((n, i) => {
+      const anchor = this.tvcAnchors[i];
+      anchor.visible = true;
+      anchor.position.set(n.x, n.y, n.z - 1.05);
+      anchor.rotation.set(0, 0, 0);
+      const kestrelNz = anchor.getObjectByName(`kestrel_nozzle_${i}`);
+      if (kestrelNz) kestrelNz.visible = true;
+      this.plumes[i]?.position.set(0, 0, 1.05);
+      if (this.plumes[i]) this.plumes[i].visible = true;
+      this.nozzleFaces[i]?.position.set(0, 0, 0.35);
+      if (this.nozzleFaces[i]) this.nozzleFaces[i].visible = true;
+    });
+    this.baseWingtips[0].set(-5.45, -0.02, 4.4);
+    this.baseWingtips[1].set(5.45, -0.02, 4.4);
   }
 
-  /** Engines, exhaust and lights for this frame. */
-  public update(timeSec: number, throttle: number, boost: number, vacuum: number): void {
+  /** Engines, exhaust, lights, and articulated surfaces/gear/vapor for this frame. */
+  public update(timeSec: number, throttle: number, boost: number, vacuum: number, visual?: JetVisualState): void {
+    const abBoost = visual?.abStage !== undefined ? Math.max(boost, visual.abStage / 3) : boost;
     const u = this.plumeMat.uniforms;
     u.uThrottle.value = throttle;
-    u.uBoost.value = boost;
+    u.uBoost.value = abBoost;
     u.uVacuum.value = vacuum;
     u.uTime.value = timeSec;
-    // Visible flame: a few metres dry, ~8–10 m on afterburner (longer, fainter in vacuum)
-    const len = 1.2 + throttle * 2.2 + boost * 3.4 + vacuum * 2.5;
+    // Visible flame: a few metres dry, ~8–10 m on zone-3 afterburner (wider & fainter in vacuum)
+    const len = 1.2 + throttle * 2.2 + abBoost * 3.8 + vacuum * 2.5;
     // uLength stays the geometry length (9); the mesh scale sets how long the flame is
     // Under-expanded in vacuum: a little wider, never a balloon
     const widen = 1 + vacuum * 0.45 * (0.3 + throttle);
-    const r = widen * (1 + boost * 0.25) * this.plumeScale;
+    const r = widen * (1 + abBoost * 0.28) * this.plumeScale;
     for (const p of this.plumes) p.scale.set(r, r, (len / 9) * Math.sqrt(this.plumeScale));
-    this.nozzleGlowMat.opacity = 0.25 + 0.6 * throttle + 0.6 * boost;
-    this.nozzleGlowMat.color.setRGB(1, 0.42 + 0.25 * boost, 0.16 + 0.1 * boost);
+    this.nozzleGlowMat.opacity = 0.25 + 0.6 * throttle + 0.65 * abBoost;
+    this.nozzleGlowMat.color.setRGB(1, 0.42 + 0.28 * abBoost, 0.16 + 0.14 * abBoost);
+
+    const dt = THREE.MathUtils.clamp(visual?.dt ?? 1 / 60, 0, 0.1);
+    this.applyRigAnimation(dt, timeSec, visual);
+
     // Anti-collision strobes: a double flash every 1.4 s
     const ph = timeSec % 1.4;
     const on = ph < 0.05 || (ph > 0.16 && ph < 0.21);
@@ -1603,6 +3073,8 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
   }
 
   public dispose(): void {
+    this.loadedExtras.clear();
+    this.kestrelExtras.clear();
     for (const d of this.disposables) d.dispose();
     this.disposables = [];
   }

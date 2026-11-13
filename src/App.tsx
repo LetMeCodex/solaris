@@ -3,6 +3,7 @@ import React, { useMemo, useEffect, useRef, useState, useCallback } from 'react'
 import { SolarSystemScene, TelemetryData } from './rendering/SolarSystemScene';
 import { FlightHUD } from './ui/HUD/FlightHUD';
 import { JetHUD } from './flight/JetHUD';
+import { AIRFRAMES, chosenAirframe } from './flight/JetModel';
 import { FpsCounter } from './ui/FpsCounter';
 import { LensProfileName } from './rendering/LensPipeline';
 import type { ComparisonPropKind } from './rendering/SpacecraftFactory';
@@ -104,9 +105,10 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
         if (st) say(`take-off  ${st.name}  ${Math.abs(st.lat).toFixed(3)}°${st.lat >= 0 ? 'N' : 'S'} ${Math.abs(st.lon).toFixed(3)}°${st.lon >= 0 ? 'E' : 'W'} · Sun high there now`);
       }
       const r = sc?.flyReadiness() ?? { jet: false, aircraft: false, tilesPending: 0, tilesVisible: 0 };
+      const airframeName = sc?.jet.airframe.anchors.name ?? AIRFRAMES[chosenAirframe()].anchors.name;
       if (r.aircraft && !aircraftSaid) {
         aircraftSaid = true;
-        say('airframe  JAS 39 Gripen glTF decoded · cockpit lit · displays live');
+        say(`airframe  ${airframeName} glTF decoded · cockpit lit · displays live`);
       }
       // Behind the film, every view is looked through once while the tiles load: the cockpit's own
       // shaders, its reflections and displays, the GoPro's and the fly-by's are all made now, not
@@ -136,7 +138,7 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
       const progress = (load.done ? 0.4 : load.progress * 0.4) + (r.aircraft ? 0.12 : 0) + (r.jet ? 0.08 : 0) + 0.4 * (ready ? 1 : tilesFrac * 0.97);
       const items: PreflightItem[] = [
         { label: 'OBSERVATORY', detail: load.done ? 'textures · shaders ready' : `${Math.round(load.progress * 100)}% · ${load.stage}`, done: load.done },
-        { label: 'AIRFRAME', detail: r.aircraft ? 'JAS 39 Gripen · cockpit lit' : 'loading the Gripen', done: r.aircraft },
+        { label: 'AIRFRAME', detail: r.aircraft ? `${airframeName} · cockpit lit` : `loading ${airframeName}`, done: r.aircraft },
         { label: 'EARTH 3D', detail: !streaming ? 'waiting for the observatory' : ready ? `${r.tilesVisible} tiles over ${start}` : `${r.tilesVisible} in · ${r.tilesPending} streaming`, done: ready },
         { label: 'SKY', detail: r.jet ? 'live weather · Sun at this hour' : 'standing by', done: r.jet && ready },
       ];

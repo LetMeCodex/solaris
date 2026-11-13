@@ -1,12 +1,15 @@
 import * as THREE from 'three';
 import type { JetModel } from './JetModel';
+import type { FbwMode, FlapMode } from './JetTelemetry';
 
 /**
  * Working cockpit controls.
  *
  *  - The airframe's own control stick and throttle grip, cut out of its merged meshes, move with
- *    the pilot's inputs: the stick tilts with pitch and roll, the throttle slides with the power.
- *  - A landing-gear lever and a guarded afterburner-arm switch on the left console, clickable.
+ *    the pilot's inputs: the stick tilts with pitch and roll (and buzzes gently under stall/aero
+ *    buffet), the throttle slides with the power.
+ *  - A landing-gear lever, guarded afterburner-arm switch, and BRK/FBW/FLAP indicator lamps on
+ *    the left console, clickable.
  *  - A destination display on the console: the worlds, or the landmarks of the world below; a
  *    click on a row sets the target (or starts the landing autopilot).
  */
@@ -19,6 +22,15 @@ export interface CockpitLayout {
   throttlePivot: THREE.Vector3;
   /** A flat spot on the left console for the added controls and display. */
   console: THREE.Vector3;
+  /** Optional uniform scale for tight cockpits (default 1.0). */
+  consoleScale?: number;
+}
+
+export interface CockpitControlOptions {
+  airbrake?: boolean;
+  fbwMode?: FbwMode;
+  flapMode?: FlapMode;
+  buffet?: number;
 }
 
 export interface DestinationRow {
@@ -41,6 +53,9 @@ export class CockpitControls {
   private armGuard: THREE.Mesh;
   private gearLamp: THREE.MeshBasicMaterial;
   private armLamp: THREE.MeshBasicMaterial;
+  private brkLamp: THREE.MeshBasicMaterial;
+  private fbwLamp: THREE.MeshBasicMaterial;
+  private flapLamp: THREE.MeshBasicMaterial;
   private display: THREE.Mesh;
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
@@ -52,11 +67,17 @@ export class CockpitControls {
   private guardAngle = 0;
   private stickRest = new THREE.Euler();
   private throttleRest = new THREE.Euler();
+  private stickTargetX = 0;
+  private stickTargetZ = 0;
 
   constructor(model: JetModel, layout: CockpitLayout) {
     this.stick = model.extractPart(layout.stickBox, layout.stickPivot);
     this.throttle = model.extractPart(layout.throttleBox, layout.throttlePivot);
-    if (this.stick) this.stickRest.copy(this.stick.rotation);
+    if (this.stick) {
+      this.stickRest.copy(this.stick.rotation);
+      this.stickTargetX = this.stickRest.x;
+      this.stickTargetZ = this.stickRest.z;
+    }
     if (this.throttle) this.throttleRest.copy(this.throttle.rotation);
 
     const metal = new THREE.MeshStandardMaterial({ color: 0x8a8f96, metalness: 0.8, roughness: 0.35 });
@@ -65,13 +86,17 @@ export class CockpitControls {
     const redPaint = new THREE.MeshStandardMaterial({ color: 0xb4141a, roughness: 0.45 });
     this.gearLamp = new THREE.MeshBasicMaterial({ color: 0x33ff66, toneMapped: false });
     this.armLamp = new THREE.MeshBasicMaterial({ color: 0xffaa22, toneMapped: false });
-    this.disposables.push(metal, black, white, redPaint, this.gearLamp, this.armLamp);
+    this.brkLamp = new THREE.MeshBasicMaterial({ color: 0x22100a, toneMapped: false });
+    this.fbwLamp = new THREE.MeshBasicMaterial({ color: 0x4ef5b2, toneMapped: false });
+    this.flapLamp = new THREE.MeshBasicMaterial({ color: 0x152520, toneMapped: false });
+    this.disposables.push(metal, black, white, redPaint, this.gearLamp, this.armLamp, this.brkLamp, this.fbwLamp, this.flapLamp);
     const add = <T extends THREE.BufferGeometry>(g: T): T => {
       this.disposables.push(g);
       return g;
     };
     const c = layout.console;
     this.group.position.copy(c);
+    if (layout.consoleScale) this.group.scale.setScalar(layout.consoleScale);
 
     // Gear lever: a short arm with the wheel-shaped knob pilots know by feel, and a gear lamp
     const plate = new THREE.Mesh(add(new THREE.BoxGeometry(0.11, 0.008, 0.16)), black);
@@ -105,6 +130,17 @@ export class CockpitControls {
     armLampMesh.position.set(0.025, 0.0045, 0.09);
     (this.group.userData as { guardPivot?: THREE.Group }).guardPivot = guardPivot;
 
+    // Compact avionics strip along the aft plate edge: BRK (speedbrake), FBW mode, FLAP state
+    const makeLed = (mat: THREE.MeshBasicMaterial, x: number): THREE.Mesh => {
+      const m = new THREE.Mesh(add(new THREE.PlaneGeometry(0.014, 0.006)), mat);
+      m.rotation.x = -Math.PI / 2;
+      m.position.set(x, 0.0046, 0.114);
+      return m;
+    };
+    const brkLed = makeLed(this.brkLamp, -0.042);
+    const fbwLed = makeLed(this.fbwLamp, -0.01);
+    const flapLed = makeLed(this.flapLamp, 0.022);
+
     // Destination display, set into the console ahead of the controls, tilted to the pilot
     this.canvas = document.createElement('canvas');
     this.canvas.width = S;
@@ -124,7 +160,7 @@ export class CockpitControls {
     bezel.rotation.copy(this.display.rotation);
     bezel.translateZ(-0.0045);
 
-    this.group.add(plate, this.gearLever, gearLampMesh, toggle, guardPivot, armLampMesh, bezel, this.display);
+    this.group.add(plate, this.gearLever, gearLampMesh, toggle, guardPivot, armLampMesh, brkLed, fbwLed, flapLed, bezel, this.display);
     this.group.traverse((o) => {
       o.frustumCulled = false;
       if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).receiveShadow = true;
@@ -148,15 +184,34 @@ export class CockpitControls {
     return null;
   }
 
-  public update(dt: number, timeSec: number, pitch: number, roll: number, throttle: number, gearDown: boolean, abArmed: boolean, title: string, rows: DestinationRow[], visible: boolean): void {
+  public update(
+    dt: number,
+    timeSec: number,
+    pitch: number,
+    roll: number,
+    throttle: number,
+    gearDown: boolean,
+    abArmed: boolean,
+    title: string,
+    rows: DestinationRow[],
+    visible: boolean,
+    opts?: CockpitControlOptions,
+  ): void {
     this.group.visible = visible;
     const k = 1 - Math.exp(-14 * dt);
+    const buffet = opts?.buffet ?? 0;
     if (this.stick) {
       // Pull back to climb: the grip comes towards the pilot; roll right: it leans right
-      this.stick.rotation.x += (this.stickRest.x + pitch * 0.24 - this.stick.rotation.x) * k;
-      this.stick.rotation.z += (this.stickRest.z - roll * 0.24 - this.stick.rotation.z) * k;
+      this.stickTargetX += (this.stickRest.x + pitch * 0.24 - this.stickTargetX) * k;
+      this.stickTargetZ += (this.stickRest.z - roll * 0.24 - this.stickTargetZ) * k;
+      const shakeX = buffet > 0.01 ? Math.sin(timeSec * 41) * buffet * 0.022 : 0;
+      const shakeZ = buffet > 0.01 ? Math.cos(timeSec * 33) * buffet * 0.018 : 0;
+      this.stick.rotation.x = this.stickTargetX + shakeX;
+      this.stick.rotation.z = this.stickTargetZ + shakeZ;
     }
-    if (this.throttle) this.throttle.rotation.x += (this.throttleRest.x - (throttle - 0.4) * 0.7 - this.throttle.rotation.x) * k;
+    if (this.throttle) {
+      this.throttle.rotation.x += (this.throttleRest.x - (throttle - 0.4) * 0.7 - this.throttle.rotation.x) * k;
+    }
     this.gearAngle += ((gearDown ? 0.5 : -0.35) - this.gearAngle) * k;
     this.gearLever.rotation.x = this.gearAngle;
     this.gearLamp.color.setHex(gearDown ? 0x33ff66 : 0x113318);
@@ -164,6 +219,14 @@ export class CockpitControls {
     this.guardAngle += ((abArmed ? -1.9 : 0) - this.guardAngle) * k;
     if (gp) gp.rotation.x = this.guardAngle;
     this.armLamp.color.setHex(abArmed ? 0xffaa22 : 0x332208);
+
+    const brk = opts?.airbrake ?? false;
+    this.brkLamp.color.setHex(brk ? 0xff4d2a : 0x220c08);
+    const fbw = opts?.fbwMode ?? 'norm';
+    this.fbwLamp.color.setHex(fbw === 'psm' ? 0xf6b946 : fbw === 'high-g' ? 0x36e6ff : 0x4ef5b2);
+    const flap = opts?.flapMode ?? 'auto';
+    this.flapLamp.color.setHex(flap === 'land' ? 0x33ff66 : flap === 'combat' ? 0x5cdbff : 0x152520);
+
     if (visible && timeSec - this.lastDraw > 0.2) {
       this.lastDraw = timeSec;
       this.drawDisplay(title, rows);

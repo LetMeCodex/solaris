@@ -2,7 +2,9 @@ import { FpsCounter } from '../ui/FpsCounter';
 import { IconButton, type IconName } from './HudIcons';
 import { WORLD_SCALE, WORLD_SCALE_KEY, WORLD_SCALE_OPTIONS } from '../rendering/Scale';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { JetController, JetTelemetry } from './JetController';
+import type { JetController } from './JetController';
+import type { JetTelemetry, ManeuverKind } from './JetTelemetry';
+import { getAirframeSpec, combatMassKg } from './AirframeSpecs';
 import { AIRFRAME_KEY } from './JetModel';
 import { DEEP_TIME_SCENES } from '../explorer/DeepTime';
 import { JET_RESUME_KEY, formatDistance, formatEta, formatSpeed } from './worlds';
@@ -25,6 +27,34 @@ const AMBER_DIM = 'rgba(244, 205, 114, 0.5)';
 const RED = 'rgba(255, 122, 102, 0.98)';
 const TEXT_DIM = 'rgba(238, 233, 222, 0.6)';
 const MONO = '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
+
+const CYAN = 'rgba(122, 232, 255, 0.94)';
+
+function drawAoAEBracket(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  aoaDeg: number,
+): void {
+  const onSpeed = aoaDeg >= 11 && aoaDeg <= 13;
+  const col = onSpeed ? MINT : aoaDeg > 13 ? AMBER : CYAN;
+  ctx.save();
+  ctx.strokeStyle = col;
+  ctx.fillStyle = col;
+  ctx.lineWidth = 1.8;
+  ctx.beginPath();
+  ctx.moveTo(x - 6, y - 12);
+  ctx.lineTo(x, y - 12);
+  ctx.lineTo(x, y + 12);
+  ctx.lineTo(x - 6, y + 12);
+  ctx.moveTo(x - 5, y);
+  ctx.lineTo(x, y);
+  ctx.stroke();
+  ctx.font = `600 9px ${MONO}`;
+  ctx.textAlign = 'right';
+  ctx.fillText(onSpeed ? 'ON SPD' : aoaDeg > 13 ? 'SLOW' : 'FAST', x - 8, y + 3);
+  ctx.restore();
+}
 
 function drawFull(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number): void {
   const w = t.width;
@@ -112,16 +142,44 @@ function drawFull(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number): 
 
   // --- Flight-path marker (where the jet is actually going)
   if (t.fpv) {
-    const { x, y } = t.fpv;
+    const rawX = t.fpv.x;
+    const rawY = t.fpv.y;
+    const fx = Math.max(54, Math.min(w - 54, rawX));
+    const fy = Math.max(54, Math.min(h - 76, rawY));
+    const clamped = Math.abs(fx - rawX) > 0.5 || Math.abs(fy - rawY) > 0.5;
+    if (clamped || Math.hypot(fx - cx, fy - cy) > t.pxPerDeg * 4.5) {
+      ctx.save();
+      ctx.strokeStyle = clamped ? AMBER : MINT_DIM;
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(fx, fy);
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.save();
+    ctx.strokeStyle = clamped ? AMBER : MINT;
+    if (clamped) ctx.setLineDash([4, 3]);
     ctx.beginPath();
-    ctx.arc(x, y, 6.5, 0, Math.PI * 2);
-    ctx.moveTo(x - 6.5, y);
-    ctx.lineTo(x - 18, y);
-    ctx.moveTo(x + 6.5, y);
-    ctx.lineTo(x + 18, y);
-    ctx.moveTo(x, y - 6.5);
-    ctx.lineTo(x, y - 13);
+    ctx.arc(fx, fy, 6.5, 0, Math.PI * 2);
     ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(fx - 6.5, fy);
+    ctx.lineTo(fx - 18, fy);
+    ctx.moveTo(fx + 6.5, fy);
+    ctx.lineTo(fx + 18, fy);
+    ctx.moveTo(fx, fy - 6.5);
+    ctx.lineTo(fx, fy - 13);
+    ctx.stroke();
+    ctx.restore();
+
+    if (t.gearDown && t.airDensity > 0) {
+      const aoa = t.aoaDeg ?? 12;
+      const eY = Math.max(56, Math.min(h - 78, rawY + (12 - aoa) * t.pxPerDeg));
+      drawAoAEBracket(ctx, fx - 24, eY, aoa);
+    }
   }
 
   // --- Heading tape (over a world)
@@ -178,33 +236,64 @@ function drawFull(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number): 
   };
   const leftX = w / 2 - unit * 0.42;
   const rightX = w / 2 + unit * 0.42;
-  const speedSub = t.airDensity > 0 ? `M ${t.mach.toFixed(2)}   ${t.gLoad.toFixed(1)} G` : t.closingMps > 1 ? `▲ ${formatSpeed(t.closingMps)}` : 'VACUUM';
-  box(leftX, 'SPEED', formatSpeed(t.speedMps), speedSub, 'left');
-  box(rightX, t.nearest ? `ALT · ${t.nearest.toUpperCase()}` : 'ALT', formatDistance(t.altKm), t.airWorld ? `AIR ρ ${t.airDensity >= 0.01 ? t.airDensity.toFixed(2) : t.airDensity.toExponential(1)}` : t.anchor ? `RIDING ${t.anchor.toUpperCase()}` : 'HELIOCENTRIC', 'right');
+  const shownSpeedMps = t.airDensity > 0 && t.iasMps !== undefined ? t.iasMps : t.speedMps;
+  const speedLbl = t.airDensity > 0 && t.iasMps !== undefined ? 'IAS' : 'SPEED';
+  const aoaStr = t.aoaDeg !== undefined ? `  α ${t.aoaDeg.toFixed(1)}°` : '';
+  const gPeakStr = t.gPeak !== undefined ? ` (PK ${t.gPeak.toFixed(1)})` : '';
+  const speedSub =
+    t.airDensity > 0
+      ? `M ${t.mach.toFixed(2)}${aoaStr}  ${t.gLoad.toFixed(1)}G${gPeakStr}`
+      : t.closingMps > 1
+        ? `▲ ${formatSpeed(t.closingMps)}`
+        : 'VACUUM';
+  box(leftX, speedLbl, formatSpeed(shownSpeedMps), speedSub, 'left');
 
-  // --- Throttle and boost gauges (bottom left)
+  const psStr =
+    t.airDensity > 0 && t.specificExcessPowerMps !== undefined
+      ? `Ps ${t.specificExcessPowerMps >= 0 ? '+' : ''}${Math.round(t.specificExcessPowerMps)}${t.specificExcessPowerMps >= 2 ? '▲' : t.specificExcessPowerMps <= -2 ? '▼' : ''}`
+      : '';
+  const twStr = t.twRatio !== undefined ? `T/W ${t.twRatio.toFixed(2)}` : '';
+  const rightSub =
+    t.airWorld
+      ? [twStr, psStr, `ρ ${t.airDensity >= 0.01 ? t.airDensity.toFixed(2) : t.airDensity.toExponential(1)}`].filter(Boolean).join(' · ')
+      : t.anchor
+        ? `RIDING ${t.anchor.toUpperCase()}`
+        : 'HELIOCENTRIC';
+  box(rightX, t.nearest ? `ALT · ${t.nearest.toUpperCase()}` : 'ALT', formatDistance(t.altKm), rightSub, 'right');
+
+  // --- Throttle, AB/fuel & mode pills (bottom left)
   const gx = leftX;
   const gy = h * 0.8;
+  const fuelVal = t.fuelFrac ?? t.boostEnergy;
+  const abStage = t.abStage ?? (t.boost > 0.66 ? 3 : t.boost > 0.33 ? 2 : t.boost > 0 ? 1 : 0);
   ctx.lineWidth = 1.2;
   ctx.strokeStyle = MINT_DIM;
   ctx.strokeRect(gx, gy - 70, 8, 70);
-  ctx.fillStyle = MINT;
+  ctx.fillStyle = abStage > 0 ? AMBER : MINT;
   ctx.fillRect(gx, gy - 70 * t.throttle, 8, 70 * t.throttle);
   ctx.strokeRect(gx + 16, gy - 70, 8, 70);
-  ctx.fillStyle = t.boost > 0 ? 'rgba(255,160,80,0.95)' : AMBER_DIM;
-  ctx.fillRect(gx + 16, gy - 70 * t.boostEnergy, 8, 70 * t.boostEnergy);
+  ctx.fillStyle = t.boost > 0 || abStage > 0 ? 'rgba(255,160,80,0.95)' : fuelVal < 0.18 ? RED : AMBER_DIM;
+  ctx.fillRect(gx + 16, gy - 70 * fuelVal, 8, 70 * fuelVal);
   ctx.font = font(9, 600);
   ctx.textAlign = 'left';
   ctx.fillStyle = MINT_DIM;
-  ctx.fillText(`THR ${Math.round(t.throttle * 100)}%`, gx, gy + 14);
-  ctx.fillText(t.boost > 0 ? 'BOOST' : 'BST', gx, gy + 26);
+  ctx.fillText(`THR ${Math.round(t.throttle * 100)}% · FUEL ${Math.round(fuelVal * 100)}%`, gx, gy + 14);
+  ctx.fillStyle = t.supercruise ? CYAN : abStage > 0 ? AMBER : MINT_DIM;
+  ctx.fillText(t.supercruise ? 'SUPERCRUISE' : abStage > 0 ? `AB ZONE ${abStage}` : t.abArmed ? 'AB ARMED' : 'MILITARY', gx, gy + 26);
+
+  const fbwLbl = `${(t.fbwMode ?? 'norm').toUpperCase()}${t.tvcActive ? '+TVC' : ''}`;
+  const flpLbl = `FLP ${(t.flapMode ?? 'auto').toUpperCase()}`;
+  const brkLbl = t.wheelBrakeActive ? 'W-BRK' : t.airbrakeActive ? 'BRK' : '';
+  const gearLbl = t.gearDown ? 'GEAR DN' : '';
   ctx.fillStyle = t.assist ? MINT : AMBER;
-  ctx.fillText(t.assist ? 'FA ON' : 'FA OFF · INERTIAL', gx + 34, gy - 58);
+  ctx.fillText(t.assist ? `FA ON · FBW ${fbwLbl}` : 'FA OFF · INERTIAL', gx + 34, gy - 58);
   ctx.fillStyle = MINT_DIM;
-  ctx.fillText(t.view.toUpperCase(), gx + 34, gy - 44);
+  ctx.fillText([flpLbl, brkLbl, gearLbl].filter(Boolean).join(' · '), gx + 34, gy - 44);
+  ctx.fillStyle = MINT_DIM;
+  ctx.fillText(t.view.toUpperCase(), gx + 34, gy - 30);
   if (t.aligning) {
     ctx.fillStyle = AMBER;
-    ctx.fillText('ALIGNING', gx + 34, gy - 30);
+    ctx.fillText('ALIGNING', gx + 34, gy - 16);
   }
 
   // --- Other worlds: small ticks with names
@@ -283,24 +372,39 @@ function drawFull(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number): 
   ctx.fillText(formatDistance(t.targetDistKm), rightX, gy - 24);
   ctx.fillText(`ETA ${eta}`, rightX, gy - 10);
 
-  // --- Warnings
+  // --- Warnings & Maneuver Cautions
   const blink = Math.floor(t.timeSec * 4) % 2 === 0;
+  ctx.textAlign = 'center';
   if (t.warning === 1 && blink) {
     ctx.fillStyle = RED;
     ctx.shadowColor = 'rgba(255,90,70,0.7)';
     ctx.font = font(22, 700);
-    ctx.textAlign = 'center';
     ctx.fillText('PULL UP', w / 2, h * 0.68);
   } else if (t.warning === 2) {
     ctx.fillStyle = blink ? RED : AMBER;
     ctx.font = font(16, 700);
-    ctx.textAlign = 'center';
     ctx.fillText('HEAT · SOLAR CORONA', w / 2, h * 0.68);
+  } else if (t.spinWarning && blink) {
+    ctx.fillStyle = RED;
+    ctx.font = font(16, 700);
+    ctx.fillText('SPIN · STICK FWD + OPP Q/E', w / 2, h * 0.68);
+  } else if (t.overGWarning && blink) {
+    ctx.fillStyle = AMBER;
+    ctx.font = font(15, 700);
+    ctx.fillText(`OVER-G · ${t.gLoad.toFixed(1)}G`, w / 2, h * 0.68);
+  } else if (t.alphaWarning && blink) {
+    ctx.fillStyle = AMBER;
+    ctx.font = font(14, 600);
+    ctx.fillText(`HIGH ALPHA ${(t.aoaDeg ?? 0).toFixed(0)}°`, w / 2, h * 0.68);
+  }
+  if (t.maneuver && t.maneuver !== 'none') {
+    ctx.fillStyle = CYAN;
+    ctx.font = font(12, 700);
+    ctx.fillText(`MANEUVER · ${t.maneuver.toUpperCase()}`, w / 2, h * 0.21);
   }
   if (t.heat > 0.15 && t.warning !== 2) {
     ctx.fillStyle = AMBER;
     ctx.font = font(11, 600);
-    ctx.textAlign = 'center';
     ctx.fillText(`PLASMA ${Math.round(t.heat * 100)}%`, w / 2, h * 0.72);
   }
 }
@@ -522,25 +626,44 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
   // Flight-path marker, outside only (inside, the HUD glass carries it), and not over the fly-by's
   // film shots
   if (!inside && t.view !== 'flyby') {
-    const cx = t.fpv?.x ?? t.nose?.x ?? w / 2;
-    const cy = t.fpv?.y ?? t.nose?.y ?? h / 2;
+    const rawX = t.fpv?.x ?? t.nose?.x ?? w / 2;
+    const rawY = t.fpv?.y ?? t.nose?.y ?? h / 2;
+    const cx = Math.max(46, Math.min(w - 46, rawX));
+    const cy = Math.max(46, Math.min(h - 68, rawY));
+    const clamped = Math.abs(cx - rawX) > 0.5 || Math.abs(cy - rawY) > 0.5;
+    if (t.nose && (clamped || Math.hypot(cx - t.nose.x, cy - t.nose.y) > 48)) {
+      ctx.save();
+      ctx.strokeStyle = clamped ? AMBER : MINT_DIM;
+      ctx.lineWidth = 1.1;
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(t.nose.x, t.nose.y);
+      ctx.lineTo(cx, cy);
+      ctx.stroke();
+      ctx.restore();
+    }
     ctx.shadowColor = 'rgba(109, 252, 192, 0.55)';
     ctx.shadowBlur = 8;
-    ctx.strokeStyle = 'rgba(109, 252, 192, 0.75)';
+    ctx.strokeStyle = clamped ? AMBER : 'rgba(109, 252, 192, 0.8)';
     ctx.lineWidth = 1.4;
     ctx.beginPath();
-    ctx.arc(cx, cy, 22, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 20, 0, Math.PI * 2);
     ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(cx - 30, cy); ctx.lineTo(cx - 22, cy);
-    ctx.moveTo(cx + 22, cy); ctx.lineTo(cx + 30, cy);
-    ctx.moveTo(cx, cy - 30); ctx.lineTo(cx, cy - 22);
-    ctx.moveTo(cx, cy + 22); ctx.lineTo(cx, cy + 30);
+    ctx.moveTo(cx - 28, cy); ctx.lineTo(cx - 20, cy);
+    ctx.moveTo(cx + 20, cy); ctx.lineTo(cx + 28, cy);
+    ctx.moveTo(cx, cy - 28); ctx.lineTo(cx, cy - 20);
+    ctx.moveTo(cx, cy + 20); ctx.lineTo(cx, cy + 28);
     ctx.stroke();
-    ctx.fillStyle = 'rgba(109, 252, 192, 0.9)';
+    ctx.fillStyle = clamped ? AMBER : 'rgba(109, 252, 192, 0.9)';
     ctx.beginPath();
     ctx.arc(cx, cy, 2.5, 0, Math.PI * 2);
     ctx.fill();
+    if (t.gearDown && t.airDensity > 0) {
+      const aoa = t.aoaDeg ?? 12;
+      const eY = Math.max(48, Math.min(h - 70, rawY + (12 - aoa) * Math.max(8, t.pxPerDeg)));
+      drawAoAEBracket(ctx, cx - 32, eY, aoa);
+    }
   }
   if (!isPhone(w, h)) {
     // The tactical overlay: location and flight cards, heading tape (Earth and space alike)
@@ -658,13 +781,24 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
     }
     ctx.fillStyle = 'rgba(255,255,255,0.1)';
     ctx.fillRect(bx, by + 8, total, 1);
-    ctx.fillStyle = t.boost > 0 ? 'rgba(255,170,90,0.95)' : AMBER_DIM;
-    ctx.fillRect(bx, by + 8, total * t.boostEnergy, 1);
+    const fuelVal = t.fuelFrac ?? t.boostEnergy;
+    const abStage = t.abStage ?? (t.boost > 0.66 ? 3 : t.boost > 0.33 ? 2 : t.boost > 0 ? 1 : 0);
+    ctx.fillStyle = t.boost > 0 || abStage > 0 ? 'rgba(255,170,90,0.95)' : fuelVal < 0.18 ? RED : AMBER_DIM;
+    ctx.fillRect(bx, by + 8, total * Math.max(0, Math.min(1, fuelVal)), 1);
     ctx.font = `500 8px ${SANS}`;
-    ctx.letterSpacing = '3px';
-    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.letterSpacing = '2.4px';
+    ctx.fillStyle = 'rgba(255,255,255,0.48)';
     ctx.textAlign = 'center';
-    ctx.fillText(`${t.assist ? 'ASSIST' : 'INERTIAL'}  ·  ${t.view.toUpperCase()}${t.aligning ? '  ·  ALIGNING' : ''}`, w / 2, by + 22);
+    const modeParts = [
+      t.assist ? `FBW ${(t.fbwMode ?? 'norm').toUpperCase()}${t.tvcActive ? '+TVC' : ''}` : 'INERTIAL',
+      t.flapMode && t.flapMode !== 'auto' ? `FLP ${t.flapMode.toUpperCase()}` : '',
+      t.wheelBrakeActive ? 'W-BRK' : t.airbrakeActive ? 'BRK' : '',
+      t.gearDown ? 'GEAR' : '',
+      t.supercruise ? 'SUPR' : abStage > 0 ? `AB${abStage}` : '',
+      t.view.toUpperCase(),
+      t.aligning ? 'ALIGNING' : '',
+    ].filter(Boolean);
+    ctx.fillText(modeParts.join('  ·  '), w / 2, by + 22);
     ctx.letterSpacing = '0px';
   }
 
@@ -724,6 +858,16 @@ function draw(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number): void
   else drawMinimal(ctx, t, dpr);
 }
 
+const MANEUVER_HINTS: Record<ManeuverKind, string> = {
+  none: '',
+  cobra: 'PUGACHEV COBRA · PITCHING PAST STALL · RELEASE V OR PUSH STICK FWD TO RECOVER',
+  kulbit: 'KULBIT 360° · TVC FULL-LOOP POST-STALL SOMERSAULT',
+  herbst: 'HERBST J-TURN · HIGH-ALPHA TVC HEADING REVERSAL',
+  'high-g-drift': 'HIGH-G DRIFT · G-LIMITER OVERRIDE ACTIVE (+11.5G)',
+  spin: 'SPIN RECOVERY · STICK FORWARD + OPPOSITE Q / E RUDDER',
+  flare: 'LANDING FLARE · HOLD 11–13° α IN E-BRACKET · TAB BRAKES ON TOUCHDOWN',
+};
+
 interface JetHUDProps {
   controller: JetController;
   onExit: () => void;
@@ -731,7 +875,29 @@ interface JetHUDProps {
 
 export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [slow, setSlow] = useState({ target: controller.target, view: controller.view, assist: controller.assist, help: controller.helpOpen, status: '', muted: false, nearest: '', landMenu: false, landing: '', landingKm: 0, weather: 'Clear', weatherMode: 'auto', time: '', sky: '' });
+  const cobraHintSecRef = useRef(0);
+  const [slow, setSlow] = useState({
+    target: controller.target,
+    view: controller.view,
+    assist: controller.assist,
+    help: controller.helpOpen,
+    status: '',
+    muted: false,
+    nearest: '',
+    landMenu: false,
+    landing: '',
+    landingKm: 0,
+    weather: 'Clear',
+    weatherMode: 'auto',
+    time: '',
+    sky: '',
+    fbwMode: 'NORM',
+    flapMode: 'AUTO',
+    fuelPct: 100,
+    maneuver: 'none' as ManeuverKind,
+    promptText: '',
+    promptTone: 'mint' as 'mint' | 'amber' | 'red',
+  });
   const [listOpen, setListOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const { compact, touch } = useScreen();
@@ -742,7 +908,8 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     let lastSlow = 0;
-    const unsub = controller.subscribe((t) => {
+    const unsub = controller.subscribe((raw) => {
+      const t = raw as JetTelemetry;
       if (!t.active) return;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const W = Math.round(t.width * dpr);
@@ -763,12 +930,80 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
         const landingKm = Math.round(t.landingDistKm);
         const hh = Math.floor(t.localTime);
         const time = t.nearest && t.nearest !== 'Sun' && t.hasHorizon ? `${String(hh).padStart(2, '0')}:${String(Math.floor((t.localTime - hh) * 60)).padStart(2, '0')}` : '';
+        const fbwMode = (t.fbwMode ?? 'norm').toUpperCase();
+        const flapMode = (t.flapMode ?? 'auto').toUpperCase();
+        const fuelPct = Math.round(Math.max(0, Math.min(1, t.fuelFrac ?? t.boostEnergy)) * 100);
+        const maneuver: ManeuverKind = t.maneuver ?? 'none';
+
+        let promptText = '';
+        let promptTone: 'mint' | 'amber' | 'red' = 'mint';
+        if (t.spinWarning) {
+          promptText = 'SPIN RECOVERY · STICK FORWARD + OPPOSITE Q / E RUDDER';
+          promptTone = 'red';
+        } else if (t.gearDown && t.onGround && t.speedMps > 4) {
+          promptText = 'ROLLOUT · HOLD TAB / ; FOR WHEEL BRAKES';
+          promptTone = 'mint';
+        } else if (t.gearDown && t.airDensity > 0 && t.altKm > 0.0005 && t.altKm < 0.035 && !t.onGround) {
+          promptText = 'FLARE 11–13° α IN E-BRACKET · TAB / ; BRAKES ON TOUCHDOWN';
+          promptTone = 'mint';
+        } else if (
+          t.airDensity > 0.05 &&
+          t.speedMps >= 110 &&
+          t.speedMps <= 260 &&
+          !t.gearDown &&
+          maneuver === 'none'
+        ) {
+          cobraHintSecRef.current += 0.25;
+          if (cobraHintSecRef.current <= 6.5) {
+            promptText = 'PSM ENVELOPE · TAP V COBRA · HOLD V PSM-TVC · SPACE+TAB HIGH-G DRIFT';
+            promptTone = 'amber';
+          }
+        }
+
         setSlow((s) =>
-          s.target === t.target && s.view === t.view && s.assist === t.assist && s.help === t.helpOpen && s.status === status && s.muted === t.muted &&
-          s.nearest === t.nearest && s.landMenu === t.landMenu && s.landing === t.landingName && s.landingKm === landingKm &&
-          s.weather === t.weather && s.weatherMode === t.weatherMode && s.time === time && s.sky === t.skyEvent
+          s.target === t.target &&
+          s.view === t.view &&
+          s.assist === t.assist &&
+          s.help === t.helpOpen &&
+          s.status === status &&
+          s.muted === t.muted &&
+          s.nearest === t.nearest &&
+          s.landMenu === t.landMenu &&
+          s.landing === t.landingName &&
+          s.landingKm === landingKm &&
+          s.weather === t.weather &&
+          s.weatherMode === t.weatherMode &&
+          s.time === time &&
+          s.sky === t.skyEvent &&
+          s.fbwMode === fbwMode &&
+          s.flapMode === flapMode &&
+          s.fuelPct === fuelPct &&
+          s.maneuver === maneuver &&
+          s.promptText === promptText &&
+          s.promptTone === promptTone
             ? s
-            : { target: t.target, view: t.view, assist: t.assist, help: t.helpOpen, status, muted: t.muted, nearest: t.nearest, landMenu: t.landMenu, landing: t.landingName, landingKm, weather: t.weather, weatherMode: t.weatherMode, time, sky: t.skyEvent }
+            : {
+                target: t.target,
+                view: t.view,
+                assist: t.assist,
+                help: t.helpOpen,
+                status,
+                muted: t.muted,
+                nearest: t.nearest,
+                landMenu: t.landMenu,
+                landing: t.landingName,
+                landingKm,
+                weather: t.weather,
+                weatherMode: t.weatherMode,
+                time,
+                sky: t.skyEvent,
+                fbwMode,
+                flapMode,
+                fuelPct,
+                maneuver,
+                promptText,
+                promptTone,
+              },
         );
       }
     });
@@ -834,6 +1069,9 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
       window.clearTimeout(timer);
     };
   }, [landQuery]);
+  const spec = useMemo(() => getAirframeSpec(controller.airframeId), [controller.airframeId]);
+  const combatMass = useMemo(() => combatMassKg(spec), [spec]);
+  const combatTw = useMemo(() => (spec.wetThrustN / (combatMass * 9.80665)).toFixed(2), [spec, combatMass]);
   const stop = (e: React.SyntheticEvent): void => e.stopPropagation();
   // Everything that is not the target, landing, camera or exit: inline on wide screens, behind a
   // menu button on narrow ones (where one row of them ran into the status and the speed)
@@ -872,7 +1110,7 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
           icon="aircraft"
           label="Aircraft"
           state={controller.airframeId === 'gripen' ? 'Gripen' : 'Su-30'}
-          title="Switch aircraft: the Gripen (detailed cockpit) or the Su-30MKK. Reloads and puts you back in the cockpit."
+          title={`Switch aircraft (${spec.displayName} · ${spec.hasTvc ? '3D TVC' : 'Canard-Delta'}): switch between JAS 39C Gripen and Su-30MKK. Reloads and puts you back in the cockpit.`}
           onClick={() => {
             try {
               localStorage.setItem(AIRFRAME_KEY, controller.airframeId === 'gripen' ? 'su30' : 'gripen');
@@ -913,6 +1151,9 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
       >
         <div style={{ fontSize: 9, letterSpacing: '0.42em', color: 'rgba(244,205,114,0.85)' }}>{controller.airframe.anchors.name}</div>
         <div style={{ fontSize: 9, letterSpacing: '0.32em', color: 'rgba(255,255,255,0.55)', marginTop: 5 }}>{slow.status}</div>
+        <div style={{ fontSize: 8.5, letterSpacing: '0.26em', color: 'rgba(109,252,192,0.72)', marginTop: 4 }}>
+          FBW {slow.fbwMode} · FLP {slow.flapMode} · FUEL {slow.fuelPct}%
+        </div>
         {slow.time && (
           <div style={{ fontSize: 9, letterSpacing: '0.32em', color: 'rgba(255,255,255,0.42)', marginTop: 5 }}>
             LOCAL {slow.time}
@@ -929,6 +1170,47 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
         )}
         <FpsCounter style={{ marginTop: 5 }} />
       </div>
+
+      {/* Non-intrusive maneuver banner and contextual micro-prompt */}
+      {(slow.maneuver !== 'none' || slow.promptText) && (
+        <div
+          style={{
+            position: 'absolute',
+            left: '50%',
+            bottom: compact ? 86 : 62,
+            transform: 'translateX(-50%)',
+            pointerEvents: 'none',
+            zIndex: 3,
+            maxWidth: '90vw',
+            textAlign: 'center',
+            padding: '5px 12px',
+            background:
+              slow.promptTone === 'red'
+                ? 'rgba(56, 10, 10, 0.72)'
+                : slow.promptTone === 'amber'
+                  ? 'rgba(26, 20, 8, 0.68)'
+                  : 'rgba(6, 18, 16, 0.66)',
+            border: `1px solid ${
+              slow.promptTone === 'red'
+                ? 'rgba(255, 110, 96, 0.7)'
+                : slow.promptTone === 'amber'
+                  ? 'rgba(244, 205, 114, 0.45)'
+                  : 'rgba(109, 252, 192, 0.42)'
+            }`,
+            fontFamily: 'var(--sol-mono)',
+            fontSize: 9.5,
+            letterSpacing: '0.16em',
+            color:
+              slow.promptTone === 'red'
+                ? 'rgba(255, 130, 116, 0.96)'
+                : slow.promptTone === 'amber'
+                  ? 'rgba(244, 205, 114, 0.92)'
+                  : 'rgba(109, 252, 192, 0.92)',
+          }}
+        >
+          {slow.maneuver !== 'none' ? MANEUVER_HINTS[slow.maneuver] : slow.promptText}
+        </div>
+      )}
 
       {/* Controls, top right: small and dim until used */}
       <div
@@ -1188,37 +1470,64 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
         <div
           onMouseDown={stop}
           style={{
-            position: 'absolute', left: compact ? 6 : 18, right: compact ? 6 : undefined, top: compact ? 48 : 56, pointerEvents: 'auto', padding: '12px 14px', maxWidth: compact ? undefined : 330,
-            maxHeight: compact ? '58vh' : undefined, overflowY: 'auto', zIndex: 4,
-            background: 'rgba(5,4,10,0.62)', border: '1px solid var(--sol-line-soft)', backdropFilter: 'blur(8px)',
-            fontFamily: 'var(--sol-mono)', fontSize: 10.5, lineHeight: 1.7, color: 'var(--sol-text)',
+            position: 'absolute', left: compact ? 6 : 18, right: compact ? 6 : undefined, top: compact ? 48 : 56, pointerEvents: 'auto', padding: '12px 14px', maxWidth: compact ? undefined : 380,
+            maxHeight: compact ? '60vh' : 'calc(100vh - 96px)', overflowY: 'auto', zIndex: 4,
+            background: 'rgba(5,4,10,0.72)', border: '1px solid var(--sol-line-soft)', backdropFilter: 'blur(8px)',
+            fontFamily: 'var(--sol-mono)', fontSize: 10, lineHeight: 1.65, color: 'var(--sol-text)',
           }}
         >
           <div style={{ color: 'var(--sol-amber)', letterSpacing: '0.2em', fontSize: 9.5, marginBottom: 6 }}>FLYING THE {controller.airframe.anchors.name}</div>
+
+          {/* Active Airframe Spec Summary */}
+          <div
+            style={{
+              padding: '6px 8px',
+              marginBottom: 8,
+              background: 'rgba(109,252,192,0.06)',
+              border: '1px solid rgba(109,252,192,0.22)',
+              fontSize: 9.5,
+              lineHeight: 1.55,
+              color: 'var(--sol-mint)',
+            }}
+          >
+            <div><b>{spec.displayName}</b> · {spec.enginesDescription}</div>
+            <div style={{ color: 'var(--sol-text)' }}>
+              Mass {spec.emptyMassKg.toLocaleString('en-US')} / {combatMass.toLocaleString('en-US')} kg · Fuel {spec.maxFuelKg.toLocaleString('en-US')} kg
+            </div>
+            <div style={{ color: 'var(--sol-text)' }}>
+              Wing {spec.wingAreaM2.toFixed(1)} m² ({spec.spanM.toFixed(2)} m) · Dry {(spec.dryThrustN / 1000).toFixed(0)} / AB {(spec.wetThrustN / 1000).toFixed(1)} kN (T/W {combatTw})
+            </div>
+            <div style={{ color: 'var(--sol-dim)' }}>
+              +{spec.gLimitPos}/{spec.gLimitNeg}G (HI-G +{spec.highGLimit}G) · {spec.hasCanards ? 'Close-Coupled Canards' : 'Slats + Flaperons'} · {spec.hasTvc ? (spec.tvcCantDeg > 0 ? `3D ${spec.tvcCantDeg}° TVC ±${spec.tvcMaxDeg}°` : `2D TVC ±${spec.tvcMaxDeg}°`) : 'Aerodynamic Control'}
+            </div>
+          </div>
+
           {touch && (
             <div style={{ color: 'var(--sol-mint)' }}>
-              <b>Touch</b> · left stick steers (up/down pitch, sideways roll) · right slider throttle · hold <b>Boost</b> · hold <b>Aim</b> (shown once a place is set as Target in the L menu) to turn to it · tap ☰ for more
+              <b>Touch</b> · left stick steers (up/down pitch, sideways roll) · right slider throttle · hold <b>Boost</b> · hold <b>Aim</b> (once a place is set in L menu) · tap ☰ for more
             </div>
           )}
-          {/* The keys, for a keyboard: on a phone they are a wall of text about keys it has not got */}
           {!touch && (
             <>
-              <div><b>Drag</b> (left mouse) · steer: up/down pitch, sideways roll</div>
+              <div><b>Drag</b> (left mouse) · steer · <b>Right drag</b> · free look</div>
               <div><b>W S / ↑ ↓</b> pitch · <b>A D / ← →</b> roll · <b>Q E</b> yaw</div>
               <div><b>R F</b> or <b>wheel</b> throttle · <b>1–0</b> set · <b>X</b> idle</div>
-              <div><b>Space</b> boost · <b>Z</b> (hold) turn to target (a landmark you set as Target in the L menu first) · <b>T</b> next target</div>
-              <div><b>C</b> chase / cockpit / GoPro / fly-by · <b>right drag</b> look · <b>G</b> assist</div>
-              <div><b>O</b> next time of day (sunrise, noon, golden hour, sunset, blue hour, night) · <b>Home</b> fly home</div>
-              <div><b>J</b> Earth speed tier (jet · Mach 6 · Mach 25) · <b>M</b> search a place · <b>P</b> transit there (up to 300,000 km/h)</div>
-              <div><b>L</b> land at a landmark on the world below · <b>U</b> full HUD</div>
-              <div><b>[ ]</b> time of day · <b>Y</b> weather (auto follows each world's climate)</div>
-              <div><b>B</b> landing gear · <b>K</b> afterburner arm · in the cockpit, click the gear lever, the red guard and the DEST screen</div>
-              <div><b>V</b> cobra (post-stall, below ~450 m/s in air) · <b>I</b> invert pitch · <b>N</b> sound · <b>H</b> this help · <b>Esc</b> exit</div>
+              <div><b>Space</b> AB/boost · <b>K</b> arm AB · <b>Tab / ;</b> airbrake &amp; brakes</div>
+              <div><b>Space+Tab / ,</b> High-G drift paddle · <b>` / Shift+G</b> FBW (NORM/HI-G/PSM)</div>
+              <div><b>. / Shift+B</b> flaps (AUTO/CMB/LND) · <b>&apos; / Shift+Z</b> FPV hold</div>
+              <div><b>V</b> tap Cobra / hold PSM-TVC · <b>B</b> gear · <b>G</b> space FA · <b>Z</b> align</div>
+              <div><b>C</b> camera · <b>U</b> full HUD · <b>T/Shift+T</b> target · <b>L/M/P</b> land &amp; transit</div>
+              <div><b>J</b> speed tier · <b>O / [ ]</b> time · <b>Y</b> weather · <b>I</b> invert · <b>N</b> sound · <b>H</b> help · <b>Esc</b> exit</div>
+              <div style={{ color: 'var(--sol-dim)', marginTop: 4 }}>
+                <b>Cockpit</b>: click gear lever, red guard, DEST screen, or any MFD bezel tab (<b>PFD·FCS·ENG·NAV</b>).
+              </div>
+              <div style={{ color: 'var(--sol-dim)', marginTop: 4 }}>
+                <b>Gamepad</b>: <b>LS</b> pitch/roll · <b>LB/RB</b> yaw · <b>RS/R3</b> look · <b>A</b> boost · <b>LB+RB</b> brake · <b>A+LB+RB</b> High-G drift · <b>D-Pad ↑</b> FBW · <b>←/→</b> flaps · <b>↓</b> gear (hold FPV) · <b>X</b> Cobra/PSM
+              </div>
             </>
           )}
           <div style={{ color: 'var(--sol-dim)', marginTop: 6 }}>
-            In air the engines set your top speed; out of it the drive's top speed scales with your height above the nearest surface: skim a moon at jet speed, cross an AU in a minute.
-            Every world is where it really is right now.
+            In air aerodynamic lift, drag, thrust lapse, and energy govern speed; above the atmosphere space drive scales with altitude.
           </div>
           <div style={{ color: 'var(--sol-faint)', marginTop: 6, fontSize: 9.5 }}>
             Aircraft:{' '}
