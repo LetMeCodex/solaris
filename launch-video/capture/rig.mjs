@@ -82,11 +82,23 @@ export async function openSite({ clean = true, settings = {}, viewport = { width
   const page = await browser.newPage({ viewport, deviceScaleFactor: 1 });
   page.on('pageerror', (e) => console.log('[page error]', e.message));
   await page.addInitScript(CLOCK);
+  // No hot reload while filming: a source file saved by anyone would reload the page mid-shot.
+  // Vite's client is given a socket that never opens
+  await page.addInitScript(() => {
+    const Real = window.WebSocket;
+    window.WebSocket = function (url, protocols) {
+      if (String(protocols).includes('vite-hmr') || String(protocols).includes('vite-ping')) {
+        return { addEventListener() {}, removeEventListener() {}, send() {}, close() {}, readyState: 0 };
+      }
+      return new Real(url, protocols);
+    };
+    window.WebSocket.prototype = Real.prototype;
+  });
   await page.addInitScript((s) => {
     localStorage.setItem('solaris.tour.v1', 'done');
     localStorage.setItem('solaris.settings', JSON.stringify({ markers: false, velaChatty: 0, ...s }));
   }, settings);
-  await page.goto(URL, { waitUntil: 'domcontentloaded' });
+  await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 180000 });
   // Through the preloader, in silence
   const begin = page.getByRole('button', { name: 'Begin in silence' });
   await begin.waitFor({ timeout: 180000 });

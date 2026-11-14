@@ -56,6 +56,7 @@ async function fly(page, { id, lat, lon, hdg = 0, dist = 3, alt = 1, pitch = -6,
     const j = s.jet;
     j.view = view;
     j.helpOpen = false;
+    j.setPitchPreference(false);
     j.weather.mode = 'auto';
     j.throttle = throttle;
     try { j.audio.muted = true; } catch (e) {}
@@ -81,14 +82,17 @@ async function fly(page, { id, lat, lon, hdg = 0, dist = 3, alt = 1, pitch = -6,
   // Hold on the spot while the 3D tiles arrive (real time), stepping the world a little
   const t0 = Date.now();
   let calm = 0;
-  while (Date.now() - t0 < hold * 4000) {
+  let waiting = 0;
+  while (Date.now() - t0 < 180000) {
     await S(page, () => window.__pin && window.__pin());
     await step(page);
     await page.waitForTimeout(350);
-    const waiting = await S(page, () => window.__tiles());
+    waiting = await S(page, () => window.__tiles());
     calm = waiting < 4 ? calm + 1 : 0;
     if (Date.now() - t0 > hold * 1000 && calm > 8) break;
   }
+  const st = await S(page, () => { try { const t = window.__solaris.photoreal.tiles.stats; return `visible ${t.visible} queued ${t.queued} downloading ${t.downloading}`; } catch (e) { return 'no tiles'; } });
+  console.log(`  held ${((Date.now() - t0) / 1000).toFixed(0)} s · ${st}`);
   await S(page, () => { window.__pin && window.__pin(); });
 }
 
@@ -156,12 +160,12 @@ const orbit = (spin, dolly = 0, tilt = 0) => (page) =>
     r.targetSpherical.radius *= 1 + dolly * dt;
   }, { spin, dolly, tilt, dt: 1 / FPS });
 
-const F = (o) => ({ seconds: o.seconds ?? 4.5, ui: o.ui, async setup(p) { await fly(p, o); }, each: flyEach(o.look ?? null) });
+const F = (o) => ({ seconds: o.seconds ?? 2.4, ui: o.ui, async setup(p) { await fly(p, o); }, each: flyEach(o.look ?? null) });
 
 // ---- the shots -------------------------------------------------------------------------------
 export const SHOTS = {
   // The whole Earth in 3D, golden hour
-  e_manhattan: F({ id: 'earth-manhattan', hdg: 25, dist: 4.5, alt: 0.55, pitch: -4, speed: 0.16, view: 'chase', hour: 18.3 }),
+  e_manhattan: F({ id: 'earth-manhattan', hdg: 25, dist: 5, alt: 0.6, pitch: -5, speed: 0.16, view: 'cockpit', hour: 18.3 }),
   e_manhattan_cockpit: F({ id: 'earth-manhattan', hdg: 25, dist: 5, alt: 0.6, pitch: -5, speed: 0.16, view: 'cockpit', hour: 18.3 }),
   e_everest: F({ cover: 0, id: 'earth-everest', hdg: 20, dist: 9, alt: 7.6, pitch: 5, speed: 0.14, view: 'chase', hour: 16.6, hold: 20 }),
   e_paris: F({ id: 'earth-eiffel-tower', hdg: 120, dist: 2.6, alt: 0.42, pitch: -5, speed: 0.12, view: 'chase', hour: 19.6 }),
@@ -176,31 +180,31 @@ export const SHOTS = {
   e_hongkong: F({ id: 'earth-hong-kong', hdg: 330, dist: 3, alt: 0.5, pitch: -6, speed: 0.13, view: 'chase', hour: 17.6 }),
   e_fuji: F({ cover: 0, id: 'earth-fuji', hdg: 240, dist: 16, alt: 4.2, pitch: -1, speed: 0.22, view: 'cockpit', hour: 17.2 }),
   // Four cameras on one pass (Chamonix under Mont Blanc)
-  cam_chase: F({ cover: 0, id: 'earth-chamonix-mont-blanc', hdg: 200, dist: 8, alt: 3.4, pitch: -2, speed: 0.18, view: 'chase', hour: 17.8, seconds: 4 }),
-  cam_cockpit: F({ cover: 0, id: 'earth-chamonix-mont-blanc', hdg: 200, dist: 8, alt: 3.4, pitch: -2, speed: 0.18, view: 'cockpit', hour: 17.8, seconds: 4 }),
-  cam_gopro: F({ cover: 0, id: 'earth-chamonix-mont-blanc', hdg: 200, dist: 8, alt: 3.4, pitch: -2, speed: 0.18, view: 'gopro', hour: 17.8, seconds: 4 }),
-  cam_flyby: F({ cover: 0, id: 'earth-chamonix-mont-blanc', hdg: 200, dist: 8, alt: 3.4, pitch: -2, speed: 0.18, view: 'flyby', hour: 17.8, seconds: 4 }),
+  cam_chase: F({ cover: 0, id: 'earth-chamonix-mont-blanc', hdg: 200, dist: 8, alt: 3.4, pitch: -2, speed: 0.18, view: 'chase', hour: 17.8, seconds: 2.2 }),
+  cam_cockpit: F({ cover: 0, id: 'earth-chamonix-mont-blanc', hdg: 200, dist: 8, alt: 3.4, pitch: -2, speed: 0.18, view: 'cockpit', hour: 17.8, seconds: 2.2 }),
+  cam_gopro: F({ cover: 0, id: 'earth-chamonix-mont-blanc', hdg: 200, dist: 8, alt: 3.4, pitch: -2, speed: 0.18, view: 'gopro', hour: 17.8, seconds: 2.2 }),
+  cam_flyby: F({ cover: 0, id: 'earth-chamonix-mont-blanc', hdg: 200, dist: 8, alt: 3.4, pitch: -2, speed: 0.18, view: 'flyby', hour: 17.8, seconds: 2.2 }),
   // The HUD, live (interface on)
-  ui_hud: F({ id: 'earth-manhattan', hdg: 25, dist: 6, alt: 0.7, pitch: -4, speed: 0.3, view: 'chase', hour: 18.3, ui: true, seconds: 6 }),
-  ui_cockpit: F({ id: 'earth-eiffel-tower', hdg: 120, dist: 5, alt: 0.6, pitch: -4, speed: 0.2, view: 'cockpit', hour: 19.6, ui: true, seconds: 6 }),
+  ui_hud: F({ id: 'earth-manhattan', hdg: 25, dist: 6, alt: 0.7, pitch: -4, speed: 0.3, view: 'chase', hour: 18.3, ui: true, seconds: 6.4 }),
+  ui_cockpit: F({ id: 'earth-eiffel-tower', hdg: 120, dist: 5, alt: 0.6, pitch: -4, speed: 0.2, view: 'cockpit', hour: 19.6, ui: true, seconds: 5 }),
   // Up: the curve of the Earth
-  up_climb: F({ cover: 0, lat: 27.9, lon: 86.9, hdg: 90, dist: 0, alt: 34, pitch: 28, speed: 2.2, view: 'chase', hour: 6.4, throttle: 1, seconds: 5 }),
-  up_orbit: F({ cover: 0, lat: 20, lon: 78, hdg: 70, dist: 0, alt: 320, pitch: -14, speed: 7.6, view: 'cockpit', hour: 7.2, throttle: 0.8, seconds: 5, hold: 8 }),
+  up_climb: F({ cover: 0, lat: 27.9, lon: 86.9, hdg: 90, dist: 0, alt: 34, pitch: 28, speed: 2.2, view: 'chase', hour: 6.4, throttle: 1, seconds: 2.4 }),
+  up_orbit: F({ cover: 0, lat: 20, lon: 78, hdg: 70, dist: 0, alt: 320, pitch: -14, speed: 7.6, view: 'cockpit', hour: 7.2, throttle: 0.8, seconds: 2.4, hold: 8 }),
   // NASA's fleet, where it really is
-  n_iss: { seconds: 5, async setup(p) { await craft(p, 'International Space Station', { radius: 0.8 }); }, each: orbit(0.07, -0.01) },
-  n_hubble: { seconds: 4.5, async setup(p) { await craft(p, 'Hubble Space Telescope', { radius: 0.8 }); }, each: orbit(0.08) },
-  n_jwst: { seconds: 4.5, async setup(p) { await craft(p, 'James Webb Space Telescope', { radius: 0.8 }); }, each: orbit(0.08) },
-  n_voyager: { seconds: 4.5, async setup(p) { await craft(p, 'Voyager 1', { radius: 0.8 }); }, each: orbit(0.07) },
-  n_perseverance: { seconds: 4.5, async setup(p) { await craft(p, 'Mars 2020 (Perseverance)', { radius: 0.8 }); }, each: orbit(0.07) },
-  n_cassini: { seconds: 4.5, async setup(p) { await craft(p, 'Cassini', { radius: 0.8, utc: '2012-06-01T00:00:00Z' }); }, each: orbit(0.07) },
-  n_juno: { seconds: 4.5, async setup(p) { await craft(p, 'Juno', { radius: 0.8 }); }, each: orbit(0.07) },
-  n_clipper: { seconds: 4.5, async setup(p) { await craft(p, 'Europa Clipper', { radius: 0.8 }); }, each: orbit(0.07) },
+  n_iss: { seconds: 2.4, async setup(p) { await craft(p, 'International Space Station', { radius: 0.8 }); }, each: orbit(0.07, -0.01) },
+  n_hubble: { seconds: 2.4, async setup(p) { await craft(p, 'Hubble Space Telescope', { radius: 0.8 }); }, each: orbit(0.08) },
+  n_jwst: { seconds: 2.4, async setup(p) { await craft(p, 'James Webb Space Telescope', { radius: 0.8 }); }, each: orbit(0.08) },
+  n_voyager: { seconds: 2.4, async setup(p) { await craft(p, 'Voyager 1', { radius: 0.8 }); }, each: orbit(0.07) },
+  n_perseverance: { seconds: 2.4, async setup(p) { await craft(p, 'Mars 2020 (Perseverance)', { radius: 0.8 }); }, each: orbit(0.07) },
+  n_cassini: { seconds: 2.4, async setup(p) { await craft(p, 'Cassini', { radius: 0.8, utc: '2012-06-01T00:00:00Z' }); }, each: orbit(0.07) },
+  n_juno: { seconds: 2.4, async setup(p) { await craft(p, 'Juno', { radius: 0.8 }); }, each: orbit(0.07) },
+  n_clipper: { seconds: 2.4, async setup(p) { await craft(p, 'Europa Clipper', { radius: 0.8 }); }, each: orbit(0.07) },
   // The planets from the jet
-  p_saturn: { seconds: 5, async setup(p) { await cruise(p, 'Saturn', 'Saturn', 'chase', { throttle: 0.6 }); }, each: flyEach(null) },
-  p_saturn_cockpit: { seconds: 5, async setup(p) { await cruise(p, 'Saturn', 'Saturn', 'cockpit', { throttle: 0.6 }); }, each: flyEach(null) },
-  p_jupiter: { seconds: 5, async setup(p) { await cruise(p, 'Jupiter', 'Jupiter', 'chase', { throttle: 0.6 }); }, each: flyEach(null) },
-  p_mars: { seconds: 5, async setup(p) { await takeoff(p, 'mars-olympus', 'chase'); }, each: flyEach(null) },
-  p_moon: { seconds: 5, async setup(p) { await cruise(p, 'Moon', 'Earth', 'cockpit', { throttle: 0.5 }); }, each: flyEach(null) },
+  p_saturn: { seconds: 2.4, async setup(p) { await cruise(p, 'Saturn', 'Saturn', 'chase', { throttle: 0.6 }); }, each: flyEach(null) },
+  p_saturn_cockpit: { seconds: 4, async setup(p) { await cruise(p, 'Saturn', 'Saturn', 'cockpit', { throttle: 0.6 }); }, each: flyEach(null) },
+  p_jupiter: { seconds: 2.4, async setup(p) { await cruise(p, 'Jupiter', 'Jupiter', 'chase', { throttle: 0.6 }); }, each: flyEach(null) },
+  p_mars: { seconds: 2.4, async setup(p) { await takeoff(p, 'mars-olympus', 'chase'); }, each: flyEach(null) },
+  p_moon: { seconds: 2.4, async setup(p) { await cruise(p, 'Moon', 'Earth', 'cockpit', { throttle: 0.5 }); }, each: flyEach(null) },
   ui_saturn: { ui: true, seconds: 5, async setup(p) { await cruise(p, 'Saturn', 'Saturn', 'chase', { throttle: 0.6 }); }, each: flyEach(null) },
 };
 
