@@ -575,7 +575,7 @@ export class LensPipeline {
   private depthTap = new DepthTapPass();
   private godRays = new GodRaysPass();
   private gradePass = new ShaderPass(ColorGradeShader);
-  public readonly clouds = new VolumetricCloudPass(perf.tier === 'high' ? 0.5 : perf.tier === 'medium' ? 0.42 : 0.33);
+  public readonly clouds = new VolumetricCloudPass(perf.tier === 'high' ? 0.65 : perf.tier === 'medium' ? 0.5 : 0.38);
 
   private prevViewProj = new THREE.Matrix4();
   private hasPrev = false;

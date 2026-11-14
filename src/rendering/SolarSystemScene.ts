@@ -2640,11 +2640,23 @@ export class SolarSystemScene {
     if (jt.lat !== undefined && jt.lon !== undefined) {
       this.earthClouds ??= new EarthClouds(this.lens.clouds);
       const kmTrue = 6378.137 / earth.visualRadius;
-      this.earthClouds.update(altKm < 40, earth.surfaceMesh, centre, this.cameraRig.camera, jt.lat, jt.lon, altKm, kmTrue, sunDir);
+      this.earthClouds.update(
+        altKm < 45,
+        earth.surfaceMesh,
+        centre,
+        this.cameraRig.camera,
+        jt.lat,
+        jt.lon,
+        altKm,
+        kmTrue,
+        sunDir,
+        this.jet.weather.mode,
+        this.jet.weather.state.flash,
+      );
       const live = this.earthClouds.weather.current;
       this.jet.weather.live = live ? { kind: live.kind, strength: live.strength, label: live.label } : null;
-      // The volumetric clouds fog the view themselves: only a touch of white-out on top
-      this.jet.weather.cloudInside = this.earthClouds.inside * 0.4;
+      // CloudSea volumetric rays fog the view themselves: keep only a touch of canopy white-out on top
+      this.jet.weather.cloudInside = this.earthClouds.inside * 0.32;
       if (live) this.photoreal?.setVisibility(live.visibilityKm);
       const cp = this.lens.clouds;
       this.photoreal?.setCloudShadows({ enabled: cp.enabled, layer: cp.layer, earthRot: cp.u.uEarthRot.value });
