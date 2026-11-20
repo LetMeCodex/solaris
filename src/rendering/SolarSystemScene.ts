@@ -156,6 +156,11 @@ export class SolarSystemScene {
   private pendingPostcard: Postcard | null = null;
   private pendingHorizonPostcard = false;
   private unsubscribeSettings: (() => void) | null = null;
+  private unsubscribePerf: (() => void) | null = null;
+  private resizeObserver: ResizeObserver | null = null;
+  private lastViewportW = 0;
+  private lastViewportH = 0;
+  private lastPixelRatio = 0;
   private nebulaStages = new Map<string, NebulaStage>();
   private jetNebulaShown = false;
   private visiting: NebulaStage | null = null;
@@ -284,10 +289,14 @@ export class SolarSystemScene {
       antialias: perf.tier === 'high',
       powerPreference: 'high-performance',
     });
-    const initialWidth = container.clientWidth || window.innerWidth;
-    const initialHeight = container.clientHeight || window.innerHeight;
+    const initialWidth = Math.max(1, container.clientWidth || window.innerWidth);
+    const initialHeight = Math.max(1, container.clientHeight || window.innerHeight);
+    const initialDpr = perf.pixelRatio(2, initialWidth, initialHeight);
+    this.lastViewportW = initialWidth;
+    this.lastViewportH = initialHeight;
+    this.lastPixelRatio = initialDpr;
     this.renderer.setSize(initialWidth, initialHeight);
-    this.renderer.setPixelRatio(perf.pixelRatio(2));
+    this.renderer.setPixelRatio(initialDpr);
     // A lost GPU context leaves the canvas black while the HUD runs on: say so in the console
     // (three.js restores the context and re-uploads everything when the browser allows it)
     this.renderer.domElement.addEventListener('webglcontextlost', () => console.warn('[Solaris] WebGL context lost: the GPU reset or ran out of memory'));
@@ -351,8 +360,15 @@ export class SolarSystemScene {
     // 8K maps only on capable GPUs (each is ~170 MB of video memory and a long upload)
     TexturePipeline.getInstance().setMaxTextureSize(perf.settings.hiRes8k ? this.renderer.capabilities.maxTextureSize : 4096);
     // The adaptive resolution: redraw the targets at the new size when the governor steps
-    perf.onChange(() => {
-      this.renderer.setPixelRatio(perf.pixelRatio(2));
+    this.unsubscribePerf = perf.onChange(() => {
+      if (this.disposed || !this.container) return;
+      const w = Math.max(1, this.container.clientWidth || window.innerWidth);
+      const h = Math.max(1, this.container.clientHeight || window.innerHeight);
+      const dpr = perf.pixelRatio(2, w, h);
+      if (dpr !== this.lastPixelRatio) {
+        this.lastPixelRatio = dpr;
+        this.renderer.setPixelRatio(dpr);
+      }
       this.lens.refreshResolution();
     });
     this.planetBundles.get('Sun')?.bodyGroup.add(this.sunGlint);
@@ -1108,6 +1124,12 @@ export class SolarSystemScene {
     this.renderer.domElement.addEventListener('mousemove', this.onCanvasMouseMove);
     this.renderer.domElement.addEventListener('click', this.onCanvasClick);
     window.addEventListener('resize', this.onResize);
+    window.visualViewport?.addEventListener('resize', this.onResize);
+    window.addEventListener('orientationchange', this.onResize);
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(() => this.onResize());
+      this.resizeObserver.observe(this.container);
+    }
   }
 
   /** Heliocentric ecliptic position of a body by name, km. */
@@ -1216,9 +1238,15 @@ export class SolarSystemScene {
   }
 
   private onResize = (): void => {
-    if (!this.container) return;
-    const w = this.container.clientWidth || window.innerWidth;
-    const h = this.container.clientHeight || window.innerHeight;
+    if (this.disposed || !this.container) return;
+    const w = Math.max(1, this.container.clientWidth || window.innerWidth);
+    const h = Math.max(1, this.container.clientHeight || window.innerHeight);
+    const dpr = perf.pixelRatio(2, w, h);
+    if (w === this.lastViewportW && h === this.lastViewportH && dpr === this.lastPixelRatio) return;
+    this.lastViewportW = w;
+    this.lastViewportH = h;
+    this.lastPixelRatio = dpr;
+    this.renderer.setPixelRatio(dpr);
     this.renderer.setSize(w, h);
     this.cameraRig.handleResize(w, h);
     this.lens.setSize(w, h);
@@ -1938,13 +1966,14 @@ export class SolarSystemScene {
   }
 
   /** How far the fly page's loading has got: the aircraft, and Google's tiles still to come. */
-  public flyReadiness(): { jet: boolean; aircraft: boolean; tilesPending: number; tilesVisible: number } {
+  public flyReadiness(): { jet: boolean; aircraft: boolean; tilesPending: number; tilesVisible: number; detailedTiles: number } {
     const st = (this.photoreal?.tiles as unknown as { stats?: object } | undefined)?.stats as { queued?: number; downloading?: number; parsing?: number; visible?: number } | undefined;
     return {
       jet: this.jet.active,
       aircraft: this.jet.aircraftReady,
       tilesPending: st ? (st.queued ?? 0) + (st.downloading ?? 0) + (st.parsing ?? 0) : 0,
       tilesVisible: st?.visible ?? 0,
+      detailedTiles: this.photoreal?.detailedTilesVisible ?? 0,
     };
   }
 
@@ -2292,8 +2321,10 @@ export class SolarSystemScene {
     // Flying or standing on the ground, Earth is lit by the real Sun (the explorer's even daylight
     // is for inspecting the night side from orbit; it left night lit like noon in the jet)
     if (this.jet.active || this.surface.isActive()) p.setDaylight(0);
+    p.setPrefetchPaused(this.jet.active && this.jet.hold);
     this.updateJetSky(earth, altKm);
-    p.update(cam, this.renderer, (altKm < 1200 || this.surface.isActive()) && !deepLand && !this.explorer.hideGround, altKm, speedKmS);
+    const onEarthSurface = this.surface.isActive() ? this.surface.getLocation()?.body === 'Earth' : altKm < 1200;
+    p.update(cam, this.renderer, onEarthSurface && !deepLand && !this.explorer.hideGround, altKm, speedKmS);
     this.explorer.photorealEarth = p.showing;
     // The globe stays drawn under the tiles as their fallback: where a tile has not arrived yet
     // you see the globe's map, not a black hole. It is sunk 500 m so the two never fight for
@@ -2306,7 +2337,7 @@ export class SolarSystemScene {
     // triangle spans ~400 km and sags up to 3.4 km under the true surface: wherever a tile had not
     // arrived, a straight-edged pit of blurry blue-green map showed (the "slabs"). Low down, a
     // fine sphere (sag ~50 m) stands in, so a gap shows ground at the right height
-    this.setFineGlobe(earth, p.showing && altKm < 400);
+    this.setFineGlobe(earth, (p.showing || this.jet.active || this.surface.isActive()) && altKm < 400);
     if (meshMat.uniforms?.uSink) meshMat.uniforms.uSink.value = p.showing ? 0.3 / earth.definition.physical.meanRadiusKm : 0;
     // The tiles' air on the globe too, low down (fading out by 80 km up, where the globe alone is
     // the view): the open sea past the tiles stopped showing as a flat deep blue to the horizon
@@ -2332,7 +2363,7 @@ export class SolarSystemScene {
     // The land's real shape, generated, under the tiles: there before they load and where they
     // have nothing (see ProceduralTerrain)
     {
-      const on = (this.jet.active || this.surface.isActive()) && altKm < 400 && !deepLand && !this.explorer.hideGround;
+      const on = (this.jet.active || (this.surface.isActive() ? this.surface.getLocation()?.body === 'Earth' : true)) && altKm < 400 && !deepLand && !this.explorer.hideGround;
       if (on || this.terrain) {
         this.terrain ??= new ProceduralTerrain();
         this.terrain.attach(earth.surfaceMesh);
@@ -2346,6 +2377,7 @@ export class SolarSystemScene {
         const sunLocal = earth.surfaceMesh.worldToLocal(this.nightTmp.sun.set(0, 0, 0));
         this.terrain.update(on, ll.lat, ll.lon, Math.max(0.05, altKm), { kmPerUnit: kmTrue, camAltKm: Math.max(0, altKm), haze: p.air.haze }, p.dayOfYearNow, sunLocal);
       }
+      this.explorer.proceduralGround = on && altKm < 45;
     }
     if (earth.atmosphereMesh) {
       const lowPhoto = p.showing && altKm < 60;
@@ -2570,19 +2602,27 @@ export class SolarSystemScene {
       city.dataGroundKm = (la, lo) => earthElevation.heightKm(la, lo, 13);
       city.prepareGround = (s, w, n, e) => earthElevation.ensure(s, w, n, e, 13);
       const ray = new THREE.Raycaster();
+      const rayFrom = new THREE.Vector3();
+      const rayCentre = new THREE.Vector3();
+      const rayDir = new THREE.Vector3();
+      const rayLoc = new THREE.Vector3();
+      const rayInvWorld = new THREE.Matrix4();
       city.drawnGroundKm = (la, lo) => {
         const target = PhotorealEarth.current?.raycastTarget();
         if (!target) return null;
         const mesh = earth.surfaceMesh;
         mesh.updateWorldMatrix(true, false);
         const [x, y, z] = bodyLatLonToLocal('Earth', la, lo);
-        const from = new THREE.Vector3(x, y, z).multiplyScalar(1 + 12 / 6378.137).applyMatrix4(mesh.matrixWorld);
-        const centre = earth.bodyGroup.getWorldPosition(new THREE.Vector3());
-        ray.set(from, centre.clone().sub(from).normalize());
+        rayFrom.set(x, y, z).multiplyScalar(1 + 12 / 6378.137).applyMatrix4(mesh.matrixWorld);
+        earth.bodyGroup.getWorldPosition(rayCentre);
+        rayDir.subVectors(rayCentre, rayFrom);
+        if (rayDir.lengthSq() < 1e-12) return null;
+        ray.set(rayFrom, rayDir.normalize());
         const hit = ray.intersectObject(target, true)[0];
         if (!hit) return null;
-        const loc = hit.point.clone().applyMatrix4(mesh.matrixWorld.clone().invert());
-        return (loc.length() - 1) * 6378.137;
+        rayInvWorld.copy(mesh.matrixWorld).invert();
+        rayLoc.copy(hit.point).applyMatrix4(rayInvWorld);
+        return (rayLoc.length() - 1) * 6378.137;
       };
       this.city = city;
     }
@@ -2885,6 +2925,7 @@ export class SolarSystemScene {
   public dispose(): void {
     this.disposed = true;
     this.photoreal?.dispose();
+    this.terrain?.dispose();
     this.jetSky?.dispose();
     this.earthClouds?.dispose();
     this.city?.dispose();
@@ -2899,7 +2940,11 @@ export class SolarSystemScene {
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
     }
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
     window.removeEventListener('resize', this.onResize);
+    window.visualViewport?.removeEventListener('resize', this.onResize);
+    window.removeEventListener('orientationchange', this.onResize);
     this.renderer.domElement.removeEventListener('mousedown', this.onPointerDown);
     this.renderer.domElement.removeEventListener('mousemove', this.onCanvasMouseMove);
     this.renderer.domElement.removeEventListener('click', this.onCanvasClick);
@@ -2907,11 +2952,19 @@ export class SolarSystemScene {
     this.labels.dispose();
     this.markers.dispose();
     this.unsubscribeSettings?.();
+    this.unsubscribePerf?.();
+    this.unsubscribePerf = null;
     this.cameraRig.dispose();
     this.explorer.dispose();
     this.lens.dispose();
     this.starfield.dispose();
     this.asteroidBelt.dispose();
+
+    const earthBundle = this.planetBundles.get('Earth');
+    if (earthBundle) this.setFineGlobe(earthBundle, false);
+    this.fineGlobe?.dispose();
+    this.fineGlobe = null;
+    this.coarseGlobe = null;
 
     // Dispose all planetary geometries and materials
     this.planetBundles.forEach((bundle) => {

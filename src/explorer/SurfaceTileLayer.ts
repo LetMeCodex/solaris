@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { ElevationSource } from './PlanetElevation';
 import { SUN_WORLD } from '../rendering/RenderOrigin';
+import { perf, QualityTier } from '../rendering/Performance';
 import { TileProvider } from './ImageryRegistry';
 import {
   TileKey,
@@ -29,12 +30,21 @@ interface TileEntry {
   key: TileKey;
   id: string;
   state: 'queued' | 'loading' | 'loaded' | 'missing';
+  useFallback?: boolean;
   attempts: number;
+  nextRetryAt?: number;
+  retryAfter?: number;
+  reqId?: number;
+  requestTimer?: ReturnType<typeof setTimeout>;
+  retryTimer?: ReturnType<typeof setTimeout>;
   texture?: THREE.Texture;
   mesh?: THREE.Mesh;
   image?: HTMLImageElement;
   /** Ground heights at this tile's vertices (km), sampled once when they arrived (raised ground). */
   heights?: Float32Array;
+  /** Captured with the height buffer: provider cooldowns must not change its vertex stride. */
+  heightGrid?: { nx: number; ny: number };
+  preparingRelief?: boolean;
   /** Raised ground: where finer tiles are drawn over this one (it is cut away there). */
   cover?: THREE.DataTexture;
   lastWanted: number;
@@ -51,7 +61,13 @@ const defaultLoader: TileImageLoader = {
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.decoding = 'async';
-    img.onload = () => onLoad(img);
+    img.onload = () => {
+      if (img.naturalWidth <= 0 || img.naturalHeight <= 0 || img.width <= 0 || img.height <= 0) {
+        onError();
+        return;
+      }
+      onLoad(img);
+    };
     img.onerror = () => onError();
     img.src = url;
     return img;
@@ -66,25 +82,49 @@ export const TILE_SHELL = 1.0001;
  */
 export const TILE_LEVEL_LIFT = 2e-6;
 
-const MAX_CONCURRENT = 10;
-/** Resolution of a tile's cover mask: exact for descendants up to six levels finer. */
-const COVER = 64;
-const MAX_CACHED = 220;
+/** Resolution of a tile's cover mask: exact for descendants up to eight levels finer. */
+const COVER = 256;
 const MAX_ATTEMPTS = 3;
 const PROVIDER_FAILURE_LIMIT = 8;
+const PRIMARY_ERROR_LIMIT = 24;
+const FALLBACK_ERROR_LIMIT = 12;
+const INITIAL_COOLDOWN_MS = 15_000;
+const MISSING_RETRY_MS = 45_000;
+const WMTS_TIMEOUT_MS = 15_000;
+const WMS_TIMEOUT_MS = 30_000;
+
+interface TierLimits {
+  wmts: number;
+  wms: number;
+  cached: number;
+  reliefSegs: number;
+  flatMaxSegs: number;
+  maxTiles: number;
+  maxPxPerTexel: number;
+  maxAnisotropy: number;
+}
+
+const TIER_LIMITS: Record<QualityTier, TierLimits> = {
+  high: { wmts: 10, wms: 4, cached: 220, reliefSegs: 32, flatMaxSegs: 48, maxTiles: 160, maxPxPerTexel: 1.3, maxAnisotropy: 8 },
+  medium: { wmts: 8, wms: 3, cached: 160, reliefSegs: 24, flatMaxSegs: 36, maxTiles: 120, maxPxPerTexel: 1.45, maxAnisotropy: 4 },
+  low: { wmts: 4, wms: 2, cached: 90, reliefSegs: 16, flatMaxSegs: 24, maxTiles: 80, maxPxPerTexel: 1.65, maxAnisotropy: 2 },
+};
 
 const vertexShader = /* glsl */ `
+  uniform float uUnderlay;
+  uniform float uUnderlayInset;
   varying vec2 vUv;
   varying vec3 vWorldPosition;
   varying vec3 vWorldNormal;
   varying vec3 vViewPosition;
   void main() {
     vUv = uv;
-    vWorldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+    vec3 tilePosition = position - normalize(position) * uUnderlay * uUnderlayInset;
+    vWorldPosition = (modelMatrix * vec4(tilePosition, 1.0)).xyz;
     vWorldNormal = normalize(mat3(modelMatrix) * normal);
     // modelViewMatrix is composed in double precision on the CPU, so vertices stay steady even
     // a few hundred metres above a globe that sits far from the scene origin
-    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vec4 mv = modelViewMatrix * vec4(tilePosition, 1.0);
     vViewPosition = mv.xyz;
     gl_Position = projectionMatrix * mv;
   }
@@ -115,11 +155,19 @@ const fragmentShader = /* glsl */ `
     if (uHasCover > 0.5 && texture2D(uCover, vUv).r > 0.5) discard;
     vec4 tex = texture2D(map, vUv);
     vec3 col = tex.rgb;
+    float outAlpha = tex.a * uOpacity;
     if (uColorize > 0.5) {
       float lon = mix(uBounds.x, uBounds.z, vUv.x);
       float lat = mix(uBounds.y, uBounds.w, vUv.y);
       vec3 base = texture2D(uBaseMap, vec2((lon + 180.0) / 360.0, (lat + 90.0) / 180.0)).rgb;
-      col = clamp(base * (luma(tex.rgb) / max(luma(base), 0.03)), 0.0, 1.0);
+      // Un-premultiply so bilinear/mipmap borders of transparent nodata swaths (e.g. Mars CTX gores)
+      // keep true terrain luminance instead of dark halos, then seamlessly fill nodata voids with uBaseMap.
+      vec3 trueRgb = tex.a > 0.01 ? tex.rgb / tex.a : base;
+      float lum = luma(trueRgb);
+      vec3 colorized = clamp(base * (lum / max(luma(base), 0.03)), 0.0, 1.0);
+      float valid = smoothstep(0.5, 0.96, tex.a) * smoothstep(0.008, 0.025, lum);
+      col = mix(base, colorized, valid);
+      outAlpha = uOpacity;
     }
     vec3 sunDir = normalize(uSunWorld - vWorldPosition);
     float ndl = dot(normalize(vWorldNormal), sunDir);
@@ -130,7 +178,7 @@ const fragmentShader = /* glsl */ `
       float h = 1.0 - exp(-length(vViewPosition) * uHazeDensity);
       col = mix(col, uHazeColor, clamp(h, 0.0, 1.0));
     }
-    gl_FragColor = vec4(col, tex.a * uOpacity);
+    gl_FragColor = vec4(col, outAlpha);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
   }
@@ -145,15 +193,21 @@ const fragmentShader = /* glsl */ `
 export class SurfaceTileLayer {
   public readonly group = new THREE.Group();
   public readonly provider: TileProvider;
+  private activeProvider: TileProvider;
+  private usingFallback = false;
   private loader: TileImageLoader;
   private tiles = new Map<string, TileEntry>();
   private queue: TileEntry[] = [];
   private inFlight = 0;
   private consecutiveFailures = 0;
-  private disabled = false;
+  private consecutiveRequestErrors = 0;
+  private disabledUntil = 0;
+  private cooldownMs = INITIAL_COOLDOWN_MS;
   private everLoaded = false;
+  private reqCounter = 0;
   /** Shared by every tile material, so changing them is free. */
   private shared = {
+    uUnderlay: { value: 0 },
     uOpacity: { value: 1 },
     uAmbient: { value: 0.07 },
     uDaylight: { value: 0 },
@@ -176,13 +230,30 @@ export class SurfaceTileLayer {
 
   constructor(provider: TileProvider, loader: TileImageLoader = defaultLoader) {
     this.provider = provider;
+    this.activeProvider = provider;
     this.loader = loader;
     this.group.name = 'surface_tile_layer';
+  }
+
+  private isDisabled(): boolean {
+    if (this.disabledUntil <= 0) return false;
+    if (performance.now() >= this.disabledUntil) {
+      this.disabledUntil = 0;
+      this.consecutiveFailures = 0;
+      this.consecutiveRequestErrors = 0;
+      return false;
+    }
+    return true;
   }
 
   /** Even illumination instead of the real Sun angle (for exploring the night side). */
   public setDaylight(on: boolean | number): void {
     this.shared.uDaylight.value = typeof on === 'number' ? on : on ? 1 : 0;
+  }
+
+  /** Keep imagery below real photogrammetry, cancelling the map-only shell/LOD lift. */
+  public setUnderlay(on: boolean): void {
+    this.shared.uUnderlay.value = on ? 1 : 0;
   }
 
   /** Whole-layer opacity (fades the imagery in over the globe map while descending). */
@@ -194,7 +265,7 @@ export class SurfaceTileLayer {
   /** Global colour map used to tint greyscale sources (`colorize` providers). */
   public setBaseMap(tex: THREE.Texture | null): void {
     this.shared.uBaseMap.value = tex;
-    this.shared.uColorize.value = tex && this.provider.colorize ? 1 : 0;
+    this.shared.uColorize.value = tex && this.activeProvider.colorize ? 1 : 0;
   }
 
   /** Aerial perspective: fade ground imagery to `color` with view distance (0 disables). */
@@ -217,8 +288,17 @@ export class SurfaceTileLayer {
     return { ...this.status };
   }
 
-  public tileUrl(k: TileKey): string {
-    const p = this.provider;
+  private providerFor(k: TileKey, useFallback = false): TileProvider {
+    const p = this.activeProvider;
+    const fb = !this.usingFallback ? p.fallback : undefined;
+    if (fb && k.z >= fb.minLevel && k.z <= fb.maxLevel && (useFallback || k.z < p.minLevel)) {
+      return fb;
+    }
+    return p;
+  }
+
+  public tileUrl(k: TileKey, useFallback = false): string {
+    const p = this.providerFor(k, useFallback);
     if (p.kind === 'wms') {
       return p.template.replace('{bbox}', wmsBbox(p, k)).split('{size}').join(String(p.tileSize));
     }
@@ -231,17 +311,32 @@ export class SurfaceTileLayer {
    */
   public update(cam: SelectionCamera): void {
     this.frame++;
-    if (this.disabled) {
+    if (this.isDisabled()) {
       this.status = { ...this.status, state: 'unavailable', inFlight: 0, queued: 0 };
       return;
     }
 
-    const wanted = selectTiles(this.provider, cam);
+    const now = performance.now();
+    const limits = TIER_LIMITS[perf.tier];
+    const effectiveCam: SelectionCamera = !cam.bodyName && this.bodyName ? { ...cam, bodyName: this.bodyName } : cam;
+    // Once Google geometry is present, this is a coverage underlay, not a second competing
+    // high-resolution map. Keep a small regional baseline and give network/VRAM to real 3D.
+    const underlay = this.shared.uUnderlay.value > 0;
+    const fb = !this.usingFallback ? this.activeProvider.fallback : undefined;
+    const selectMinLevel = fb ? Math.min(this.activeProvider.minLevel, fb.minLevel) : this.activeProvider.minLevel;
+    const baseSelection =
+      selectMinLevel !== this.activeProvider.minLevel
+        ? { ...this.activeProvider, minLevel: selectMinLevel }
+        : this.activeProvider;
+    const selectionProvider = underlay
+      ? { ...baseSelection, maxLevel: Math.max(baseSelection.minLevel, Math.min(7, baseSelection.maxLevel)) }
+      : baseSelection;
+    const wanted = selectTiles(selectionProvider, effectiveCam, limits.maxPxPerTexel, underlay ? Math.min(24, limits.maxTiles) : limits.maxTiles);
     const wantedIds = new Set<string>();
     let deepest = -1;
 
-    // Queue coarse-to-fine: parents of the wanted tiles first (a quick, sharper-than-base stand-in
-    // that also anchors the fallback chain), then the wanted tiles nearest-first
+    // Queue coarse-to-fine: ancestors first (a quick, sharper-than-base stand-in that anchors the
+    // fallback chain), then the wanted tiles nearest-first
     this.queue = [];
     const leafQueue: TileEntry[] = [];
     for (const k of wanted) {
@@ -253,16 +348,24 @@ export class SurfaceTileLayer {
         this.tiles.set(id, entry);
       }
       entry.lastWanted = this.frame;
-      if (entry.state === 'queued') leafQueue.push(entry);
+      if (entry.state === 'missing' && entry.retryAfter && now >= entry.retryAfter) {
+        entry.state = 'queued';
+        entry.attempts = 0;
+        entry.retryAfter = undefined;
+      }
+      if (entry.state === 'queued' && (!entry.nextRetryAt || now >= entry.nextRetryAt)) {
+        leafQueue.push(entry);
+      }
     }
-    // Grandparents, then parents: a coarse but complete stand-in arrives within a few requests
-    // even when flying fast enough to outrun the detail
-    const ancestorQueues: TileEntry[][] = [[], []];
+    // Always keep a complete path to a cheap global anchor. Four ancestors were insufficient
+    // for a direct landing at z10–13: every request still needed detailed remote imagery.
+    const ancestorLevels = this.activeProvider.maxLevel - selectMinLevel;
+    const ancestorQueues: TileEntry[][] = Array.from({ length: ancestorLevels }, () => []);
     for (const k of wanted) {
       let ak: TileKey | null = k;
-      for (let up = 0; up < 2; up++) {
+      for (let up = 0; up < ancestorLevels; up++) {
         ak = ak ? parentTile(ak) : null;
-        if (!ak) break;
+        if (!ak || ak.z < selectMinLevel) break;
         const aid = tileId(ak);
         if (wantedIds.has(aid)) continue;
         wantedIds.add(aid);
@@ -272,28 +375,33 @@ export class SurfaceTileLayer {
           this.tiles.set(aid, entry);
         }
         entry.lastWanted = this.frame;
-        if (entry.state === 'queued') ancestorQueues[up].push(entry);
+        if (entry.state === 'missing' && entry.retryAfter && now >= entry.retryAfter) {
+          entry.state = 'queued';
+          entry.attempts = 0;
+          entry.retryAfter = undefined;
+        }
+        if (entry.state === 'queued' && (!entry.nextRetryAt || now >= entry.nextRetryAt)) {
+          ancestorQueues[up].push(entry);
+        }
       }
     }
-    this.queue.push(...ancestorQueues[1], ...ancestorQueues[0]);
+    for (let up = ancestorLevels - 1; up >= 0; up--) this.queue.push(...ancestorQueues[up]);
     this.queue.push(...leafQueue);
 
-    // Abort requests that are no longer useful (fast scrolling / body switch)
+    // Abort requests that are no longer useful (fast scrolling / body switch) without burning attempts,
+    // while letting coarse anchor tiles (z <= 2) finish so low-res stand-ins appear rapidly during descent
     for (const entry of this.tiles.values()) {
-      if (entry.state === 'loading' && !wantedIds.has(entry.id) && entry.image) {
-        entry.image.onload = null;
-        entry.image.onerror = null;
-        entry.image.src = '';
-        entry.image = undefined;
+      if (entry.state === 'loading' && !wantedIds.has(entry.id) && entry.key.z > 2 && entry.image) {
+        this.cancelRequest(entry);
+        entry.attempts = Math.max(0, entry.attempts - 1);
         entry.state = 'queued';
-        this.inFlight--;
       }
     }
     this.pump();
 
     // Draw: each wanted tile, or its nearest loaded ancestor. On raised ground a family of tiles
-    // replaces its parent only once all of its wanted members are in: a parent and some of its
-    // children drawn together would put two different reliefs on the same ground (ghost ridges)
+    // replaces its parent while siblings are actively loading; permanently missing siblings do not
+    // deadlock the healthy quarters forever.
     const relief = !!this.elevation && !this.elevation.disabled;
     const families = new Map<string, TileKey[]>();
     if (relief) {
@@ -309,32 +417,50 @@ export class SurfaceTileLayer {
     const familyReady = (k: TileKey): boolean => {
       const pk = parentTile(k);
       const fam = pk ? families.get(tileId(pk)) : undefined;
-      return !fam || fam.every((m) => this.tiles.get(tileId(m))?.state === 'loaded');
+      return !fam || fam.every((m) => {
+        const st = this.tiles.get(tileId(m))?.state;
+        return st === 'loaded' || st === 'missing';
+      });
     };
     const drawIds = new Set<string>();
     for (const k of wanted) {
       let cur: TileKey | null = k;
+      let fallbackId: string | undefined;
+      let fallbackZ = -1;
       while (cur) {
         const e = this.tiles.get(tileId(cur));
-        if (e && e.state === 'loaded' && (!relief || cur !== k || familyReady(cur))) {
-          drawIds.add(e.id);
-          deepest = Math.max(deepest, cur.z);
-          break;
+        if (e && e.state === 'loaded') {
+          if (fallbackId === undefined) {
+            fallbackId = e.id;
+            fallbackZ = cur.z;
+          }
+          if (!relief || cur !== k || familyReady(cur)) {
+            drawIds.add(e.id);
+            deepest = Math.max(deepest, cur.z);
+            fallbackId = undefined;
+            break;
+          }
         }
         cur = parentTile(cur);
       }
+      if (fallbackId !== undefined) {
+        drawIds.add(fallbackId);
+        deepest = Math.max(deepest, fallbackZ);
+      }
     }
-    // An ancestor standing in for unloaded tiles stays drawn even once some of its descendants have
-    // arrived: removing it uncovered the quarters still loading (L-, U- and diamond-shaped holes
-    // down to the base globe). Deeper levels sit on a slightly higher shell (see createMesh), so
-    // finer tiles cleanly cover coarser ones where both are drawn.
     for (const entry of this.tiles.values()) {
       const visible = drawIds.has(entry.id);
+      if (visible && relief && !entry.heights && entry.mesh) {
+        // Keep the existing image and mesh visible until relief is ready; never refetch imagery
+        // or remove the fallback merely because its independent elevation endpoint recovered.
+        this.prepareRelief(entry);
+      }
       if (visible && !entry.mesh && entry.texture) entry.mesh = this.createMesh(entry);
       if (entry.mesh) entry.mesh.visible = visible;
       if (visible) entry.lastDrawn = this.frame;
     }
-    if (relief) this.cutCovered(drawIds);
+    const hasAnyRelief = relief || [...drawIds].some((id) => !!this.tiles.get(id)?.heights);
+    if (hasAnyRelief) this.cutCovered(drawIds);
 
     this.evict();
 
@@ -350,20 +476,58 @@ export class SurfaceTileLayer {
     };
   }
 
-  /** Hide all tiles without discarding the cache (camera left the surface range). */
+  /** Hide all tiles and release active network slots without discarding cached textures. */
   public hide(): void {
-    for (const entry of this.tiles.values()) if (entry.mesh) entry.mesh.visible = false;
+    for (const entry of this.tiles.values()) {
+      if (entry.mesh) entry.mesh.visible = false;
+      if (entry.state === 'loading' || entry.retryTimer) {
+        const wasLoading = entry.state === 'loading';
+        this.cancelRequest(entry);
+        if (wasLoading) entry.attempts = Math.max(0, entry.attempts - 1);
+        entry.state = 'queued';
+      }
+    }
+    if (this.bodyName !== 'Earth') this.elevation?.cancelPending?.();
     this.queue = [];
-    this.status = { ...this.status, state: this.disabled ? 'unavailable' : 'idle', queued: 0, drawn: 0 };
+    this.inFlight = 0;
+    this.status = { ...this.status, state: this.isDisabled() ? 'unavailable' : 'idle', inFlight: 0, queued: 0, drawn: 0 };
+  }
+
+  private cancelRequest(entry: TileEntry): void {
+    entry.reqId = undefined;
+    if (entry.requestTimer) {
+      clearTimeout(entry.requestTimer);
+      entry.requestTimer = undefined;
+    }
+    if (entry.retryTimer) {
+      clearTimeout(entry.retryTimer);
+      entry.retryTimer = undefined;
+    }
+    if (entry.image) {
+      entry.image.onload = null;
+      entry.image.onerror = null;
+      entry.image.src = '';
+      entry.image = undefined;
+      this.inFlight = Math.max(0, this.inFlight - 1);
+    }
+    if (entry.state === 'loading' && entry.texture) {
+      entry.texture.dispose();
+      entry.texture = undefined;
+    }
   }
 
   private pump(): void {
-    // A WMS renders every tile on request (USGS: ~3 s each); more than a few at once only queue at
-    // the server, and each answer then takes 25 s or times out
-    const limit = this.provider.kind === 'wms' ? 4 : MAX_CONCURRENT;
+    if (this.isDisabled()) return;
+    const limits = TIER_LIMITS[perf.tier];
+    // WMS renders per request; HTTP/1.1 Trek enforces 6-socket browser pool per host — reserve
+    // sockets for parallel DEM tiles when relief is active so neither starves the other.
+    const trekMax = this.elevation && !this.elevation.disabled ? 4 : 6;
+    const wmtsLimit = this.activeProvider.template.includes('trek.nasa.gov') ? Math.min(limits.wmts, trekMax) : limits.wmts;
+    const limit = this.activeProvider.kind === 'wms' ? limits.wms : wmtsLimit;
     while (this.inFlight < limit && this.queue.length > 0) {
       const entry = this.queue.shift()!;
       if (entry.state !== 'queued') continue;
+      if (entry.nextRetryAt && performance.now() < entry.nextRetryAt) continue;
       this.request(entry);
     }
   }
@@ -371,117 +535,231 @@ export class SurfaceTileLayer {
   private request(entry: TileEntry): void {
     entry.state = 'loading';
     entry.attempts++;
+    entry.nextRetryAt = undefined;
+    const reqId = ++this.reqCounter;
+    entry.reqId = reqId;
     this.inFlight++;
-    const url = this.tileUrl(entry.key);
-    entry.image = this.loader.load(
-      url,
-      (img) => {
-        if (entry.state !== 'loading') return;
-        this.inFlight--;
-        entry.image = undefined;
-        const tex = new THREE.Texture(img);
-        tex.colorSpace = THREE.SRGBColorSpace;
-        tex.wrapS = THREE.ClampToEdgeWrapping;
-        tex.wrapT = THREE.ClampToEdgeWrapping;
-        tex.minFilter = THREE.LinearMipmapLinearFilter;
-        tex.anisotropy = this.anisotropy;
-        tex.needsUpdate = true;
-        entry.texture = tex;
-        this.everLoaded = true;
-        this.consecutiveFailures = 0;
-        if (this.elevation && !this.elevation.disabled) {
-          // Raised ground: the tile counts as loaded only once its heights are in, so it never
-          // appears flat and then jumps (its parent stands in until then)
-          const b = tileBounds(this.provider, entry.key);
-          const elevation = this.elevation;
-          const z = elevation.zoomFor(Math.max(b.clipEast - b.clipWest, b.clipNorth - b.clipSouth));
-          void elevation.ensure(b.clipSouth, b.clipWest, b.clipNorth, b.clipEast, z).then(() => {
-            if (entry.state !== 'loading') return;
-            // Sample this tile's whole height grid now, while its height tiles are certainly cached
-            const { nx, ny } = this.grid(entry.key);
-            const h = new Float32Array((nx + 1) * (ny + 1));
-            for (let j = 0; j <= ny; j++) {
-              const lat = b.clipNorth + (b.clipSouth - b.clipNorth) * (j / ny);
-              for (let i = 0; i <= nx; i++) {
-                const lon = b.clipWest + (b.clipEast - b.clipWest) * (i / nx);
-                h[j * (nx + 1) + i] = elevation.heightKm(lat, lon, z);
-              }
-            }
-            entry.heights = h;
-            entry.state = 'loaded';
-          });
-        } else {
-          entry.state = 'loaded';
-        }
-        this.pump();
-      },
-      () => {
-        if (entry.state !== 'loading') return;
-        this.inFlight--;
-        entry.image = undefined;
-        // Retry transient failures with backoff; give up on tiles that keep failing (404 / gaps).
-        // Only tiles given up on count towards the source looking unreachable.
-        if (entry.attempts < MAX_ATTEMPTS) {
-          entry.state = 'queued';
-          setTimeout(() => {
-            if (entry.state === 'queued' && entry.lastWanted >= this.frame - 2) {
-              this.queue.unshift(entry);
-              this.pump();
-            }
-          }, 400 * Math.pow(2, entry.attempts));
-        } else {
-          entry.state = 'missing';
-          this.consecutiveFailures++;
-          this.status.failures = this.consecutiveFailures;
-        }
-        // The whole source looks unreachable (offline, blocked, CORS) — stop asking
-        if (this.consecutiveFailures >= PROVIDER_FAILURE_LIMIT && !this.everLoaded) {
-          this.disableProvider();
-          return;
-        }
-        this.pump();
-      }
-    );
-  }
+    const url = this.tileUrl(entry.key, entry.useFallback);
+    const timeoutMs = this.providerFor(entry.key, entry.useFallback).kind === 'wms' ? WMS_TIMEOUT_MS : WMTS_TIMEOUT_MS;
+    const limits = TIER_LIMITS[perf.tier];
 
-  /** Stop all traffic to a source that appears unreachable; the base globe map stays visible. */
-  private disableProvider(): void {
-    this.disabled = true;
-    for (const entry of this.tiles.values()) {
-      if (entry.state === 'loading' && entry.image) {
+    const failRequest = (): void => {
+      if (entry.state !== 'loading' || entry.reqId !== reqId) return;
+      entry.reqId = undefined;
+      if (entry.requestTimer) {
+        clearTimeout(entry.requestTimer);
+        entry.requestTimer = undefined;
+      }
+      this.inFlight = Math.max(0, this.inFlight - 1);
+      if (entry.image) {
         entry.image.onload = null;
         entry.image.onerror = null;
         entry.image.src = '';
         entry.image = undefined;
       }
-      if (entry.state !== 'loaded') entry.state = 'missing';
+      const fb = this.activeProvider.fallback;
+      if (
+        this.everLoaded &&
+        !this.usingFallback &&
+        !entry.useFallback &&
+        fb &&
+        entry.key.z >= fb.minLevel &&
+        entry.key.z <= fb.maxLevel
+      ) {
+        entry.useFallback = true;
+        entry.attempts = 0;
+        entry.state = 'queued';
+        entry.nextRetryAt = undefined;
+        this.queue.unshift(entry);
+        this.pump();
+        return;
+      }
+      this.consecutiveRequestErrors++;
+      if (entry.attempts < MAX_ATTEMPTS) {
+        const delay = 400 * Math.pow(2, entry.attempts);
+        entry.state = 'queued';
+        entry.nextRetryAt = performance.now() + delay;
+        entry.retryTimer = setTimeout(() => {
+          entry.retryTimer = undefined;
+          if (entry.state === 'queued' && !this.isDisabled() && entry.lastWanted >= this.frame - 12) {
+            this.queue.unshift(entry);
+            this.pump();
+          }
+        }, delay);
+      } else {
+        entry.state = 'missing';
+        entry.retryAfter = performance.now() + MISSING_RETRY_MS;
+        this.consecutiveFailures++;
+        this.status.failures = this.consecutiveFailures;
+      }
+      const missLimit = this.usingFallback ? Math.max(4, PROVIDER_FAILURE_LIMIT / 2) : PROVIDER_FAILURE_LIMIT;
+      const errLimit = this.usingFallback ? FALLBACK_ERROR_LIMIT : PRIMARY_ERROR_LIMIT;
+      if (!this.everLoaded && (this.consecutiveFailures >= missLimit || this.consecutiveRequestErrors >= errLimit)) {
+        if (!this.usingFallback && this.activeProvider.fallback) {
+          this.switchToFallback();
+          return;
+        }
+        this.disableProvider();
+        return;
+      }
+      this.pump();
+    };
+
+    entry.requestTimer = setTimeout(failRequest, timeoutMs);
+    entry.image = this.loader.load(
+      url,
+      (img) => {
+        if (entry.state !== 'loading' || entry.reqId !== reqId) return;
+        if (
+          !img ||
+          img.complete === false ||
+          img.naturalWidth <= 0 ||
+          img.naturalHeight <= 0 ||
+          img.width <= 0 ||
+          img.height <= 0
+        ) {
+          failRequest();
+          return;
+        }
+        const commitTexture = (): void => {
+          if (entry.state !== 'loading' || entry.reqId !== reqId) return;
+          entry.reqId = undefined;
+          if (entry.requestTimer) {
+            clearTimeout(entry.requestTimer);
+            entry.requestTimer = undefined;
+          }
+          this.inFlight = Math.max(0, this.inFlight - 1);
+          entry.image = undefined;
+          const tex = new THREE.Texture(img);
+          tex.colorSpace = THREE.SRGBColorSpace;
+          tex.wrapS = THREE.ClampToEdgeWrapping;
+          tex.wrapT = THREE.ClampToEdgeWrapping;
+          tex.minFilter = THREE.LinearMipmapLinearFilter;
+          tex.anisotropy = Math.min(this.anisotropy, limits.maxAnisotropy);
+          tex.needsUpdate = true;
+          entry.texture = tex;
+          this.everLoaded = true;
+          this.consecutiveFailures = 0;
+          this.consecutiveRequestErrors = 0;
+          this.cooldownMs = INITIAL_COOLDOWN_MS;
+          entry.state = 'loaded';
+          if (this.elevation && !this.elevation.disabled) {
+            this.prepareRelief(entry);
+          }
+          this.pump();
+        };
+        // HTMLImageElement.onload and .decode() can both resolve on truncated PNGs in Chromium,
+        // only failing later during texSubImage2D with WebGL INVALID_VALUE. Decode a throwaway
+        // ImageBitmap first so corrupt or truncated streams fail cleanly before GPU upload.
+        if (
+          typeof HTMLImageElement !== 'undefined' &&
+          img instanceof HTMLImageElement &&
+          typeof createImageBitmap === 'function'
+        ) {
+          createImageBitmap(img).then(
+            (bmp) => {
+              bmp.close();
+              commitTexture();
+            },
+            () => failRequest()
+          );
+          return;
+        }
+        commitTexture();
+      },
+      failRequest
+    );
+  }
+
+  /** Commit a complete height grid in one step; stale callbacks cannot mutate another request. */
+  private prepareRelief(entry: TileEntry): void {
+    const elevation = this.elevation;
+    if (!elevation || elevation.disabled || entry.preparingRelief) return;
+    entry.preparingRelief = true;
+    const texture = entry.texture;
+    const b = tileBounds(this.activeProvider, entry.key);
+    const grid = this.grid(entry.key);
+    const z = elevation.zoomFor(Math.max(b.clipEast - b.clipWest, b.clipNorth - b.clipSouth));
+    void elevation.ensure(b.clipSouth, b.clipWest, b.clipNorth, b.clipEast, z)
+      .catch(() => undefined)
+      .then(() => {
+        entry.preparingRelief = false;
+        if (this.tiles.get(entry.id) !== entry || entry.texture !== texture || !texture) return;
+        if (!elevation.disabled) {
+          const { nx, ny } = grid;
+          const heights = new Float32Array((nx + 1) * (ny + 1));
+          for (let j = 0; j <= ny; j++) {
+            const lat = b.clipNorth + (b.clipSouth - b.clipNorth) * j / ny;
+            for (let i = 0; i <= nx; i++) {
+              const lon = b.clipWest + (b.clipEast - b.clipWest) * i / nx;
+              const h = elevation.heightKm(lat, lon, z);
+              heights[j * (nx + 1) + i] = Number.isFinite(h) ? h : 0;
+            }
+          }
+          entry.heights = heights;
+          entry.heightGrid = grid;
+          if (entry.mesh) {
+            const previous = entry.mesh;
+            entry.mesh = this.createMesh(entry);
+            entry.mesh.visible = previous.visible;
+            this.group.remove(previous);
+            previous.geometry.dispose();
+            (previous.material as THREE.Material).dispose();
+          }
+        }
+        entry.state = 'loaded';
+      });
+  }
+
+  private switchToFallback(): void {
+    const next = this.activeProvider.fallback;
+    if (!next) return;
+    for (const entry of this.tiles.values()) {
+      this.cancelRequest(entry);
+      this.disposeEntry(entry);
+    }
+    this.tiles.clear();
+    this.queue = [];
+    this.inFlight = 0;
+    this.consecutiveFailures = 0;
+    this.consecutiveRequestErrors = 0;
+    this.activeProvider = next;
+    this.usingFallback = true;
+    this.shared.uColorize.value = this.shared.uBaseMap.value && next.colorize ? 1 : 0;
+    this.status = { ...this.status, state: 'streaming', inFlight: 0, queued: 0, failures: 0 };
+  }
+
+  /** Pause traffic temporarily when an endpoint appears unreachable; the base globe stays visible. */
+  private disableProvider(): void {
+    this.disabledUntil = performance.now() + this.cooldownMs;
+    this.cooldownMs = Math.min(120_000, this.cooldownMs * 2);
+    for (const entry of this.tiles.values()) {
+      this.cancelRequest(entry);
+      if (entry.state !== 'loaded') entry.state = 'queued';
     }
     this.queue = [];
     this.inFlight = 0;
     this.status = { ...this.status, state: 'unavailable', inFlight: 0, queued: 0 };
   }
 
-  /** Vertex grid of a tile: a fixed fine grid for raised ground, else by its size. */
+  /** Vertex grid of a tile: tier-scaled density for raised ground, else by its angular size. */
   private grid(k: TileKey): { nx: number; ny: number } {
-    const b = tileBounds(this.provider, k);
+    const b = tileBounds(this.activeProvider, k);
     const spanDeg = Math.max(b.clipEast - b.clipWest, b.clipNorth - b.clipSouth);
     const relief = !!this.elevation && !this.elevation.disabled;
-    // Flat tiles: cells of at most ~0.5° so their chords sag less than the shell lift (TILE_SHELL)
-    // below the true curve; with 1.5° cells the surface view's finely curved ground cap poked up
-    // through the middle of every cell (a lattice of discs on Io, Europa, Pluto…)
-    const segs = relief ? 32 : Math.max(8, Math.min(48, Math.ceil(spanDeg / 0.5)));
+    const limits = TIER_LIMITS[perf.tier];
+    const segs = relief ? limits.reliefSegs : Math.max(8, Math.min(limits.flatMaxSegs, Math.ceil(spanDeg / 0.5)));
     const ny = Math.max(2, Math.ceil(segs * ((b.clipNorth - b.clipSouth) / Math.max(1e-6, b.clipEast - b.clipWest))));
-    return { nx: segs, ny: Math.min(48, ny) };
+    return { nx: segs, ny: Math.min(limits.flatMaxSegs, ny) };
   }
 
   private createMesh(entry: TileEntry): THREE.Mesh {
-    const b = tileBounds(this.provider, entry.key);
+    const b = tileBounds(this.activeProvider, entry.key);
     const spanDeg = Math.max(b.clipEast - b.clipWest, b.clipNorth - b.clipSouth);
     const heights = entry.heights;
     const relief = !!heights;
-    // (Finer tiles already sit a little higher: TILE_LEVEL_LIFT; skirts close the edges)
     const sinkKm = 0;
-    const { nx, ny: nyc } = this.grid(entry.key);
+    const { nx, ny: nyc } = entry.heightGrid ?? this.grid(entry.key);
 
     const positions: number[] = [];
     const normals: number[] = [];
@@ -492,13 +770,11 @@ export class SurfaceTileLayer {
       for (let i = 0; i <= nx; i++) {
         const lon = b.clipWest + (b.clipEast - b.clipWest) * (i / nx);
         const [x, y, z] = bodyLatLonToLocal(this.bodyName, lat, lon);
-        // Coarser tiles sink a little under finer ones (by ~1% of their size), so where both are
-        // drawn during loading the coarse relief never pokes up through the fine
-        const lift = heights ? (heights[j * (nx + 1) + i] - sinkKm) / this.radiusKm : 0;
+        const height = heights?.[j * (nx + 1) + i] ?? 0;
+        const lift = Number.isFinite(height) ? (height - sinkKm) / this.radiusKm : 0;
         const shell = TILE_SHELL + entry.key.z * TILE_LEVEL_LIFT + lift;
         positions.push(x * shell, y * shell, z * shell);
         normals.push(x, y, z);
-        // UV within the full nominal tile image (v = 1 at the tile's north edge)
         uvs.push((lon - b.west) / (b.east - b.west), (lat - b.south) / (b.north - b.south));
       }
     }
@@ -509,26 +785,17 @@ export class SurfaceTileLayer {
         indices.push(a, c, a + 1, a + 1, c, c + 1);
       }
     }
-    // Skirts on raised ground: a short wall hanging down from every edge, so where a finer tile meets
-    // a coarser one (their edges at slightly different heights) no crack shows the sky through
+    // Modest single-sided outward skirts seal minor LOD chord seams without hanging multi-km curtains
     let skirtInfo: { ring: number[]; top: number; start: number } | null = null;
     if (relief) {
-      // Deep enough to reach under a coarser neighbour's edge in steep country (it can sit a large
-      // part of the local relief lower)
-      let hMin = Infinity, hMax = -Infinity;
-      for (const h of heights!) {
-        hMin = Math.min(hMin, h);
-        hMax = Math.max(hMax, h);
-      }
-      // (km per degree of this body: 111 on Earth, 30 on the Moon)
-      const skirtKm = Math.max(0.15, spanDeg * ((Math.PI * this.radiusKm) / 180) * 0.008, (hMax - hMin) * 0.35);
+      const spanKm = spanDeg * ((Math.PI * this.radiusKm) / 180);
+      const cellKm = spanKm / Math.max(1, nx);
+      const skirtKm = Math.max(0.015, Math.min(0.4, cellKm * 1.15));
       const ring: number[] = [];
       for (let i = 0; i <= nx; i++) ring.push(i);
       for (let j = 1; j <= nyc; j++) ring.push(j * (nx + 1) + nx);
       for (let i = nx - 1; i >= 0; i--) ring.push(nyc * (nx + 1) + i);
       for (let j = nyc - 1; j >= 1; j--) ring.push(j * (nx + 1));
-      // Own copies of the edge (top) and the hanging edge (bottom): the walls must not bend the
-      // shading of the ground's own edge vertices
       const top = positions.length / 3;
       skirtInfo = { ring, top, start: top + ring.length };
       for (const k of ring) {
@@ -550,8 +817,8 @@ export class SurfaceTileLayer {
         const b = top + ((n + 1) % ring.length);
         const a2 = start + n;
         const b2 = start + ((n + 1) % ring.length);
-        // Both windings: the wall is seen from either side
-        indices.push(a, a2, b, b, a2, b2, a, b, a2, b, b2, a2);
+        // Outward-facing triangles only: avoids double-sided curtains seen from behind or below
+        indices.push(a, b, a2, b, b2, a2);
       }
     }
     const geo = new THREE.BufferGeometry();
@@ -577,6 +844,7 @@ export class SurfaceTileLayer {
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         ...this.shared,
+        uUnderlayInset: { value: TILE_SHELL - 1 + entry.key.z * TILE_LEVEL_LIFT + 0.15 / this.radiusKm },
         uSunWorld: SUN_WORLD,
         map: { value: entry.texture },
         uBounds: { value: new THREE.Vector4(b.west, b.south, b.east, b.north) },
@@ -605,8 +873,9 @@ export class SurfaceTileLayer {
   private cutCovered(drawIds: Set<string>): void {
     const masks = new Map<string, Uint8Array>();
     for (const id of drawIds) {
-      const k = this.tiles.get(id)?.key;
-      if (!k) continue;
+      const entry = this.tiles.get(id);
+      if (!entry?.mesh) continue;
+      const k = entry.key;
       let pk = parentTile(k);
       while (pk) {
         const pid = tileId(pk);
@@ -617,9 +886,11 @@ export class SurfaceTileLayer {
           const iy = k.y - pk.y * n;
           let m = masks.get(pid);
           if (!m) masks.set(pid, (m = new Uint8Array(COVER * COVER)));
-          // Texels whose centres lie inside the finer tile (v = 1 at the coarse tile's north edge)
-          const x0 = Math.round((ix / n) * COVER), x1 = Math.round(((ix + 1) / n) * COVER);
-          const y0 = Math.round((1 - (iy + 1) / n) * COVER), y1 = Math.round((1 - iy / n) * COVER);
+          // Cut only texels wholly inside the child's footprint so coarse quantization never opens gaps
+          const x0 = Math.min(COVER, Math.max(0, Math.ceil((ix / n) * COVER - 1e-6)));
+          const x1 = Math.min(COVER, Math.max(x0, Math.floor(((ix + 1) / n) * COVER + 1e-6)));
+          const y0 = Math.min(COVER, Math.max(0, Math.ceil((1 - (iy + 1) / n) * COVER - 1e-6)));
+          const y1 = Math.min(COVER, Math.max(y0, Math.floor((1 - iy / n) * COVER + 1e-6)));
           for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) m[y * COVER + x] = 255;
         }
         pk = parentTile(pk);
@@ -653,17 +924,22 @@ export class SurfaceTileLayer {
   }
 
   private evict(): void {
+    const maxCached = TIER_LIMITS[perf.tier].cached;
     const loaded = [...this.tiles.values()].filter((t) => t.state === 'loaded');
-    if (loaded.length <= MAX_CACHED) return;
+    if (loaded.length <= maxCached) return;
     loaded.sort((a, b) => Math.max(a.lastDrawn, a.lastWanted) - Math.max(b.lastDrawn, b.lastWanted));
-    for (const entry of loaded.slice(0, loaded.length - MAX_CACHED)) {
-      if (entry.lastDrawn === this.frame || entry.key.z <= 1) continue; // keep what is on screen and the roots
+    for (const entry of loaded.slice(0, loaded.length - maxCached)) {
+      if (entry.lastDrawn === this.frame || entry.lastWanted >= this.frame - 2 || entry.key.z <= 2) continue;
       this.disposeEntry(entry);
       this.tiles.delete(entry.id);
     }
     // Forget long-unwanted bookkeeping entries
     for (const entry of this.tiles.values()) {
       if (entry.state !== 'loaded' && entry.state !== 'loading' && this.frame - entry.lastWanted > 600) {
+        if (entry.retryTimer) {
+          clearTimeout(entry.retryTimer);
+          entry.retryTimer = undefined;
+        }
         this.tiles.delete(entry.id);
       }
     }
@@ -684,11 +960,7 @@ export class SurfaceTileLayer {
 
   public dispose(): void {
     for (const entry of this.tiles.values()) {
-      if (entry.image) {
-        entry.image.onload = null;
-        entry.image.onerror = null;
-        entry.image.src = '';
-      }
+      this.cancelRequest(entry);
       this.disposeEntry(entry);
     }
     this.tiles.clear();

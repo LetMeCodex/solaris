@@ -66,6 +66,8 @@ function airlinerGeometry(): THREE.BufferGeometry {
     const q = p.index ? p.toNonIndexed() : p;
     const a = q.getAttribute('position');
     for (let i = 0; i < a.count; i++) pos.push(a.getX(i), a.getY(i), a.getZ(i));
+    if (q !== p) q.dispose();
+    p.dispose();
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -123,9 +125,15 @@ export class AliveWorld {
   private readonly u = { uT: { value: 0 } };
   private m = new THREE.Matrix4();
   private q = new THREE.Quaternion();
+  private q2 = new THREE.Quaternion();
+  private e = new THREE.Euler(0, 0, -0.35, 'YXZ');
   private v = new THREE.Vector3();
+  private v2 = new THREE.Vector3();
+  private v3 = new THREE.Vector3();
   private w = new THREE.Vector3();
+  private s = new THREE.Vector3();
   private yAxis = new THREE.Vector3(0, 1, 0);
+  private metreScale = new THREE.Vector3(1 / 6378137, 1 / 6378137, 1 / 6378137);
   private jetLocal = new THREE.Vector3();
   private inv = new THREE.Matrix4();
   private seeded = 0;
@@ -240,7 +248,7 @@ void main() {
     // Somewhere ahead and around: 0.6-2.5 km off, 40-220 m up
     const n = this.seeded * 7.13 + i * 3.7 + f.seed;
     const tangentA = this.v.set(up.y, up.z, up.x).cross(up).normalize();
-    const tangentB = new THREE.Vector3().crossVectors(up, tangentA);
+    const tangentB = this.v2.crossVectors(up, tangentA);
     const ang = hash(n) * Math.PI * 2;
     const distM = 600 + hash(n + 1) * 1900;
     const dir = tangentA.multiplyScalar(Math.cos(ang)).addScaledVector(tangentB, Math.sin(ang));
@@ -255,12 +263,13 @@ void main() {
     // The flock's own frame at its centre: y up (away from Earth's centre), in metres
     const upL = this.v.copy(f.centre).normalize();
     this.q.setFromUnitVectors(this.yAxis, upL);
-    f.mesh.matrix.compose(f.centre, this.q, new THREE.Vector3(METRE, METRE, METRE));
+    f.mesh.matrix.compose(f.centre, this.q, this.metreScale);
     f.mesh.matrixWorldNeedsUpdate = true;
     const dummy = this.m;
-    const pos = new THREE.Vector3();
-    const rot = new THREE.Quaternion();
-    const scl = new THREE.Vector3();
+    const pos = this.v2;
+    const rot = this.q2;
+    const scl = this.s;
+    const e = this.e;
     for (let b = 0; b < BIRDS; b++) {
       // Each bird a little ahead or behind, inside or out, above or below the flock's circle,
       // drifting on its own
@@ -271,8 +280,8 @@ void main() {
       const y = (hash(s + 2) - 0.5) * 18 + Math.sin(timeSec * 0.9 + s * 2) * 2.5;
       pos.set(Math.cos(ang) * ring, y, Math.sin(ang) * ring);
       // Facing along the circle (and banked into it a little)
-      const yaw = -ang;
-      rot.setFromEuler(new THREE.Euler(0, yaw, -0.35, 'YXZ'));
+      e.set(0, -ang, -0.35, 'YXZ');
+      rot.setFromEuler(e);
       const size = 0.8 + hash(s + 3) * 0.5;
       scl.setScalar(size);
       dummy.compose(pos, rot, scl);
@@ -284,15 +293,15 @@ void main() {
   private seatAirliner(a: Airliner, up: THREE.Vector3, i: number): void {
     const n = this.seeded * 3.31 + i * 9.1;
     const tangentA = this.v.set(up.y, up.z, up.x).cross(up).normalize();
-    const tangentB = new THREE.Vector3().crossVectors(up, tangentA);
+    const tangentB = this.v2.crossVectors(up, tangentA);
     const ang = hash(n) * Math.PI * 2;
     const distKm = 30 + hash(n + 1) * 110;
-    const dir = tangentA.clone().multiplyScalar(Math.cos(ang)).addScaledVector(tangentB, Math.sin(ang));
+    const dir = this.v3.copy(tangentA).multiplyScalar(Math.cos(ang)).addScaledVector(tangentB, Math.sin(ang));
     a.at.copy(up).addScaledVector(dir, distKm / 6378.137).normalize();
     // Heading: any way across the sky
     const h = hash(n + 2) * Math.PI * 2;
-    const tA = new THREE.Vector3(a.at.y, a.at.z, a.at.x).cross(a.at).normalize();
-    const tB = new THREE.Vector3().crossVectors(a.at, tA);
+    const tA = this.v.set(a.at.y, a.at.z, a.at.x).cross(a.at).normalize();
+    const tB = this.v2.crossVectors(a.at, tA);
     a.heading.copy(tA).multiplyScalar(Math.cos(h)).addScaledVector(tB, Math.sin(h)).normalize();
     a.altKm = 9.5 + hash(n + 3) * 2;
     a.speedMps = 225 + hash(n + 4) * 30;
@@ -305,8 +314,8 @@ void main() {
     const right = this.v.crossVectors(upL, fwd).normalize();
     this.m.makeBasis(right, upL, fwd);
     this.q.setFromRotationMatrix(this.m);
-    const p = new THREE.Vector3().copy(upL).multiplyScalar(1 + (a.altKm * 1000) / R_M);
-    a.body.matrix.compose(p, this.q, new THREE.Vector3(METRE, METRE, METRE));
+    const p = this.v2.copy(upL).multiplyScalar(1 + (a.altKm * 1000) / R_M);
+    a.body.matrix.compose(p, this.q, this.metreScale);
     a.body.matrixWorldNeedsUpdate = true;
   }
 

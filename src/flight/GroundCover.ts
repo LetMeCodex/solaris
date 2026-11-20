@@ -24,16 +24,17 @@ import { bodyLatLonToLocal, bodyLocalToLatLon } from '../explorer/TileMath';
  */
 
 const HIGH = perf.tier === 'high';
-const RES = HIGH ? 512 : 384;
-const SPAN_KM = HIGH ? 4.0 : 3.0;
+const LOW = perf.tier === 'low';
+const RES = HIGH ? 512 : LOW ? 256 : 384;
+const SPAN_KM = HIGH ? 4.0 : LOW ? 2.4 : 3.0;
 /** One candidate tree per this many pixels each way (~16 m on a strong GPU, ~24 m otherwise). */
 const CELL = HIGH ? 2 : 3;
-const MAX_TREES = HIGH ? 24000 : 8000;
+const MAX_TREES = HIGH ? 24000 : LOW ? 3200 : 8000;
 const METRE = 1 / 6378137; // Earth's surface frame: a unit sphere
 /** Shrubs: out to this far from the eye (m), one candidate per this many metres each way. */
-const SHRUB_REACH_M = HIGH ? 140 : 100;
+const SHRUB_REACH_M = HIGH ? 140 : LOW ? 75 : 100;
 const SHRUB_STEP_M = 3.5;
-const MAX_SHRUBS = HIGH ? 7000 : 3000;
+const MAX_SHRUBS = HIGH ? 7000 : LOW ? 1000 : 3000;
 /** Shrubs only while the eye is at most this high over the ground (km). */
 const SHRUB_MAX_AGL_KM = 0.3;
 
@@ -266,11 +267,14 @@ export class GroundCover {
   private shadowFromLocal = new THREE.Matrix4();
   private shadowFrame = 0;
   private hasShadow = false;
+  private floatRtSupported: boolean | null = null;
+  private tmpClear = new THREE.Color();
+  private savedMats: Array<THREE.Material | THREE.Material[]> = [];
   /** World -> shadow map texture space (and depth), for this frame's draw. */
   public readonly shadowMatrix = new THREE.Matrix4();
 
   constructor() {
-    const size = HIGH ? 2048 : 1024;
+    const size = HIGH ? 2048 : LOW ? 256 : 1024;
     this.shadowTarget = new THREE.WebGLRenderTarget(size, size, { depthBuffer: true });
     this.shadowTarget.depthTexture = new THREE.DepthTexture(size, size, THREE.UnsignedIntType);
     this.kinds = [conifer(), broadleaf(), shrub()].map((g, kind) => {
@@ -391,12 +395,13 @@ if (vCrown > 0.5) {
    */
   public renderShadow(renderer: THREE.WebGLRenderer, surface: THREE.Object3D, sunDir: THREE.Vector3, up: THREE.Vector3, unitsPerKm: number, sunUp: number): void {
     const trees = this.kinds[0].count + this.kinds[1].count + this.kinds[2].count;
-    if (sunUp < 0.02 || trees === 0 || !this.group.visible) {
+    if (LOW || perf.scale < 0.72 || sunUp < 0.02 || trees === 0 || !this.group.visible || renderer.getContext?.()?.isContextLost?.()) {
       this.hasShadow = false;
       return;
     }
     surface.updateWorldMatrix(true, false);
-    if (this.shadowFrame++ % 6 === 0 || !this.hasShadow) {
+    const shadowEvery = HIGH ? 6 : 12;
+    if (this.shadowFrame++ % shadowEvery === 0 || !this.hasShadow) {
       // Over the planted area round the eye (the eye is at the origin in the draw), from the Sun.
       // Low Suns throw long shadows: the box is made deep enough for them
       const half = (SPAN_KM / 2) * unitsPerKm;
@@ -414,7 +419,8 @@ if (vCrown > 0.5) {
       cam.far = back + 1.5 * unitsPerKm;
       cam.updateProjectionMatrix();
       cam.updateMatrixWorld(true);
-      const saved = this.kinds.map((im) => im.material);
+      this.savedMats.length = 0;
+      for (const im of this.kinds) this.savedMats.push(im.material);
       const target = renderer.getRenderTarget();
       const autoClear = renderer.autoClear;
       try {
@@ -424,7 +430,7 @@ if (vCrown > 0.5) {
         renderer.clear(true, true, false);
         renderer.render(this.group, cam);
       } finally {
-        this.kinds.forEach((im, k) => (im.material = saved[k]));
+        for (let k = 0; k < this.kinds.length; k++) this.kinds[k].material = this.savedMats[k];
         renderer.setRenderTarget(target);
         renderer.autoClear = autoClear;
       }
@@ -474,14 +480,19 @@ if (vCrown > 0.5) {
     this.u.uFadeFar.value = (SPAN_KM / 2) * 0.98 * unitsPerKm;
   }
 
-  /** Whether a capture would run now (every 1.5 s, one readback at a time). */
+  /** Whether a capture would run now (every 1.5–2.5 s depending on performance headroom, one readback at a time). */
   public get captureDue(): boolean {
-    return performance.now() - this.last >= 1500 && !this.reading;
+    const intervalMs = LOW || perf.scale < 0.78 ? 2500 : 1500;
+    return performance.now() - this.last >= intervalMs && !this.reading;
   }
 
   public capture(renderer: THREE.WebGLRenderer, tiles: THREE.Object3D, surface: THREE.Object3D, up: THREE.Vector3, unitsPerKm: number, aglKm: number, tileErrors?: Map<THREE.Object3D, number>): void {
     this.setArea(unitsPerKm);
-    if (!this.captureDue) return;
+    if (!this.captureDue || renderer.getContext?.()?.isContextLost?.()) return;
+    if (this.floatRtSupported === null) {
+      this.floatRtSupported = renderer.extensions.has('EXT_color_buffer_float');
+    }
+    if (!this.floatRtSupported) return;
     this.last = performance.now();
     this.captureAgl = aglKm;
     // The floating origin has just moved the scene: bring the tiles' world matrices up to date
@@ -503,7 +514,7 @@ if (vCrown > 0.5) {
     cam.updateMatrixWorld(true);
     const target = renderer.getRenderTarget();
     const autoClear = renderer.autoClear;
-    const clear = renderer.getClearColor(new THREE.Color());
+    const clear = renderer.getClearColor(this.tmpClear);
     const clearA = renderer.getClearAlpha();
     try {
       renderer.autoClear = true;

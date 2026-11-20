@@ -104,7 +104,7 @@ function eyeHeightKm(body: SurfaceBody): number {
 function groundCap(centre: THREE.Vector3, horizonRad: number): THREE.BufferGeometry {
   const RINGS = 72;
   const SECTORS = 160;
-  const reach = Math.min(Math.PI * 0.45, Math.max(horizonRad * 4, 0.01));
+  const reach = Math.min(Math.PI * 0.45, Math.max(horizonRad * 4, 0.04));
   const c = centre.clone().normalize();
   const a = Math.abs(c.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
   const e1 = new THREE.Vector3().crossVectors(a, c).normalize();
@@ -224,13 +224,25 @@ export class SurfaceObserver {
     }
   }
 
-  /** Height of the real ground under you (km, Earth), for the air above and the eye. */
+  /** Height of the real ground under you (km), for the eye and the air above. */
   private groundKm = 0;
-  private groundFix = 0;
   private groundProbe = 0;
+  /** Latest absolute surface elevation (km above baseShell) hit on streamed SurfaceTileLayer meshes. */
+  private groundTileKm: number | null = null;
+  /** Absolute height (km above WGS84 sea level) locked on PhotorealEarth 3D tiles. */
+  private lockedSurfaceKm: number | null = null;
+  private lockedTileRadiusKm = Infinity;
   /** The photoreal ground has been found under the current standing point. */
   private groundLocked = false;
   private ray = new THREE.Raycaster();
+
+  private isPhotorealActive(): boolean {
+    return this.body?.name === 'Earth' && !!PhotorealEarth.current?.showing && !this.deep.scene?.land;
+  }
+
+  private expectsPhotoreal(b: SurfaceBody): boolean {
+    return b.name === 'Earth' && !!PhotorealEarth.current && !this.deep.scene?.land;
+  }
 
   /**
    * Eye height above the ground: on Earth's real 3D ground you stand on it (about 2 m, a person's
@@ -278,14 +290,25 @@ export class SurfaceObserver {
     this.lon = lon;
     this.place = place;
     this.customEyeKm = customEyeKm;
-    this.groundFix = 0;
+    this.groundKm = 0;
+    this.groundProbe = 0;
+    this.groundTileKm = null;
+    this.lockedSurfaceKm = null;
+    this.lockedTileRadiusKm = Infinity;
     this.groundLocked = false;
     // Fetch the ground height here now (the eye stands on it; see computeFrame)
     if (bodyName === 'Earth') {
       const solid = getLandmarkSolidElevationKm(lat, lon);
       if (solid > 0) this.groundKm = solid;
     }
-    void elevationFor(bodyName)?.ensure(lat - 0.02, lon - 0.02, lat + 0.02, lon + 0.02, 13);
+    const elev = elevationFor(bodyName);
+    if (elev) {
+      const s9 = Math.max(-89.9, lat - 0.12), n9 = Math.min(89.9, lat + 0.12);
+      const s13 = Math.max(-89.9, lat - 0.03), n13 = Math.min(89.9, lat + 0.03);
+      // Warm an intermediate tile alongside z=13 so relief resolves quickly on high-latency cold fetches
+      void elev.ensure(s9, lon - 0.12, n9, lon + 0.12, 9);
+      void elev.ensure(s13, lon - 0.03, n13, lon + 0.03, 13);
+    }
     this.model = atmosphereFor(bodyName);
     this.atmosphere.setModel(this.model);
     this.atmosphereOn = true;
@@ -327,8 +350,6 @@ export class SurfaceObserver {
 
   private addGroundCap(body: SurfaceBody, lat: number, lon: number): void {
     this.removeGroundCap();
-    // On Earth with Google Photorealistic 3D Tiles, real 3D buildings and photogrammetric terrain are drawn
-    if (body.name === 'Earth' && PhotorealEarth.current) return;
     const mat = body.surfaceMesh.material as THREE.Material & { uniforms?: Record<string, { value: unknown }> };
     // The cap may cross the map's date line: let the textures repeat instead of clamping there
     for (const key of ['map', 'normalMap']) {
@@ -338,10 +359,12 @@ export class SurfaceObserver {
         t.needsUpdate = true;
       }
     }
-    const horizon = Math.sqrt((2 * this.eye(body)) / body.radiusKm);
+    const horizon = Math.sqrt((2 * (this.eye(body) + Math.max(0, this.groundKm))) / body.radiusKm);
     this.cap = new THREE.Mesh(groundCap(new THREE.Vector3(...bodyLatLonToLocal(body.name, lat, lon)), horizon), mat);
     this.cap.name = 'surface_ground_cap';
     this.cap.renderOrder = body.surfaceMesh.renderOrder;
+    // Keep ready as fallback beneath SurfaceTileLayer when PhotorealEarth is inactive or still loading
+    this.cap.visible = !this.isPhotorealActive() && !this.deep.scene?.land;
     body.surfaceMesh.add(this.cap);
   }
 
@@ -443,124 +466,146 @@ export class SurfaceObserver {
     const b = this.body!;
     const kmPerUnit = b.radiusKm / b.visualRadius;
     const eyeKm = this.eye(b);
-    const horizonUnits = Math.sqrt(2 * b.radiusKm * eyeKm) / kmPerUnit;
+    const totalAltKm = eyeKm + Math.max(0, this.groundKm);
+    const horizonUnits = Math.sqrt(2 * b.radiusKm * totalAltKm) / kmPerUnit;
     const dome = Math.max(0.5, horizonUnits * 3);
     const shell = dome * 2;
     const stars = shell * 2.5;
-    const isPhoto = b.name === 'Earth' && !!PhotorealEarth.current;
-    // On Earth with 3D tiles, clamp near and far planes for optimal 24-bit depth precision to prevent z-fighting
-    const far = isPhoto ? Math.max(stars * 1.8, 15.0) : Math.max(stars * 1.6, b.name === 'Saturn' ? b.visualRadius * 5 : 0);
+    const isPhoto = this.isPhotorealActive();
+    // Keep far tight to the sky shell/stars so 24-bit depth buffer keeps precision and near can sit closer
+    const far = Math.max(stars * 1.6, b.name === 'Saturn' ? b.visualRadius * 5 : 0);
     const eyeUnits = eyeKm / kmPerUnit;
-    const near = isPhoto ? Math.max(0.000008, eyeUnits * 0.4) : Math.max(eyeUnits * 0.15, 1e-7);
+    const near = isPhoto ? Math.max(eyeUnits * 0.12, 1.5e-6) : Math.max(eyeUnits * 0.15, 2.5e-7);
     return { dome, shell, stars, far, near, eyeUnits };
   }
 
   private computeFrame(): THREE.Vector3 {
     const b = this.body!;
     b.surfaceMesh.updateWorldMatrix(true, true);
-    const isPhoto = b.name === 'Earth' && !!PhotorealEarth.current;
+    const isPhoto = this.isPhotorealActive();
+    const expectsPhoto = this.expectsPhotoreal(b);
+    if (this.cap) this.cap.visible = !isPhoto && !this.deep.scene?.land;
     const eyeKm = this.eye(b);
-    // On Earth the ground is raised to its real height (src/explorer/Elevation): stand on it
+    const kmPerUnit = b.radiusKm / b.visualRadius;
+    // On Earth, Moon, and Mars the ground is raised to its real relief: stand cleanly above it
     const relief = this.deep.scene?.land ? null : elevationFor(b.name);
     const demKm = relief && !relief.disabled ? Math.max(0, relief.heightKm(this.lat, this.lon, 13)) : 0;
     const solidKm = b.name === 'Earth' ? getLandmarkSolidElevationKm(this.lat, this.lon) : 0;
-    const groundKm = Math.max(demKm, solidKm);
-    if (groundKm > this.groundKm) this.groundKm = groundKm;
-    this.groundKm = groundKm;
-    // For Google Photorealistic 3D Tiles, surface coordinates are exact WGS84 ECEF (radius 1.0 at sea level).
-    // TILE_SHELL was only for the old 2D tile mesh to prevent z-fighting with the base globe.
-    const baseShell = isPhoto ? 1.0 : TILE_SHELL;
-    const r = baseShell + (eyeKm + groundKm) / b.radiusKm;
+    const baseGroundKm = Math.max(demKm, solidKm);
+    const baseShell = isPhoto || (expectsPhoto && !this.hasVisibleTiles(b)) ? 1.0 : TILE_SHELL;
     const [x, y, z] = bodyLatLonToLocal(b.name, this.lat, this.lon);
-    const pos = b.surfaceMesh.localToWorld(new THREE.Vector3(x * r, y * r, z * r));
     const centre = b.bodyGroup.getWorldPosition(new THREE.Vector3());
-    const up = this.frame.up.copy(pos).sub(centre).normalize();
+    // Anchor sea-level reference independently of DEM arrival so groundKm and raycast heights never double-count
+    const surfaceOrigin = b.surfaceMesh.localToWorld(new THREE.Vector3(x * baseShell, y * baseShell, z * baseShell));
+    const up = this.frame.up.copy(surfaceOrigin).sub(centre).normalize();
     const pole = new THREE.Vector3(0, 1, 0).applyQuaternion(b.surfaceMesh.getWorldQuaternion(new THREE.Quaternion()));
     const north = this.frame.north.copy(pole).addScaledVector(up, -pole.dot(up));
     if (north.lengthSq() < 1e-10) north.set(1, 0, 0).addScaledVector(up, -up.x);
     north.normalize();
     this.frame.east.crossVectors(north, up).normalize();
-    // Standing on Earth's real ground:
-    // For Google Photorealistic 3D Tiles, surface coordinates are exact WGS84 ECEF.
-    // Raycasting down onto dynamic 3D tiles caused violent 300m camera altitude jumping and LOD cycling.
+
     if (relief && !relief.disabled) {
       if (isPhoto) {
-        // Lock onto the local photogrammetric surface once a fine tile (<= 350 m radius) loads.
-        // Coarse root/regional tiles cut chords hundreds of metres below the curved ellipsoid and
-        // must be ignored; once locked on a fine local tile, groundFix stays constant for this spot.
-        if (!this.groundLocked && this.groundProbe++ % 6 === 0) {
-          const kmPerUnit = b.radiusKm / b.visualRadius;
-          const maxTileRadiusUnits = 0.35 / kmPerUnit;
-          const maxHorizUnits = 0.18 / kmPerUnit;
+        // Lock onto the finest photogrammetric 3D tile under the camera; allow mountain/rural LODs up to 8 km radius
+        // and measure horizontal distance along the vertical column so initial demKm=0 never hides overhead terrain
+        if (!this.groundLocked && this.groundProbe++ % 4 === 0) {
+          const maxTileRadiusUnits = 8.0 / kmPerUnit;
+          const maxHorizUnits = 0.25 / kmPerUnit;
           const target = PhotorealEarth.current?.raycastTarget();
           if (target) {
             const localMeshes: THREE.Mesh[] = [];
-            let nearestCenter: THREE.Vector3 | null = null;
-            let nearestDist = Infinity;
+            const radiusKmByMesh = new Map<THREE.Object3D, number>();
+            const delta = new THREE.Vector3();
             target.traverse((o) => {
               const m = o as THREE.Mesh;
-              if (!m.isMesh || !m.geometry) return;
+              if (!m.isMesh || !m.geometry || !m.visible) return;
               if (!m.geometry.boundingSphere) m.geometry.computeBoundingSphere();
               const bs = m.geometry.boundingSphere!;
               const rUnits = bs.radius * m.matrixWorld.getMaxScaleOnAxis();
               if (rUnits > maxTileRadiusUnits) return;
               const c = bs.center.clone().applyMatrix4(m.matrixWorld);
-              const d = c.distanceTo(pos);
-              if (d <= rUnits + maxHorizUnits) {
+              delta.copy(c).sub(surfaceOrigin);
+              const along = delta.dot(up);
+              if (Math.abs(along) > rUnits + 20 / kmPerUnit) return;
+              const horizSq = Math.max(0, delta.lengthSq() - along * along);
+              if (horizSq <= (rUnits + maxHorizUnits) * (rUnits + maxHorizUnits)) {
                 localMeshes.push(m);
-                if (d < nearestDist) {
-                  nearestDist = d;
-                  nearestCenter = c;
-                }
+                radiusKmByMesh.set(m, rUnits * kmPerUnit);
               }
             });
             if (localMeshes.length > 0) {
-              const probeUnits = 12 / kmPerUnit;
-              this.ray.set(pos.clone().addScaledVector(up, probeUnits), up.clone().negate());
-              this.ray.far = probeUnits * 2;
-              let hit = this.ray.intersectObjects(localMeshes, false)[0];
-              if (!hit && nearestCenter) {
-                this.ray.set((nearestCenter as THREE.Vector3).clone().addScaledVector(up, probeUnits), up.clone().negate());
-                hit = this.ray.intersectObjects(localMeshes, false)[0];
+              const probeTopUnits = 18 / kmPerUnit;
+              this.ray.far = 36 / kmPerUnit;
+              let bestHeightKm: number | null = null;
+              let bestRadiusKm = Infinity;
+              const offsets: Array<[number, number]> = [[0, 0], [0.008, 0], [-0.008, 0], [0, 0.008], [0, -0.008]];
+              for (const [dn, de] of offsets) {
+                const origin = surfaceOrigin.clone()
+                  .addScaledVector(up, probeTopUnits)
+                  .addScaledVector(this.frame.north, dn / kmPerUnit)
+                  .addScaledVector(this.frame.east, de / kmPerUnit);
+                this.ray.set(origin, up.clone().negate());
+                const hits = this.ray.intersectObjects(localMeshes, false);
+                if (hits.length === 0) continue;
+                hits.sort((a, q) => (radiusKmByMesh.get(a.object) ?? Infinity) - (radiusKmByMesh.get(q.object) ?? Infinity));
+                const hit = hits[0];
+                const rKm = radiusKmByMesh.get(hit.object) ?? Infinity;
+                const hKm = hit.point.clone().sub(surfaceOrigin).dot(up) * kmPerUnit;
+                if (bestHeightKm === null || rKm < bestRadiusKm * 0.7 || (Math.abs(rKm - bestRadiusKm) <= bestRadiusKm * 0.3 && hKm > bestHeightKm)) {
+                  bestHeightKm = hKm;
+                  bestRadiusKm = rKm;
+                }
               }
-              if (hit) {
-                this.groundFix = hit.point.clone().sub(pos).dot(up) + eyeKm / kmPerUnit;
-                this.groundLocked = true;
+              if (bestHeightKm !== null && (this.lockedSurfaceKm === null || bestRadiusKm < this.lockedTileRadiusKm * 0.85)) {
+                this.lockedSurfaceKm = bestHeightKm;
+                this.lockedTileRadiusKm = bestRadiusKm;
+                if (bestRadiusKm <= 0.45) this.groundLocked = true;
               }
             }
           }
         }
-      } else if (this.groundProbe++ % 6 === 0) {
-        const kmPerUnit = b.radiusKm / b.visualRadius;
-        const groundPoint = pos.clone().addScaledVector(up, -eyeKm / kmPerUnit);
-        this.ray.set(groundPoint.clone().addScaledVector(up, 30 / kmPerUnit), up.clone().negate());
-        this.ray.far = 60 / kmPerUnit;
-        const tiles: THREE.Object3D[] = [];
-        b.surfaceMesh.traverse((o) => {
-          if (o.name.startsWith('tile_') && o.visible && o.parent?.visible !== false) tiles.push(o);
-        });
-        let best: number | null = null;
-        for (let k = -1; k < 24; k++) {
-          const at = groundPoint.clone();
-          if (k >= 0) {
-            const ringKm = [0.012, 0.04, 0.12][Math.floor(k / 8)];
-            const a = ((k % 8) / 8 + Math.floor(k / 8) / 16) * Math.PI * 2;
-            at.addScaledVector(this.frame.north, (Math.cos(a) * ringKm) / kmPerUnit).addScaledVector(this.frame.east, (Math.sin(a) * ringKm) / kmPerUnit);
+        this.groundKm = this.lockedSurfaceKm !== null ? Math.max(this.lockedSurfaceKm, solidKm) : baseGroundKm;
+      } else {
+        if (this.groundProbe++ % (this.groundTileKm === null ? 2 : 6) === 0) {
+          const tiles: THREE.Object3D[] = [];
+          b.surfaceMesh.traverse((o) => {
+            if (o.name.startsWith('tile_') && o.visible && o.parent?.visible !== false) tiles.push(o);
+          });
+          if (tiles.length > 0) {
+            this.ray.far = 80 / kmPerUnit;
+            let best: number | null = null;
+            const zOf = (o: THREE.Object3D): number => Number(o.name.slice(5).split('/')[0]);
+            for (let k = -1; k < 24; k++) {
+              const at = surfaceOrigin.clone();
+              if (k >= 0) {
+                const ringKm = [0.012, 0.04, 0.12][Math.floor(k / 8)];
+                const a = ((k % 8) / 8 + Math.floor(k / 8) / 16) * Math.PI * 2;
+                at.addScaledVector(this.frame.north, (Math.cos(a) * ringKm) / kmPerUnit).addScaledVector(this.frame.east, (Math.sin(a) * ringKm) / kmPerUnit);
+              }
+              this.ray.set(at.addScaledVector(up, 40 / kmPerUnit), up.clone().negate());
+              const hit = this.ray.intersectObjects(tiles, false).sort((p, q) => zOf(q.object) - zOf(p.object))[0];
+              if (!hit) continue;
+              const hKm = hit.point.clone().sub(surfaceOrigin).dot(up) * kmPerUnit;
+              best = best === null ? hKm : Math.max(best, hKm);
+            }
+            if (best !== null) this.groundTileKm = best;
           }
-          this.ray.set(at.addScaledVector(up, 30 / kmPerUnit), up.clone().negate());
-          const zOf = (o: THREE.Object3D): number => Number(o.name.slice(5).split('/')[0]);
-          const hit = this.ray.intersectObjects(tiles, false).sort((p, q) => zOf(q.object) - zOf(p.object))[0];
-          if (!hit) continue;
-          const h = hit.point.clone().sub(groundPoint).dot(up);
-          best = best === null ? h : Math.max(best, h);
         }
-        this.groundFix = best ?? 0;
+        this.groundKm = this.groundTileKm !== null ? Math.max(this.groundTileKm, solidKm) : baseGroundKm;
       }
-      pos.addScaledVector(up, this.groundFix);
     } else {
-      this.groundFix = 0;
+      this.groundTileKm = null;
+      this.groundKm = solidKm;
     }
-    return pos;
+    return surfaceOrigin.clone().addScaledVector(up, (eyeKm + this.groundKm) / kmPerUnit);
+  }
+
+  private hasVisibleTiles(b: SurfaceBody): boolean {
+    let found = false;
+    b.surfaceMesh.traverse((o) => {
+      if (!found && o.name.startsWith('tile_') && o.visible && o.parent?.visible !== false) found = true;
+    });
+    return found;
   }
 
   public update(): void {
@@ -581,7 +626,7 @@ export class SurfaceObserver {
     this.targetPitch = THREE.MathUtils.clamp(this.targetPitch, -80 * DEG, 89.5 * DEG);
     // Idle: after a quiet spell the view drifts slowly and the sky turns (a time-lapse); any input
     // hands control straight back
-    const isPhoto = b.name === 'Earth' && !!PhotorealEarth.current && !this.deep.scene;
+    const isPhoto = this.isPhotorealActive();
     const quiet = this.idleEnabled && !isPhoto && (now - this.lastInput) / 1000 > IDLE_AFTER && !this.dragging && this.keys.size === 0;
     this.idle = THREE.MathUtils.clamp(this.idle + (quiet ? dt / 4 : -dt * 3), 0, 1);
     if (this.idle > 0) {
@@ -628,7 +673,9 @@ export class SurfaceObserver {
     if (sunAz < 0) sunAz += 360;
 
     const atmo = this.atmosphereOn && this.model.kind !== 'none' ? this.model : null;
-    this.atmosphere.update(pos, radii.dome, this.frame, sunDir, (this.eye(b) + this.groundKm) * 1000, !!atmo);
+    // Subtract Mars's 8.3 km DEM datum so Hellas / Olympus Mons sample true areoid atmospheric density
+    const atmoGroundKm = b.name === 'Mars' ? Math.max(0, this.groundKm - 8.3) : Math.max(0, this.groundKm);
+    this.atmosphere.update(pos, radii.dome, this.frame, sunDir, (this.eye(b) + atmoGroundKm) * 1000, !!atmo);
 
     // How much daylight drowns faint objects
     const dayK = atmo
@@ -789,32 +836,50 @@ export class SurfaceObserver {
 
   // --- input ---
 
+  private prevTouchAction = '';
+
+  private isUiTarget(target: EventTarget | null): boolean {
+    return typeof Element !== 'undefined' && target instanceof Element && !!target.closest('button,input,select,textarea,a,[role="button"],.hud-interactive');
+  }
+
   private attach(): void {
     const el = this.d.dom;
+    if (el.style) {
+      this.prevTouchAction = el.style.touchAction;
+      el.style.touchAction = 'none';
+    }
     el.addEventListener('mousedown', this.onDown);
     window.addEventListener('mousemove', this.onMove);
     window.addEventListener('mouseup', this.onUp);
     el.addEventListener('wheel', this.onWheel, { passive: false });
-    el.addEventListener('touchstart', this.onTouchStart, { passive: true });
-    el.addEventListener('touchmove', this.onTouchMove, { passive: true });
+    el.addEventListener('touchstart', this.onTouchStart, { passive: false });
+    el.addEventListener('touchmove', this.onTouchMove, { passive: false });
+    window.addEventListener('touchend', this.onTouchEnd);
+    window.addEventListener('touchcancel', this.onTouchEnd);
     el.addEventListener('dblclick', this.onDbl);
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
+    window.addEventListener('blur', this.onBlur);
   }
 
   private detach(): void {
     const el = this.d.dom;
+    if (el.style) el.style.touchAction = this.prevTouchAction;
     el.removeEventListener('mousedown', this.onDown);
     window.removeEventListener('mousemove', this.onMove);
     window.removeEventListener('mouseup', this.onUp);
     el.removeEventListener('wheel', this.onWheel);
     el.removeEventListener('touchstart', this.onTouchStart);
     el.removeEventListener('touchmove', this.onTouchMove);
+    window.removeEventListener('touchend', this.onTouchEnd);
+    window.removeEventListener('touchcancel', this.onTouchEnd);
     el.removeEventListener('dblclick', this.onDbl);
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
+    window.removeEventListener('blur', this.onBlur);
     this.keys.clear();
     this.dragging = false;
+    this.pinch = 0;
   }
 
   private radPerPx(): number {
@@ -822,6 +887,7 @@ export class SurfaceObserver {
   }
 
   private onDown = (e: MouseEvent): void => {
+    if (e.button !== 0 || this.isUiTarget(e.target)) return;
     this.touch();
     this.dragging = true;
     this.last = { x: e.clientX, y: e.clientY };
@@ -843,6 +909,7 @@ export class SurfaceObserver {
   };
 
   private onWheel = (e: WheelEvent): void => {
+    if (this.isUiTarget(e.target)) return;
     e.preventDefault();
     this.touch();
     const lineScale = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
@@ -852,40 +919,65 @@ export class SurfaceObserver {
   };
 
   private onTouchStart = (e: TouchEvent): void => {
+    if (this.isUiTarget(e.target)) return;
+    if (e.cancelable) e.preventDefault();
     this.touch();
     if (e.touches.length === 1) {
       this.dragging = true;
+      this.pinch = 0;
       this.last = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-    } else if (e.touches.length === 2) {
+    } else if (e.touches.length >= 2) {
       this.dragging = false;
       this.pinch = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
     }
   };
 
   private onTouchMove = (e: TouchEvent): void => {
+    if (!this.dragging && this.pinch <= 0) return;
+    if (e.cancelable) e.preventDefault();
     this.touch();
     if (e.touches.length === 1 && this.dragging) {
       const t = e.touches[0];
       const dx = t.clientX - this.last.x;
       const dy = t.clientY - this.last.y;
       this.last = { x: t.clientX, y: t.clientY };
-      this.targetHeading -= dx * this.radPerPx();
-      this.targetPitch = THREE.MathUtils.clamp(this.targetPitch + dy * this.radPerPx(), -80 * DEG, 89.5 * DEG);
-    } else if (e.touches.length === 2 && this.pinch > 0) {
+      if (Number.isFinite(dx) && Number.isFinite(dy)) {
+        this.targetHeading -= dx * this.radPerPx();
+        this.targetPitch = THREE.MathUtils.clamp(this.targetPitch + dy * this.radPerPx(), -80 * DEG, 89.5 * DEG);
+      }
+    } else if (e.touches.length >= 2 && this.pinch > 0) {
       const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-      this.targetFov = THREE.MathUtils.clamp(this.targetFov * (this.pinch / Math.max(1, d)), MIN_FOV, MAX_FOV);
-      this.pinch = d;
+      if (d > 1) {
+        this.targetFov = THREE.MathUtils.clamp(this.targetFov * (this.pinch / d), MIN_FOV, MAX_FOV);
+        this.pinch = d;
+      }
     }
   };
 
-  private onDbl = (): void => {
+  private onTouchEnd = (e: TouchEvent): void => {
+    if (e.touches.length === 0) {
+      this.dragging = false;
+      this.pinch = 0;
+    } else if (e.touches.length === 1) {
+      // Seamless handoff from 2-finger pinch back to 1-finger look drag without camera jump
+      this.pinch = 0;
+      this.dragging = true;
+      this.last = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    } else {
+      this.dragging = false;
+      this.pinch = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+    }
+  };
+
+  private onDbl = (e: MouseEvent): void => {
+    if (this.isUiTarget(e.target)) return;
     this.touch();
     this.targetFov = DEFAULT_FOV;
   };
 
   private onKeyDown = (e: KeyboardEvent): void => {
     const t = e.target as HTMLElement | null;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
     this.touch();
     if (e.key.startsWith('Arrow')) {
       this.keys.add(e.key);
@@ -895,6 +987,12 @@ export class SurfaceObserver {
 
   private onKeyUp = (e: KeyboardEvent): void => {
     this.keys.delete(e.key);
+  };
+
+  private onBlur = (): void => {
+    this.keys.clear();
+    this.dragging = false;
+    this.pinch = 0;
   };
 
   public dispose(): void {

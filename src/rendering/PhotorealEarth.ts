@@ -129,9 +129,14 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
   float hKm = (rl - 1.0) * 6378.137;
   float latDeg = degrees(asin(clamp(nl.y, -1.0, 1.0)));
   vec2 uvG = vec2(fract(atan(nl.z, -nl.x) / 6.2831853), 1.0 - acos(clamp(nl.y, -1.0, 1.0)) / 3.14159265);
+  // Seamless 2D ground-scale coordinates (avoids dateline atan jump and equator xz collapse)
+  vec2 nlPlane = vec2(nl.x - nl.z * 0.65, nl.y + 0.55 * (nl.x + nl.z));
 
-  vec3 upW = normalize(rel);
-  vec3 sunDir = normalize(uSunW - uEarthC);
+  float relLen = length(rel);
+  vec3 upW = relLen > 1e-9 ? rel / relLen : vec3(0.0, 1.0, 0.0);
+  vec3 sunRaw = uSunW - uEarthC;
+  float sunLen = length(sunRaw);
+  vec3 sunDir = sunLen > 1e-9 ? sunRaw / sunLen : vec3(1.0, 0.0, 0.0);
   float sunUp = dot(upW, sunDir);
   float day = smoothstep(-0.10, 0.16, sunUp);
   vec3 sunCol = mix(vec3(1.0, 0.70, 0.50), uSunTint, smoothstep(0.02, 0.32, sunUp));
@@ -149,8 +154,10 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
   // snow is added, between the winter line and the summer line, and never on steep rock
   float summerLine = 5.4 * (1.0 - smoothstep(30.0, 72.0, absLat)) + 0.6;
   float snowLine = summerLine - 1.6 * max(winterHere, 0.0);
-  vec3 fN = normalize(cross(dFdx(vPhotoWorld), dFdy(vPhotoWorld)));
-  float flatness = abs(dot(fN, normalize(vPhotoWorld - uEarthC)));
+  vec3 fCr = cross(dFdx(vPhotoWorld), dFdy(vPhotoWorld));
+  float fCrLen = length(fCr);
+  vec3 fN = fCrLen > 1e-12 ? fCr / fCrLen : upW;
+  float flatness = abs(dot(fN, upW));
   float green = smoothstep(0.0, 0.05, photo.g - max(photo.r, photo.b));
   float midLat = smoothstep(28.0, 40.0, absLat) * (1.0 - smoothstep(60.0, 68.0, absLat));
   float fallN = exp(-(((uDoy - 292.0) / 26.0) * ((uDoy - 292.0) / 26.0)));
@@ -159,7 +166,7 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
   // Autumn: a warm shift that varies from stand to stand (some trees turn, some stay green), never
   // a flat repaint: on a coarse tile, where a whole forest is one green, a strong tint made flat
   // olive slabs with hard edges against the sharper tiles beside it
-  float stand = phNoise(nl.xz * 2.2e4) * 0.7 + phNoise(nl.xz * 9.0e4) * 0.3;
+  float stand = phNoise(nlPlane * 2.2e4) * 0.7 + phNoise(nlPlane * 9.0e4) * 0.3;
   vec3 turned = photo * vec3(1.22, 0.98, 0.72);
   photo = mix(photo, turned, green * autumn * 0.38 * smoothstep(0.3, 0.75, stand));
   float bare = clamp(winterHere, 0.0, 1.0) * midLat;
@@ -174,7 +181,7 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
     float photoWater = smoothstep(0.24, 0.07, photo.r) * smoothstep(-0.02, 0.03, photo.b - photo.r) * smoothstep(0.42, 0.18, lum);
     water = mapWater * (0.25 + 0.75 * photoWater) * smoothstep(0.08, -0.02, hKm);
   }
-  float snowNoise = phNoise(nl.xz * 9000.0) * 0.6 + phNoise(nl.xz * 41000.0) * 0.4;
+  float snowNoise = phNoise(nlPlane * 9000.0) * 0.6 + phNoise(nlPlane * 41000.0) * 0.4;
   float hN = hKm + (snowNoise - 0.5) * 0.5;
   float snow = smoothstep(snowLine - 0.2, snowLine + 0.4, hN) * (1.0 - smoothstep(summerLine - 0.4, summerLine + 0.2, hN));
   snow *= smoothstep(0.55, 0.85, flatness) * (1.0 - water) * smoothstep(0.85, 0.6, lum);
@@ -199,6 +206,7 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
     // the made-by-rule surface takes over
     float smearK = (1.0 - smoothstep(0.25, 2.5, pxG)) * flatK;
     float nearK = (1.0 - smoothstep(0.08, 0.4, pxG)) * flatK;
+    vec3 rawMapPhoto = max(texture2D(map, vMapUv).rgb, vec3(0.01));
     if (smearK > 0.002) {
       // The bare photograph and its means (fixed mip levels: up close the photograph is magnified,
       // where a bias from the current level blurs nothing), brought to the photo's own grade
@@ -206,8 +214,7 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
       // brightness. No coarser: a tile's photograph is an atlas of patches (ground, walls, roofs),
       // and a coarser mean took in the others, so each tile's ground came out its own shade, in
       // polygons with straight seams between them
-      vec3 raw = max(texture2D(map, vMapUv).rgb, vec3(0.01));
-      vec3 grade = photo / raw;
+      vec3 grade = photo / rawMapPhoto;
       vec3 mean1 = textureLod(map, vMapUv, 3.0).rgb * grade;
       vec3 meanL = textureLod(map, vMapUv, 4.5).rgb * grade;
       float lumP = dot(photo, vec3(0.2126, 0.7152, 0.0722));
@@ -271,7 +278,9 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
     // and its facet is the real lie of the land (hillsides), which keeps its light
     float pxW = length(fwidth(vPhotoWorld)) * uKmPerUnit * 1000.0;
     float levelK = smoothstep(0.8, 0.95, flatness) * (1.0 - smoothstep(0.6, 5.0, pxW));
-    nF = normalize(mix(nF, upW, levelK));
+    vec3 nFMix = mix(nF, upW, levelK);
+    float nFLen = length(nFMix);
+    nF = nFLen > 1e-9 ? nFMix / nFLen : upW;
     float facing = dot(nF, sunDir);
     float lowSun = 1.0 - smoothstep(0.05, 0.4, sunUp);
     float relief = 0.2 * day * (1.0 - uDaylight);
@@ -307,11 +316,11 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
       float px = 1.0 / 2048.0;
       float bias = 0.0004;
       float occ = 0.0;
-      occ += step(texture2D(uTreeShadow, su.xy).r + bias, su.z);
-      occ += step(texture2D(uTreeShadow, su.xy + vec2(px, 0.0)).r + bias, su.z);
-      occ += step(texture2D(uTreeShadow, su.xy - vec2(px, 0.0)).r + bias, su.z);
-      occ += step(texture2D(uTreeShadow, su.xy + vec2(0.0, px)).r + bias, su.z);
-      occ += step(texture2D(uTreeShadow, su.xy - vec2(0.0, px)).r + bias, su.z);
+      occ += step(textureLod(uTreeShadow, su.xy, 0.0).r + bias, su.z);
+      occ += step(textureLod(uTreeShadow, su.xy + vec2(px, 0.0), 0.0).r + bias, su.z);
+      occ += step(textureLod(uTreeShadow, su.xy - vec2(px, 0.0), 0.0).r + bias, su.z);
+      occ += step(textureLod(uTreeShadow, su.xy + vec2(0.0, px), 0.0).r + bias, su.z);
+      occ += step(textureLod(uTreeShadow, su.xy - vec2(0.0, px), 0.0).r + bias, su.z);
       // The sky still lights the shade: about half the light goes
       col *= 1.0 - 0.62 * (occ / 5.0) * day;
     }
@@ -326,21 +335,27 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
   vec3 skyCol = mix(vec3(0.012, 0.018, 0.04), mix(skyLow, skyDay, smoothstep(0.02, 0.30, sunUp)), smoothstep(-0.14, 0.04, sunUp));
 
   if (water > 0.001) {
-    vec2 pm = nl.xz * 6.378137e6;
+    vec2 pm = nlPlane * 6.378137e6;
     float t = uTime;
     vec2 sl = vec2(0.0);
     sl += vec2(0.8, 0.3) * cos(dot(pm, vec2(0.011, 0.004)) + t * 1.3);
     sl += vec2(-0.3, 0.9) * cos(dot(pm, vec2(-0.006, 0.017)) + t * 1.7);
     sl += vec2(0.5, -0.6) * cos(dot(pm, vec2(0.031, -0.022)) + t * 2.6) * 0.5;
-    vec3 N = normalize(upW + 0.045 * vec3(sl.x, 0.0, sl.y));
-    float NdV = max(dot(N, V), 0.0);
+    vec3 nwRaw = upW + 0.045 * vec3(sl.x, 0.0, sl.y);
+    float nwLen = length(nwRaw);
+    vec3 N = nwLen > 1e-9 ? nwRaw / nwLen : upW;
+    float NdV = clamp(dot(N, V), 0.0, 1.0);
     float fres = 0.02 + 0.98 * pow(1.0 - NdV, 5.0);
-    vec3 H = normalize(V + sunDir);
+    vec3 hSunRaw = V + sunDir;
+    float hSunLen = length(hSunRaw);
+    vec3 H = hSunLen > 1e-9 ? hSunRaw / hSunLen : N;
     float glint = pow(max(dot(N, H), 0.0), 260.0) * 9.0 + pow(max(dot(N, H), 0.0), 40.0) * 0.25;
     vec3 wcol = mix(col * 0.85, skyCol * (0.25 + 0.75 * day), fres);
     wcol += sunCol * glint * day * (1.0 - snow);
     // The Moon's path of light on the water
-    vec3 Hm = normalize(V + uMoonDir);
+    vec3 hMoonRaw = V + uMoonDir;
+    float hMoonLen = length(hMoonRaw);
+    vec3 Hm = hMoonLen > 1e-9 ? hMoonRaw / hMoonLen : N;
     float mGlint = pow(max(dot(N, Hm), 0.0), 220.0) * 6.0 + pow(max(dot(N, Hm), 0.0), 30.0) * 0.12;
     wcol += uMoonLight * mGlint * (1.0 - day);
     wcol = mix(wcol, wcol + uNightAir * 0.6, fres * (1.0 - day));
@@ -349,17 +364,10 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
 
   // --- City lights after dark
   if (uHasMaps > 0.5) {
-    float night = 1.0 - smoothstep(-0.12, 0.02, sunUp);
+    float night = (1.0 - smoothstep(-0.12, 0.02, sunUp)) * (1.0 - uDaylight);
     vec3 nm = texture2D(uNightMap, uvG).rgb;
     float glow = dot(nm, vec3(0.333));
-    // Lights are points (windows, street lamps), not a wash: a lamp is a small disc (~1.5 m)
-    // somewhere in a 10 m cell, more of them lit where the night map is brighter, on open ground
-    // and roofs only (walls get a faint warm wash, their windows). From higher up a 10 m cell is
-    // far smaller than a pixel and the lamps fell between the pixels: the city went dark, or (as
-    // an average) a flat orange-brown sheet. So the cell grows with the distance, 10, 40, 160,
-    // 640 m (a far light stands for a street's worth), each lamp kept about a pixel across and as
-    // bright: from above a city stays a field of points, its streets and squares still showing
-    vec2 pmM = nl.xz * 6.378137e6;
+    vec2 pmM = nlPlane * 6.378137e6;
     float pxM = length(fwidth(pmM));
     float lvl = clamp(log2(max(pxM, 1e-3) / 6.0) * 0.5, 0.0, 3.0);
     float l0 = floor(lvl);
@@ -389,24 +397,14 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
 }
 `;
 
-/** The parts of a 3d-tiles-renderer tile the download order reads. */
-interface TileLike {
-  geometricError: number;
-  traversal?: { used: boolean; error: number; distanceFromCamera: number };
-  internal?: { hasUnrenderableContent: boolean; loadingState: number };
-  engineData?: { boundingVolume?: { distanceToPoint(p: THREE.Vector3): number; intersectsFrustum(f: unknown): boolean } };
-  parent?: TileLike | null;
-  /** Download rank for this frame (higher first), set by rankQueue. */
-  solarisRank?: number;
-}
-
 export class PhotorealEarth {
   /** The layer currently in use (one Earth), for the ground raycasts of the surface view and the jet. */
   public static current: PhotorealEarth | null = null;
   /**
-   * Cross-fade tile swaps (TilesFadePlugin): a tile dithers in over its parent instead of popping.
+   * Cross-fade tile swaps (TilesFadePlugin): disabled by default because Bayer 4x4 discard
+   * exposes sunken fallback geometry as checkerboard holes and recompiles shaders mid-flight.
    */
-  public static fade = true;
+  public static fade = false;
 
   public readonly tiles: TilesRenderer;
   private readonly holder = new THREE.Group();
@@ -435,102 +433,142 @@ export class PhotorealEarth {
   private attributionEl: HTMLDivElement | null = null;
   private lastAttribution = 0;
   private enabled = false;
+  private disposed = false;
+  private authFailed = false;
+  private cooldownUntil = 0;
+  private consecutiveErrors = 0;
+  private failedCount = 0;
   private dracoLoader: DRACOLoader;
   private surface: THREE.Object3D | null = null;
   private maxAnisotropy = 8;
-  private baseError = 8;
+  private baseError = 14;
+  private readonly downloadMaxJobs: number;
 
   constructor(apiKey: string, container: HTMLElement | null) {
     this.tiles = new TilesRenderer();
-    this.tiles.registerPlugin(new GoogleCloudAuthPlugin({
+    const auth = new GoogleCloudAuthPlugin({
       apiToken: apiKey,
       autoRefreshToken: true,
       // The detail target is set here by device tier (the plugin's own default is 20)
       useRecommendedSettings: false,
-    }));
+    });
+    const authFetchHost = auth as unknown as {
+      fetchData(url: string, options: RequestInit): Promise<unknown>;
+    };
+    const rawFetch = authFetchHost.fetchData.bind(auth);
+    // Keep each PriorityQueue download slot occupied for the full network transfer (headers + body)
+    // rather than freeing slots as soon as HTTP headers arrive.
+    authFetchHost.fetchData = async (url: string, options: RequestInit) => {
+      const res = await rawFetch(url, options);
+      if (!(res instanceof Response) || !res.ok) return res;
+      const baseOrigin = typeof window !== 'undefined' ? window.location.href : 'https://tile.googleapis.com';
+      const pathname = new URL(url, baseOrigin).pathname.toLowerCase();
+      return pathname.endsWith('.json') ? res.json() : res.arrayBuffer();
+    };
+    this.tiles.registerPlugin(auth);
     const tier = perf.tier;
     const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
     this.dracoLoader = new DRACOLoader().setDecoderPath(`${import.meta.env.BASE_URL}draco/`);
     this.dracoLoader.setWorkerLimit(tier === 'low' ? 2 : Math.max(2, Math.min(6, cores - 2)));
     this.tiles.registerPlugin(new GLTFExtensionsPlugin({ dracoLoader: this.dracoLoader }));
-    // A coarse tile dissolves into its sharper children (and back) over a quarter second instead
-    // of being swapped in one frame: no pops, no hard sharp/blurry edges while detail streams in
     // A tile's photograph goes to the GPU before the tile is shown, a few milliseconds' worth a
     // frame: hundreds of tiles arriving together were all uploaded inside one draw (frames of
     // 0.4-2 s on the fly page's opening). The tile waits its turn; the frame never does
-    this.uploadBudgetMs = tier === 'high' ? 5 : tier === 'medium' ? 4 : 3;
+    this.uploadBudgetMs = tier === 'high' ? 8 : tier === 'medium' ? 5 : 3;
     this.tiles.registerPlugin({ name: 'SOLARIS_UPLOAD_BUDGET', processTileModel: (scene: THREE.Object3D) => this.uploadInTurn(scene) } as unknown as Parameters<TilesRenderer['registerPlugin']>[0]);
     if (PhotorealEarth.fade) this.tiles.registerPlugin(new TilesFadePlugin({ fadeDuration: 280, fadeRootTiles: false, maximumFadeOutTiles: tier === "low" ? 30 : 80 }));
-    // Detail target: the screen-space error (pixels) a tile may have before a finer one is asked
-    // for. Measured over Paris at 240 m: a target of 1 queues 14,000 tiles (the sharp ones near
-    // you never arrive, and the frame time triples); 8 queues a few hundred and they all load.
-    this.baseError = tier === 'high' ? 8 : tier === 'medium' ? 12 : 20;
+    // Detail target (pixels): calibrated around Google Cloud Auth's recommended 20-px threshold so
+    // nested JSON subtrees resolve cleanly without flooding peripheral leaf queues.
+    this.baseError = tier === 'high' ? 20 : tier === 'medium' ? 22 : 26;
     this.tiles.errorTarget = this.baseError;
-    // Memory. Measured: with a 450 MB floor the cache sat on it, and at 3,700 km/h 20 tiles a
-    // second were thrown away as 23 arrived, everything behind the jet gone at once. A higher
-    // floor keeps the ground you flew over (turn back and it is still there), bounded per device
     const mb = 1024 * 1024;
-    this.tiles.lruCache.minSize = tier === 'low' ? 900 : tier === 'medium' ? 2500 : 4500;
-    this.tiles.lruCache.maxSize = tier === 'low' ? 1600 : tier === 'medium' ? 4000 : 7000;
-    this.tiles.lruCache.minBytesSize = (tier === 'high' ? 1000 : tier === 'medium' ? 520 : 200) * mb;
-    this.tiles.lruCache.maxBytesSize = (tier === 'high' ? 1500 : tier === 'medium' ? 760 : 300) * mb;
-    // Downloads. Measured: tiles are small (35 KB) but each request takes ~430 ms, so the number in
-    // flight, not bandwidth, sets the rate (~35 tiles/s at 14). Google serves over HTTP/2, so more
-    // requests share one connection
-    // Measured again: ~650 ms a request at Google (time to first byte); but at 96 in flight the
-    // line itself filled (bodies took 0.3-2 s to arrive, ~27 tiles a second): past ~60 more at once
-    // only makes each slower and lets less important tiles share the line with the ones on screen
-    this.tiles.downloadQueue.maxJobs = tier === 'high' ? 56 : tier === 'medium' ? 40 : 16;
-    // Parsing (Draco in workers, images decoded off the main thread) was the real bottleneck for
-    // blurry ground: measured flying low at 900 km/h, 6 at a time left 120-390 downloaded tiles
-    // waiting to be parsed (seconds before the sharp children could show); 20 keeps the wait
-    // under 10 tiles at the same frame time
-    this.tiles.parseQueue.maxJobs = tier === 'high' ? 20 : tier === 'medium' ? 10 : 4;
-    // Each view culls the tiles itself (three.js frustum culling). With the renderer's own culling
-    // the tiles loaded for the look-ahead and ground views below would all be drawn as well
+    this.tiles.lruCache.minSize = tier === 'low' ? 700 : tier === 'medium' ? 1800 : 3200;
+    this.tiles.lruCache.maxSize = tier === 'low' ? 1200 : tier === 'medium' ? 2800 : 4800;
+    this.tiles.lruCache.minBytesSize = (tier === 'high' ? 550 : tier === 'medium' ? 360 : 160) * mb;
+    this.tiles.lruCache.maxBytesSize = (tier === 'high' ? 900 : tier === 'medium' ? 540 : 240) * mb;
+    // Maximize HTTP/2 multiplexing so deep JSON trees + intermediate/leaf GLBs stream concurrently,
+    // while keeping Draco/GLTF parsing and GPU upload budgets scaled by device tier.
+    this.downloadMaxJobs = tier === 'high' ? 32 : tier === 'medium' ? 24 : 14;
+    this.tiles.downloadQueue.maxJobs = this.downloadMaxJobs;
+    this.tiles.parseQueue.maxJobs = tier === 'high' ? 8 : tier === 'medium' ? 5 : 3;
     this.tiles.autoDisableRendererCulling = false;
-    // Parents load first and stay on screen while their children stream in: the ground sharpens
-    // in steps (blur to sharp) and never has holes
-    // The cross-fade dissolves a coarse tile into its children on top of that.
-    // (It failed twice before because the plugin leaves a line break inside `void main(`, so our
-    // shader edit missed and the tile shader did not compile: matched by pattern now)
-    this.tiles.loadAncestors = true;
-    // What to fetch first. Measured (Paris, Manhattan, London, Tokyo, a few hundred metres up,
-    // cold): each request takes ~650 ms at Google whatever its size, so the order is everything.
-    // Four views ask for tiles (the screen; the look-ahead; the all-round coarse view; the probe
-    // straight down under the jet, at 1,000 px from 150 m, for collisions) and the library ranks
-    // them all together, by error: the probe's centimetre tiles under the jet came first, the
-    // levels the screen needed waited behind them, and after 12 s nothing finer than level 10-12
-    // was on screen though hundreds of level 19-21 tiles had arrived (a level is only shown when
-    // all its siblings are in). So each queued tile is ranked once a frame by what the screen
-    // needs (see rankQueue): the tileset files that open the next levels first of all, then the
-    // screen's own tiles, coarsest on screen first; what only the helper views want after them.
-    // One number per item, so the order is always the same total order (anything that is not a
-    // tile, such as a plugin's own request, goes first; a tile not ranked yet, last)
-    const key = (t: TileLike): number => (!t.engineData ? Infinity : t.solarisRank ?? -1);
-    const order = (a: TileLike, b: TileLike): number => {
-      const ka = key(a), kb = key(b);
-      return ka > kb ? 1 : ka < kb ? -1 : 0;
+    // Direct leaf-targeted traversal avoids ancestor/sibling queue explosions while a brief
+    // coarse-LOD bootstrap (in update()) fills the viewport solidly before refining to <=16 m leaves.
+    this.tiles.loadAncestors = false;
+    this.tiles.loadSiblings = false;
+    // TilesRenderer distanceFromCamera is in ECEF metres (~0..1e7 m). Sort visible frustum tiles in
+    // 1.5 km radial shells nearest-first, expanding JSON indexes first and city-scale ancestors (<= 2048 m)
+    // coarse-to-fine ahead of giant continent skirts (> 2048 m) and horizon tiles.
+    this.libraryOrder = this.tiles.downloadQueue.priorityCallback as unknown as (a: unknown, b: unknown) => number;
+    type PriorityTile = {
+      geometricError?: number;
+      traversal?: { used?: boolean; inFrustum?: boolean; distanceFromCamera?: number; error?: number };
+      internal?: { hasUnrenderableContent?: boolean };
     };
-    this.libraryOrder = this.tiles.downloadQueue.priorityCallback as unknown as typeof this.libraryOrder;
-    this.tiles.downloadQueue.priorityCallback = order as never;
-    this.tiles.parseQueue.priorityCallback = order as never;
-
+    const nearFirstOrder = (a: PriorityTile, b: PriorityTile): number => {
+      const at = a.traversal;
+      const bt = b.traversal;
+      if (!at || !bt) return 0;
+      if (!!at.used !== !!bt.used) return at.used ? 1 : -1;
+      if (!!at.inFrustum !== !!bt.inFrustum) return at.inFrustum ? 1 : -1;
+      const au = !!a.internal?.hasUnrenderableContent;
+      const bu = !!b.internal?.hasUnrenderableContent;
+      const aCoarseSkirt = !au && (a.geometricError ?? Infinity) > 2048;
+      const bCoarseSkirt = !bu && (b.geometricError ?? Infinity) > 2048;
+      if (aCoarseSkirt !== bCoarseSkirt) return aCoarseSkirt ? -1 : 1;
+      const da = at.distanceFromCamera ?? Infinity;
+      const db = bt.distanceFromCamera ?? Infinity;
+      if (da !== db) {
+        const ba = Math.floor(da / 1500);
+        const bb = Math.floor(db / 1500);
+        if (ba !== bb) return ba > bb ? -1 : 1;
+      }
+      if (au !== bu) return au ? 1 : -1;
+      const ea = at.error ?? 0;
+      const eb = bt.error ?? 0;
+      if (ea !== eb) return ea > eb ? 1 : -1;
+      if (da !== db) return da > db ? -1 : 1;
+      return 0;
+    };
+    this.tiles.downloadQueue.priorityCallback = nearFirstOrder as unknown as typeof this.tiles.downloadQueue.priorityCallback;
+    this.tiles.parseQueue.priorityCallback = nearFirstOrder as unknown as typeof this.tiles.parseQueue.priorityCallback;
     // ECEF metres -> the surface mesh's unit frame
     const s = 1 / WGS84_A;
-    const m = new THREE.Matrix4().set(
+    this.baseMatrix.set(
       s, 0, 0, 0,
       0, 0, s, 0,
       0, -s, 0, 0,
       0, 0, 0, 1
     );
     this.holder.matrixAutoUpdate = false;
-    this.holder.matrix.copy(m);
+    this.holder.matrix.copy(this.baseMatrix);
     this.holder.name = 'photoreal_earth';
     this.holder.add(this.tiles.group);
     this.holder.visible = false;
 
-    this.tiles.addEventListener('load-model', ({ scene }) => this.prepareModel(scene));
+    this.tiles.addEventListener('load-model', ({ scene }) => {
+      this.consecutiveErrors = 0;
+      this.cooldownUntil = 0;
+      this.prepareModel(scene);
+    });
+    this.tiles.addEventListener('load-tileset', () => {
+      this.consecutiveErrors = 0;
+      this.cooldownUntil = 0;
+    });
+    this.tiles.addEventListener('load-error', (ev: unknown) => {
+      this.failedCount++;
+      this.consecutiveErrors++;
+      const msg = String((ev as { error?: unknown })?.error ?? '');
+      if (/\b(401|403)\b/.test(msg)) {
+        this.authFailed = true;
+        console.warn('[PhotorealEarth] Auth rejected by Google 3D Tiles API; falling back to planetary imagery:', msg);
+        return;
+      }
+      if (/\b429\b/.test(msg) || (this.consecutiveErrors >= 12 && this.tiles.visibleTiles.size === 0)) {
+        const waitMs = Math.min(60_000, 10_000 * 2 ** Math.min(3, Math.floor(this.consecutiveErrors / 12)));
+        this.cooldownUntil = performance.now() + waitMs;
+      }
+    });
 
     if (container) {
       const el = document.createElement('div');
@@ -544,11 +582,14 @@ export class PhotorealEarth {
     PhotorealEarth.current = this;
   }
 
+  private readonly baseMatrix = new THREE.Matrix4();
+  private readonly unsquashTmp = new THREE.Matrix4();
+
   /** Hang the tiles under Earth's surface mesh (unit sphere, scaled y by `polarScale`). */
   public attach(surfaceMesh: THREE.Object3D, polarScale: number): void {
-    // Undo the mesh's polar squash: the tiles are the real ellipsoid already
-    const unsquash = new THREE.Matrix4().makeScale(1, 1 / polarScale, 1);
-    this.holder.matrix.premultiply(unsquash);
+    // Undo the mesh's polar squash: the tiles are the real ellipsoid already (idempotent)
+    this.unsquashTmp.makeScale(1, 1 / Math.max(0.5, polarScale), 1);
+    this.holder.matrix.multiplyMatrices(this.unsquashTmp, this.baseMatrix);
     surfaceMesh.add(this.holder);
     this.surface = surfaceMesh;
   }
@@ -565,7 +606,27 @@ export class PhotorealEarth {
 
   /** Whether the photoreal Earth is drawn (and the imagery tiles should step aside). */
   public get showing(): boolean {
-    return this.enabled && this.tiles.visibleTiles.size > 0;
+    return (
+      this.enabled &&
+      !this.disposed &&
+      !this.authFailed &&
+      this.tiles.visibleTiles.size > 0
+    );
+  }
+
+  /** Error/cooldown diagnostics for fallback coordination. */
+  public get isDegraded(): boolean {
+    return this.authFailed || this.cooldownUntil > performance.now();
+  }
+
+  /** Root/continent tiles do not constitute a ready city. Count building-scale geometry. */
+  public get detailedTilesVisible(): number {
+    if (!this.showing) return 0;
+    let count = 0;
+    for (const tile of this.tiles.visibleTiles) {
+      if (Number.isFinite(tile.geometricError) && tile.geometricError <= 36) count++;
+    }
+    return count;
   }
 
   /**
@@ -573,104 +634,134 @@ export class PhotorealEarth {
    * camera when `enabled`, else hide and stop loading.
    */
   public update(camera: THREE.PerspectiveCamera, renderer: THREE.WebGLRenderer, enabled: boolean, altKm?: number, speedKmS = 0): void {
-    this.enabled = enabled;
-    this.holder.visible = enabled;
-    if (enabled) {
+    if (this.disposed) return;
+    const nowMs = performance.now();
+    const cooled = this.cooldownUntil > nowMs;
+    if (this.cooldownUntil > 0 && !cooled && !this.authFailed) {
+      this.cooldownUntil = 0;
+      this.consecutiveErrors = 0;
+      this.tiles.resetFailedTiles();
+    }
+    const active = enabled && !this.authFailed && !cooled;
+    // Back off requests without throwing away good terrain already on screen. A transient
+    // 429 must not turn an entire loaded city into the fallback globe for a minute.
+    this.enabled = enabled && !this.authFailed;
+    this.holder.visible = this.enabled && this.tiles.visibleTiles.size > 0;
+    this.tiles.downloadQueue.maxJobs = active ? this.downloadMaxJobs : 0;
+    if (!this.enabled) {
+      this.cancelInFlightDownloads();
+      this.bootstrapArriveMs = 0;
+      this.bootstrapLocalMs = 0;
+      this.bootstrapDone = false;
+      this.hasBootLocal = false;
+    }
+    if (active) {
       if (!this.tiles.hasCamera(camera)) this.tiles.setCamera(camera);
-      this.maxAnisotropy = Math.min(perf.tier === 'low' ? 4 : 8, renderer.capabilities.getMaxAnisotropy());
+      this.maxAnisotropy = Math.min(perf.tier === 'low' ? 2 : perf.tier === 'medium' ? 4 : 8, renderer.capabilities.getMaxAnisotropy());
       this.renderer = renderer;
-      // Detail is chosen for the screen as it is, not for the render scale: when the frame rate
-      // dropped and the picture was drawn smaller, the screen-space error shrank with it and the
-      // tiles stayed coarse. A 32 m tile 2 km away then counted as fine enough, and Downtown Dubai
-      // stood flat, the Burj Khalifa missing (measured: 828 m of tower, 0 m in the coarse tile)
       const css = renderer.getSize(this.cssSize);
-      const lodRatio = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, perf.tier === 'low' ? 1 : 1.5);
+      const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+      const lodRatio = Math.min(dpr, perf.tier === 'high' ? 1.0 : perf.tier === 'medium' ? 0.95 : 0.9);
       this.tiles.setResolution(camera, Math.max(1, css.x * lodRatio), Math.max(1, css.y * lodRatio));
 
-      // Flying fast and low, the ground goes by quicker than fine tiles can arrive: ask for a
-      // little less detail, so what is asked for does arrive (it is motion-blurred anyway)
       const alt = Math.max(0.2, altKm ?? 1);
       const rush = THREE.MathUtils.clamp((speedKmS / alt) * 0.35, 0, 1.5);
-      // Standing still on the ground there is time for one step finer
-      const still = speedKmS < 0.01 && alt < 3 ? 0.75 : 1;
-      // Behind on a slow line (hundreds of tiles waiting): ask for a step less detail until it
-      // catches up, so the whole view arrives at medium detail in seconds instead of holes and
-      // blur for half a minute, then sharpens as the queue drains. Eased over a few seconds, so
-      // it does not swing with each burst of tiles
-      const waiting = (this.tiles as unknown as { stats: { queued: number } }).stats.queued;
-      const want = THREE.MathUtils.clamp(1 + (waiting - 250) / 500, 1, 2);
-      const dtS = Math.min(0.25, Math.max(0, (performance.now() - this.backlogT) / 1000));
-      this.backlogT = performance.now();
-      this.backlog += (want - this.backlog) * (1 - Math.exp(-dtS / (want > this.backlog ? 1.5 : 4)));
-      // Memory full. The library asks for nothing new while its cache is over its byte limit, and
-      // only tiles no view uses can be let go: standing in Paris every tile in a full cache was in
-      // use (the screen, the look-ahead, the all-round and the probe views, each tile's siblings
-      // and its ancestors), so nothing was freed and nothing came, and a coarse tile stood across
-      // the view like a wall for good. Full: less detail is asked for, more each second it stays
-      // full, so the far tiles step back and free room for the near ones; let off slowly once the
-      // cache is well under its limit again
+      const still = 1;
+      const stats = (this.tiles as unknown as { stats: { queued: number; downloading: number; parsing: number } }).stats;
+      const waiting = stats.queued;
+      // Modest backlog ceiling only under heavy moving queue (>220), never inflating stationary
+      // or low-altitude city views into blurry regional blobs.
+      const want = speedKmS < 0.03 ? 1 : THREE.MathUtils.clamp(1 + (waiting - 220) / 360, 1, 1.35);
+      const dtS = Math.min(0.25, Math.max(0, (nowMs - (this.backlogT || nowMs)) / 1000));
+      this.backlogT = nowMs;
+      this.backlog += (want - this.backlog) * (1 - Math.exp(-dtS / (want > this.backlog ? 1.5 : 0.6)));
       const lru = this.tiles.lruCache as unknown as { isFull(): boolean; cachedBytes: number; minBytesSize: number; maxBytesSize: number };
-      if (lru.isFull()) this.memPressure = Math.min(4, this.memPressure + dtS * 0.8);
-      else if (lru.cachedBytes < (lru.minBytesSize + lru.maxBytesSize) / 2) this.memPressure = Math.max(1, this.memPressure - dtS * 0.08);
-      this.tiles.errorTarget = this.baseError * (1 + rush) * still * this.backlog * this.memPressure;
-
+      if (lru.isFull()) this.memPressure = Math.min(2, this.memPressure + dtS * 0.5);
+      else if (lru.cachedBytes < (lru.minBytesSize + lru.maxBytesSize) / 2) this.memPressure = Math.max(1, this.memPressure - dtS * 0.25);
       this.surface?.updateWorldMatrix(true, true);
       if (this.surface) {
-        // The body frame does not depend on where the floating origin is (rotation and scale only)
         this.earthInv.value.setFromMatrix4(this.invTmp.copy(this.surface.matrixWorld).invert());
         const sx = new THREE.Vector3().setFromMatrixColumn(this.surface.matrixWorld, 0).length();
         this.kmPerUnit.value = (WGS84_A / 1000) / Math.max(sx, 1e-12);
       }
       this.camAltKm.value = Math.max(0, altKm ?? 1);
-      // Earth's centre as the draw will see it: the floating origin puts the camera at (0, 0, 0)
-      // for the draw (SolarSystemScene.renderFrame). Set here once a frame; a per-mesh render hook
-      // was not reliably called, which left night lit like noon
       if (this.surface) this.earthCentre.value.setFromMatrixPosition(this.surface.matrixWorld).sub(camera.position);
       if (this.surface) this.updateDetailFrame(camera);
+
+      // Two-stage city bootstrap when arriving low (< 40 km) at a new location: wait through root
+      // JSON discovery until local (<= 512 m) meshes appear, settle for up to 6 s (or until >= 10
+      // local tiles cover the view or the queue drains after >= 4 local tiles) on a solid ~64 m
+      // city/terrain pass so parent-fallback replacement fills the screen cleanly instead of
+      // isolated skyscraper islands, then snap to full leaf resolution.
+      if (alt >= 40) {
+        this.bootstrapArriveMs = 0;
+        this.bootstrapLocalMs = 0;
+        this.bootstrapDone = false;
+        this.hasBootLocal = false;
+      } else {
+        let jumped = false;
+        if (this.surface) {
+          const local = this.surface.worldToLocal(this.bootTmp.copy(camera.position));
+          const kmPerLocal = WGS84_A / 1000;
+          if (!this.hasBootLocal) {
+            this.lastBootLocal.copy(local);
+            this.hasBootLocal = true;
+            jumped = true;
+          } else if (local.distanceTo(this.lastBootLocal) * kmPerLocal > 15) {
+            this.lastBootLocal.copy(local);
+            jumped = true;
+          }
+        }
+        if (jumped || this.bootstrapArriveMs === 0) {
+          this.bootstrapDone = false;
+          this.bootstrapArriveMs = nowMs;
+          this.bootstrapLocalMs = 0;
+        } else if (
+          nowMs - this.bootstrapArriveMs >= 4_000 ||
+          (this.bootstrapLocalMs > 0 && nowMs - this.bootstrapLocalMs >= 1_500)
+        ) {
+          this.bootstrapDone = true;
+        }
+      }
+      const inBootstrap =
+        alt < 40 &&
+        speedKmS < 0.05 &&
+        !this.bootstrapDone &&
+        this.bootstrapArriveMs > 0;
+      const bootstrapMult = inBootstrap ? 1.4 : 1;
+      this.tiles.errorTarget = this.baseError * bootstrapMult * (1 + rush) * still * this.backlog * this.memPressure;
+
       camera.updateMatrixWorld();
       this.tiles.update();
-      // Ranked every few frames (a long queue is thousands of frustum tests; the order changes slowly)
-      if (this.rankTick++ % 6 === 0) this.rankQueue(camera);
+      // Regional meshes can depth-occlude a whole valley, leaving only mountain ridges.
+      // Continue refining parents, but let the bundled DEM draw until local geometry exists.
+      for (const tile of this.tiles.visibleTiles) {
+        const scene = (tile as unknown as { engineData?: { scene?: THREE.Object3D } }).engineData?.scene;
+        if (scene) scene.visible = (altKm ?? 100) >= 20 || tile.geometricError <= 256;
+      }
+      if (alt < 40 && !this.bootstrapDone) {
+        let nearLocal = 0;
+        for (const tile of this.tiles.visibleTiles as Set<{ geometricError?: number; traversal?: { distanceFromCamera?: number } }>) {
+          if ((tile.geometricError ?? Infinity) <= 256 && (tile.traversal?.distanceFromCamera ?? Infinity) < 100_000) {
+            nearLocal++;
+            if (nearLocal >= 4) break;
+          }
+        }
+        if (nearLocal >= 1 && this.bootstrapLocalMs === 0) {
+          this.bootstrapLocalMs = nowMs;
+        }
+        if (nearLocal >= 4 || (nearLocal >= 2 && stats.queued === 0 && stats.downloading === 0 && stats.parsing === 0)) {
+          this.bootstrapDone = true;
+        }
+      }
+      this.holder.visible = this.tiles.visibleTiles.size > 0;
+      // The library updates queue priorities during traversal; do not overwrite them here.
+    } else if (this.aheadOn || this.surroundOn || this.probeOn) {
+      this.setLookahead(null);
+      this.setSurround(null);
+      this.setGroundProbe(null);
     }
     this.updateAttribution();
-  }
-
-  /**
-   * Rank the queued tiles by what the screen needs (read by the download and parse order set up in
-   * the constructor). Tiers, best first: a tileset file in the screen's view (it opens the levels
-   * below); a tile in view; anything only a helper view wants. Within a tier, the higher the error
-   * on screen (the coarser for its distance) the sooner: nearest and coarsest first, so every part
-   * of the view gets ground and then sharpens.
-   */
-  private rankQueue(camera: THREE.PerspectiveCamera): void {
-    const T = this.tiles as unknown as {
-      cameras: THREE.Camera[];
-      cameraInfo: Array<{ frustum: unknown; position: THREE.Vector3; sseDenominator: number }>;
-      downloadQueue: { items: TileLike[] };
-      parseQueue: { items: TileLike[] };
-    };
-    const i = T.cameras.indexOf(camera);
-    const info = i >= 0 ? T.cameraInfo[i] : null;
-    if (!info) return;
-    const rank = (t: TileLike): void => {
-      const bv = t.engineData?.boundingVolume;
-      if (!bv || !t.internal) {
-        t.solarisRank = undefined;
-        return;
-      }
-      let tier = 0;
-      let err = t.traversal?.error ?? 0;
-      // In the screen's view: first (the tileset files that open the levels below before the
-      // tiles), ranked by their error on screen; out of it (only a helper view wants it): after
-      if (bv.intersectsFrustum(info.frustum)) {
-        const d = bv.distanceToPoint(info.position);
-        err = d === 0 ? 1e6 : t.geometricError / (d * info.sseDenominator);
-        tier = t.internal.hasUnrenderableContent ? 2 : 1;
-      }
-      t.solarisRank = tier * 1e7 + Math.min(err, 9.99e6);
-    };
-    for (const t of T.downloadQueue.items) rank(t);
-    for (const t of T.parseQueue.items) rank(t);
   }
 
   /** Detail eased back while downloads are behind (1 = none; see update). */
@@ -678,6 +769,12 @@ export class PhotorealEarth {
   private backlogT = 0;
   /** Less detail asked for while the tile cache is full (see the update). */
   private memPressure = 1;
+  private bootstrapArriveMs = 0;
+  private bootstrapLocalMs = 0;
+  private bootstrapDone = false;
+  private hasBootLocal = false;
+  private readonly lastBootLocal = new THREE.Vector3();
+  private readonly bootTmp = new THREE.Vector3();
 
   /** The library's own download order (kept for comparison in development). */
   public libraryOrder: ((a: unknown, b: unknown) => number) | null = null;
@@ -710,7 +807,6 @@ export class PhotorealEarth {
     this.detailP0.value.copy(p0).addScaledVector(E, sE / mPerUnit).addScaledVector(N, sN / mPerUnit).sub(camera.position);
   }
 
-  private rankTick = 0;
   private cssSize = new THREE.Vector2();
   private aheadCamera: THREE.PerspectiveCamera | null = null;
   private aheadOn = false;
@@ -722,13 +818,26 @@ export class PhotorealEarth {
    * real camera, which culls them itself). It asks for one step less detail than the real view,
    * so it never competes with what is on screen. Pass null to stop.
    */
+  private prefetchPaused = false;
+
+  /** Pause off-screen helper cameras during preflight hold so all slots stream the launch view. */
+  public setPrefetchPaused(paused: boolean): void {
+    this.prefetchPaused = paused;
+    if (paused) {
+      if (this.aheadOn && this.aheadCamera) this.tiles.deleteCamera(this.aheadCamera);
+      this.aheadOn = false;
+      if (this.surroundOn && this.surroundCamera) this.tiles.deleteCamera(this.surroundCamera);
+      this.surroundOn = false;
+    }
+  }
+
   public setLookahead(point: THREE.Vector3 | null, velocity?: THREE.Vector3, earthCentre?: THREE.Vector3, leadS = 4): void {
-    if (!point || !velocity || !earthCentre || !this.enabled || velocity.lengthSq() < 1e-20) {
+    if (!point || !velocity || !earthCentre || !this.enabled || this.prefetchPaused || this.tiles.visibleTiles.size === 0 || velocity.lengthSq() < 1e-20) {
       if (this.aheadOn && this.aheadCamera) this.tiles.deleteCamera(this.aheadCamera);
       this.aheadOn = false;
       return;
     }
-    const cam = (this.aheadCamera ??= new THREE.PerspectiveCamera(70, 1.6, 1e-7, 50));
+    const cam = (this.aheadCamera ??= new THREE.PerspectiveCamera(70, 1.6, 1e-6, 50));
     const up = this.probeUp.subVectors(point, earthCentre).normalize();
     cam.position.copy(point).addScaledVector(velocity, leadS);
     const fwd = velocity.clone().normalize();
@@ -740,7 +849,7 @@ export class PhotorealEarth {
     cam.updateProjectionMatrix();
     if (!this.aheadOn) {
       this.tiles.setCamera(cam);
-      this.tiles.setResolution(cam, 900, 560);
+      this.tiles.setResolution(cam, 512, 320);
       this.aheadOn = true;
     }
   }
@@ -757,24 +866,14 @@ export class PhotorealEarth {
    * tiles; whatever the real camera turns to already has ground, which then sharpens. Pass null
    * to stop.
    */
-  public setSurround(point: THREE.Vector3 | null, earthCentre?: THREE.Vector3): void {
-    if (!point || !earthCentre || !this.enabled) {
-      if (this.surroundOn && this.surroundCamera) this.tiles.deleteCamera(this.surroundCamera);
-      this.surroundOn = false;
-      return;
-    }
-    const cam = (this.surroundCamera ??= new THREE.PerspectiveCamera(170, 1, 1e-7, 80));
-    const up = this.probeUp.subVectors(point, earthCentre).normalize();
-    cam.up.set(up.y, up.z, up.x);
-    cam.position.copy(point);
-    cam.lookAt(earthCentre);
-    cam.updateMatrixWorld();
-    cam.updateProjectionMatrix();
-    if (!this.surroundOn) {
-      this.tiles.setCamera(cam);
-      this.tiles.setResolution(cam, 200, 200);
-      this.surroundOn = true;
-    }
+  public setSurround(_point: THREE.Vector3 | null, _earthCentre?: THREE.Vector3): void {
+    void _point;
+    void _earthCentre;
+    // ProceduralTerrain now renders seamless 360-degree terrain & 10 m satellite imagery behind
+    // and around the jet; registering a 170° 128 px surround camera forced 65 km-error coarse
+    // skirt meshes to become visible horizon walls while starving forward city detail.
+    if (this.surroundOn && this.surroundCamera) this.tiles.deleteCamera(this.surroundCamera);
+    this.surroundOn = false;
   }
 
   private probeCamera: THREE.PerspectiveCamera | null = null;
@@ -793,7 +892,7 @@ export class PhotorealEarth {
       this.probeOn = false;
       return;
     }
-    const cam = (this.probeCamera ??= new THREE.PerspectiveCamera(100, 1, 1e-7, 10));
+    const cam = (this.probeCamera ??= new THREE.PerspectiveCamera(100, 1, 1e-6, 10));
     const up = this.probeUp.subVectors(point, earthCentre).normalize();
     const unitsPerKm = point.distanceTo(earthCentre) / (WGS84_A / 1000);
     // Any axis not along the view will do for "up"
@@ -803,10 +902,7 @@ export class PhotorealEarth {
     cam.updateMatrixWorld();
     if (!this.probeOn) {
       this.tiles.setCamera(cam);
-      // As if drawn 500 pixels across: ground true to a few metres under the jet. (At 1,000 it
-      // asked for the finest tiles there are, level 22-23, ~100 KB each, which crowded the line
-      // the screen's tiles come down)
-      this.tiles.setResolution(cam, 500, 500);
+      this.tiles.setResolution(cam, 256, 256);
       this.probeOn = true;
     }
   }
@@ -910,6 +1006,7 @@ export class PhotorealEarth {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       mesh.name = PHOTOREAL_TILE_NAME;
+      mesh.userData.solarisKeepCoverage = true;
       // Drawn after the atmosphere shell when close (it has no depth test, and would lay the haze
       // of the whole path to the horizon over nearby ground); see PlanetaryExplorer
       mesh.renderOrder = 1.2;
@@ -953,7 +1050,7 @@ export class PhotorealEarth {
         .replace('#include <project_vertex>', '#include <project_vertex>\n  vPhotoWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
       shader.fragmentShader = shader.fragmentShader
         .replace(/void\s+main\s*\(\s*\)\s*\{/, PHOTO_FRAGMENT_HEAD + '\nvoid main() {')
-        .replace('#include <opaque_fragment>', PHOTO_FRAGMENT_BODY + '\n#include <opaque_fragment>\n  // Marks the pixel as a tile (alpha 0): the procedural terrain, drawn after, leaves it alone\n  gl_FragColor.a = 0.0;');
+        .replace('#include <opaque_fragment>', PHOTO_FRAGMENT_BODY + '\n#include <opaque_fragment>');
     };
     mat.needsUpdate = true;
   }
@@ -978,25 +1075,56 @@ export class PhotorealEarth {
   private uploadQueue: Array<() => void> = [];
   private uploadPump = 0;
 
+  private static isTextureImageReady(tex: THREE.Texture | null | undefined): tex is THREE.Texture {
+    if (!tex || (tex as THREE.Texture & { isRenderTargetTexture?: boolean }).isRenderTargetTexture) return false;
+    const img = tex.image as
+      | { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number; complete?: boolean; data?: unknown }
+      | null
+      | undefined;
+    if (!img) return false;
+    if ('complete' in img && img.complete === false) return false;
+    if ('naturalWidth' in img && typeof img.naturalWidth === 'number') {
+      return img.naturalWidth > 0 && (img.naturalHeight ?? 0) > 0;
+    }
+    if ('data' in img) {
+      return Boolean(img.data) && (img.width ?? 0) > 0 && (img.height ?? 0) > 0;
+    }
+    if (typeof img.width === 'number' && typeof img.height === 'number') {
+      return img.width > 0 && img.height > 0;
+    }
+    return true;
+  }
+
   /** Upload a tile's textures within the per-frame budget; resolves once they are on the GPU. */
   private uploadInTurn(scene: THREE.Object3D): Promise<void> {
-    const maps: THREE.Texture[] = [];
+    const maps = new Set<THREE.Texture>();
     scene.traverse((o) => {
       const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
       for (const mat of !m ? [] : Array.isArray(m) ? m : [m]) {
         const map = (mat as THREE.MeshBasicMaterial).map;
-        if (map && map.image) {
+        if (PhotorealEarth.isTextureImageReady(map)) {
           // Before the upload: the filtering is fixed with it
           map.anisotropy = this.maxAnisotropy;
-          maps.push(map);
+          maps.add(map);
         }
       }
     });
-    if (maps.length === 0 || !this.renderer || typeof requestAnimationFrame === 'undefined') return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      this.uploadQueue.push(() => {
-        for (const t of maps) this.renderer?.initTexture(t);
-        resolve();
+    if (maps.size === 0 || !this.renderer || this.disposed || this.renderer.getContext()?.isContextLost?.() || typeof requestAnimationFrame === 'undefined') return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      let remaining = maps.size;
+      // One texture per job: a model may carry dozens. Treating the whole model as a single
+      // job defeated the upload budget and froze weak GPUs even with a tiny frame allowance.
+      for (const texture of maps) this.uploadQueue.push(() => {
+        try {
+          if (!this.disposed && !this.renderer?.getContext()?.isContextLost?.() && PhotorealEarth.isTextureImageReady(texture)) {
+            this.renderer?.initTexture(texture);
+          }
+          if (--remaining === 0) resolve();
+        } catch (error) {
+          // Let the tile loader report/retry this failure; an exception escaping the RAF pump
+          // used to stop all following uploads and leave their parse promises pending forever.
+          reject(error);
+        }
       });
       if (this.uploadPump === 0) this.uploadPump = requestAnimationFrame(this.pumpUploads);
     });
@@ -1007,11 +1135,31 @@ export class PhotorealEarth {
     // At least one a frame, so a slow device still gets there
     do this.uploadQueue.shift()?.();
     while (this.uploadQueue.length > 0 && performance.now() - start < this.uploadBudgetMs);
-    this.uploadPump = this.uploadQueue.length > 0 ? requestAnimationFrame(this.pumpUploads) : 0;
+    this.uploadPump = this.uploadQueue.length > 0 && !this.disposed ? requestAnimationFrame(this.pumpUploads) : 0;
   };
 
+  /** Abort queued/downloading Earth tile requests when leaving Earth so sockets stay free for other worlds. */
+  private cancelInFlightDownloads(): void {
+    const tilesRenderer = this.tiles as unknown as {
+      loadingTiles?: Set<unknown>;
+      lruCache: { remove: (t: unknown) => void };
+    };
+    if (!tilesRenderer.loadingTiles || tilesRenderer.loadingTiles.size === 0) return;
+    for (const t of [...tilesRenderer.loadingTiles]) {
+      const state = (t as { internal?: { loadingState?: number } }).internal?.loadingState;
+      if (state !== 4 /* LOADED */) {
+        tilesRenderer.lruCache.remove(t);
+      }
+    }
+  }
+
   public dispose(): void {
+    this.disposed = true;
+    this.setLookahead(null);
+    this.setSurround(null);
+    this.setGroundProbe(null);
     if (this.uploadPump) cancelAnimationFrame(this.uploadPump);
+    this.uploadPump = 0;
     for (const job of this.uploadQueue.splice(0)) job();
     this.holder.removeFromParent();
     this.tiles.dispose();

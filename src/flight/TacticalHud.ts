@@ -284,7 +284,8 @@ function locationCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, p: Place, 
   ctx.letterSpacing = '3px';
   const titleW = ctx.measureText(p.title).width;
   ctx.letterSpacing = '0px';
-  const w = Math.max(300, Math.min(560, maxW, titleW + 70));
+  const safeMaxW = Math.max(210, maxW);
+  const w = Math.max(Math.min(300, safeMaxW), Math.min(560, safeMaxW, titleW + 70));
   const h = 122;
   const y = bottom - h;
   ctx.save();
@@ -805,7 +806,7 @@ function isTouch(): boolean {
  * over Earth (null elsewhere); `bottomInset` the height of the map credits; `travel` a line of
  * travel status (a transit, the speed tier) shown by the flight card, or ''.
  */
-export function drawTactical(ctx: CanvasRenderingContext2D, t: JetTelemetry, earth: { title: string; subtitle: string } | null, bottomInset: number, travel = ''): void {
+export function drawTactical(ctx: CanvasRenderingContext2D, t: JetTelemetry, earth: { title: string; subtitle: string } | null, bottomInset: number, travel = '', topInset = 0): void {
   const now = performance.now() / 1000;
   if (startT < 0) startT = now;
   const w = t.width;
@@ -820,14 +821,14 @@ export function drawTactical(ctx: CanvasRenderingContext2D, t: JetTelemetry, ear
   // Each card is drawn about its own anchor corner, scaled
   const LOC_H = 122;
   const FLT_H = 160;
-  const tapeTop = 58 * Math.max(0.8, Math.min(1.2, L.k));
-  const topY = (L.tape ? tapeTop + 64 * L.k : 70) + 8;
-  const locBottom = L.top ? topY + LOC_H * L.k : h - Math.max(40, bottomInset + 12);
-  const fltBottom = L.top ? topY + (FLT_H + 20) * L.k : locBottom;
+  const tapeTop = (L.top ? Math.max(58, topInset + 50) : 58) * Math.max(0.8, Math.min(1.2, L.k));
+  const topClear = L.top ? Math.max(topInset + (w < 820 ? 132 : 96), (L.tape ? tapeTop + 62 * L.k : 70) + 12) : 0;
+  const locBottom = L.top ? topClear + LOC_H * L.k : h - Math.max(40, bottomInset + 12);
+  const fltBottom = L.top ? topClear + (FLT_H + 16) * L.k : locBottom;
   ctx.save();
   ctx.translate(L.pad, locBottom);
   ctx.scale(L.k, L.k);
-  locationCard(ctx, t, place, now, 0, 0, (w / 2 - L.pad - 170 * L.k) / L.k);
+  locationCard(ctx, t, place, now, 0, 0, (w / 2 - L.pad - Math.max(110, 170 * L.k)) / L.k);
   ctx.restore();
   ctx.save();
   ctx.translate(w - L.pad, fltBottom);
@@ -842,8 +843,8 @@ export function drawTactical(ctx: CanvasRenderingContext2D, t: JetTelemetry, ear
     headingTape(ctx, t, 0, 0);
     ctx.restore();
   }
-  // The title sits in the upper third, or under the cards when they are at the top
-  centreReveal(ctx, t, place, earth, now, L.top ? Math.max(h * 0.4, fltBottom + 150) : h * 0.3);
+  // The title sits in the upper third, or neatly below the top cards on tablets
+  centreReveal(ctx, t, place, earth, now, L.top ? Math.min(h * 0.62, Math.max(h * 0.44, fltBottom + 96)) : h * 0.3);
   warning(ctx, t, now);
   ctx.restore();
 }

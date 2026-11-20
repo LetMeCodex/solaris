@@ -43,15 +43,44 @@ export function installCompileGate(renderer: THREE.WebGLRenderer): CompileGate {
   // Without the extension a program reports ready at once: nothing is ever held back
   const parallel = r.extensions.has('KHR_parallel_shader_compile');
   const state = { mode: 'off' as GateMode, skips: 0, hidden: 0, depth: 0, uploadUntil: 0, uploads: 0 };
+  let contextLost = false;
+
+  const canvas = r.domElement;
+  const onContextLost = (e: Event): void => {
+    e.preventDefault();
+    contextLost = true;
+    state.depth = 0;
+  };
+  const onContextRestored = (): void => {
+    contextLost = false;
+    state.depth = 0;
+    state.uploadUntil = 0;
+    knownMaterials = new WeakMap<object, Known>();
+    compiledHidden = new WeakMap<object, Known>();
+    knownObjects = new WeakMap<object, Known>();
+    knownCasters = new WeakMap<object, Known>();
+    drawnBefore = new WeakSet<THREE.Object3D>();
+    heldFor = new WeakMap<THREE.Object3D, number>();
+  };
+  if (canvas?.addEventListener) {
+    canvas.addEventListener('webglcontextlost', onContextLost);
+    canvas.addEventListener('webglcontextrestored', onContextRestored);
+    const origDispose = r.dispose.bind(r);
+    r.dispose = (): void => {
+      canvas.removeEventListener('webglcontextlost', onContextLost);
+      canvas.removeEventListener('webglcontextrestored', onContextRestored);
+      origDispose();
+    };
+  }
 
   // What a scene (or an override material) has had prepared, and at which version: a material
   // changed since (a reflection map assigned, a define switched) needs a new program. A scene's
   // programs also depend on its environment and fog and on whether it is drawn to the screen or
   // into a target (tone mapping, colour space): a change there starts it afresh
-  const knownMaterials = new WeakMap<object, Known>();
-  const compiledHidden = new WeakMap<object, Known>();
-  const knownObjects = new WeakMap<object, Known>();
-  const knownCasters = new WeakMap<object, Known>();
+  let knownMaterials = new WeakMap<object, Known>();
+  let compiledHidden = new WeakMap<object, Known>();
+  let knownObjects = new WeakMap<object, Known>();
+  let knownCasters = new WeakMap<object, Known>();
   const signature = new WeakMap<object, string>();
   const ids = new WeakMap<object, number>();
   let nextId = 1;
@@ -201,9 +230,9 @@ export function installCompileGate(renderer: THREE.WebGLRenderer): CompileGate {
 
   // Things drawn before: in 'hide' mode only what appears for the first time is held back (a
   // change of lights recompiles everything already on screen; that is drawn, not blanked)
-  const drawnBefore = new WeakSet<THREE.Object3D>();
+  let drawnBefore = new WeakSet<THREE.Object3D>();
   // How many draws each object has been held back: never more than a third of a second or so
-  const heldFor = new WeakMap<THREE.Object3D, number>();
+  let heldFor = new WeakMap<THREE.Object3D, number>();
   const MAX_HELD = 20;
 
   const examine = (scene: THREE.Scene, camera: THREE.Camera): Verdict => {
@@ -285,6 +314,7 @@ export function installCompileGate(renderer: THREE.WebGLRenderer): CompileGate {
   };
 
   r.render = (scene: THREE.Object3D, camera: THREE.Camera): void => {
+    if (contextLost || r.getContext?.()?.isContextLost?.()) return;
     if (state.mode === 'off' || !parallel || state.depth > 0) {
       state.depth++;
       try {
@@ -317,7 +347,9 @@ export function installCompileGate(renderer: THREE.WebGLRenderer): CompileGate {
     const restoreVisible: THREE.Object3D[] = [];
     const restoreCast: THREE.Object3D[] = [];
     for (const o of v.notReady) {
-      if (o === scene || !o.visible || drawnBefore.has(o)) continue;
+      // HLOD tile managers have already retired the parent when the child becomes visible.
+      // Hiding that child here would punch a hole through otherwise complete terrain coverage.
+      if (o === scene || !o.visible || drawnBefore.has(o) || o.userData.solarisKeepCoverage === true) continue;
       const n = (heldFor.get(o) ?? 0) + 1;
       heldFor.set(o, n);
       if (n > MAX_HELD) {

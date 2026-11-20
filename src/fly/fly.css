@@ -23,7 +23,7 @@
   position: absolute;
   left: 0;
   right: 0;
-  height: 7vh;
+  height: max(22px, 6.5dvh);
   background: #000;
   transition: transform 1.2s cubic-bezier(0.7, 0, 0.2, 1);
   z-index: 1;
@@ -35,31 +35,34 @@
 
 .flyfilm__top {
   position: absolute;
-  top: calc(7vh + 14px);
-  left: 30px;
-  right: 30px;
+  top: max(calc(env(safe-area-inset-top, 0px) + 12px), calc(6.5dvh + 12px));
+  left: max(16px, env(safe-area-inset-left, 0px), 30px);
+  right: max(16px, env(safe-area-inset-right, 0px), 30px);
   display: flex;
   justify-content: space-between;
-  font-size: 9.5px;
-  letter-spacing: 0.46em;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: clamp(8px, 2.2vw, 9.5px);
+  letter-spacing: clamp(0.18em, 0.9vw, 0.46em);
   color: rgba(243, 239, 230, 0.5);
   z-index: 2;
   animation: ff-fade 2s ease 0.4s both;
 }
 .flyfilm__brand b { color: #f4cd72; font-weight: 500; }
-.flyfilm__clock { font-family: 'JetBrains Mono', ui-monospace, monospace; letter-spacing: 0.24em; }
+.flyfilm__clock { font-family: 'JetBrains Mono', ui-monospace, monospace; letter-spacing: clamp(0.12em, 0.5vw, 0.24em); }
 
 /* The title: thin, wide, each letter condensing out of a blur */
 .flyfilm__title {
   position: absolute;
   left: 0;
   right: 0;
-  top: 26vh;
+  top: clamp(72px, 24dvh, 26dvh);
   text-align: center;
   font-weight: 200;
-  font-size: clamp(30px, 6.4vw, 104px);
-  letter-spacing: 0.62em;
-  padding-left: 0.62em;
+  font-size: clamp(24px, 6.4vw, 104px);
+  letter-spacing: clamp(0.28em, 1.1vw, 0.62em);
+  padding-left: clamp(0.28em, 1.1vw, 0.62em);
   z-index: 2;
   pointer-events: none;
   transition: opacity 1.2s ease, transform 1.6s cubic-bezier(0.7, 0, 0.2, 1), letter-spacing 1.6s cubic-bezier(0.7, 0, 0.2, 1);
@@ -94,6 +97,8 @@
   position: absolute;
   left: 50%;
   top: 50%;
+  width: min(88vw, 440px);
+  text-align: center;
   /* Below the ENGAGE ring (its bottom edge is 52px under the centre): the take-off place sat
      under the ring and its pulse on a phone */
   transform: translate(-50%, 66px);
@@ -107,20 +112,20 @@
   transition: opacity 0.6s ease;
 }
 .flyfilm__dest-k { font-size: 8.5px; letter-spacing: 0.5em; color: #6dfcc0; }
-.flyfilm__dest-name { font-size: 15px; letter-spacing: 0.24em; text-transform: uppercase; }
+.flyfilm__dest-name { font-size: clamp(12.5px, 3vw, 15px); letter-spacing: 0.24em; text-transform: uppercase; }
 .flyfilm__dest-ll { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; letter-spacing: 0.16em; color: rgba(243, 239, 230, 0.55); }
 .flyfilm--dive .flyfilm__dest { opacity: 0; }
 
 /* Preflight and the count */
 .flyfilm__bottom {
   position: absolute;
-  left: 30px;
-  right: 30px;
-  bottom: calc(7vh + 18px);
+  left: max(16px, env(safe-area-inset-left, 0px), 30px);
+  right: max(16px, env(safe-area-inset-right, 0px), 30px);
+  bottom: max(calc(env(safe-area-inset-bottom, 0px) + 16px), calc(6.5dvh + 16px));
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  gap: 24px;
+  gap: clamp(12px, 3vw, 24px);
   z-index: 2;
   transition: opacity 0.5s ease;
   animation: ff-fade 1.5s ease 1s both;
@@ -163,7 +168,7 @@
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 7vh;
+  bottom: max(env(safe-area-inset-bottom, 0px), 6.5dvh);
   height: 1px;
   background: rgba(243, 239, 230, 0.08);
   z-index: 2;
@@ -244,18 +249,38 @@
 @keyframes ff-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
 
 @media (max-width: 640px) {
-  .flyfilm__top, .flyfilm__bottom { left: 16px; right: 16px; }
-  .flyfilm__title { letter-spacing: 0.4em; padding-left: 0.4em; }
+  .flyfilm__top,
+  .flyfilm__bottom {
+    left: max(16px, env(safe-area-inset-left, 0px));
+    right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .flyfilm__title {
+    top: clamp(68px, 19dvh, 22dvh);
+    letter-spacing: clamp(0.24em, 1vw, 0.4em);
+    padding-left: clamp(0.24em, 1vw, 0.4em);
+  }
   .flyfilm__detail { display: none; }
+  .flyfilm__stream { max-width: 100%; flex: 1; }
+  .flyfilm__log { min-height: 4.2em; font-size: 9.5px; line-height: 1.55; }
+}
+@media (max-width: 480px) {
+  .flyfilm__engage { width: 112px; height: 112px; margin-top: -26px; }
+  .flyfilm__dest { transform: translate(-50%, 44px); gap: 3px; }
+  @keyframes ff-rise { from { opacity: 0; transform: translate(-50%, 58px); } to { opacity: 1; transform: translate(-50%, 44px); } }
+  .flyfilm__bottom { gap: 10px; }
+  .flyfilm__pct span { font-size: clamp(32px, 10vw, 44px); }
 }
 /* A phone on its side (~360 px tall): ready to go, the loading log steps aside so the ENGAGE ring
    and the take-off place have the middle of the screen to themselves */
 @media (max-height: 500px) {
-  .flyfilm--ready .flyfilm__stream { opacity: 0; transition: opacity 0.5s ease; }
-  .flyfilm__engage { width: 110px; height: 110px; margin-top: -24px; }
-  .flyfilm__dest { transform: translate(-50%, 44px); }
-  @keyframes ff-rise { from { opacity: 0; transform: translate(-50%, 58px); } to { opacity: 1; transform: translate(-50%, 44px); } }
-  .flyfilm__pct span { font-size: 38px; }
+  .flyfilm--ready .flyfilm__stream { opacity: 0; pointer-events: none; transition: opacity 0.5s ease; }
+  .flyfilm__title { top: max(42px, 14dvh); font-size: clamp(22px, 5vw, 46px); }
+  .flyfilm__tag { display: none; }
+  .flyfilm__engage { width: 104px; height: 104px; margin-top: -24px; }
+  .flyfilm__dest { transform: translate(-50%, 38px); }
+  @keyframes ff-rise { from { opacity: 0; transform: translate(-50%, 52px); } to { opacity: 1; transform: translate(-50%, 38px); } }
+  .flyfilm__pct span { font-size: 36px; }
+  .flyfilm__log { min-height: 3.2em; }
 }
 @media (prefers-reduced-motion: reduce) {
   .flyfilm__title > span, .flyfilm__engage-ring, .flyfilm__checks li i { animation: none !important; }

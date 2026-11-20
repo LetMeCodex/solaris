@@ -2,6 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --hud-header-h: calc(env(safe-area-inset-top, 0px) + 64px);
+  --hud-footer-h: calc(env(safe-area-inset-bottom, 0px) + 68px);
+}
+
 html, body, #root {
   width: 100%;
   height: 100%;
@@ -9,14 +18,21 @@ html, body, #root {
   margin: 0;
   padding: 0;
   overflow: hidden;
+  overflow: clip;
   position: relative;
   /* Phones: no rubber-band scroll or pull-to-refresh behind the 3D view */
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
 }
+html {
+  scroll-padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+}
 /* The visible height on phones (the address bar comes and goes) */
 @supports (height: 100dvh) {
-  html, body, #root { min-height: 100dvh; }
+  html, body, #root {
+    height: 100dvh;
+    min-height: 100svh;
+  }
 }
 /* Drags and pinches on the 3D view steer the camera; they must not scroll or zoom the page */
 canvas { touch-action: none; }
@@ -29,6 +45,7 @@ canvas { touch-action: none; }
     color: #ffffff;
     font-family: 'Montserrat', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     overflow: hidden;
+    overflow: clip;
     user-select: none;
     -webkit-user-select: none;
     -webkit-font-smoothing: antialiased;

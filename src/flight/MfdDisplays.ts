@@ -76,9 +76,10 @@ vec2 local(vec2 uv, vec4 r) {
   return (l.x < 0.0 || l.y < 0.0 || l.x > 1.0 || l.y > 1.0) ? vec2(-1.0) : l;
 }
 vec3 sampleMode(float m, vec2 uv) {
-  if (m > 1.5) return texture2D(tNav, uv).rgb * 0.85;
-  if (m > 0.5) return texture2D(tPfd, uv).rgb * 0.90;
-  return vec3(0.0);
+  vec3 res = vec3(0.0);
+  if (m > 1.5) res = texture2D(tNav, uv).rgb * 0.85;
+  else if (m > 0.5) res = texture2D(tPfd, uv).rgb * 0.90;
+  return res;
 }
 void main() {
   vec4 sym = texture2D(tCanvas, vec2(vUv.x, 1.0 - vUv.y));

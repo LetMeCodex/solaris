@@ -173,15 +173,15 @@ export const VoyageConsole: React.FC<{ getView?: ViewStateGetter; route: FlightR
     <div className={`hud-letterbox ${active ? 'active' : ''}`} aria-hidden={!active}>
       <div className="bar top">
         {route && (
-          <div className="flex items-end justify-between w-full px-6 md:px-10 pb-3">
-            <div className="flex items-center gap-2 hud-label" style={{ color: 'var(--sol-mint)' }}>
+          <div className="flex items-end justify-between gap-2 w-full px-4 sm:px-6 md:px-10 pb-2 sm:pb-3">
+            <div className="flex items-center gap-2 hud-label shrink-0" style={{ color: 'var(--sol-mint)' }}>
               <span className="hud-led on pulse" /> En route
             </div>
-            <div className="text-center">
+            <div className="text-center min-w-0">
               <div className="hud-label !text-[8px]">Destination</div>
-              <DecodeText text={route.to.toUpperCase()} className="text-lg md:text-2xl font-extralight tracking-[0.5em] text-white" durationMs={1200} />
+              <DecodeText text={route.to.toUpperCase()} className="text-sm sm:text-lg md:text-2xl font-extralight tracking-[0.26em] sm:tracking-[0.5em] text-white truncate block" durationMs={1200} />
             </div>
-            <span ref={eta} className="hud-num text-[11px] text-[color:var(--sol-amber)]">T−00.0 s</span>
+            <span ref={eta} className="hud-num text-[10px] sm:text-[11px] text-[color:var(--sol-amber)] shrink-0">T−00.0 s</span>
           </div>
         )}
       </div>
@@ -190,11 +190,11 @@ export const VoyageConsole: React.FC<{ getView?: ViewStateGetter; route: FlightR
 
       <div className="bar bottom">
         {route && (
-          <div className="w-full max-w-[900px] mx-auto px-6 pt-3 flex flex-col gap-2.5">
-            <div className="flex items-center gap-4">
-              <div className="text-right min-w-[90px]">
+          <div className="w-full max-w-[900px] mx-auto px-3 sm:px-6 pt-2 sm:pt-3 flex flex-col gap-2">
+            <div className="flex items-center gap-2 sm:gap-4">
+              <div className="text-right min-w-[52px] sm:min-w-[90px]">
                 <div className="hud-label !text-[8px]">From</div>
-                <div className="text-[11px] tracking-[0.3em] uppercase text-white/80">{route.from}</div>
+                <div className="text-[10px] sm:text-[11px] tracking-[0.2em] sm:tracking-[0.3em] uppercase text-white/80 truncate">{route.from}</div>
               </div>
               <div className="relative flex-1 h-5">
                 <span className="absolute left-0 right-0 top-1/2 h-px bg-white/15" />
@@ -212,12 +212,12 @@ export const VoyageConsole: React.FC<{ getView?: ViewStateGetter; route: FlightR
                 })}
                 <span ref={ship} className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-2.5 h-2.5 rotate-45 border border-[color:var(--sol-mint)] bg-[#05040a] shadow-[0_0_10px_var(--sol-mint)]" style={{ left: '0%' }} />
               </div>
-              <div className="min-w-[90px]">
+              <div className="min-w-[52px] sm:min-w-[90px]">
                 <div className="hud-label !text-[8px]">To</div>
-                <div className="text-[11px] tracking-[0.3em] uppercase text-white">{route.to}</div>
+                <div className="text-[10px] sm:text-[11px] tracking-[0.2em] sm:tracking-[0.3em] uppercase text-white truncate">{route.to}</div>
               </div>
             </div>
-            <dl className="flex flex-wrap justify-center gap-x-8 gap-y-1">
+            <dl className="flex flex-wrap justify-center gap-x-4 sm:gap-x-8 gap-y-1">
               {[
                 ['Distance', fmtSpan(route.distanceKm)],
                 ['Light takes', fmtDuration(lightSec)],
@@ -318,6 +318,13 @@ function loadGalaxyDisk(onReady: () => void) {
   img.src = `${import.meta.env.BASE_URL || '/'}textures/milky_way_disk.webp`;
 }
 
+function plotScale(): number {
+  if (typeof window === 'undefined') return 1;
+  if (window.innerWidth >= 2200) return 1.12;
+  if (window.innerWidth < 1280) return 0.78;
+  return 1;
+}
+
 export const SystemPlot: React.FC<{ getView?: ViewStateGetter; target: string; onSelect: (name: string) => void }> = ({
   getView,
   target,
@@ -330,15 +337,32 @@ export const SystemPlot: React.FC<{ getView?: ViewStateGetter; target: string; o
   const hits = useRef<Array<{ name: string; x: number; y: number }>>([]);
   const [hoverName, setHoverName] = useState<string | null>(null);
   const [, setReady] = useState(false);
+  const [scale, setScale] = useState(plotScale);
 
   useEffect(() => {
-    const c = canvasRef.current;
-    if (!c) return;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    c.width = PW * dpr;
-    c.height = PH * dpr;
-    c.getContext('2d')?.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const sync = () => {
+      const nextScale = plotScale();
+      setScale(nextScale);
+      const c = canvasRef.current;
+      if (!c) return;
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const cssW = Math.round(PW * nextScale);
+      const cssH = Math.round(PH * nextScale);
+      c.width = Math.round(cssW * dpr);
+      c.height = Math.round(cssH * dpr);
+      c.getContext('2d')?.setTransform(dpr * nextScale, 0, 0, dpr * nextScale, 0, 0);
+    };
+    sync();
     loadGalaxyDisk(() => setReady(true));
+    const ro = typeof ResizeObserver !== 'undefined' && canvasRef.current ? new ResizeObserver(sync) : null;
+    if (ro && canvasRef.current) ro.observe(canvasRef.current);
+    window.addEventListener('resize', sync, { passive: true });
+    window.visualViewport?.addEventListener('resize', sync, { passive: true });
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', sync);
+      window.visualViewport?.removeEventListener('resize', sync);
+    };
   }, []);
 
   useViewFrame(getView, (v, t) => {
@@ -599,7 +623,10 @@ export const SystemPlot: React.FC<{ getView?: ViewStateGetter; target: string; o
 
   const pick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
+    return {
+      x: r.width > 0 ? ((e.clientX - r.left) / r.width) * PW : 0,
+      y: r.height > 0 ? ((e.clientY - r.top) / r.height) * PH : 0,
+    };
   };
 
   return (
@@ -607,7 +634,7 @@ export const SystemPlot: React.FC<{ getView?: ViewStateGetter; target: string; o
       <div className="relative">
         <canvas
           ref={canvasRef}
-          style={{ width: PW, height: PH, cursor: hoverName ? 'pointer' : 'default' }}
+          style={{ width: Math.round(PW * scale), height: Math.round(PH * scale), cursor: hoverName ? 'pointer' : 'default' }}
           onMouseMove={(e) => (hover.current = pick(e))}
           onMouseLeave={() => {
             hover.current = null;

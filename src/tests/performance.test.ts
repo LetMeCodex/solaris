@@ -29,6 +29,21 @@ describe('quality tier detection', () => {
 });
 
 describe('adaptive resolution', () => {
+  it('respects the framebuffer pixel budget even on an 8K screen', () => {
+    const g = new PerformanceGovernor('low');
+    const ratio = g.pixelRatio(2, 7680, 4320);
+    expect(7680 * 4320 * ratio ** 2).toBeLessThanOrEqual(1_250_000);
+    expect(ratio).toBeGreaterThan(0);
+  });
+
+  it('does not poison frame-time adaptation with invalid samples', () => {
+    const g = new PerformanceGovernor('low');
+    for (const value of [NaN, Infinity, -30, 0]) g.frame(value);
+    expect(Number.isFinite(g.frameMs)).toBe(true);
+    for (let i = 0; i < 1000; i++) g.frame(40);
+    expect(g.scale).toBeLessThan(0.8);
+  });
+
   it('steps the resolution down when frames run long, not below the tier floor', () => {
     const g = new PerformanceGovernor('high');
     let changes = 0;

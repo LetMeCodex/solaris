@@ -19,6 +19,9 @@ export interface EquirectGrid {
   level0TileDeg: number;
   minLevel: number;
   maxLevel: number;
+  /** Optional latitude coverage bounds (deg); tiles wholly outside are skipped instead of 404ing. */
+  minLat?: number;
+  maxLat?: number;
 }
 
 export interface WmtsProvider extends EquirectGrid {
@@ -30,6 +33,8 @@ export interface WmtsProvider extends EquirectGrid {
    * chroma from the global map), e.g. Mars CTX over the Viking-based colour map.
    */
   colorize?: boolean;
+  /** Optional fallback provider activated if the primary source fails or enters outage cooldown. */
+  fallback?: TileProvider;
 }
 
 export interface WmsProvider extends EquirectGrid {
@@ -38,6 +43,8 @@ export interface WmsProvider extends EquirectGrid {
   template: string;
   /** As for WmtsProvider: greyscale detail, hue from the bundled colour map. */
   colorize?: boolean;
+  /** Optional fallback provider activated if the primary source fails or enters outage cooldown. */
+  fallback?: TileProvider;
 }
 
 export type TileProvider = WmtsProvider | WmsProvider;
@@ -131,7 +138,7 @@ const MOON_IMAGERY: BodyImagery[] = [
   },
   {
     body: 'Titan',
-    provider: { kind: 'wmts', template: TREK('Titan', 'Titan_ISS_Globe_65Sto45N_450M_AvgMos', 'png'), ...TREK_GRID, maxLevel: 6 },
+    provider: { kind: 'wmts', template: TREK('Titan', 'Titan_ISS_Globe_65Sto45N_450M_AvgMos', 'png'), ...TREK_GRID, maxLevel: 6, minLat: -65, maxLat: 45 },
     kind: 'monochrome',
     title: 'Cassini ISS controlled mosaic, 938 nm (450 m)',
     source: 'NASA Titan Trek · Cassini Imaging Science Subsystem',
@@ -253,6 +260,14 @@ export const BODY_IMAGERY: Record<string, BodyImagery> = {
       template: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless/default/WGS84/{z}/{y}/{x}.jpg',
       ...TREK_GRID,
       maxLevel: 13,
+      fallback: {
+        kind: 'wmts',
+        template: 'https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_NextGeneration/default/500m/{z}/{y}/{x}.jpeg',
+        tileSize: 512,
+        level0TileDeg: 288,
+        minLevel: 0,
+        maxLevel: 7,
+      },
     },
     kind: 'visible',
     title: 'Sentinel-2 cloudless (2016, 10 m)',
@@ -265,7 +280,13 @@ export const BODY_IMAGERY: Record<string, BodyImagery> = {
   },
   Moon: {
     body: 'Moon',
-    provider: { kind: 'wmts', template: TREK('Moon', 'Kaguya_TCortho_Mosaic_Global_4096ppd', 'png'), ...TREK_GRID, maxLevel: 10 },
+    provider: {
+      kind: 'wmts',
+      template: TREK('Moon', 'Kaguya_TCortho_Mosaic_Global_4096ppd', 'png'),
+      ...TREK_GRID,
+      maxLevel: 10,
+      fallback: { kind: 'wmts', template: TREK('Moon', 'LRO_WAC_Mosaic_Global_303ppd_v02', 'jpg'), ...TREK_GRID, maxLevel: 7 },
+    },
     kind: 'monochrome',
     title: 'SELENE/Kaguya Terrain Camera ortho mosaic',
     source: 'NASA Moon Trek · JAXA SELENE (Kaguya) Terrain Camera',
@@ -310,11 +331,22 @@ export const BODY_IMAGERY: Record<string, BodyImagery> = {
     provider: {
       kind: 'wmts',
       // Trek's capabilities for CTX_beta01_uncontrolled_5m_Caltech point at this Esri-hosted cache
-      // (same 2×1, 256 px grid); levels 0–12, level 13 returns 400.
+      // (same 2×1, 256 px grid). Levels 0–2 return HTTP 500 without CORS, levels 3–4 have
+      // truncated/missing polar PNGs, and polar strips beyond ±73° fail; route z < 5 and per-tile
+      // fallbacks to Viking 232m (levels 0–7, CORS-clean JPEG) while keeping levels 5–12 CTX.
       template: 'https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/{z}/{y}/{x}',
       ...TREK_GRID,
+      minLevel: 5,
       maxLevel: 12,
+      minLat: -73,
+      maxLat: 73,
       colorize: true,
+      fallback: {
+        kind: 'wmts',
+        template: TREK('Mars', 'Mars_Viking_MDIM21_ClrMosaic_global_232m', 'jpg'),
+        ...TREK_GRID,
+        maxLevel: 7,
+      },
     },
     kind: 'visible',
     title: 'MRO CTX global mosaic (Caltech Murray Lab), tinted',

@@ -122,6 +122,7 @@ export class JetController {
 
   private flight = new FlightModel(this.airframeId);
   private model: JetModel | null = null;
+  private fallbackAircraftReady = false;
   private cockpit: Cockpit | null = null;
   private navPoints: NavPoint[] = [];
   private jetGroup = new THREE.Group();
@@ -242,7 +243,7 @@ export class JetController {
       vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
       // NaN or infinity becomes nothing; light far brighter than any surface is capped
       fragmentShader:
-        'uniform sampler2D tSrc; varying vec2 vUv; void main() { vec4 c = texture2D(tSrc, vUv); bool bad = any(isnan(c.rgb)) || any(isinf(c.rgb)); gl_FragColor = vec4(bad ? vec3(0.0) : min(c.rgb, vec3(2.0e4)), 1.0); }',
+        'uniform sampler2D tSrc; varying vec2 vUv; void main() { vec4 c = texture2D(tSrc, vUv); vec3 r = vec3(c.r >= 0.0 ? (c.r <= 2.0e4 ? c.r : 2.0e4) : 0.0, c.g >= 0.0 ? (c.g <= 2.0e4 ? c.g : 2.0e4) : 0.0, c.b >= 0.0 ? (c.b <= 2.0e4 ? c.b : 2.0e4) : 0.0); gl_FragColor = vec4(r, 1.0); }',
       depthTest: false,
       depthWrite: false,
     }),
@@ -267,6 +268,16 @@ export class JetController {
   public touchAlign = false;
   private lookDrag = false;
   private look = new THREE.Vector2();
+  private readonly activeTouches = new Map<number, { x: number; y: number }>();
+  private touchPinchDist = 0;
+  private touchStartPos = { x: 0, y: 0, t: 0, moved: false };
+  private lastTapTime = 0;
+  private lastTapPos = { x: 0, y: 0 };
+  private eChase = new THREE.Euler(0, 0, 0, 'YXZ');
+  private envViewport = new THREE.Vector4();
+  private envScissor = new THREE.Vector4();
+  private envOuterViewport = new THREE.Vector4();
+  private envTargetChecked = false;
   /**
    * The head's actual angles (yaw, pitch), chasing `look` on a critically damped spring: eyes and
    * neck move smoothly, ease in and out, never snap. And its velocity.
@@ -483,6 +494,7 @@ export class JetController {
         .catch((err) => {
           console.warn('[Solaris] jet model not loaded; flying the built-in airframe', err);
           model.showBuiltIn();
+          this.fallbackAircraftReady = true;
         });
       this.model.root.add(this.cockpitLight);
       this.cockpitLight.position.copy(this.model.eye).add(new THREE.Vector3(0, -0.25, -0.5));
@@ -597,9 +609,14 @@ export class JetController {
     window.addEventListener('keydown', this.onKeyDown, true);
     window.addEventListener('keyup', this.onKeyUp, true);
     window.addEventListener('blur', this.onBlur);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
     dom.addEventListener('mousedown', this.onMouseDown);
     window.addEventListener('mouseup', this.onMouseUp);
     window.addEventListener('mousemove', this.onMouseMove);
+    dom.addEventListener('touchstart', this.onTouchStart, { passive: false });
+    window.addEventListener('touchmove', this.onTouchMove, { passive: false });
+    window.addEventListener('touchend', this.onTouchEnd);
+    window.addEventListener('touchcancel', this.onTouchCancel);
     dom.addEventListener('wheel', this.onWheel, { passive: false });
     dom.addEventListener('contextmenu', this.onContextMenu);
     document.addEventListener('pointerlockchange', this.onPointerLock);
@@ -616,16 +633,20 @@ export class JetController {
     this.groundCover?.setVisible(false);
     this.alive?.setVisible(false);
     this.photoGround = null;
+    this.localGroundKm = 0;
     this.transit = null;
-    this.keys.clear();
-    this.dragSteer = false;
-    this.lookDrag = false;
+    this.clearHeldInputs();
     window.removeEventListener('keydown', this.onKeyDown, true);
     window.removeEventListener('keyup', this.onKeyUp, true);
     window.removeEventListener('blur', this.onBlur);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.dom?.removeEventListener('mousedown', this.onMouseDown);
     window.removeEventListener('mouseup', this.onMouseUp);
     window.removeEventListener('mousemove', this.onMouseMove);
+    this.dom?.removeEventListener('touchstart', this.onTouchStart);
+    window.removeEventListener('touchmove', this.onTouchMove);
+    window.removeEventListener('touchend', this.onTouchEnd);
+    window.removeEventListener('touchcancel', this.onTouchCancel);
     this.dom?.removeEventListener('wheel', this.onWheel);
     this.dom?.removeEventListener('contextmenu', this.onContextMenu);
     document.removeEventListener('pointerlockchange', this.onPointerLock);
@@ -907,23 +928,169 @@ export class JetController {
     if (k === 'shift' && this.mouseHead) this.steer.set(0, 0);
   };
 
-  private onBlur = (): void => {
+  private clearHeldInputs = (): void => {
     this.keys.clear();
     this.zFpvHoldLatched = false;
     this.dragSteer = false;
     this.lookDrag = false;
+    this.steer.set(0, 0);
+    this.touchSteer.set(0, 0);
+    this.touchBoost = false;
+    this.touchAlign = false;
+    this.activeTouches.clear();
+    this.touchPinchDist = 0;
+  };
+
+  private onBlur = (): void => {
+    this.clearHeldInputs();
+  };
+
+  private onVisibilityChange = (): void => {
+    if (typeof document !== 'undefined' && document.hidden) {
+      this.clearHeldInputs();
+    }
+  };
+
+  private isCanvasTarget(target: EventTarget | null): boolean {
+    if (!target) return false;
+    if (target === this.dom) return true;
+    return !!(this.dom && target instanceof Node && this.dom.contains(target) && (target as HTMLElement).tagName === 'CANVAS');
+  }
+
+  private onTouchStart = (e: TouchEvent): void => {
+    if (!this.isCanvasTarget(e.target)) return;
+    e.preventDefault();
+    this.audio.resume();
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      this.activeTouches.set(t.identifier, { x: t.clientX, y: t.clientY });
+    }
+    if (this.activeTouches.size === 1) {
+      const t = e.changedTouches[0];
+      this.touchStartPos = { x: t.clientX, y: t.clientY, t: performance.now(), moved: false };
+      this.lookDrag = true;
+      this.touchPinchDist = 0;
+    } else if (this.activeTouches.size >= 2) {
+      this.lookDrag = false;
+      this.touchStartPos.moved = true;
+      const pts = Array.from(this.activeTouches.values());
+      this.touchPinchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    }
+  };
+
+  private onTouchMove = (e: TouchEvent): void => {
+    if (this.activeTouches.size === 0) return;
+    let tracked = false;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      if (this.activeTouches.has(e.changedTouches[i].identifier)) {
+        tracked = true;
+        break;
+      }
+    }
+    if (!tracked) return;
+    e.preventDefault();
+
+    if (this.activeTouches.size === 1) {
+      const t = e.changedTouches[0];
+      const prev = this.activeTouches.get(t.identifier);
+      if (prev) {
+        const dx = t.clientX - prev.x;
+        const dy = t.clientY - prev.y;
+        if (Math.hypot(t.clientX - this.touchStartPos.x, t.clientY - this.touchStartPos.y) > 12) {
+          this.touchStartPos.moved = true;
+        }
+        const inside = this.view === 'cockpit' || this.view === 'gopro';
+        const k = inside ? 0.005 * (this.insideFovNow / 76) : 0.0065;
+        this.look.x -= dx * k;
+        if (inside) this.look.x = THREE.MathUtils.clamp(this.look.x, -2.7, 2.7);
+        this.look.y = THREE.MathUtils.clamp(this.look.y - dy * k, inside ? -1.0 : -1.3, inside ? 1.45 : 1.3);
+        this.lastHeadMove = performance.now();
+        prev.x = t.clientX;
+        prev.y = t.clientY;
+      }
+      return;
+    }
+
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      const pt = this.activeTouches.get(t.identifier);
+      if (pt) {
+        pt.x = t.clientX;
+        pt.y = t.clientY;
+      }
+    }
+    if (this.activeTouches.size >= 2) {
+      const pts = Array.from(this.activeTouches.values());
+      const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      if (this.touchPinchDist > 8 && dist > 8) {
+        const ratio = this.touchPinchDist / dist;
+        if (this.view === 'cockpit' || this.view === 'gopro') {
+          this.insideFov = THREE.MathUtils.clamp(this.insideFov * ratio, 25, 115);
+        } else if (this.view === 'chase') {
+          this.chaseDist = THREE.MathUtils.clamp(this.chaseDist * ratio, 9, 80);
+        }
+      }
+      this.touchPinchDist = dist;
+    }
+  };
+
+  private onTouchEnd = (e: TouchEvent): void => {
+    const now = performance.now();
+    const wasSingleQuickTap =
+      this.activeTouches.size === 1 &&
+      !this.touchStartPos.moved &&
+      now - this.touchStartPos.t < 260;
+
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      this.activeTouches.delete(e.changedTouches[i].identifier);
+    }
+
+    if (this.activeTouches.size < 2) {
+      this.touchPinchDist = 0;
+    }
+    if (this.activeTouches.size === 0) {
+      this.lookDrag = false;
+      if (wasSingleQuickTap && e.changedTouches.length > 0) {
+        const t = e.changedTouches[0];
+        if (!this.clickCockpit(t.clientX, t.clientY)) {
+          const isDouble =
+            now - this.lastTapTime < 320 &&
+            Math.hypot(t.clientX - this.lastTapPos.x, t.clientY - this.lastTapPos.y) < 38;
+          if (isDouble) {
+            this.look.set(0, 0);
+            this.insideFov = 76;
+            this.lastTapTime = 0;
+          } else {
+            this.lastTapTime = now;
+            this.lastTapPos.x = t.clientX;
+            this.lastTapPos.y = t.clientY;
+          }
+        }
+      }
+    }
+  };
+
+  private onTouchCancel = (): void => {
+    this.activeTouches.clear();
+    this.touchPinchDist = 0;
+    this.lookDrag = false;
   };
 
   private onMouseDown = (e: MouseEvent): void => {
-    if (e.target !== this.dom && !(this.dom && e.target instanceof Node && this.dom.contains(e.target) && (e.target as HTMLElement).tagName === 'CANVAS')) return;
+    if (!this.isCanvasTarget(e.target)) return;
     this.audio.resume();
     this.lastMouse.set(e.clientX, e.clientY);
     if (e.button === 0 && this.clickCockpit(e.clientX, e.clientY)) return;
-    // Inside, a click hands the mouse to the head (a first-person look); Esc gives it back
+    // Inside, a click hands the mouse to the head (a first-person look); Esc gives it back (skip pointer lock on coarse touch screens)
     const inside = (this.view === 'cockpit' || this.view === 'gopro') && !this.cutscene;
-    if (e.button === 0 && inside && !document.pointerLockElement && this.dom) {
+    const coarse = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches;
+    if (e.button === 0 && inside && !coarse && !document.pointerLockElement && this.dom) {
       const canvas = this.dom.querySelector('canvas') ?? this.dom;
-      void (canvas as HTMLElement & { requestPointerLock: () => Promise<void> | void }).requestPointerLock();
+      try {
+        void Promise.resolve((canvas as HTMLElement & { requestPointerLock?: () => Promise<void> | void }).requestPointerLock?.()).catch(() => {});
+      } catch {
+        /* pointer lock rejected or unavailable */
+      }
       return;
     }
     if (e.button === 2) this.lookDrag = true;
@@ -1033,6 +1200,10 @@ export class JetController {
     const R = b.radius;
     const ellipR = Math.abs(ps - 1) < 1e-6 ? R : 1 / Math.sqrt((d.x * d.x + d.z * d.z) / (R * R) + (d.y * d.y) / (R * ps * R * ps));
     if (b.name === 'Earth') {
+      // Clear local takeoff ground bias once the jet leaves the landmark neighbourhood (> 15 km)
+      if (this.localGroundKm > 0 && point.distanceTo(this.localGroundPos) * (b.radiusKm / b.radius) > 15) {
+        this.localGroundKm = 0;
+      }
       // Over Google's 3D Earth the ground is the drawn one (rooftops, bridges, real slopes),
       // measured under the jet a few times a second (probePhotoGround)
       const pg = this.photoGround;
@@ -1045,6 +1216,7 @@ export class JetController {
       if (solidKm > elevKm) elevKm = solidKm;
       return ellipR + elevKm * (b.radius / b.radiusKm);
     }
+    this.localGroundKm = 0;
     // The Moon and Mars: the real relief (DEM) the explorer draws, from height tiles already loaded
     if (relief) {
       const ll = bodyLocalToLatLon(b.name, d.x, d.y, d.z);
@@ -1084,6 +1256,7 @@ export class JetController {
   private camMidPoint = new THREE.Vector3();
   private camLookQuat = new THREE.Quaternion();
   private localGroundKm = 0;
+  private localGroundPos = new THREE.Vector3();
 
   /** A click inside the cockpit: operate a switch, destination display, or any MFD bezel tab. */
   private clickCockpit(cx: number, cy: number): boolean {
@@ -1227,7 +1400,7 @@ export class JetController {
 
   /** The airframe model has loaded. */
   public get aircraftReady(): boolean {
-    return !!this.model?.airframe;
+    return !!this.model?.airframe || this.fallbackAircraftReady;
   }
 
   /** A landmark or place to fly to by hand: shown as a marker, Z turns towards it. */
@@ -1419,6 +1592,7 @@ export class JetController {
       const extraUnits = g !== null ? Math.max(g, -0.08 / kmNear) : 0;
       site.addScaledVector(up, extraUnits);
       this.localGroundKm = Math.max(solidKm, elevKm + extraUnits * kmNear);
+      this.localGroundPos.copy(site);
     } else {
       // Real relief (Moon, Mars): stand on the drawn ground, not the bare sphere
       const gKm = groundHeightKm(lm.body, lat, lon);
@@ -1735,6 +1909,8 @@ export class JetController {
   private photoRay = new THREE.Raycaster();
   private pv1 = new THREE.Vector3();
   private pv2 = new THREE.Vector3();
+  private pv3 = new THREE.Vector3();
+  private pv4 = new THREE.Vector3();
   private pnm = new THREE.Matrix3();
 
   /**
@@ -1755,13 +1931,18 @@ export class JetController {
     const rough = f.position.distanceTo(b.center) - b.radius;
     // Fetch the ground ahead of the jet while it is low enough to see detail: about 4 s of travel
     // ahead (less when very fast, so the view ahead stays on the ground it is about to cross)
+    const constrained = perf.tier === 'low' || perf.scale < 0.72;
     const photo = PhotorealEarth.current;
     if (photo && b.name === 'Earth') {
       if (rough * kmNear < 80 && !this.scripted) {
         const speedKmS = f.velocity.length() * kmNear;
         const lead = THREE.MathUtils.clamp(25 / Math.max(speedKmS, 0.05), 1.2, 5);
         photo.setLookahead(f.position, f.velocity, b.center, lead);
-        photo.setSurround(f.position, b.center);
+        if (rough * kmNear < (constrained ? 22 : 48)) {
+          photo.setSurround(f.position, b.center);
+        } else {
+          photo.setSurround(null);
+        }
       } else {
         photo.setLookahead(null);
         photo.setSurround(null);
@@ -1774,19 +1955,15 @@ export class JetController {
     }
     // The ground straight under the jet is off the bottom of the screen: keep it loaded
     PhotorealEarth.current?.setGroundProbe(f.position, b.center);
-    if (this.photoProbeTick++ % 3 !== 0) return;
+    if (this.photoProbeTick++ % (constrained ? 6 : 3) !== 0) return;
     const up = this.pv1.subVectors(f.position, b.center).normalize();
     const ray = this.photoRay;
     (ray as THREE.Raycaster & { firstHitOnly?: boolean }).firstHitOnly = true;
 
     // Down: from 9 km above the jet, so the first surface met is always the true top of the ground
-    // (a rooftop, a mountain), even when the jet has ended up under it. A ray from just above the
-    // jet never saw ground over its head: once the height map was missing (so the jet thought
-    // the ground was at sea level, 600 m under Las Vegas) it flew under the city and stayed there,
-    // the buildings hanging upside down overhead. With the ground found above, the contact below
-    // lifts the jet straight back out.
+    // (a rooftop, a mountain), even when the jet has ended up under it.
     const fromKm = 9;
-    ray.set(this.pv2.copy(f.position).addScaledVector(up, fromKm / kmNear), up.clone().negate());
+    ray.set(this.pv2.copy(f.position).addScaledVector(up, fromKm / kmNear), this.pv3.copy(up).negate());
     ray.far = (fromKm + 6) / kmNear;
     const down = ray.intersectObject(target, true)[0];
     if (down) {
@@ -1821,7 +1998,7 @@ export class JetController {
     ray.far = look;
     const wall = ray.intersectObject(target, true)[0];
     if (!wall || !wall.face) return;
-    const n = wall.face.normal.clone().applyMatrix3(this.pnm.getNormalMatrix(wall.object.matrixWorld)).normalize();
+    const n = this.pv4.copy(wall.face.normal).applyMatrix3(this.pnm.getNormalMatrix(wall.object.matrixWorld)).normalize();
     if (n.dot(dir) > 0) n.negate();
     // Level ground met at a shallow angle is the down ray's business (a landing, a low pass)
     if (n.dot(up) > 0.8) return;
@@ -1962,6 +2139,12 @@ export class JetController {
    */
   public update(dt: number, timeSec: number, camera: THREE.PerspectiveCamera, width: number, height: number, toScreen: NdcToScreen): void {
     if (!this.active || !this.model) return;
+    const safeW = Math.max(1, width);
+    const safeH = Math.max(1, height);
+    const nextAspect = safeW / safeH;
+    if (Math.abs(camera.aspect - nextAspect) > 1e-4) {
+      camera.aspect = nextAspect;
+    }
     // Held (behind the fly page's preloader): time almost stands still while the world streams in
     dt = this.hold ? 1e-4 : Math.min(dt, 0.05);
     const f = this.flight;
@@ -2583,6 +2766,14 @@ export class JetController {
     }
   }
 
+  /** Widen vertical FOV slightly on portrait viewports so wings and horizon stay visible, and tame ultrawide edge stretch. */
+  private responsiveFov(baseDeg: number, aspect: number, maxDeg = 108): number {
+    const safeAspect = Math.max(0.35, aspect || 1);
+    const portraitBoost = safeAspect < 1.15 ? Math.min(24, (1.15 - safeAspect) * 32) : 0;
+    const ultraTrim = safeAspect > 2.25 ? Math.max(-6, (2.25 - safeAspect) * 4.5) : 0;
+    return THREE.MathUtils.clamp(baseDeg + portraitBoost + ultraTrim, 18, maxDeg);
+  }
+
   private placeCamera(dt: number, camera: THREE.PerspectiveCamera, nearest: BodyInfo, kmPerUnit: number, density: number, timeSec: number): void {
     const f = this.flight;
     const upm = 1 / (kmPerUnit * 1000); // units per metre
@@ -2590,6 +2781,7 @@ export class JetController {
     // The landing cutscene has its own camera beside the runway
     if (this.placeCutsceneCamera(camera)) {
       camera.near = 2e-6;
+      camera.far = Math.max(1.25e8, camera.position.length() * 2.5);
       camera.updateProjectionMatrix();
       return;
     }
@@ -2643,7 +2835,7 @@ export class JetController {
       camera.rotateX(this.head.y - this.headDrop * 0.6);
       // The head tilts a little into a look over the shoulder
       camera.rotateZ(-Math.sin(this.head.x) * 0.06);
-      camera.fov = this.insideFovNow + this.fovKick * 0.5;
+      camera.fov = this.responsiveFov(this.insideFovNow + this.fovKick * 0.5, camera.aspect, 120);
     }
     if (this.view === 'gopro') {
       // The GoPro is now at the eyes too (first person): the picture is an action camera's
@@ -2652,19 +2844,21 @@ export class JetController {
       camera.rotateX(Math.sin(timeSec * 97) * Math.sin(timeSec * 13.1) * buzz);
       camera.rotateY(Math.sin(timeSec * 83 + 1.7) * buzz * 0.8);
       // Rendered wide; the lens folds it into an action camera's picture (zoom still applies)
-      camera.fov = Math.min(140, this.insideFovNow * 1.32 + this.fovKick * 0.4);
+      camera.fov = this.responsiveFov(Math.min(132, this.insideFovNow * 1.32 + this.fovKick * 0.4), camera.aspect, 136);
     } else if (this.view === 'chase') {
-      // The camera lags the airframe a little so turns show; drag right mouse to look around
+      // The camera lags the airframe a little so turns show; drag right mouse or touch to look around
       this.chaseQuat.slerp(f.quaternion, 1 - Math.exp(-5.5 * dt));
       if (!this.lookDrag) this.look.multiplyScalar(Math.exp(-1.5 * dt));
-      this.q1.setFromEuler(new THREE.Euler(this.look.y * 0.8 - 0.06, this.look.x, 0, 'YXZ'));
+      this.eChase.set(this.look.y * 0.8 - 0.06, this.look.x, 0, 'YXZ');
+      this.q1.setFromEuler(this.eChase);
       const q = this.q2.copy(this.chaseQuat).multiply(this.q1);
       const pullBack = 1 + THREE.MathUtils.clamp((machVal - 1) * 0.012 + (f.boosting ? 0.08 : 0), 0, 0.25);
       const effChaseDist = this.chaseDist * pullBack;
       const off = this.v2.set(0, effChaseDist * 0.17, effChaseDist).applyQuaternion(q).multiplyScalar(upm);
       camera.position.copy(f.position).add(off);
       camera.quaternion.copy(q);
-      camera.fov = 60 + Math.min(54, this.fovKick);
+      const kickScale = camera.aspect > 2.2 ? Math.max(0.65, 2.2 / camera.aspect) : 1;
+      camera.fov = this.responsiveFov(60 + Math.min(54, this.fovKick * kickScale), camera.aspect, 108);
     } else if (this.view === 'flyby') {
       this.flybyDirector(dt, timeSec, camera, f, upm, speedMps, fwd, nearest);
     }
@@ -2716,23 +2910,36 @@ export class JetController {
       }
     }
 
-    // Depth range for the world: near follows the actual height of the camera over the local ground
+    // Depth range for the world: near follows camera height over local ground without collapsing depth precision
     const camDistAboveGround = nearest ? Math.max(0, camera.position.distanceTo(nearest.center) - this.surfaceRadius(nearest, camera.position)) : this.lastAltUnits;
-    camera.near = Math.max(1e-6, Math.min(0.02, camDistAboveGround * 0.1));
-    camera.far = Math.max(2.4e8, camera.position.length() * 2.5);
+    const nearFrac = camDistAboveGround > 5e-5 ? 0.22 : 0.14;
+    camera.near = Math.max(2e-6, Math.min(0.02, camDistAboveGround * nearFrac));
+    camera.far = Math.max(1.25e8, camera.position.length() * 2.5);
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
   }
 
   /** Re-render the cube map that lights and reflects the jet. Called inside the floating-origin draw. */
   public captureEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Scene): void {
-    if (!this.active) return;
+    if (!this.active || renderer.getContext?.()?.isContextLost?.()) return;
+    if (!this.envTargetChecked) {
+      this.envTargetChecked = true;
+      const isWebGL2 = renderer.capabilities?.isWebGL2 ?? false;
+      const canHalfFloat = isWebGL2
+        ? renderer.extensions.has('EXT_color_buffer_float') || renderer.extensions.has('EXT_color_buffer_half_float')
+        : renderer.extensions.has('EXT_color_buffer_half_float');
+      if (!canHalfFloat && this.envFaceTarget.texture.type !== THREE.UnsignedByteType) {
+        this.envFaceTarget.dispose();
+        this.envFaceTarget = new THREE.WebGLRenderTarget(256, 256, { type: THREE.UnsignedByteType });
+        (this.envClean.material as THREE.ShaderMaterial).uniforms.tSrc.value = this.envFaceTarget.texture;
+      }
+    }
     {
       // The mirrors, live, while the cockpit is in view
       const inside = (this.view === 'cockpit' || this.view === 'gopro') && !this.cutscene && this.mirrorCount > 0;
       const fwd = this.flight.forward(this.vMirF);
       this.vMirU.set(0, 1, 0).applyQuaternion(this.flight.quaternion);
-      const viewport = renderer.getViewport(new THREE.Vector4());
+      const viewport = renderer.getViewport(this.envOuterViewport);
       this.mirror.render(renderer, scene, fwd, this.vMirU, Math.max(1e-6, this.lastAltUnits * 0.02), inside);
       // The cockpit displays' 3D views (synthetic vision ahead, the moving map below)
       const insideAny = (this.view === 'cockpit' || this.view === 'gopro') && !this.cutscene && this.mfdCount > 0 && perf.tier !== 'low';
@@ -2804,11 +3011,12 @@ export class JetController {
     }
     // One face of the cube a turn, the six in the same time the whole cube took before: drawn all
     // at once it was the whole world six times in one frame (a 60-270 ms hitch every 12th frame)
-    if (this.envFrame++ % Math.max(1, Math.round(perf.settings.envEvery / 6)) !== 0) return;
+    const envCadence = Math.max(1, Math.round((perf.settings.envEvery * (perf.scale < 0.78 ? 2 : 1)) / 6));
+    if (this.envFrame++ % envCadence !== 0) return;
     const altUnits = Math.max(1e-6, this.lastAltUnits);
     for (const c of this.envCamera.children as THREE.PerspectiveCamera[]) {
-      c.near = Math.max(1e-6, altUnits * 0.02);
-      c.far = 2.4e8;
+      c.near = Math.max(2e-6, altUnits * 0.02);
+      c.far = 1.25e8;
       c.updateProjectionMatrix();
     }
     this.envCamera.position.set(0, 0, 0);
@@ -2816,8 +3024,8 @@ export class JetController {
     // Leave the renderer exactly as found: a leaked target, viewport or clear state would show as a
     // black frame every time the cube refreshes
     const target = renderer.getRenderTarget();
-    const viewport = renderer.getViewport(new THREE.Vector4());
-    const scissor = renderer.getScissor(new THREE.Vector4());
+    const viewport = renderer.getViewport(this.envViewport);
+    const scissor = renderer.getScissor(this.envScissor);
     const scissorTest = renderer.getScissorTest();
     const autoClear = renderer.autoClear;
     const shadowAuto = renderer.shadowMap.autoUpdate;

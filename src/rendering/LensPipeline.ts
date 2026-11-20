@@ -543,12 +543,39 @@ const FiniteShader = {
     varying vec2 vUv;
     void main() {
       vec4 c = texture2D(tDiffuse, vUv);
-      // isnan (GLSL ES 3.0): a compiler may fold the classic (c != c) test away
-      c = mix(c, vec4(0.0, 0.0, 0.0, 1.0), vec4(isnan(c)));
-      gl_FragColor = clamp(c, 0.0, 30000.0);
+      // Avoid isnan() (triggers ANGLE D3D11 X3577): NaN fails both >= 0 and <= 30000 comparisons
+      vec3 rgb = vec3(
+        c.r >= 0.0 ? (c.r <= 30000.0 ? c.r : 30000.0) : 0.0,
+        c.g >= 0.0 ? (c.g <= 30000.0 ? c.g : 30000.0) : 0.0,
+        c.b >= 0.0 ? (c.b <= 30000.0 ? c.b : 30000.0) : 0.0
+      );
+      float a = (c.a >= 0.0 && c.a <= 1.0) ? c.a : 1.0;
+      gl_FragColor = vec4(rgb, a);
     }
   `,
 };
+
+/**
+ * Clone Three.js FXAAShader with textureLod + single-return control flow so
+ * ANGLE HLSL on Windows compiles without X3595 / X4000 shader warnings.
+ */
+function createCleanFxaaShader(): typeof FXAAShader {
+  const frag = FXAAShader.fragmentShader
+    .replace(
+      'return texture( tex2D, uv );',
+      'return textureLod( tex2D, uv, 0.0 );',
+    )
+    .replace(
+      /if\s*\(\s*ShouldSkipPixel\(\s*luminance\s*\)\s*\)\s*\{\s*return Sample\(\s*tex2D,\s*uv\s*\);\s*\}([\s\S]*?)return Sample\(\s*tex2D,\s*uv\s*\);/,
+      'vec4 fxaaOut = Sample( tex2D, uv );\n\t\t\tif ( !ShouldSkipPixel( luminance ) ) {\n$1\t\t\tfxaaOut = Sample( tex2D, uv );\n\t\t\t}\n\t\t\treturn fxaaOut;',
+    );
+  return {
+    name: FXAAShader.name,
+    uniforms: THREE.UniformsUtils.clone(FXAAShader.uniforms),
+    vertexShader: FXAAShader.vertexShader,
+    fragmentShader: frag,
+  };
+}
 
 export class LensPipeline {
   public profile: LensProfile = LENS_PROFILES.cinematic;
@@ -560,7 +587,7 @@ export class LensPipeline {
   private bloomPass: UnrealBloomPass;
   private lensPass: ShaderPass;
   private overlayPass = new OverlayPass();
-  private fxaaPass = new ShaderPass(FXAAShader);
+  private fxaaPass = new ShaderPass(createCleanFxaaShader());
   /** Edge smoothing for the jet overlay: SMAA keeps single-pixel stars crisp, where FXAA smeared them. */
   private smaaPass: SMAAPass;
   private aoPass: OverlayAOPass | null = null;
@@ -575,12 +602,19 @@ export class LensPipeline {
   private depthTap = new DepthTapPass();
   private godRays = new GodRaysPass();
   private gradePass = new ShaderPass(ColorGradeShader);
-  public readonly clouds = new VolumetricCloudPass(perf.tier === 'high' ? 0.65 : perf.tier === 'medium' ? 0.5 : 0.38);
+  public readonly clouds = new VolumetricCloudPass(perf.cloudScale);
 
   private prevViewProj = new THREE.Matrix4();
   private hasPrev = false;
   private tmpView = new THREE.Matrix4();
   private tmpViewProj = new THREE.Matrix4();
+  private tmpSize = new THREE.Vector2();
+  private lastWidth = 0;
+  private lastHeight = 0;
+  private lastPixelRatio = 0;
+  private contextLost = false;
+  private readonly onContextLostBound: (e: Event) => void;
+  private readonly onContextRestoredBound: () => void;
   private reducedMotion = false;
 
   constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.PerspectiveCamera) {
@@ -588,12 +622,22 @@ export class LensPipeline {
     this.scene = scene;
     this.camera = camera;
 
-    const size = renderer.getSize(new THREE.Vector2());
-    const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType });
+    const size = renderer.getSize(this.tmpSize);
+    const initW = Math.max(1, Math.round(size.x));
+    const initH = Math.max(1, Math.round(size.y));
+    const isWebGL2 = renderer.capabilities?.isWebGL2 ?? false;
+    const canHalfFloat = isWebGL2
+      ? renderer.extensions.has('EXT_color_buffer_float') || renderer.extensions.has('EXT_color_buffer_half_float')
+      : renderer.extensions.has('EXT_color_buffer_half_float');
+    const target = new THREE.WebGLRenderTarget(initW, initH, {
+      type: canHalfFloat ? THREE.HalfFloatType : THREE.UnsignedByteType,
+    });
     // The scene's depth, for the volumetric clouds (each composer buffer gets its own copy)
-    target.depthTexture = new THREE.DepthTexture(size.x, size.y, THREE.FloatType);
+    target.depthTexture = new THREE.DepthTexture(initW, initH, isWebGL2 ? THREE.FloatType : THREE.UnsignedIntType);
     this.composer = new EffectComposer(renderer, target);
-    this.composer.setPixelRatio(perf.pixelRatio(1.5));
+    const initPr = perf.pixelRatio(1.5, initW, initH);
+    this.lastPixelRatio = initPr;
+    this.composer.setPixelRatio(initPr);
 
     this.composer.addPass(new RenderPass(scene, camera));
     this.composer.addPass(this.depthTap);
@@ -610,7 +654,7 @@ export class LensPipeline {
     this.composer.addPass(this.canopyPass);
     this.composer.addPass(this.overlayPass);
     this.composer.addPass(new ShaderPass(FiniteShader));
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.4, 0.5, 0.85);
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(initW, initH), 0.4, 0.5, 0.85);
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(new OutputPass());
     this.gradePass.enabled = false;
@@ -619,7 +663,7 @@ export class LensPipeline {
     this.composer.addPass(this.actionCamPass);
     this.fxaaPass.enabled = false;
     this.composer.addPass(this.fxaaPass);
-    this.smaaPass = new SMAAPass(size.x, size.y);
+    this.smaaPass = new SMAAPass(initW, initH);
     this.smaaPass.enabled = false;
     this.composer.addPass(this.smaaPass);
     this.lensPass = new ShaderPass(LensShader);
@@ -627,11 +671,27 @@ export class LensPipeline {
     this.helmetPass.enabled = false;
     this.composer.addPass(this.helmetPass);
 
+    this.onContextLostBound = (e: Event): void => {
+      e.preventDefault();
+      this.contextLost = true;
+      this.hasPrev = false;
+    };
+    this.onContextRestoredBound = (): void => {
+      this.contextLost = false;
+      this.hasPrev = false;
+      this.lastWidth = 0;
+      this.lastHeight = 0;
+      this.clouds.onContextRestored();
+      this.refreshResolution();
+    };
+    renderer.domElement?.addEventListener?.('webglcontextlost', this.onContextLostBound);
+    renderer.domElement?.addEventListener?.('webglcontextrestored', this.onContextRestoredBound);
+
     if (typeof window !== 'undefined' && window.matchMedia) {
       this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     }
 
-    this.setSize(size.x, size.y);
+    this.setSize(initW, initH);
     // First visit: the clean lens. Afterwards, whatever the viewer chose last time.
     let saved: string | null = null;
     try {
@@ -735,16 +795,35 @@ export class LensPipeline {
   }
 
   public setSize(width: number, height: number): void {
-    this.composer.setSize(width, height);
-    const pr = this.composerRatio();
-    this.lensPass.uniforms.uResolution.value.set(width * pr, height * pr);
-    this.fxaaPass.uniforms.resolution.value.set(1 / Math.max(1, width * pr), 1 / Math.max(1, height * pr));
-    this.aoPass?.setSize(width * pr, height * pr);
+    const w = Math.max(1, Math.round(width));
+    const h = Math.max(1, Math.round(height));
+    const pr = this.composerRatio(w, h);
+    if (w !== this.lastWidth || h !== this.lastHeight || Math.abs(pr - this.lastPixelRatio) > 1e-3) {
+      this.lastWidth = w;
+      this.lastHeight = h;
+      this.lastPixelRatio = pr;
+      this.composer.setPixelRatio(pr);
+      this.composer.setSize(w, h);
+    }
+    this.clouds.setAdaptiveQuality(perf.cloudScale, perf.cloudStepScale);
+    this.syncAdaptivePasses();
+    this.lensPass.uniforms.uResolution.value.set(w * pr, h * pr);
+    this.fxaaPass.uniforms.resolution.value.set(1 / Math.max(1, w * pr), 1 / Math.max(1, h * pr));
+    this.aoPass?.setSize(w * pr, h * pr);
+  }
+
+  /** Sync expensive overlay post-FX (GTAO / SMAA vs FXAA fallback) with current dynamic quality scale. */
+  private syncAdaptivePasses(): void {
+    const on = this.overlayPass.enabled;
+    if (this.aoPass) this.aoPass.enabled = on && perf.aoEnabled;
+    const useSmaa = on && perf.smaaEnabled;
+    this.smaaPass.enabled = useSmaa;
+    this.fxaaPass.enabled = on && !useSmaa;
   }
 
   /** Resolution of the composer's targets: the full screen while flying, a little less otherwise. */
-  private composerRatio(): number {
-    const base = this.overlayPass.enabled ? perf.pixelRatio(2) : perf.pixelRatio(1.5);
+  private composerRatio(width?: number, height?: number): number {
+    const base = this.overlayPass.enabled ? perf.pixelRatio(2, width, height) : perf.pixelRatio(1.5, width, height);
     return base * this.supersample;
   }
 
@@ -765,8 +844,7 @@ export class LensPipeline {
 
   /** Re-apply the resolution (the performance governor changed its scale). */
   public refreshResolution(): void {
-    this.composer.setPixelRatio(this.composerRatio());
-    const size = this.renderer.getSize(new THREE.Vector2());
+    const size = this.renderer.getSize(this.tmpSize);
     this.setSize(size.x, size.y);
   }
 
@@ -815,10 +893,10 @@ export class LensPipeline {
     this.gradePass.enabled = on;
     if (!on) this.godRays.enabled = false;
     // Ambient occlusion on the jet: only where the GPU has room for it
+    const size = this.renderer.getSize(this.tmpSize);
     if (on && scene && camera && !this.aoPass && perf.settings.ao) {
-      const size = this.renderer.getSize(new THREE.Vector2());
-      const pr = perf.pixelRatio(1.5);
-      this.aoPass = new OverlayAOPass(scene, camera, size.x * pr, size.y * pr);
+      const pr = perf.pixelRatio(1.5, size.x, size.y);
+      this.aoPass = new OverlayAOPass(scene, camera, Math.max(1, size.x * pr), Math.max(1, size.y * pr));
       this.aoPass.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1.2, thickness: 1.2, scale: 1.1, samples: 12 });
       this.aoPass.updatePdMaterial({ radius: 6, rings: 2, samples: 12 });
       this.aoPass.blendIntensity = 0.9;
@@ -826,12 +904,9 @@ export class LensPipeline {
     }
     if (on === this.overlayPass.enabled) return;
     this.overlayPass.enabled = on;
-    if (this.aoPass) this.aoPass.enabled = on;
-    this.smaaPass.enabled = on && perf.settings.smaa;
+    this.syncAdaptivePasses();
     // Flying, the sky is drawn at the screen's full sharpness (as the clean lens draws it), not the
     // 1.5x the observatory's lens effects run at
-    this.composer.setPixelRatio(this.composerRatio());
-    const size = this.renderer.getSize(new THREE.Vector2());
     this.setSize(size.x, size.y);
     if (!on) {
       this.speedBlurPass.enabled = false;
@@ -854,7 +929,7 @@ export class LensPipeline {
     const u = this.actionCamPass.uniforms;
     u.uVibration.value = this.reducedMotion ? 0 : vibration;
     u.uTime.value = timeSec;
-    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    const size = this.renderer.getDrawingBufferSize(this.tmpSize);
     u.uResolution.value.copy(size);
   }
 
@@ -868,12 +943,14 @@ export class LensPipeline {
     u.uProj.value = on ? 1 : 0;
     if (!on) return;
     const d = THREE.MathUtils.degToRad;
+    const safeAspect = Math.max(0.25, aspect);
     const srcTan = Math.tan(d(srcHalfFovDeg));
     // Rectilinear core: 40 degrees at the top edge's height; the bending starts 0.6 half-heights out
     const k = Math.tan(d(40));
     const r0 = 0.6;
-    const side = aspect;
-    const corner = Math.hypot(aspect, 1);
+    // On portrait viewports aspect < 1 (around r0=0.6), use max(1, aspect) so (side - r0) never vanishes
+    const side = Math.max(1, safeAspect);
+    const corner = Math.hypot(safeAspect, 1);
     const srcSide = Math.atan(side * srcTan);
     const srcCorner = Math.atan(corner * srcTan);
     // Wide at the sides (the horizon's ends), never past what was rendered
@@ -902,7 +979,7 @@ export class LensPipeline {
   }
 
   public setGodRays(x: number, y: number, k: number): void {
-    const size = this.renderer.getSize(new THREE.Vector2());
+    const size = this.renderer.getSize(this.tmpSize);
     this.godRays.enabled = this.overlayPass.enabled && k > 0.003;
     this.godRays.set(x, y, k, size.x / Math.max(1, size.y));
   }
@@ -917,7 +994,7 @@ export class LensPipeline {
     u.uOn.value = k;
     u.uSun.value.set(sunNdcX * 0.5 + 0.5, sunNdcY * 0.5 + 0.5, sunK);
     u.uTime.value = timeSec;
-    const size = this.renderer.getSize(new THREE.Vector2());
+    const size = this.renderer.getSize(this.tmpSize);
     u.uAspect.value = size.x / Math.max(1, size.y);
   }
 
@@ -927,7 +1004,7 @@ export class LensPipeline {
     this.canopyPass.uniforms.uInside.value = inside ? 1 : 0;
     const u = this.canopyPass.uniforms;
     u.uSun.value.set(ndcX * 0.5 + 0.5, ndcY * 0.5 + 0.5, strength);
-    const size = this.renderer.getSize(new THREE.Vector2());
+    const size = this.renderer.getSize(this.tmpSize);
     u.uAspect.value = size.x / Math.max(1, size.y);
   }
 
@@ -939,6 +1016,7 @@ export class LensPipeline {
   }
 
   public render(timeSec: number): void {
+    if (this.contextLost || this.renderer.getContext?.()?.isContextLost?.()) return;
     if (this.clouds.enabled) this.clouds.setView(this.camera);
     if (this.profile.name === 'clean' && !this.overlayPass.enabled) {
       this.renderer.render(this.scene, this.camera);
@@ -956,7 +1034,7 @@ export class LensPipeline {
     u.uPrevViewProj.value.copy(this.hasPrev ? this.prevViewProj : this.tmpViewProj);
     u.uTime.value = timeSec;
 
-    const rSize = this.renderer.getSize(new THREE.Vector2());
+    const rSize = this.renderer.getSize(this.tmpSize);
     this.renderer.setViewport(0, 0, rSize.x, rSize.y);
     this.renderer.setScissor(0, 0, rSize.x, rSize.y);
     this.composer.render();
@@ -966,6 +1044,8 @@ export class LensPipeline {
   }
 
   public dispose(): void {
+    this.renderer.domElement?.removeEventListener?.('webglcontextlost', this.onContextLostBound);
+    this.renderer.domElement?.removeEventListener?.('webglcontextrestored', this.onContextRestoredBound);
     this.composer.dispose();
     this.clouds.dispose();
     this.exposure.dispose();

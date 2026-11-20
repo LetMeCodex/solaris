@@ -452,7 +452,7 @@ export const CatalogueScreen: React.FC<Props> = ({
 
       {!system && tab === 'all' && (
         <aside className="cat-panel cat-panel-all">
-          <input autoFocus className="cat-search" placeholder={`Search ${CatalogueManager.getAllBodies().length} worlds, moons and small bodies`} value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search the Atlas" />
+          <input autoFocus={typeof window !== 'undefined' && window.matchMedia('(pointer: fine)').matches} className="cat-search" placeholder={`Search ${CatalogueManager.getAllBodies().length} worlds, moons and small bodies`} value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search the Atlas" />
           <div className="cat-filters">
             {(['all', 'planet', 'moon', 'minor'] as Filter[]).map((f) => (
               <button key={f} aria-pressed={filter === f} onClick={() => setFilter(f)}>

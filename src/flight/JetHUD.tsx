@@ -675,7 +675,8 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
         : t.destinationName
           ? `P · TRANSIT TO ${t.destinationName.toUpperCase()}`
           : '';
-    drawTactical(ctx, t, earth, creditsHeight(), travel);
+    const insets = safeInsets();
+    drawTactical(ctx, t, earth, creditsHeight() + insets.bottom, travel, insets.top);
   } else if (t.nearest === 'Earth') {
     // ── Phone: compact readouts in the bottom corners ──
     const loc = getEarthLocation(t.lat, t.lon, t.altKm);
@@ -687,12 +688,13 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
       ? `${Math.round(t.altKm * 1000).toLocaleString('en-US')} M`
       : `${Math.round(t.altKm).toLocaleString('en-US')} KM`;
     const speedKmh = Math.round(t.speedMps * 3.6);
-    let padR = w - 14;
+    let padR = w - Math.max(14, safeInsets().right + 8);
     let botR = h - 20;
     if (phone) {
-      const base = h - Math.max(side ? 12 : 20, creditsHeight()) - 8;
-      const padL = 14;
-      padR = w - 14;
+      const insets = safeInsets();
+      const base = h - Math.max(side ? 12 : 20, creditsHeight() + insets.bottom) - 8;
+      const padL = Math.max(14, insets.left + 8);
+      padR = w - Math.max(14, insets.right + 8);
       botR = base;
       ctx.shadowColor = 'rgba(0,0,0,0.7)';
       ctx.shadowBlur = 6;
@@ -706,19 +708,8 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
       ctx.lineTo(padR, base + 2);
       ctx.lineTo(padR - 46, base + 2);
       ctx.stroke();
-      ctx.textAlign = 'left';
-      ctx.font = `700 12.5px ${MONO}`;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(fitText(ctx, loc.title, w / 2 - padL - 30), padL + 9, base - 28);
-      ctx.font = `500 10px ${SANS}`;
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
-      ctx.fillText(fitText(ctx, loc.subtitle, w / 2 - padL - 30), padL + 9, base - 15);
-      if (loc.coords) {
-        ctx.font = `500 9px ${MONO}`;
-        ctx.fillStyle = 'rgba(109, 252, 192, 0.85)';
-        ctx.fillText(loc.coords, padL + 9, base - 3);
-      }
-      // Value, then its label to the left of it, right-aligned to the bracket
+      // Draw right telemetry first so we can measure its exact left edge and give location text the full free gap
+      let minRightX = padR - 46;
       const row = (label: string, value: string, y: number, size: number, colour: string): void => {
         ctx.textAlign = 'right';
         ctx.font = `600 ${size}px ${MONO}`;
@@ -726,12 +717,27 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
         ctx.fillText(value, padR - 9, y);
         const vw = ctx.measureText(value).width;
         ctx.font = `600 8px ${MONO}`;
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.45)';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
         ctx.fillText(label, padR - 9 - vw - 6, y);
+        const lw = ctx.measureText(label).width;
+        minRightX = Math.min(minRightX, padR - 9 - vw - 6 - lw);
       };
       row('ALT', altStr, base - 29, 12, '#ffffff');
       row('SPD', `${speedKmh.toLocaleString('en-US')} KM/H`, base - 16, 12, '#ffffff');
       row('MACH', t.mach.toFixed(2), base - 1, 14, t.mach >= 1.0 ? 'rgba(109, 252, 192, 0.95)' : '#ffffff');
+      const maxLocW = Math.max(w / 2 - padL - 10, minRightX - (padL + 9) - 18);
+      ctx.textAlign = 'left';
+      ctx.font = `700 12.5px ${MONO}`;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(fitText(ctx, loc.title, maxLocW), padL + 9, base - 28);
+      ctx.font = `500 10px ${SANS}`;
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
+      ctx.fillText(fitText(ctx, loc.subtitle, maxLocW), padL + 9, base - 15);
+      if (loc.coords) {
+        ctx.font = `500 9px ${MONO}`;
+        ctx.fillStyle = 'rgba(109, 252, 192, 0.9)';
+        ctx.fillText(fitText(ctx, loc.coords, maxLocW), padL + 9, base - 3);
+      }
       botR = base + 34;
     }
     // Travel: the speed tier (J), and a transit under way (P)
@@ -829,6 +835,27 @@ function isPhone(w: number, h = Infinity): boolean {
   return !!(window.matchMedia?.('(pointer: coarse)').matches || navigator.maxTouchPoints > 0) && !window.matchMedia?.('(pointer: fine)').matches;
 }
 
+let cachedInsets = { top: 0, bottom: 0, left: 0, right: 0 };
+let insetsAt = 0;
+function safeInsets(): { top: number; bottom: number; left: number; right: number } {
+  const now = performance.now();
+  if (now - insetsAt > 600 && typeof document !== 'undefined' && typeof getComputedStyle !== 'undefined') {
+    insetsAt = now;
+    const cs = getComputedStyle(document.documentElement);
+    const px = (v: string): number => {
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? n : 0;
+    };
+    cachedInsets = {
+      top: px(cs.scrollPaddingTop),
+      bottom: px(cs.scrollPaddingBottom),
+      left: px(cs.scrollPaddingLeft),
+      right: px(cs.scrollPaddingRight),
+    };
+  }
+  return cachedInsets;
+}
+
 /**
  * Height of the map credits along the bottom (Google's list changes with the place and wraps on a
  * narrow screen), read at most twice a second; 0 when none are shown.
@@ -900,7 +927,8 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
   });
   const [listOpen, setListOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const { compact, touch } = useScreen();
+  const [helpTab, setHelpTab] = useState<'keys' | 'spec'>('keys');
+  const { compact, touch, narrow, landscapeShort, vw } = useScreen();
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -908,17 +936,33 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     let lastSlow = 0;
-    const unsub = controller.subscribe((raw) => {
-      const t = raw as JetTelemetry;
-      if (!t.active) return;
+    let lastTelemetry: JetTelemetry | null = null;
+    const syncCanvasAndDraw = (t: JetTelemetry): void => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const W = Math.round(t.width * dpr);
-      const H = Math.round(t.height * dpr);
+      const cw = canvas.clientWidth || t.width;
+      const ch = canvas.clientHeight || t.height;
+      const W = Math.max(1, Math.round(cw * dpr));
+      const H = Math.max(1, Math.round(ch * dpr));
       if (canvas.width !== W || canvas.height !== H) {
         canvas.width = W;
         canvas.height = H;
       }
       draw(ctx, t, dpr);
+    };
+    const onResize = (): void => {
+      insetsAt = 0;
+      creditsAt = 0;
+      if (lastTelemetry) syncCanvasAndDraw(lastTelemetry);
+    };
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(onResize) : null;
+    ro?.observe(canvas);
+    window.visualViewport?.addEventListener('resize', onResize);
+
+    const unsub = controller.subscribe((raw) => {
+      const t = raw as JetTelemetry;
+      if (!t.active) return;
+      lastTelemetry = t;
+      syncCanvasAndDraw(t);
       // The DOM bits only need a few updates a second
       if (t.timeSec - lastSlow > 0.25) {
         lastSlow = t.timeSec;
@@ -1007,16 +1051,16 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
         );
       }
     });
-    return unsub;
+    return () => {
+      unsub();
+      ro?.disconnect();
+      window.visualViewport?.removeEventListener('resize', onResize);
+    };
   }, [controller]);
 
-  // The controls card greets the pilot, then gets out of the way (H brings it back)
+  // Keep controls collapsed by default so the HUD & LOC/flight cards stay unobstructed (H or Help button toggles)
   useEffect(() => {
-    controller.helpOpen = true;
-    const id = window.setTimeout(() => {
-      controller.helpOpen = false;
-    }, 14000);
-    return () => window.clearTimeout(id);
+    controller.helpOpen = false;
   }, [controller]);
 
   const names = controller.bodyNames();
@@ -1141,34 +1185,59 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
       {/* Where you are, top left: quiet */}
       <div
         style={
-          // Up out of the view: on a phone just under the buttons, on its side beside them
-          compact && typeof window !== 'undefined' && window.innerWidth < 560
-            ? { position: 'absolute', top: 46, left: 12, right: 12, textAlign: 'center', fontFamily: 'Montserrat, system-ui, sans-serif', pointerEvents: 'none' }
+          // Up out of the view: on portrait phone just under the buttons, on landscape/tablet beside them
+          compact && narrow
+            ? {
+                position: 'absolute',
+                top: 'calc(env(safe-area-inset-top, 0px) + 54px)',
+                left: 'max(12px, env(safe-area-inset-left, 0px))',
+                right: 'max(12px, env(safe-area-inset-right, 0px))',
+                textAlign: 'center',
+                fontFamily: 'Montserrat, system-ui, sans-serif',
+                textShadow: '0 1px 4px rgba(0,0,0,0.88), 0 0 10px rgba(0,0,0,0.5)',
+                pointerEvents: 'none',
+              }
             : compact
-              ? { position: 'absolute', top: typeof window !== 'undefined' && window.innerHeight < 500 ? 8 : 44, left: 12, maxWidth: '40vw', fontFamily: 'Montserrat, system-ui, sans-serif', pointerEvents: 'none' }
-            : { position: 'absolute', top: 18, left: 22, maxWidth: 'calc(50vw - 160px)', fontFamily: 'Montserrat, system-ui, sans-serif', pointerEvents: 'none' }
+              ? {
+                  position: 'absolute',
+                  top: landscapeShort ? 'max(8px, env(safe-area-inset-top, 0px))' : 'calc(env(safe-area-inset-top, 0px) + 48px)',
+                  left: 'max(12px, env(safe-area-inset-left, 0px))',
+                  maxWidth: 'min(260px, 38vw)',
+                  fontFamily: 'Montserrat, system-ui, sans-serif',
+                  textShadow: '0 1px 4px rgba(0,0,0,0.88), 0 0 10px rgba(0,0,0,0.5)',
+                  pointerEvents: 'none',
+                }
+              : {
+                  position: 'absolute',
+                  top: 'max(16px, calc(env(safe-area-inset-top, 0px) + 10px))',
+                  left: 'max(22px, calc(env(safe-area-inset-left, 0px) + 14px))',
+                  maxWidth: 'min(320px, calc(50vw - 170px))',
+                  fontFamily: 'Montserrat, system-ui, sans-serif',
+                  textShadow: '0 1px 4px rgba(0,0,0,0.85)',
+                  pointerEvents: 'none',
+                }
         }
       >
-        <div style={{ fontSize: 9, letterSpacing: '0.42em', color: 'rgba(244,205,114,0.85)' }}>{controller.airframe.anchors.name}</div>
-        <div style={{ fontSize: 9, letterSpacing: '0.32em', color: 'rgba(255,255,255,0.55)', marginTop: 5 }}>{slow.status}</div>
-        <div style={{ fontSize: 8.5, letterSpacing: '0.26em', color: 'rgba(109,252,192,0.72)', marginTop: 4 }}>
+        <div style={{ fontSize: 9, letterSpacing: '0.42em', color: 'rgba(244,205,114,0.92)' }}>{controller.airframe.anchors.name}</div>
+        <div style={{ fontSize: 9, letterSpacing: '0.32em', color: 'rgba(255,255,255,0.82)', marginTop: 4 }}>{slow.status}</div>
+        <div style={{ fontSize: 8.5, letterSpacing: '0.26em', color: 'rgba(109,252,192,0.88)', marginTop: 4 }}>
           FBW {slow.fbwMode} · FLP {slow.flapMode} · FUEL {slow.fuelPct}%
         </div>
-        {slow.time && (
-          <div style={{ fontSize: 9, letterSpacing: '0.32em', color: 'rgba(255,255,255,0.42)', marginTop: 5 }}>
+        {slow.time && !landscapeShort && (
+          <div style={{ fontSize: 9, letterSpacing: '0.32em', color: 'rgba(255,255,255,0.68)', marginTop: 4 }}>
             LOCAL {slow.time}
             {slow.weather !== 'Clear' || slow.weatherMode !== 'auto' ? ` · ${slow.weather.toUpperCase()}` : ''}
           </div>
         )}
         {slow.sky && (
-          <div style={{ fontSize: 9, letterSpacing: '0.3em', color: 'rgba(244,205,114,0.9)', marginTop: 5 }}>{slow.sky}</div>
+          <div style={{ fontSize: 9, letterSpacing: '0.3em', color: 'rgba(244,205,114,0.9)', marginTop: 4 }}>{slow.sky}</div>
         )}
         {slow.landing && (
-          <div style={{ fontSize: 9, letterSpacing: '0.3em', color: 'var(--sol-mint)', marginTop: 5 }}>
+          <div style={{ fontSize: 9, letterSpacing: '0.3em', color: 'var(--sol-mint)', marginTop: 4 }}>
             LANDING · {slow.landing.toUpperCase()} · {slow.landingKm.toLocaleString('en-US')} KM
           </div>
         )}
-        <FpsCounter style={{ marginTop: 5 }} />
+        <FpsCounter style={{ marginTop: 4 }} />
       </div>
 
       {/* Non-intrusive maneuver banner and contextual micro-prompt */}
@@ -1177,11 +1246,15 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
           style={{
             position: 'absolute',
             left: '50%',
-            bottom: compact ? 86 : 62,
+            bottom: touch
+              ? 'calc(env(safe-area-inset-bottom, 0px) + 92px)'
+              : compact
+                ? 'calc(env(safe-area-inset-bottom, 0px) + 76px)'
+                : 'calc(env(safe-area-inset-bottom, 0px) + 62px)',
             transform: 'translateX(-50%)',
             pointerEvents: 'none',
             zIndex: 3,
-            maxWidth: '90vw',
+            maxWidth: 'min(92vw, 680px)',
             textAlign: 'center',
             padding: '5px 12px',
             background:
@@ -1198,8 +1271,8 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
                   : 'rgba(109, 252, 192, 0.42)'
             }`,
             fontFamily: 'var(--sol-mono)',
-            fontSize: 9.5,
-            letterSpacing: '0.16em',
+            fontSize: narrow ? 8.5 : 9.5,
+            letterSpacing: narrow ? '0.1em' : '0.16em',
             color:
               slow.promptTone === 'red'
                 ? 'rgba(255, 130, 116, 0.96)'
@@ -1217,9 +1290,18 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
         onMouseDown={stop}
         className="jet-controls"
         style={{
-          position: 'absolute', top: compact ? 6 : 12, right: compact ? 6 : 14, left: compact ? 6 : undefined, display: 'flex', gap: 2,
-          pointerEvents: 'auto', alignItems: 'center', justifyContent: 'flex-end', flexWrap: compact ? 'nowrap' : 'wrap', opacity: compact ? 0.9 : 0.72,
-          maxWidth: compact ? undefined : 'calc(100vw - 260px)',
+          position: 'absolute',
+          top: compact ? 'max(6px, env(safe-area-inset-top, 0px))' : 'max(12px, calc(env(safe-area-inset-top, 0px) + 6px))',
+          right: compact ? 'max(6px, env(safe-area-inset-right, 0px))' : 'max(14px, calc(env(safe-area-inset-right, 0px) + 6px))',
+          left: compact ? 'max(6px, env(safe-area-inset-left, 0px))' : undefined,
+          display: 'flex',
+          gap: narrow ? 0 : 2,
+          pointerEvents: 'auto',
+          alignItems: 'center',
+          justifyContent: 'flex-end',
+          flexWrap: vw < 360 || !compact ? 'wrap' : 'nowrap',
+          opacity: compact ? 0.92 : 0.78,
+          maxWidth: compact ? undefined : 'calc(100vw - 260px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))',
         }}
       >
         <IconButton icon="prev" label="Previous target" title="Previous target (Shift+T)" onClick={() => controller.cycleTarget(-1)} />
@@ -1248,8 +1330,22 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
           onMouseDown={stop}
           className="jet-menu"
           style={{
-            position: 'absolute', top: 44, right: 6, left: 6, pointerEvents: 'auto', padding: 8, display: 'flex', flexWrap: 'wrap', gap: 4,
-            justifyContent: 'center', background: 'rgba(5,4,10,0.82)', border: '1px solid var(--sol-line-soft)', backdropFilter: 'blur(10px)', zIndex: 5,
+            position: 'absolute',
+            top: 'calc(env(safe-area-inset-top, 0px) + 52px)',
+            right: 'max(6px, env(safe-area-inset-right, 0px))',
+            left: 'max(6px, env(safe-area-inset-left, 0px))',
+            maxHeight: 'calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 70px)',
+            overflowY: 'auto',
+            pointerEvents: 'auto',
+            padding: 8,
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: 4,
+            justifyContent: 'center',
+            background: 'rgba(5,4,10,0.86)',
+            border: '1px solid var(--sol-line-soft)',
+            backdropFilter: 'blur(10px)',
+            zIndex: 5,
           }}
           onClick={(e) => { if ((e.target as HTMLElement).tagName === 'BUTTON') setMenuOpen(false); }}
         >
@@ -1260,10 +1356,20 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
       {listOpen && (
         <div
           onMouseDown={stop}
+          className="hud-scroll"
           style={{
-            position: 'absolute', top: 48, right: compact ? 6 : 14, pointerEvents: 'auto', padding: 10, width: compact ? 'calc(100vw - 12px)' : 460,
-            maxHeight: '66vh', overflowY: 'auto', zIndex: 5,
-            background: 'rgba(5,4,10,0.88)', border: '1px solid var(--sol-line-soft)', backdropFilter: 'blur(12px)',
+            position: 'absolute',
+            top: compact ? 'calc(env(safe-area-inset-top, 0px) + 54px)' : 'calc(env(safe-area-inset-top, 0px) + 56px)',
+            right: compact ? 'max(6px, env(safe-area-inset-right, 0px))' : 'max(14px, env(safe-area-inset-right, 0px))',
+            pointerEvents: 'auto',
+            padding: 10,
+            width: compact ? 'calc(100vw - 12px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))' : 'min(460px, calc(100vw - 28px))',
+            maxHeight: 'calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 76px)',
+            overflowY: 'auto',
+            zIndex: 6,
+            background: 'rgba(5,4,10,0.9)',
+            border: '1px solid var(--sol-line-soft)',
+            backdropFilter: 'blur(12px)',
             fontFamily: 'Montserrat, system-ui, sans-serif',
           }}
         >
@@ -1286,9 +1392,9 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
             </button>
           </div>
           {targetTab === 'worlds' ? (
-            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${compact ? 3 : 4}, 1fr)`, gap: 2 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${vw < 400 ? 2 : compact ? 3 : 4}, minmax(0, 1fr))`, gap: 4 }}>
               {worldTargetNames.map((n) => (
-                <button key={n} type="button" className={`hud-btn ${n === slow.target ? 'is-on' : ''}`} onClick={() => { controller.setTarget(n); setListOpen(false); }}>
+                <button key={n} type="button" className={`hud-btn ${n === slow.target ? 'is-on' : ''}`} style={{ justifyContent: 'center' }} onClick={() => { controller.setTarget(n); setListOpen(false); }}>
                   {n}
                 </button>
               ))}
@@ -1357,9 +1463,21 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
       {slow.landMenu && (
         <div
           onMouseDown={stop}
+          className="hud-scroll"
           style={{
-            position: 'absolute', top: 48, right: compact ? 6 : 14, pointerEvents: 'auto', padding: '12px 12px 8px', width: compact ? 'calc(100vw - 12px)' : 380, maxHeight: '62vh', overflowY: 'auto', zIndex: 5,
-            background: 'rgba(5,4,10,0.76)', border: '1px solid var(--sol-line-soft)', backdropFilter: 'blur(10px)', fontFamily: 'Montserrat, system-ui, sans-serif',
+            position: 'absolute',
+            top: compact ? 'calc(env(safe-area-inset-top, 0px) + 54px)' : 'calc(env(safe-area-inset-top, 0px) + 56px)',
+            right: compact ? 'max(6px, env(safe-area-inset-right, 0px))' : 'max(14px, env(safe-area-inset-right, 0px))',
+            pointerEvents: 'auto',
+            padding: '12px 12px 8px',
+            width: compact ? 'calc(100vw - 12px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))' : 'min(380px, calc(100vw - 28px))',
+            maxHeight: 'calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 76px)',
+            overflowY: 'auto',
+            zIndex: 6,
+            background: 'rgba(5,4,10,0.88)',
+            border: '1px solid var(--sol-line-soft)',
+            backdropFilter: 'blur(10px)',
+            fontFamily: 'Montserrat, system-ui, sans-serif',
           }}
         >
           <div style={{ fontSize: 9, letterSpacing: '0.38em', color: 'var(--sol-mint)', marginBottom: 8 }}>
@@ -1381,47 +1499,49 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
               {landHits.map((lm) => (
                 <div
                   key={lm.id}
-                  style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '7px 6px', borderBottom: '1px solid rgba(109,252,192,0.18)', background: 'rgba(109,252,192,0.06)' }}
+                  style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, width: '100%', padding: '7px 6px', borderBottom: '1px solid rgba(109,252,192,0.18)', background: 'rgba(109,252,192,0.06)' }}
                 >
-                  <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ flex: '1 1 140px', minWidth: 0 }}>
                     <div style={{ fontSize: 12, color: 'var(--sol-mint)', letterSpacing: '0.04em' }}>{lm.name}</div>
                     <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.55)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{lm.description}</div>
                   </div>
-                  <button
-                    type="button"
-                    className="hud-btn is-on"
-                    title="Transit there: climb, cross at up to 300,000 km/h, come down over it (P)"
-                    onClick={() => {
-                      setLandQuery('');
-                      controller.setEarthDestination(lm.name, lm.lat, lm.lon);
-                      controller.startTransit(lm.name, lm.lat, lm.lon);
-                      controller.landMenu = false;
-                    }}
-                  >
-                    Fly there
-                  </button>
-                  <button
-                    type="button"
-                    className="hud-btn"
-                    title="Make it the target and fly there yourself: a marker shows the way, Z turns towards it"
-                    onClick={() => {
-                      setLandQuery('');
-                      controller.setWaypoint(lm.name, lm.lat, lm.lon);
-                    }}
-                  >
-                    Target
-                  </button>
-                  <button
-                    type="button"
-                    className="hud-btn"
-                    title="Land there and stand on the ground"
-                    onClick={() => {
-                      setLandQuery('');
-                      controller.startLanding(lm);
-                    }}
-                  >
-                    Land
-                  </button>
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="hud-btn is-on"
+                      title="Transit there: climb, cross at up to 300,000 km/h, come down over it (P)"
+                      onClick={() => {
+                        setLandQuery('');
+                        controller.setEarthDestination(lm.name, lm.lat, lm.lon);
+                        controller.startTransit(lm.name, lm.lat, lm.lon);
+                        controller.landMenu = false;
+                      }}
+                    >
+                      Fly there
+                    </button>
+                    <button
+                      type="button"
+                      className="hud-btn"
+                      title="Make it the target and fly there yourself: a marker shows the way, Z turns towards it"
+                      onClick={() => {
+                        setLandQuery('');
+                        controller.setWaypoint(lm.name, lm.lat, lm.lon);
+                      }}
+                    >
+                      Target
+                    </button>
+                    <button
+                      type="button"
+                      className="hud-btn"
+                      title="Land there and stand on the ground"
+                      onClick={() => {
+                        setLandQuery('');
+                        controller.startLanding(lm);
+                      }}
+                    >
+                      Land
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1446,7 +1566,7 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
                 type="button"
                 title="Fly there on autopilot and land"
                 onClick={() => controller.startLanding(lm)}
-                style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'transparent', cursor: 'pointer', padding: 0 }}
+                style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'transparent', cursor: 'pointer', padding: '4px 0' }}
               >
                 <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.92)', letterSpacing: '0.04em' }}>{lm.name}</div>
                 <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.5)', marginTop: 3, lineHeight: 1.45 }}>{lm.scene ?? lm.description}</div>
@@ -1469,81 +1589,130 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
       {slow.help && (
         <div
           onMouseDown={stop}
+          className="hud-scroll"
+          role="dialog"
+          aria-label="Flight controls and airframe specs"
           style={{
-            position: 'absolute', left: compact ? 6 : 18, right: compact ? 6 : undefined, top: compact ? 48 : 56, pointerEvents: 'auto', padding: '12px 14px', maxWidth: compact ? undefined : 380,
-            maxHeight: compact ? '60vh' : 'calc(100vh - 96px)', overflowY: 'auto', zIndex: 4,
-            background: 'rgba(5,4,10,0.72)', border: '1px solid var(--sol-line-soft)', backdropFilter: 'blur(8px)',
-            fontFamily: 'var(--sol-mono)', fontSize: 10, lineHeight: 1.65, color: 'var(--sol-text)',
+            position: 'absolute',
+            left: compact ? 'max(6px, env(safe-area-inset-left, 0px))' : 'max(18px, calc(env(safe-area-inset-left, 0px) + 12px))',
+            right: compact ? 'max(6px, env(safe-area-inset-right, 0px))' : undefined,
+            top: compact
+              ? 'calc(env(safe-area-inset-top, 0px) + 54px)'
+              : 'calc(env(safe-area-inset-top, 0px) + 56px)',
+            pointerEvents: 'auto',
+            padding: '10px 12px',
+            width: compact ? undefined : 'min(348px, 36vw)',
+            maxWidth: compact ? undefined : 360,
+            // Reserve bottom margin on desktop/laptop so opening Help never covers the LOC card
+            maxHeight: compact
+              ? 'calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 72px)'
+              : 'min(390px, calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 220px))',
+            overflowY: 'auto',
+            zIndex: 7,
+            background: 'rgba(5,4,10,0.88)',
+            border: '1px solid var(--sol-line-soft)',
+            backdropFilter: 'blur(12px)',
+            fontFamily: 'var(--sol-mono)',
+            fontSize: 9.5,
+            lineHeight: 1.5,
+            color: 'var(--sol-text)',
           }}
         >
-          <div style={{ color: 'var(--sol-amber)', letterSpacing: '0.2em', fontSize: 9.5, marginBottom: 6 }}>FLYING THE {controller.airframe.anchors.name}</div>
-
-          {/* Active Airframe Spec Summary */}
-          <div
-            style={{
-              padding: '6px 8px',
-              marginBottom: 8,
-              background: 'rgba(109,252,192,0.06)',
-              border: '1px solid rgba(109,252,192,0.22)',
-              fontSize: 9.5,
-              lineHeight: 1.55,
-              color: 'var(--sol-mint)',
-            }}
-          >
-            <div><b>{spec.displayName}</b> · {spec.enginesDescription}</div>
-            <div style={{ color: 'var(--sol-text)' }}>
-              Mass {spec.emptyMassKg.toLocaleString('en-US')} / {combatMass.toLocaleString('en-US')} kg · Fuel {spec.maxFuelKg.toLocaleString('en-US')} kg
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+            <div style={{ color: 'var(--sol-amber)', letterSpacing: '0.18em', fontSize: 9.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {controller.airframe.anchors.name} · CONTROLS
             </div>
-            <div style={{ color: 'var(--sol-text)' }}>
-              Wing {spec.wingAreaM2.toFixed(1)} m² ({spec.spanM.toFixed(2)} m) · Dry {(spec.dryThrustN / 1000).toFixed(0)} / AB {(spec.wetThrustN / 1000).toFixed(1)} kN (T/W {combatTw})
-            </div>
-            <div style={{ color: 'var(--sol-dim)' }}>
-              +{spec.gLimitPos}/{spec.gLimitNeg}G (HI-G +{spec.highGLimit}G) · {spec.hasCanards ? 'Close-Coupled Canards' : 'Slats + Flaperons'} · {spec.hasTvc ? (spec.tvcCantDeg > 0 ? `3D ${spec.tvcCantDeg}° TVC ±${spec.tvcMaxDeg}°` : `2D TVC ±${spec.tvcMaxDeg}°`) : 'Aerodynamic Control'}
-            </div>
-          </div>
-
-          {touch && (
-            <div style={{ color: 'var(--sol-mint)' }}>
-              <b>Touch</b> · left stick steers (up/down pitch, sideways roll) · right slider throttle · hold <b>Boost</b> · hold <b>Aim</b> (once a place is set in L menu) · tap ☰ for more
-            </div>
-          )}
-          {!touch && (
-            <>
-              <div><b>Drag</b> (left mouse) · steer · <b>Right drag</b> · free look</div>
-              <div><b>W S / ↑ ↓</b> pitch · <b>A D / ← →</b> roll · <b>Q E</b> yaw</div>
-              <div><b>R F</b> or <b>wheel</b> throttle · <b>1–0</b> set · <b>X</b> idle</div>
-              <div><b>Space</b> AB/boost · <b>K</b> arm AB · <b>Tab / ;</b> airbrake &amp; brakes</div>
-              <div><b>Space+Tab / ,</b> High-G drift paddle · <b>` / Shift+G</b> FBW (NORM/HI-G/PSM)</div>
-              <div><b>. / Shift+B</b> flaps (AUTO/CMB/LND) · <b>&apos; / Shift+Z</b> FPV hold</div>
-              <div><b>V</b> tap Cobra / hold PSM-TVC · <b>B</b> gear · <b>G</b> space FA · <b>Z</b> align</div>
-              <div><b>C</b> camera · <b>U</b> full HUD · <b>T/Shift+T</b> target · <b>L/M/P</b> land &amp; transit</div>
-              <div><b>J</b> speed tier · <b>O / [ ]</b> time · <b>Y</b> weather · <b>I</b> invert · <b>N</b> sound · <b>H</b> help · <b>Esc</b> exit</div>
-              <div style={{ color: 'var(--sol-dim)', marginTop: 4 }}>
-                <b>Cockpit</b>: click gear lever, red guard, DEST screen, or any MFD bezel tab (<b>PFD·FCS·ENG·NAV</b>).
-              </div>
-              <div style={{ color: 'var(--sol-dim)', marginTop: 4 }}>
-                <b>Gamepad</b>: <b>LS</b> pitch/roll · <b>LB/RB</b> yaw · <b>RS/R3</b> look · <b>A</b> boost · <b>LB+RB</b> brake · <b>A+LB+RB</b> High-G drift · <b>D-Pad ↑</b> FBW · <b>←/→</b> flaps · <b>↓</b> gear (hold FPV) · <b>X</b> Cobra/PSM
-              </div>
-            </>
-          )}
-          <div style={{ color: 'var(--sol-dim)', marginTop: 6 }}>
-            In air aerodynamic lift, drag, thrust lapse, and energy govern speed; above the atmosphere space drive scales with altitude.
-          </div>
-          <div style={{ color: 'var(--sol-faint)', marginTop: 6, fontSize: 9.5 }}>
-            Aircraft:{' '}
-            <a href={controller.airframe.anchors.credit.url} target="_blank" rel="noreferrer" style={{ color: 'var(--sol-dim)' }}>
-              {controller.airframe.anchors.credit.title}
-            </a>{' '}
-            by {controller.airframe.anchors.credit.author},{' '}
-            <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer" style={{ color: 'var(--sol-dim)' }}>
-              CC BY 4.0
-            </a>{' '}
-            (optimised)
-          </div>
-          {touch && (
-            <button type="button" className="hud-btn is-on" style={{ marginTop: 10, width: '100%', padding: '9px 0', color: 'var(--sol-mint)' }} onClick={() => { controller.helpOpen = false; }}>
-              Got it
+            <button
+              type="button"
+              className="hud-btn"
+              onClick={() => { controller.helpOpen = false; }}
+              aria-label="Close controls (H)"
+              title="Close controls (H)"
+              style={{ flexShrink: 0, padding: '4px 9px', fontSize: 9 }}
+            >
+              × Close
             </button>
+          </div>
+
+          <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+            <button
+              type="button"
+              className={`hud-btn ${helpTab === 'keys' ? 'is-on' : ''}`}
+              style={{ flex: 1, justifyContent: 'center' }}
+              onClick={() => setHelpTab('keys')}
+            >
+              {touch ? 'Touch & Pad' : 'Keys & Pad'}
+            </button>
+            <button
+              type="button"
+              className={`hud-btn ${helpTab === 'spec' ? 'is-on' : ''}`}
+              style={{ flex: 1, justifyContent: 'center' }}
+              onClick={() => setHelpTab('spec')}
+            >
+              Airframe Spec
+            </button>
+          </div>
+
+          {helpTab === 'keys' ? (
+            touch ? (
+              <div style={{ display: 'grid', gap: 6, color: 'var(--sol-mint)' }}>
+                <div><b>Left stick</b> · pitch (up/down) &amp; roll (sideways)</div>
+                <div><b>Right slider</b> · throttle · <b>Boost</b> · afterburner</div>
+                <div><b>Aim</b> · turn nose toward waypoint/target · tap <b>☰</b> for camera, era &amp; weather</div>
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 3 }}>
+                <div><b>Drag / LMB</b> steer · <b>RMB</b> look · <b>W S A D / Q E</b> pitch/roll/yaw</div>
+                <div><b>R F / Wheel</b> throttle · <b>1–0</b> set · <b>X</b> idle · <b>Space</b> AB/boost</div>
+                <div><b>Tab / ;</b> brakes · <b>Space+Tab / ,</b> Hi-G drift · <b>`</b> FBW · <b>.</b> flaps</div>
+                <div><b>V</b> Cobra / PSM-TVC · <b>B</b> gear · <b>G</b> FA · <b>Z</b> align · <b>&apos;</b> FPV hold</div>
+                <div><b>C</b> view · <b>U</b> HUD · <b>T/Shift+T</b> target · <b>L/M/P</b> land · <b>J</b> tier</div>
+                <div><b>O / [ ]</b> time · <b>Y</b> weather · <b>I</b> invert · <b>N</b> sound · <b>H</b> help · <b>Esc</b> exit</div>
+                <div style={{ color: 'var(--sol-dim)', marginTop: 3 }}>
+                  <b>Cockpit</b>: click gear lever, guard, DEST, or MFD tabs (<b>PFD·FCS·ENG·NAV</b>).
+                </div>
+                <div style={{ color: 'var(--sol-dim)', marginTop: 2 }}>
+                  <b>Gamepad</b>: <b>LS</b> steer · <b>LB/RB</b> yaw/brake · <b>RS</b> look · <b>A</b> boost · <b>X</b> Cobra · <b>D-Pad</b> modes.
+                </div>
+              </div>
+            )
+          ) : (
+            <div style={{ display: 'grid', gap: 6 }}>
+              <div
+                style={{
+                  padding: '6px 8px',
+                  background: 'rgba(109,252,192,0.06)',
+                  border: '1px solid rgba(109,252,192,0.22)',
+                  lineHeight: 1.5,
+                  color: 'var(--sol-mint)',
+                }}
+              >
+                <div><b>{spec.displayName}</b> · {spec.enginesDescription}</div>
+                <div style={{ color: 'var(--sol-text)' }}>
+                  Mass {spec.emptyMassKg.toLocaleString('en-US')} / {combatMass.toLocaleString('en-US')} kg · Fuel {spec.maxFuelKg.toLocaleString('en-US')} kg
+                </div>
+                <div style={{ color: 'var(--sol-text)' }}>
+                  Wing {spec.wingAreaM2.toFixed(1)} m² ({spec.spanM.toFixed(2)} m) · Dry {(spec.dryThrustN / 1000).toFixed(0)} / AB {(spec.wetThrustN / 1000).toFixed(1)} kN (T/W {combatTw})
+                </div>
+                <div style={{ color: 'var(--sol-dim)' }}>
+                  +{spec.gLimitPos}/{spec.gLimitNeg}G (HI-G +{spec.highGLimit}G) · {spec.hasCanards ? 'Close-Coupled Canards' : 'Slats + Flaperons'} · {spec.hasTvc ? (spec.tvcCantDeg > 0 ? `3D ${spec.tvcCantDeg}° TVC ±${spec.tvcMaxDeg}°` : `2D TVC ±${spec.tvcMaxDeg}°`) : 'Aerodynamic Control'}
+                </div>
+              </div>
+              <div style={{ color: 'var(--sol-dim)' }}>
+                In air aerodynamic lift, drag, thrust lapse, and energy govern speed; above the atmosphere space drive scales with altitude.
+              </div>
+              <div style={{ color: 'var(--sol-faint)' }}>
+                Aircraft:{' '}
+                <a href={controller.airframe.anchors.credit.url} target="_blank" rel="noreferrer" style={{ color: 'var(--sol-dim)' }}>
+                  {controller.airframe.anchors.credit.title}
+                </a>{' '}
+                by {controller.airframe.anchors.credit.author},{' '}
+                <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer" style={{ color: 'var(--sol-dim)' }}>
+                  CC BY 4.0
+                </a>{' '}
+                (optimised)
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -1599,18 +1768,23 @@ const EraTitle: React.FC<{ controller: JetController }> = ({ controller }) => {
     <div
       key={shown!.t}
       style={{
-        position: 'absolute', left: '6%', top: '16%', maxWidth: 'min(720px, 88vw)', pointerEvents: 'none',
-        animation: 'eraTitle 9s ease-in-out forwards', textShadow: '0 2px 18px rgba(0,0,0,0.65)',
+        position: 'absolute',
+        left: 'max(6%, env(safe-area-inset-left, 0px) + 16px)',
+        top: 'max(16%, calc(env(safe-area-inset-top, 0px) + 56px))',
+        maxWidth: 'min(720px, 88vw)',
+        pointerEvents: 'none',
+        animation: 'eraTitle 9s ease-in-out forwards',
+        textShadow: '0 2px 18px rgba(0,0,0,0.65)',
       }}
     >
       <style>{'@keyframes eraTitle { 0% { opacity: 0; transform: translateY(8px) } 10% { opacity: 1; transform: none } 80% { opacity: 1 } 100% { opacity: 0 } }'}</style>
-      <div style={{ fontFamily: 'Montserrat, system-ui, sans-serif', fontWeight: 300, fontSize: 'clamp(26px, 4.6vw, 54px)', letterSpacing: '0.04em', color: '#fff', textTransform: 'uppercase', lineHeight: 1.05 }}>
+      <div style={{ fontFamily: 'Montserrat, system-ui, sans-serif', fontWeight: 300, fontSize: 'clamp(22px, 4.6vw, 54px)', letterSpacing: '0.04em', color: '#fff', textTransform: 'uppercase', lineHeight: 1.05 }}>
         {era.title}
       </div>
-      <div style={{ fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 'clamp(13px, 1.5vw, 18px)', color: 'rgba(255,255,255,0.88)', marginTop: 6 }}>
+      <div style={{ fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 'clamp(12px, 1.5vw, 18px)', color: 'rgba(255,255,255,0.88)', marginTop: 6 }}>
         {era.when.charAt(0).toLowerCase() + era.when.slice(1)}
       </div>
-      <div style={{ fontFamily: 'Montserrat, system-ui, sans-serif', fontSize: 'clamp(11px, 1.15vw, 14px)', color: 'rgba(255,255,255,0.72)', marginTop: 14, maxWidth: 560, lineHeight: 1.5 }}>
+      <div style={{ fontFamily: 'Montserrat, system-ui, sans-serif', fontSize: 'clamp(11px, 1.15vw, 14px)', color: 'rgba(255,255,255,0.72)', marginTop: 12, maxWidth: 560, lineHeight: 1.5 }}>
         {era.blurb}
       </div>
     </div>
@@ -1623,7 +1797,7 @@ const EraTitle: React.FC<{ controller: JetController }> = ({ controller }) => {
  */
 const EraHint: React.FC<{ controller: JetController }> = ({ controller }) => {
   const [state, setState] = useState<{ id: string; title: string; body: string; place: string; arrived: boolean; km: number } | null>(null);
-  const { compact } = useScreen();
+  const { compact, touch, landscapeShort } = useScreen();
   useEffect(() => {
     const id = window.setInterval(() => {
       const era = controller.era ? DEEP_TIME_SCENES.find((d) => d.id === controller.era) : null;
@@ -1642,13 +1816,37 @@ const EraHint: React.FC<{ controller: JetController }> = ({ controller }) => {
   return (
     <div
       style={{
-        position: 'absolute', left: '50%', bottom: compact ? undefined : 86, top: compact ? 170 : undefined, transform: 'translateX(-50%)', pointerEvents: 'auto',
-        display: 'flex', alignItems: 'center', gap: 12, padding: '8px 10px 8px 16px', borderRadius: 999, maxWidth: '92vw',
-        background: 'rgba(6,8,14,0.6)', border: '1px solid rgba(255,255,255,0.14)', backdropFilter: 'blur(6px)',
-        fontFamily: 'Montserrat, system-ui, sans-serif', fontSize: 11, letterSpacing: '0.1em', color: 'rgba(255,255,255,0.85)',
+        position: 'absolute',
+        left: '50%',
+        bottom: touch && !landscapeShort
+          ? 'calc(env(safe-area-inset-bottom, 0px) + 196px)'
+          : compact
+            ? undefined
+            : 'calc(env(safe-area-inset-bottom, 0px) + 86px)',
+        top: touch && !landscapeShort
+          ? undefined
+          : compact
+            ? 'calc(env(safe-area-inset-top, 0px) + 54px)'
+            : undefined,
+        transform: 'translateX(-50%)',
+        pointerEvents: 'auto',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '6px 8px 6px 14px',
+        borderRadius: 999,
+        maxWidth: 'calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))',
+        background: 'rgba(6,8,14,0.72)',
+        border: '1px solid rgba(255,255,255,0.16)',
+        backdropFilter: 'blur(6px)',
+        fontFamily: 'Montserrat, system-ui, sans-serif',
+        fontSize: compact ? 10 : 11,
+        letterSpacing: '0.08em',
+        color: 'rgba(255,255,255,0.88)',
+        zIndex: 4,
       }}
     >
-      <span style={{ textTransform: 'uppercase', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <span style={{ textTransform: 'uppercase', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0 }}>
         {state.arrived
           ? `${state.title} · you are at ${state.body}: land and look up`
           : `${state.title} · seen from ${state.place}${state.km > 0 ? ` · ${formatDistance(state.km)}` : ''}`}
@@ -1682,26 +1880,38 @@ const LandingFade: React.FC<{ controller: JetController }> = ({ controller }) =>
 };
 
 /** Narrow screens (phones, small windows) get the compact HUD; touch screens get on-screen controls. */
-function useScreen(): { compact: boolean; touch: boolean } {
-  const read = (): { compact: boolean; touch: boolean } => ({
-    compact: typeof window !== 'undefined' && (window.innerWidth < 820 || window.innerHeight < 480),
-    touch:
-      typeof window !== 'undefined' &&
-      !!(window.matchMedia?.('(pointer: coarse)').matches || navigator.maxTouchPoints > 0) &&
-      !window.matchMedia?.('(pointer: fine)').matches,
-  });
+function useScreen(): { compact: boolean; touch: boolean; narrow: boolean; landscapeShort: boolean; vw: number; vh: number } {
+  const read = (): { compact: boolean; touch: boolean; narrow: boolean; landscapeShort: boolean; vw: number; vh: number } => {
+    const vw = typeof window !== 'undefined' ? (window.visualViewport?.width || window.innerWidth) : 1280;
+    const vh = typeof window !== 'undefined' ? (window.visualViewport?.height || window.innerHeight) : 720;
+    return {
+      vw,
+      vh,
+      compact: vw < 820 || vh < 480,
+      narrow: vw < 560,
+      landscapeShort: vh < 500,
+      touch:
+        typeof window !== 'undefined' &&
+        !!(window.matchMedia?.('(pointer: coarse)').matches || navigator.maxTouchPoints > 0) &&
+        !window.matchMedia?.('(pointer: fine)').matches,
+    };
+  };
   const [v, setV] = useState(read);
   useEffect(() => {
     const on = (): void =>
       setV((p) => {
         const n = read();
-        return n.compact === p.compact && n.touch === p.touch ? p : n;
+        return n.compact === p.compact && n.touch === p.touch && n.narrow === p.narrow && n.landscapeShort === p.landscapeShort && Math.abs(n.vw - p.vw) < 4 && Math.abs(n.vh - p.vh) < 4
+          ? p
+          : n;
       });
     window.addEventListener('resize', on);
     window.addEventListener('orientationchange', on);
+    window.visualViewport?.addEventListener('resize', on);
     return () => {
       window.removeEventListener('resize', on);
       window.removeEventListener('orientationchange', on);
+      window.visualViewport?.removeEventListener('resize', on);
     };
   }, []);
   return v;
@@ -1721,7 +1931,9 @@ const TouchControls: React.FC<{ controller: JetController }> = ({ controller }) 
   const knobRef = useRef<HTMLDivElement>(null);
   const thrRef = useRef<HTMLDivElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
-  const R = 52;
+  const { vw, vh } = useScreen();
+  const compactTouch = vw < 400 || vh < 440;
+  const R = compactTouch ? 40 : 52;
   // AIM turns the nose to the target: over Earth that is a place set as Target (L menu, or search),
   // in space the world picked as target. Over Earth with no place set it would swing the nose up at
   // a planet in the sky, so it is only there when it has something to aim at
@@ -1791,15 +2003,16 @@ const TouchControls: React.FC<{ controller: JetController }> = ({ controller }) 
     onPointerCancel: () => set(false),
     onLostPointerCapture: () => set(false),
   });
+  const btnSize = compactTouch ? 52 : 62;
   const btn: React.CSSProperties = {
-    width: 62, height: 62, borderRadius: '50%', border: `1px solid ${ring}`, background: 'rgba(8,10,16,0.35)', color: 'rgba(255,255,255,0.85)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Montserrat, system-ui, sans-serif', fontSize: 10,
-    letterSpacing: '0.18em', userSelect: 'none', touchAction: 'none', pointerEvents: 'auto',
+    width: btnSize, height: btnSize, borderRadius: '50%', border: `1px solid ${ring}`, background: 'rgba(8,10,16,0.38)', color: 'rgba(255,255,255,0.85)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'Montserrat, system-ui, sans-serif', fontSize: compactTouch ? 9 : 10,
+    letterSpacing: '0.16em', userSelect: 'none', touchAction: 'none', pointerEvents: 'auto',
   };
   // Above the readouts in the bottom corners (~50 px) and the map credits under them (their height
   // read live, see creditsHeight)
   const [credits, setCredits] = useState(0);
-  const bottom = `max(${credits + 60}px, calc(env(safe-area-inset-bottom) + ${credits + 54}px))`;
+  const bottom = `max(${credits + (compactTouch ? 52 : 60)}px, calc(env(safe-area-inset-bottom, 0px) + ${credits + (compactTouch ? 48 : 54)}px))`;
   return (
     <>
       <div
@@ -1814,16 +2027,16 @@ const TouchControls: React.FC<{ controller: JetController }> = ({ controller }) 
         onPointerCancel={stickEnd}
         onLostPointerCapture={stickEnd}
         style={{
-          position: 'absolute', left: 'max(18px, env(safe-area-inset-left))', bottom,
-          width: R * 2 + 24, height: R * 2 + 24, borderRadius: '50%', border: `1px solid ${ring}`, background: 'rgba(8,10,16,0.22)',
+          position: 'absolute', left: 'max(14px, calc(env(safe-area-inset-left, 0px) + 8px))', bottom,
+          width: R * 2 + 22, height: R * 2 + 22, borderRadius: '50%', border: `1px solid ${ring}`, background: 'rgba(8,10,16,0.24)',
           touchAction: 'none', pointerEvents: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}
         aria-label="Flight stick"
       >
-        <div ref={knobRef} style={{ width: 46, height: 46, borderRadius: '50%', background: 'rgba(255,255,255,0.18)', border: '1px solid rgba(255,255,255,0.45)', pointerEvents: 'none' }} />
+        <div ref={knobRef} style={{ width: compactTouch ? 38 : 46, height: compactTouch ? 38 : 46, borderRadius: '50%', background: 'rgba(255,255,255,0.18)', border: '1px solid rgba(255,255,255,0.45)', pointerEvents: 'none' }} />
       </div>
-      <div style={{ position: 'absolute', right: 'max(18px, env(safe-area-inset-right))', bottom, display: 'flex', alignItems: 'flex-end', gap: 14, pointerEvents: 'none' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ position: 'absolute', right: 'max(14px, calc(env(safe-area-inset-right, 0px) + 8px))', bottom, display: 'flex', alignItems: 'flex-end', gap: compactTouch ? 10 : 14, pointerEvents: 'none' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: compactTouch ? 8 : 12 }}>
           {showAim && <div style={btn} {...hold((on) => { controller.touchAlign = on; })} aria-label="Aim at the target (hold)">AIM</div>}
           <div style={{ ...btn, color: 'rgba(255,190,120,0.95)' }} {...hold((on) => { controller.touchBoost = on; })} aria-label="Boost (hold)">BOOST</div>
         </div>
@@ -1835,7 +2048,7 @@ const TouchControls: React.FC<{ controller: JetController }> = ({ controller }) 
             thrMove(e);
           }}
           onPointerMove={thrMove}
-          style={{ position: 'relative', width: 46, height: 150, borderRadius: 10, border: `1px solid ${ring}`, background: 'rgba(8,10,16,0.3)', overflow: 'hidden', touchAction: 'none', pointerEvents: 'auto' }}
+          style={{ position: 'relative', width: 46, height: compactTouch ? 116 : 150, borderRadius: 10, border: `1px solid ${ring}`, background: 'rgba(8,10,16,0.32)', overflow: 'hidden', touchAction: 'none', pointerEvents: 'auto' }}
           aria-label="Throttle"
         >
           <div ref={fillRef} style={{ position: 'absolute', left: 0, right: 0, bottom: 0, background: 'rgba(255,255,255,0.22)' }} />
@@ -1880,6 +2093,7 @@ const TravelButtons: React.FC<{ controller: JetController }> = ({ controller }) 
 /** Radio calls as a subtitle near the bottom of the frame (transit, arrival, speed tier, cloud). */
 const RadioSubtitle: React.FC<{ controller: JetController }> = ({ controller }) => {
   const [text, setText] = useState('');
+  const { touch, landscapeShort } = useScreen();
   useEffect(() => {
     const id = window.setInterval(() => setText(controller.telemetry.radio), 150);
     return () => window.clearInterval(id);
@@ -1888,9 +2102,23 @@ const RadioSubtitle: React.FC<{ controller: JetController }> = ({ controller }) 
   return (
     <div
       style={{
-        position: 'absolute', left: '50%', bottom: 120, transform: 'translateX(-50%)', maxWidth: 'min(640px, 90vw)', pointerEvents: 'none',
-        textAlign: 'center', fontFamily: 'Georgia, "Times New Roman", serif', fontStyle: 'italic', fontSize: 15, color: 'rgba(255,255,255,0.92)',
-        textShadow: '0 1px 8px rgba(0,0,0,0.8)', letterSpacing: '0.02em',
+        position: 'absolute',
+        left: '50%',
+        bottom: landscapeShort
+          ? 'calc(env(safe-area-inset-bottom, 0px) + 64px)'
+          : touch
+            ? 'calc(env(safe-area-inset-bottom, 0px) + 148px)'
+            : 'calc(env(safe-area-inset-bottom, 0px) + 120px)',
+        transform: 'translateX(-50%)',
+        maxWidth: 'min(640px, 88vw)',
+        pointerEvents: 'none',
+        textAlign: 'center',
+        fontFamily: 'Georgia, "Times New Roman", serif',
+        fontStyle: 'italic',
+        fontSize: 'clamp(12px, 2.2vw, 15px)',
+        color: 'rgba(255,255,255,0.92)',
+        textShadow: '0 1px 8px rgba(0,0,0,0.8)',
+        letterSpacing: '0.02em',
       }}
     >
       <div style={{ fontFamily: 'Montserrat, system-ui, sans-serif', fontStyle: 'normal', fontSize: 8.5, letterSpacing: '0.4em', color: 'rgba(244,205,114,0.85)', marginBottom: 4 }}>RADIO</div>
@@ -1902,6 +2130,7 @@ const RadioSubtitle: React.FC<{ controller: JetController }> = ({ controller }) 
 /** Asked once, on the first flight: which way should W move the nose? */
 const PitchQuestion: React.FC<{ controller: JetController }> = ({ controller }) => {
   const [ask, setAsk] = useState(false);
+  const { vw } = useScreen();
   useEffect(() => {
     const id = window.setInterval(() => setAsk(controller.telemetry.askPitch), 400);
     return () => window.clearInterval(id);
@@ -1920,16 +2149,17 @@ const PitchQuestion: React.FC<{ controller: JetController }> = ({ controller }) 
     return () => window.removeEventListener('keydown', onKey, true);
   }, [ask, controller]);
   if (!ask) return null;
+  const stacked = vw < 520;
   const card: React.CSSProperties = {
-    flex: 1, padding: '18px 14px', border: '1px solid rgba(255,255,255,0.22)', background: 'rgba(8,10,16,0.55)', color: '#fff', cursor: 'pointer',
-    fontFamily: 'Georgia, "Times New Roman", serif', fontSize: 22, textAlign: 'center',
+    flex: 1, minHeight: 44, padding: stacked ? '14px 12px' : '18px 14px', border: '1px solid rgba(255,255,255,0.22)', background: 'rgba(8,10,16,0.68)', color: '#fff', cursor: 'pointer',
+    fontFamily: 'Georgia, "Times New Roman", serif', fontSize: 'clamp(18px, 4vw, 22px)', textAlign: 'center',
   };
   return (
-    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.35)', pointerEvents: 'auto', zIndex: 20 }}>
-      <div style={{ width: 'min(560px, 92vw)', textAlign: 'center' }}>
+    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'max(14px, env(safe-area-inset-top, 0px)) max(14px, env(safe-area-inset-right, 0px)) max(14px, env(safe-area-inset-bottom, 0px)) max(14px, env(safe-area-inset-left, 0px))', background: 'rgba(0,0,0,0.42)', pointerEvents: 'auto', zIndex: 20 }}>
+      <div style={{ width: 'min(560px, 92vw)', maxHeight: 'calc(100dvh - 28px)', overflowY: 'auto', textAlign: 'center' }}>
         <div style={{ fontFamily: 'Montserrat, system-ui, sans-serif', fontSize: 9, letterSpacing: '0.45em', color: 'rgba(255,255,255,0.7)' }}>BEFORE YOU FLY</div>
-        <div style={{ fontFamily: 'Georgia, "Times New Roman", serif', fontSize: 30, color: '#fff', margin: '10px 0 18px' }}>Flown a flight sim before?</div>
-        <div style={{ display: 'flex', gap: 12 }}>
+        <div style={{ fontFamily: 'Georgia, "Times New Roman", serif', fontSize: 'clamp(22px, 5vw, 30px)', color: '#fff', margin: '10px 0 18px' }}>Flown a flight sim before?</div>
+        <div style={{ display: 'flex', flexDirection: stacked ? 'column' : 'row', gap: 12 }}>
           <button type="button" style={card} onClick={() => { controller.setPitchPreference(true); setAsk(false); }}>
             New to this
             <div style={{ fontFamily: 'Montserrat, system-ui, sans-serif', fontSize: 11, color: 'rgba(255,255,255,0.65)', marginTop: 8 }}>1 · W nose up · S nose down</div>

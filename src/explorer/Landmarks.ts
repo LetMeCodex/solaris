@@ -570,7 +570,8 @@ function destination(lat: number, lon: number, bearing: number, km: number, R: n
   const d = km / R;
   const b = bearing * toRad;
   const p1 = lat * toRad;
-  const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
+  const sinP2 = Math.max(-1, Math.min(1, Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b)));
+  const p2 = Math.asin(sinP2);
   const l2 = lon * toRad + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
   return [p2 / toRad, ((((l2 / toRad + 540) % 360) + 360) % 360) - 180];
 }
@@ -599,9 +600,11 @@ export const LANDMARKS: Landmark[] = ENTRIES.map(({ towards, ...l }) => {
     // On a flat world the heading is taken from the feature itself, then the viewpoint steps back
     const originLat = l.vantageLat ?? l.lat;
     const originLon = l.vantageLon ?? l.lon;
-    out = { ...l, viewHeadingDeg: (Math.round(bearingDeg(originLat, originLon, towards[0], towards[1]) * 10) / 10) % 360 };
+    const h = Math.round(bearingDeg(originLat, originLon, towards[0], towards[1]) * 10) / 10;
+    out = { ...l, viewHeadingDeg: ((h % 360) + 360) % 360 };
   }
-  return flatWorldVantage(out, out.viewHeadingDeg ?? 0);
+  const v = flatWorldVantage(out, out.viewHeadingDeg ?? 0);
+  return v.viewHeadingDeg !== undefined ? { ...v, viewHeadingDeg: ((v.viewHeadingDeg % 360) + 360) % 360 } : v;
 });
 
 const dynamicLandmarks = new Map<string, Landmark>();
@@ -619,7 +622,16 @@ export function landmarksFor(body: string): Landmark[] {
 export function searchLandmarks(query: string): Landmark[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
-  return LANDMARKS.filter((l) => l.name.toLowerCase().includes(q) || l.body.toLowerCase().includes(q));
+  const primary: Landmark[] = [];
+  const secondary: Landmark[] = [];
+  for (const l of LANDMARKS) {
+    if (l.name.toLowerCase().includes(q) || l.body.toLowerCase().includes(q)) {
+      primary.push(l);
+    } else if (l.description.toLowerCase().includes(q)) {
+      secondary.push(l);
+    }
+  }
+  return [...primary, ...secondary];
 }
 
 export function getLandmark(id: string): Landmark | undefined {

@@ -246,8 +246,32 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
     return () => clearTimeout(t);
   }, [stamp]);
 
-  // Helmet parallax: the HUD floats a few pixels against the pointer
+  // Helmet parallax & dynamic header/footer height CSS variables (--hud-header-h / --hud-footer-h)
   const rootRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
+  const footerRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const docStyle = document.documentElement.style;
+    const syncMetrics = () => {
+      const hh = headerRef.current?.getBoundingClientRect().height;
+      if (hh && hh > 0) docStyle.setProperty('--hud-header-h', `${Math.ceil(hh)}px`);
+      const fh = footerRef.current?.getBoundingClientRect().height;
+      if (fh && fh > 0) docStyle.setProperty('--hud-footer-h', `${Math.ceil(fh + 16)}px`);
+    };
+    syncMetrics();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(syncMetrics) : null;
+    if (ro) {
+      if (headerRef.current) ro.observe(headerRef.current);
+      if (footerRef.current) ro.observe(footerRef.current);
+    }
+    window.addEventListener('resize', syncMetrics, { passive: true });
+    window.visualViewport?.addEventListener('resize', syncMetrics, { passive: true });
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', syncMetrics);
+      window.visualViewport?.removeEventListener('resize', syncMetrics);
+    };
+  }, [isHudVisible]);
   useEffect(() => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     let raf = 0;
@@ -466,7 +490,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
   if (!isHudVisible) {
     return (
-      <div className="absolute bottom-6 right-6 z-50 pointer-events-auto hud-fade-in">
+      <div className="absolute bottom-[max(16px,var(--safe-b))] right-[max(16px,var(--safe-r))] md:bottom-[max(24px,var(--safe-b))] md:right-[max(24px,var(--safe-r))] z-50 pointer-events-auto hud-fade-in">
         <button onClick={() => setIsHudVisible(true)} className="hud-btn hud-frame !text-white/60">
           <Eye size={12} />
           <span>Show interface · H</span>
@@ -527,7 +551,10 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
       {/* ========================================================
           HEADER — wordmark & chronometer · scale ladder · systems
           ======================================================== */}
-      <header className="hud-dim absolute top-0 left-0 right-0 flex flex-wrap sm:flex-nowrap items-start justify-between gap-x-4 gap-y-2 px-3 sm:px-4 md:px-7 pt-3 sm:pt-4 md:pt-5 z-40 hud-parallax-far">
+      <header
+        ref={headerRef}
+        className="hud-dim absolute top-0 left-0 right-0 flex flex-wrap lg:flex-nowrap items-start justify-between gap-x-3 sm:gap-x-4 gap-y-2 pl-[max(12px,var(--safe-l))] pr-[max(12px,var(--safe-r))] sm:pl-[max(16px,var(--safe-l))] sm:pr-[max(16px,var(--safe-r))] lg:pl-[max(28px,var(--safe-l))] lg:pr-[max(28px,var(--safe-r))] pt-[max(10px,var(--safe-t))] sm:pt-[max(14px,var(--safe-t))] md:pt-[max(20px,var(--safe-t))] z-40"
+      >
         {/* Wordmark & chronometer */}
         <div className="flex flex-col gap-2 pointer-events-auto min-w-0 shrink-0 hud-boot" style={{ ['--d' as string]: '80ms' }}>
           <div
@@ -547,8 +574,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             {/* Luminous stellar aura behind title */}
             <div className="absolute -inset-2 bg-gradient-to-r from-amber-500/10 via-white/5 to-transparent rounded-lg blur-md opacity-40 group-hover:opacity-90 transition-opacity animate-corona-aura pointer-events-none" />
 
-            <h1 className="relative flex items-center gap-3 md:gap-3.5 text-xl md:text-2xl uppercase tracking-[0.52em] font-extralight drop-shadow-md select-none">
-              <SolarisLogo className="w-7 h-7 md:w-[34px] md:h-[34px]" />
+            <h1 className="relative flex items-center gap-2.5 sm:gap-3 md:gap-3.5 text-lg sm:text-xl md:text-2xl uppercase tracking-[0.34em] sm:tracking-[0.52em] font-extralight drop-shadow-md select-none">
+              <SolarisLogo className="w-6 h-6 sm:w-7 sm:h-7 md:w-[34px] md:h-[34px]" />
               <span className="animate-solaris-shimmer">SOLARIS</span>
             </h1>
           </div>
@@ -606,108 +633,112 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         </div>
 
         {/* Systems */}
-        {/* On phones the instrument buttons take their own row at the top, above the title */}
-        <div className="relative flex items-center gap-1.5 md:gap-2 pointer-events-auto shrink-0 hud-boot z-10 max-sm:order-first max-sm:w-full max-sm:justify-end" style={{ ['--d' as string]: '420ms' }}>
+        {/* On phones the instrument buttons split cleanly into two balanced rows above the title (no orphan button wrap) */}
+        <div className="relative flex flex-col items-end gap-1 sm:flex-row sm:flex-nowrap sm:items-center sm:gap-1 lg:gap-2 pointer-events-auto shrink-0 hud-boot z-10 max-sm:order-first max-sm:w-full" style={{ ['--d' as string]: '420ms' }}>
           <div data-tour="layers" className="hidden lg:flex items-center">{layerSwitches}</div>
           <span className="hidden lg:block w-px h-4 bg-white/10 mx-1" />
-          {prefs.showRecord ? <VinylDeck current={activeTargetName} /> : <VinylFollower current={activeTargetName} />}
-          <button
-            type="button"
-            data-tour="optics"
-            data-popover-trigger
-            onClick={(e) => {
-              e.stopPropagation();
-              setIsOpticsOpen((o) => !o);
-            }}
-            aria-expanded={isOpticsOpen}
-            className={`hud-btn ${isOpticsOpen ? 'is-on' : ''}`}
-            title="Lens, distances and layers"
-          >
-            <SlidersHorizontal size={11} />
-            <span className="hidden sm:inline">Optics</span>
-          </button>
-          {onLaunchJet && (
+          <div className="flex items-center justify-end gap-1.5 sm:contents">
+            {prefs.showRecord ? <VinylDeck current={activeTargetName} /> : <VinylFollower current={activeTargetName} />}
             <button
               type="button"
-              data-tour="jet"
+              data-tour="optics"
+              data-popover-trigger
               onClick={(e) => {
                 e.stopPropagation();
-                onLaunchJet();
+                setIsOpticsOpen((o) => !o);
               }}
-              className="hud-btn"
-              style={{ color: 'var(--sol-mint)' }}
-              title="Fly the SX-1 through the real Solar System (J)"
+              aria-expanded={isOpticsOpen}
+              className={`hud-btn ${isOpticsOpen ? 'is-on' : ''}`}
+              title="Lens, distances and layers"
             >
-              <Plane size={11} />
-              <span className="hidden sm:inline">Fly</span>
+              <SlidersHorizontal size={11} />
+              <span className="max-[359px]:hidden sm:hidden min-[900px]:inline">Optics</span>
             </button>
-          )}
-          <AtlasLauncher stats={explored} onOpen={() => { setAtlasTab('worlds'); setIsCatalogueOpen(true); }} />
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              void takeShot();
-            }}
-            className="hud-icon-btn"
-            title="Take a picture (P)"
-            data-tour="camera"
-            aria-label="Take a picture"
-          >
-            <Camera size={12} />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onResetView();
-            }}
-            className="hud-icon-btn"
-            title="System overview (Esc)"
-            aria-label="Reset to system overview"
-          >
-            <RotateCcw size={12} />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setTourOpen(true);
-            }}
-            className="hud-icon-btn"
-            title="Instrument briefing"
-            aria-label="Replay the instrument briefing"
-          >
-            <HelpCircle size={12} />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setIsHudVisible(false);
-            }}
-            className="hud-icon-btn"
-            title="Hide interface (H)"
-            aria-label="Hide interface"
-          >
-            <EyeOff size={12} />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setSettingsOpen((o) => !o);
-            }}
-            className={`hud-icon-btn ${settingsOpen ? 'is-on' : ''}`}
-            title="Settings"
-            data-tour="settings"
-            aria-label="Settings"
-            aria-expanded={settingsOpen}
-          >
-            <Settings2 size={12} />
-          </button>
+            {onLaunchJet && (
+              <button
+                type="button"
+                data-tour="jet"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onLaunchJet();
+                }}
+                className="hud-btn"
+                style={{ color: 'var(--sol-mint)' }}
+                title="Fly the SX-1 through the real Solar System (J)"
+              >
+                <Plane size={11} />
+                <span className="max-[359px]:hidden sm:hidden min-[900px]:inline">Fly</span>
+              </button>
+            )}
+            <AtlasLauncher stats={explored} onOpen={() => { setAtlasTab('worlds'); setIsCatalogueOpen(true); }} />
+          </div>
+          <div className="flex items-center justify-end gap-1 sm:contents">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                void takeShot();
+              }}
+              className="hud-icon-btn"
+              title="Take a picture (P)"
+              data-tour="camera"
+              aria-label="Take a picture"
+            >
+              <Camera size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onResetView();
+              }}
+              className="hud-icon-btn"
+              title="System overview (Esc)"
+              aria-label="Reset to system overview"
+            >
+              <RotateCcw size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setTourOpen(true);
+              }}
+              className="hud-icon-btn"
+              title="Instrument briefing"
+              aria-label="Replay the instrument briefing"
+            >
+              <HelpCircle size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsHudVisible(false);
+              }}
+              className="hud-icon-btn"
+              title="Hide interface (H)"
+              aria-label="Hide interface"
+            >
+              <EyeOff size={12} />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSettingsOpen((o) => !o);
+              }}
+              className={`hud-icon-btn ${settingsOpen ? 'is-on' : ''}`}
+              title="Settings"
+              data-tour="settings"
+              aria-label="Settings"
+              aria-expanded={settingsOpen}
+            >
+              <Settings2 size={12} />
+            </button>
+          </div>
 
-          <Popover open={isOpticsOpen} onClose={closeOptics} className="absolute right-0 top-[calc(100%+12px)] w-[340px] max-w-[calc(100vw-24px)] p-4 flex flex-col gap-4 z-40">
+          <Popover open={isOpticsOpen} onClose={closeOptics} className="absolute right-0 top-[calc(100%+12px)] w-[340px] max-w-[calc(100vw-24px-var(--safe-l)-var(--safe-r))] max-h-[calc(100dvh-var(--hud-header-h)-24px)] overflow-y-auto hud-scroll p-4 flex flex-col gap-4 z-40">
             <div className="flex flex-col gap-2">
               <span className="hud-label">Lens · L</span>
               <Segmented
@@ -775,7 +806,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           ======================================================== */}
       <nav
         data-tour="nav"
-        className={`hud-dim absolute left-8 top-1/2 -translate-y-1/2 hidden md:flex flex-col gap-3 [@media(max-height:720px)]:gap-1 [@media(max-height:720px)]:top-[calc(50%+28px)] [@media(max-height:560px)]:hidden pointer-events-auto transition-all duration-1000 z-30 ${
+        className={`hud-dim absolute left-[max(16px,var(--safe-l))] lg:left-[max(28px,var(--safe-l))] top-1/2 -translate-y-1/2 hidden md:flex flex-col gap-3 [@media(max-height:720px)]:gap-1 [@media(max-height:720px)]:top-[calc(50%+28px)] [@media(max-height:560px)]:hidden pointer-events-auto transition-all duration-1000 z-30 ${
           introPhase >= 1
             ? onSurfaceView || inHorizon
               ? 'opacity-0 -translate-x-8 pointer-events-none'
@@ -903,7 +934,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
       {/* Black hole viewpoint: from orbit, or from the shore of a world */}
       {isBlackHole && !route && (
-        <div className="hud-dim absolute left-1/2 -translate-x-1/2 top-[84px] md:top-[112px] z-30 pointer-events-auto hud-rise flex flex-col items-center gap-1.5">
+        <div className="hud-dim absolute left-1/2 -translate-x-1/2 top-[calc(var(--hud-header-h)+10px)] z-30 pointer-events-auto hud-rise flex flex-col items-center gap-1.5">
           <span className="hud-label !text-[8px]">Viewpoint</span>
           <div className="hud-frame px-1 py-0.5">
             <Segmented
@@ -925,7 +956,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         const farText = farPerHour < 600 ? `${Math.floor(farPerHour / 60)} h ${String(Math.round(farPerHour % 60)).padStart(2, '0')} m` : `${(farPerHour / 60).toFixed(0)} h`;
         const depth = Math.max(0, Math.min(1, (20 - h.rRs) / 18.9));
         return (
-          <aside className="absolute left-6 bottom-6 z-20 hud-frame hud-slide-in px-4 py-3 w-[290px] pointer-events-auto">
+          <aside className="absolute left-[max(12px,var(--safe-l))] xl:left-[max(24px,var(--safe-l))] bottom-[calc(var(--hud-footer-h)+8px)] xl:bottom-[max(24px,var(--safe-b))] z-20 hud-frame hud-slide-in px-3.5 py-2.5 sm:px-4 sm:py-3 w-[min(290px,calc(100vw-24px-var(--safe-l)-var(--safe-r)))] max-h-[calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-76px)] overflow-y-auto hud-scroll pointer-events-auto">
             <div className="hud-label !text-[color:var(--sol-amber)]">{h.onShore ? 'Shore readout · hypothetical world' : 'Free flight · hovering on thrust'}</div>
             <div className="flex items-baseline justify-between mt-1">
               <span className="text-[13px] font-extralight tracking-[0.3em] uppercase text-white">{h.onShore ? 'Ocean world' : 'Descent'}</span>
@@ -969,7 +1000,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
       {/* Attitude scope — bottom left, under the planet list */}
       {!onSurfaceView && !inHorizon && (
-        <div data-tour="scope" className="hud-dim absolute left-6 bottom-5 hidden md:block z-20 hud-boot hud-parallax-near [@media(max-height:820px)]:hidden" style={{ ['--d' as string]: '700ms' }}>
+        <div data-tour="scope" className="hud-dim absolute left-[max(24px,var(--safe-l))] bottom-[max(20px,var(--safe-b))] hidden lg:block z-20 hud-boot hud-parallax-near [@media(max-height:820px)]:hidden" style={{ ['--d' as string]: '700ms' }}>
           <AttitudeScope
             getView={getView}
             range={observerScale}
@@ -988,9 +1019,9 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           key={activeTargetName}
           onMouseEnter={() => setIsHoveredMonograph(true)}
           onMouseLeave={() => setIsHoveredMonograph(false)}
-          className="hud-dim absolute left-1/2 bottom-[96px] md:bottom-[104px] -translate-x-1/2 pointer-events-auto select-none z-20 w-[min(760px,calc(100vw-32px))]"
+          className="hud-dim absolute left-1/2 bottom-[calc(var(--hud-footer-h)+10px)] -translate-x-1/2 pointer-events-auto select-none z-20 w-[min(760px,calc(100vw-24px-var(--safe-l)-var(--safe-r)))] max-h-[calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-24px)] overflow-y-auto no-scrollbar"
         >
-          <div className={`flex flex-col items-center text-center px-4 ${isVanishing ? 'monograph-vanishing' : 'monograph-visible'}`}>
+          <div className={`flex flex-col items-center text-center px-3 sm:px-4 ${isVanishing ? 'monograph-vanishing' : 'monograph-visible'}`}>
             {/* Eyebrow: 03 / PLANET */}
             <div className="flex items-center gap-3 mb-1">
               <span className="hud-rule rev w-10" style={{ ['--d' as string]: '200ms' }} />
@@ -1004,7 +1035,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
             </div>
 
             {/* Huge Title */}
-            <h2 className="text-3xl sm:text-5xl md:text-6xl font-extralight tracking-[0.2em] sm:tracking-[0.34em] text-white uppercase drop-shadow-2xl my-1 [text-shadow:0_0_40px_rgba(0,0,0,0.6)]">
+            <h2 className="text-2xl sm:text-5xl md:text-6xl [@media(max-height:620px)]:text-2xl font-extralight tracking-[0.2em] sm:tracking-[0.34em] text-white uppercase drop-shadow-2xl my-1 [text-shadow:0_0_40px_rgba(0,0,0,0.6)]">
               <DecodeText text={activeTargetName.toUpperCase()} durationMs={1000} />
             </h2>
 
@@ -1056,7 +1087,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
       {/* Re-open the monograph once it has stepped aside */}
       {!monographVisible && !exploring && !velaTalking && (
-        <div className="hud-dim absolute left-1/2 bottom-[86px] md:bottom-[96px] -translate-x-1/2 pointer-events-auto z-20 hud-rise">
+        <div className="hud-dim absolute left-1/2 bottom-[calc(var(--hud-footer-h)+10px)] -translate-x-1/2 pointer-events-auto z-20 hud-rise">
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -1073,7 +1104,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
 
       {/* System plot — bottom right */}
       {!onSurfaceView && (
-        <div data-tour="plot" className={`hud-dim absolute right-6 bottom-5 ${prefs.showMinimap ? 'hidden md:block' : 'hidden'} z-20 hud-boot hud-parallax-near [@media(max-height:620px)]:hidden`} style={{ ['--d' as string]: '820ms' }}>
+        <div data-tour="plot" className={`hud-dim absolute right-[max(20px,var(--safe-r))] bottom-[max(16px,var(--safe-b))] ${prefs.showMinimap ? 'hidden lg:block' : 'hidden'} z-20 hud-boot hud-parallax-near [@media(max-height:620px)]:hidden`} style={{ ['--d' as string]: '820ms' }}>
           <SystemPlot
             getView={getView}
             target={activeTargetName}
@@ -1128,7 +1159,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         </div>
       )}
 
-      <footer data-tour="time" className="absolute bottom-4 md:bottom-5 left-1/2 -translate-x-1/2 pointer-events-auto z-30 hud-boot max-w-[calc(100vw-16px)]" style={{ ['--d' as string]: '560ms' }}>
+      <footer ref={footerRef} data-tour="time" className="absolute bottom-[max(10px,var(--safe-b))] md:bottom-[max(18px,var(--safe-b))] left-1/2 -translate-x-1/2 pointer-events-auto z-30 hud-boot max-w-[calc(100vw-16px-var(--safe-l)-var(--safe-r))]" style={{ ['--d' as string]: '560ms' }}>
         <TimeDeck
           isPaused={isPaused}
           multiplier={multiplier}
@@ -1152,6 +1183,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         tourOpen={tourOpen}
         horizon={telemetry?.horizon ?? null}
         surfaceActive={onSurfaceView}
+        bottomSheetActive={onSurfaceView ? !!telemetry?.surface : !!(telemetry?.explorer?.body && telemetry?.explorer?.imagery)}
         orbitsOn={orbitsOn}
         constellationsOn={constellationsOn}
         worldsLogged={logbook.worlds}
@@ -1211,7 +1243,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
         <div className="fixed inset-0 z-50 pointer-events-auto flex justify-end">
           <div onClick={() => setIsReadMoreOpen(false)} className="flex-1 bg-black/55 backdrop-blur-[3px] hud-fade-in" />
 
-          <aside className="hud-drawer-in hud-scroll w-[440px] max-w-full bg-[#05040a]/95 backdrop-blur-2xl border-l border-[color:var(--sol-line)] px-7 py-7 flex flex-col gap-6 shadow-2xl h-full overflow-y-auto">
+          <aside className="hud-drawer-in hud-scroll w-[440px] max-w-full bg-[#05040a]/95 backdrop-blur-2xl border-l border-[color:var(--sol-line)] pl-[max(20px,var(--safe-l))] sm:pl-7 pr-[max(20px,var(--safe-r))] sm:pr-7 pt-[max(24px,var(--safe-t))] pb-[max(28px,var(--safe-b))] flex flex-col gap-6 shadow-2xl h-[100dvh] overflow-y-auto">
             <div className="flex justify-between items-start">
               <div className="flex flex-col gap-1">
                 <span className="hud-label" style={{ color: narrative.eyebrowColor }}>

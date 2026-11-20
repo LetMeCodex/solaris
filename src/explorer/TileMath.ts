@@ -76,10 +76,13 @@ export function parentTile(k: TileKey): TileKey | null {
   return { z: k.z - 1, x: Math.floor(k.x / 2), y: Math.floor(k.y / 2) };
 }
 
-/** True when the tile's clipped extent is non-empty (GIBS edge tiles can fall entirely outside). */
+/** True when the tile's clipped extent overlaps the grid's valid latitude band and has non-zero area. */
 function hasArea(grid: EquirectGrid, k: TileKey): boolean {
   const b = tileBounds(grid, k);
-  return b.clipEast > b.clipWest && b.clipNorth > b.clipSouth;
+  if (b.clipEast <= b.clipWest || b.clipNorth <= b.clipSouth) return false;
+  const minLat = grid.minLat ?? -90;
+  const maxLat = grid.maxLat ?? 90;
+  return Math.min(b.clipNorth, maxLat) > Math.max(b.clipSouth, minLat);
 }
 
 const DEG = Math.PI / 180;
@@ -130,11 +133,11 @@ export function bodyLocalToLatLon(body: string, x: number, y: number, z: number)
 }
 
 /** Centre direction and angular radius (radians) of the drawn part of a tile. */
-export function tileCap(grid: EquirectGrid, k: TileKey): { centre: [number, number, number]; radius: number } {
+export function tileCap(grid: EquirectGrid, k: TileKey, bodyName: string = ''): { centre: [number, number, number]; radius: number } {
   const b = tileBounds(grid, k);
   const lat = (b.clipNorth + b.clipSouth) / 2;
   const lon = (b.clipWest + b.clipEast) / 2;
-  const centre = latLonToLocal(lat, lon);
+  const centre = bodyLatLonToLocal(bodyName, lat, lon);
   // Largest angular distance from the centre to a corner
   let radius = 0;
   // Corners, edge midpoints and — for tiles spanning the equator — the equatorial edge points,
@@ -145,11 +148,11 @@ export function tileCap(grid: EquirectGrid, k: TileKey): { centre: [number, numb
   ];
   if (b.clipNorth > 0 && b.clipSouth < 0) pts.push([0, b.clipWest], [0, b.clipEast]);
   for (const [la, lo] of pts) {
-    const p = latLonToLocal(la, lo);
+    const p = bodyLatLonToLocal(bodyName, la, lo);
     const d = Math.acos(Math.max(-1, Math.min(1, p[0] * centre[0] + p[1] * centre[1] + p[2] * centre[2])));
     radius = Math.max(radius, d);
   }
-  return { centre, radius };
+  return { centre, radius: Math.min(Math.PI, radius) };
 }
 
 /** Angular size (radians) of one source pixel of a tile at the equator. */
@@ -170,12 +173,20 @@ export interface SelectionCamera {
    * one, so distant peaks are still drawn.
    */
   groundLift?: number;
+  /** Optional body name for geodetic cap geometry (WGS84 flattening on Earth). */
+  bodyName?: string;
+}
+
+interface CandidateNode {
+  k: TileKey;
+  dist: number;
+  pxPerTexel: number;
 }
 
 /**
- * Screen-space-error quadtree selection. A tile is refined while one of its source pixels would
- * cover more than `maxPixelsPerTexel` screen pixels at its nearest visible point. Tiles beyond the
- * horizon or outside the view are dropped. Returns leaves ordered nearest first.
+ * Best-first screen-space-error quadtree selection. Highest-error (nearest / most under-sampled)
+ * visible tiles refine first, guaranteeing foreground/near-camera tiles are never starved behind
+ * distant branches. Returns visible leaves ordered nearest first.
  */
 export function selectTiles(
   grid: EquirectGrid,
@@ -187,29 +198,62 @@ export function selectTiles(
   const d = Math.hypot(px, py, pz);
   if (d <= 1) return [];
   const dir: [number, number, number] = [px / d, py / d, pz / d];
-  const horizon = Math.acos(Math.min(1, 1 / d)); // angle from the sub-camera point to the horizon
+  const groundLift = Math.max(0, cam.groundLift ?? 0);
+  const g = 1 + groundLift;
+  const horizon =
+    Math.acos(Math.min(1, 1 / d)) +
+    (groundLift > 0 ? Math.min(0.08, Math.sqrt(2 * groundLift) + 0.03) : 0.02);
+  const bodyName = cam.bodyName ?? '';
 
-  const leaves: Array<{ k: TileKey; dist: number }> = [];
-  const stack: TileKey[] = rootTiles(grid).filter((k) => hasArea(grid, k));
-
-  while (stack.length > 0) {
-    const k = stack.pop()!;
-    const { centre, radius } = tileCap(grid, k);
+  const evaluate = (k: TileKey): CandidateNode | null => {
+    const { centre, radius } = tileCap(grid, k, bodyName);
     const angle = Math.acos(Math.max(-1, Math.min(1, centre[0] * dir[0] + centre[1] * dir[1] + centre[2] * dir[2])));
-    if (angle - radius > horizon + 0.02) continue; // entirely behind the horizon
-    if (cam.isCapVisible && !cam.isCapVisible(centre, radius)) continue;
-
-    // Distance from the camera to the nearest point of the tile on the sphere
+    if (angle - radius > horizon) return null; // entirely behind the horizon
+    if (cam.isCapVisible && !cam.isCapVisible(centre, radius)) return null;
     const nearest = Math.max(0, angle - radius);
-    const g = 1 + (cam.groundLift ?? 0);
     const dist = Math.sqrt(Math.max(1e-12, d * d + g * g - 2 * d * g * Math.cos(nearest)));
-    const pxPerTexel = (texelAngle(grid, k.z) / dist) * cam.pixelsPerRadian;
+    const pxPerTexel = (texelAngle(grid, k.z) / Math.max(1e-6, dist)) * cam.pixelsPerRadian;
+    return { k, dist, pxPerTexel };
+  };
 
-    const children = k.z < grid.maxLevel ? childTiles(grid, k) : [];
-    if (pxPerTexel > maxPixelsPerTexel && children.length > 0 && leaves.length + stack.length < maxTiles * 4) {
-      stack.push(...children);
-    } else {
-      leaves.push({ k, dist });
+  const active: CandidateNode[] = [];
+  const leaves: CandidateNode[] = [];
+  for (const rk of rootTiles(grid)) {
+    if (!hasArea(grid, rk)) continue;
+    const node = evaluate(rk);
+    if (node) active.push(node);
+  }
+
+  while (active.length > 0) {
+    let bestIdx = -1;
+    let bestErr = -1;
+    for (let i = 0; i < active.length; i++) {
+      const c = active[i];
+      if (c.pxPerTexel <= maxPixelsPerTexel || c.k.z >= grid.maxLevel) continue;
+      if (c.pxPerTexel > bestErr) {
+        bestErr = c.pxPerTexel;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx < 0) {
+      leaves.push(...active);
+      break;
+    }
+    const node = active.splice(bestIdx, 1)[0];
+    const children: CandidateNode[] = [];
+    for (const ck of childTiles(grid, node.k)) {
+      const child = evaluate(ck);
+      if (child) children.push(child);
+    }
+    if (children.length === 0) continue;
+    if (leaves.length + active.length + children.length > maxTiles) {
+      // Keep this coarser tile whole so the view stays covered within the tile budget
+      leaves.push(node);
+      continue;
+    }
+    for (const ch of children) {
+      if (ch.pxPerTexel > maxPixelsPerTexel && ch.k.z < grid.maxLevel) active.push(ch);
+      else leaves.push(ch);
     }
   }
 

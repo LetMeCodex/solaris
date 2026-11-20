@@ -309,7 +309,8 @@ export class SkyAtmosphere {
     u.uUp.value.copy(frame.up);
     u.uNorth.value.copy(frame.north);
     u.uSunDir.value.copy(sunDir);
-    u.uEye.value = Math.max(2, eyeHeightM);
+    // Keep camera altitude strictly below atmosphere top so outer sky rays stay valid even at high relief/vantage
+    u.uEye.value = Math.min(Math.max(2, eyeHeightM), Math.max(100, this.model.top * 0.95));
     u.uSunElev.value = sunDir.dot(frame.up);
     // Stars fade from civil twilight (−6°) to sunrise, as they do to the eye
     const sunAlt = (Math.asin(THREE.MathUtils.clamp(u.uSunElev.value, -1, 1)) * 180) / Math.PI;

@@ -2,10 +2,10 @@ import * as THREE from 'three';
 import { elevationFor, groundHeightKm } from './PlanetElevation';
 import { BodyImagery, getBodyImagery, minimumAltitudeKm } from './ImageryRegistry';
 import { SurfaceTileLayer, LayerStatus, TileImageLoader } from './SurfaceTileLayer';
-import { bodyLatLonToLocal, localToLatLon } from './TileMath';
+import { bodyLatLonToLocal, bodyLocalToLatLon } from './TileMath';
 import { getLandmark, Landmark, landmarksFor } from './Landmarks';
 import { ScreenLabelItem } from './ScreenLabels';
-import { TILE_SHELL } from './SurfaceTileLayer';
+import { TILE_LEVEL_LIFT, TILE_SHELL } from './SurfaceTileLayer';
 import { CameraRig, OBSERVATION_FOV_DEG } from '../navigation/CameraRig';
 import { PhotorealEarth } from '../rendering/PhotorealEarth';
 
@@ -46,7 +46,7 @@ export interface ExplorerStatus {
 }
 
 /** Tiles are streamed only below this altitude (body radii); above it the globe map is sharper than needed. */
-const STREAM_BELOW_ALTITUDE = 0.9; // below the arrival shot (~1 radius up): arrivals show the whole, even globe
+const STREAM_BELOW_ALTITUDE = 1.35; // covers all orbital landmark arrivals (~1.03 radii at Mercury Caloris) while keeping full globes crisp
 /** Ride along with the body's rotation below this altitude (body radii). */
 const CO_ROTATE_BELOW_ALTITUDE = 1.5;
 /** Imagery fades in over the globe map between these altitudes (body radii). */
@@ -65,6 +65,14 @@ function localBodyRadius(body: ExplorerBody, latDeg: number): number {
   const latRad = (latDeg * Math.PI) / 180;
   const ps = 0.996647; // 1 - Earth's flattening (0.003353)
   return body.visualRadius * Math.sqrt(Math.cos(latRad) ** 2 + (ps * Math.sin(latRad)) ** 2);
+}
+
+/** Max radial elevation envelope (km) for displaced-terrain bodies so steep peaks/craters aren't frustum-culled. */
+function maxReliefEnvelopeKm(bodyName: string): number {
+  if (bodyName === 'Earth') return 10.5;
+  if (bodyName === 'Moon') return 22.0; // SLDEM/LOLA datum 9.2 km + ~11 km highlands
+  if (bodyName === 'Mars') return 32.0; // HRSC/MOLA datum 8.3 km + ~21.2 km Olympus Mons
+  return 0;
 }
 
 /**
@@ -87,6 +95,7 @@ export class PlanetaryExplorer {
   private tmpS = new THREE.Sphere();
   private tmpColor = new THREE.Color(0, 0, 0);
   private frameCounter = 0;
+  private lastLayerBody: string | null = null;
   private landmark: Landmark | null = null;
   private lighting: LightingMode = 'auto';
   private daylightFactor = 0;
@@ -96,6 +105,8 @@ export class PlanetaryExplorer {
   public hideGround = false;
   /** Google's photorealistic 3D Earth is on screen: Earth's imagery tiles step aside for it. */
   public photorealEarth = false;
+  /** ProceduralTerrain owns Earth's low-altitude surface below ~45 km; inset imagery tiles under it. */
+  public proceduralGround = false;
   /** Surface view: real sunlight with this tint and sky ambient (null in space). */
   public groundLight: { sunTint: [number, number, number]; ambient: number } | null = null;
   private maxAnisotropy = 8;
@@ -147,7 +158,7 @@ export class PlanetaryExplorer {
     const camLocal = body.surfaceMesh.worldToLocal(this.tmpV.copy(camera.position));
     const dLocal = camLocal.length();
     const altitudeRadii = Math.max(0, dLocal - 1);
-    const sub = localToLatLon(camLocal.x, camLocal.y, camLocal.z);
+    const sub = bodyLocalToLatLon(body.name, camLocal.x, camLocal.y, camLocal.z);
     const groundKm = groundHeightKm(body.name, sub.lat, sub.lon);
     const altitudeKm = Math.max(0.05, altitudeRadii * body.radiusKm - groundKm);
     const minAltKm = this.minAltitudeKmFor(body, imagery, camera.fov);
@@ -156,13 +167,19 @@ export class PlanetaryExplorer {
     this.rig.focusedRadius = localR;
     this.rig.surfaceMinAltitude = (groundKm + minAltKm) / kmPerUnit;
 
-    // Ride along with the rotating surface when close, so the ground stays under the camera
+    // Ride along with the rotating surface when close, so the ground stays under the camera.
+    // Use |sin(theta/2)| = hypot(x,y,z) instead of (1 - |w| ≈ theta^2/8), which underflows past 1e-12
+    // at 60+ Hz 1x Earth spin and previously discarded the entire frame's rotation on every tick.
     const q = body.surfaceMesh.getWorldQuaternion(new THREE.Quaternion());
     if (this.prevSurfaceBody === body.name && altitudeRadii < CO_ROTATE_BELOW_ALTITUDE) {
       const delta = q.clone().multiply(this.prevSurfaceQuat.clone().invert());
-      if (1 - Math.abs(delta.w) > 1e-12) this.rig.applyFrameRotation(delta);
+      if (Math.hypot(delta.x, delta.y, delta.z) > 1e-9) {
+        this.rig.applyFrameRotation(delta);
+        this.prevSurfaceQuat.copy(q);
+      }
+    } else {
+      this.prevSurfaceQuat.copy(q);
     }
-    this.prevSurfaceQuat.copy(q);
     this.prevSurfaceBody = body.name;
 
     // Earth's clouds fade out close to the ground so the surface imagery shows
@@ -178,14 +195,13 @@ export class PlanetaryExplorer {
     }
 
     let layerStatus: LayerStatus | null = null;
-    const hasPhotorealEarth = body.name === 'Earth' && !!PhotorealEarth.current;
-    if (hasPhotorealEarth) {
-      this.layers.get('Earth')?.hide();
-      if (body.atmosphereMesh) {
-        body.atmosphereMesh.renderOrder = altitudeKm < 60 ? 0.95 : 3;
-      }
-    } else if (imagery.provider) {
+    // Use actual PhotorealEarth visibility flag so Earth imagery tiles act as fallback whenever 3D tiles are absent or disabled
+    const hasPhotorealEarth = body.name === 'Earth' && (this.photorealEarth || this.proceduralGround);
+    // A visible Google root tile does not imply local coverage. Continue refining the
+    // imagery underneath it so failed, distant and still-coarse 3D branches have a fallback.
+    if (imagery.provider) {
       const layer = this.ensureLayer(body, imagery);
+      layer.setUnderlay(hasPhotorealEarth);
       layer.setDaylight(this.daylightFactor);
       layer.setOpacity(this.hideGround ? 0 : 1 - THREE.MathUtils.smoothstep(altitudeRadii, FADE_IN_TO, FADE_IN_FROM));
       if (body.atmosphereMesh) {
@@ -197,26 +213,33 @@ export class PlanetaryExplorer {
       if (this.groundLight) layer.setLighting(this.groundLight.sunTint, this.groundLight.ambient);
       else layer.setLighting([1, 1, 1], 0.07);
       if (altitudeRadii < STREAM_BELOW_ALTITUDE) {
-        // Selection is cheap but not free — run it every other frame
-        if (this.frameCounter % 2 === 0) {
+        // Update every frame close to the ground (surface view / low flight) or on body switch so foreground tiles never lag
+        const needUpdate = altitudeRadii < 0.05 || this.lastLayerBody !== body.name || this.frameCounter % 2 === 0;
+        if (needUpdate) {
+          this.lastLayerBody = body.name;
           this.projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
           this.frustum.setFromProjectionMatrix(this.projView);
           const surface = body.surfaceMesh;
-          const lift = layer.elevation && !layer.elevation.disabled ? Math.max(0, layer.elevation.heightKm(sub.lat, sub.lon, 11)) / body.radiusKm : 0;
-          const scale = body.visualRadius * (1 + lift);
+          const hasRelief = !!layer.elevation && !layer.elevation.disabled;
+          const lift = hasRelief ? Math.max(0, layer.elevation!.heightKm(sub.lat, sub.lon, 11)) / body.radiusKm : 0;
+          const rMin = body.name === 'Earth' && hasRelief ? Math.max(0.99, 1 - 0.5 / body.radiusKm) : 1.0;
+          const rMax = TILE_SHELL + (hasRelief ? Math.max(lift, maxReliefEnvelopeKm(body.name) / body.radiusKm) + 20 * TILE_LEVEL_LIFT : 14 * TILE_LEVEL_LIFT);
+          const rMid = 0.5 * (rMin + rMax);
+          const halfH = 0.5 * (rMax - rMin);
+          // Guard against dLocal <= 1 (e.g. sea level / Dead Sea depression) where selectTiles returns []
+          const safeScale = dLocal <= TILE_SHELL + 1e-6 ? (TILE_SHELL + 1e-6) / Math.max(dLocal, 1e-9) : 1;
+          const camPos: [number, number, number] = [camLocal.x * safeScale, camLocal.y * safeScale, camLocal.z * safeScale];
           layer.update({
-            position: [camLocal.x, camLocal.y, camLocal.z],
+            position: camPos,
             groundLift: lift,
             pixelsPerRadian: viewportHeightPx / (2 * Math.tan((camera.fov * Math.PI) / 360)),
             isCapVisible: (centre, radius) => {
               if (radius < Math.PI / 2) {
-                const k = Math.cos(radius);
-                const kl = k * (1 + lift);
-                surface.localToWorld(this.tmpS.center.set(centre[0] * kl, centre[1] * kl, centre[2] * kl));
-                this.tmpS.radius = Math.sin(radius) * scale * 1.02 + (1 - k) * scale;
+                surface.localToWorld(this.tmpS.center.set(centre[0] * rMid, centre[1] * rMid, centre[2] * rMid));
+                this.tmpS.radius = (2 * rMax * Math.sin(radius * 0.5) + halfH) * body.visualRadius * 1.04;
               } else {
                 surface.localToWorld(this.tmpS.center.set(0, 0, 0));
-                this.tmpS.radius = scale * 1.02;
+                this.tmpS.radius = rMax * body.visualRadius * 1.04;
               }
               return this.frustum.intersectsSphere(this.tmpS);
             },
@@ -224,6 +247,7 @@ export class PlanetaryExplorer {
         }
       } else {
         layer.hide();
+        this.lastLayerBody = null;
       }
       layerStatus = layer.getStatus();
     }
@@ -293,7 +317,7 @@ export class PlanetaryExplorer {
     for (const lm of landmarksFor(s.body)) {
       const [x, y, z] = bodyLatLonToLocal(s.body, lm.lat, lm.lon);
       const lift = groundHeightKm(s.body, lm.lat, lm.lon, 9) / body.radiusKm;
-      const r = Math.max(TILE_SHELL, 1 + lift);
+      const r = (this.photorealEarth || this.proceduralGround ? 1 : TILE_SHELL) + lift;
       const p = body.surfaceMesh.localToWorld(new THREE.Vector3(x * r, y * r, z * r));
       const n = p.clone().sub(centre).normalize();
       const toCam = camera.position.clone().sub(p).normalize();
@@ -322,8 +346,9 @@ export class PlanetaryExplorer {
     const targetLat = lm.vantageLat ?? lm.lat;
     const targetLon = lm.vantageLon ?? lm.lon;
     const dir = this.surfaceDirection(body, targetLat, targetLon);
-    // Start fetching the ground heights there now: the camera arrives on the real relief
-    void elevationFor(lm.body)?.ensure(targetLat - 0.3, targetLon - 0.3, targetLat + 0.3, targetLon + 0.3, 6);
+    // Start fetching the ground heights there now: orbital landmarks warm coarse z=3 so Trek DEM doesn't starve imagery
+    const warmZ = lm.viewAltitudeKm > 30 ? 3 : 6;
+    void elevationFor(lm.body)?.ensure(targetLat - 0.3, targetLon - 0.3, targetLat + 0.3, targetLon + 0.3, warmZ);
     const groundKm = groundHeightKm(lm.body, targetLat, targetLon);
     const localR = localBodyRadius(body, targetLat);
     this.rig.focusedRadius = localR;
@@ -374,11 +399,11 @@ export class PlanetaryExplorer {
       layer.setBaseMap(body.baseMap ?? null);
       // Ground in real 3D where a world has elevation data (Earth, the Moon, Mars): mountains,
       // crater walls and canyons from real heights (src/explorer/PlanetElevation)
+      layer.bodyName = body.name;
+      layer.radiusKm = body.radiusKm;
       const relief = elevationFor(body.name);
       if (relief) {
         layer.elevation = relief;
-        layer.bodyName = body.name;
-        layer.radiusKm = body.radiusKm;
       }
       body.surfaceMesh.add(layer.group);
       this.layers.set(body.name, layer);

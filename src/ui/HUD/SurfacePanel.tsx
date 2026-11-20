@@ -45,28 +45,37 @@ function fmtSize(arcsec: number): string {
  * the atmosphere switch, and what is up there right now.
  */
 export const SurfacePanel: React.FC<SurfacePanelProps> = ({ status, onAction }) => {
-  const [open, setOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 640);
+  const [open, setOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 768);
   const s = status;
   const sunUp = s.sunAltDeg > -0.833;
-  const btn = 'px-2 py-0.5 rounded-full border text-[10px] transition focus-visible:ring-1 focus-visible:ring-white/60';
+  const btn = 'hud-pill-btn px-2.5 py-1 rounded-full border text-[10px] transition focus-visible:ring-1 focus-visible:ring-white/60';
   const btnOff = 'border-white/15 text-white/65 hover:text-white hover:border-white/35';
   const btnOn = 'border-amber-300/50 text-amber-100 bg-amber-300/10';
+  const sheetOpen = open || !!s.deepTime;
 
   return (
     <section
       aria-label="Surface view"
-      className="hud-frame hud-slide-in hud-scroll absolute right-3 md:right-7 top-[204px] sm:top-[76px] md:top-[92px] w-[310px] max-w-[calc(100vw-24px)] max-h-[calc(100vh-330px)] sm:max-h-[calc(100vh-200px)] overflow-y-auto pointer-events-auto z-30 text-white/80 font-light"
+      className={`hud-frame hud-slide-in absolute flex flex-col overflow-hidden right-[max(10px,var(--safe-r))] bottom-[calc(var(--hud-footer-h)+8px)] ${
+        sheetOpen
+          ? 'left-[max(10px,var(--safe-l))] max-h-[calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-18px)]'
+          : 'w-auto max-w-[calc(100vw-20px-var(--safe-l)-var(--safe-r))]'
+      } md:left-auto md:bottom-auto md:top-[calc(var(--hud-header-h)+10px)] md:right-[max(16px,var(--safe-r))] lg:right-[max(28px,var(--safe-r))] ${
+        sheetOpen
+          ? 'md:w-[clamp(284px,25vw,340px)] md:max-h-[calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-24px)]'
+          : 'md:w-auto'
+      } pointer-events-auto z-30 text-white/80 font-light`}
     >
-      <div className="flex items-center justify-between px-4 pt-3 pb-2 text-[10px] uppercase tracking-[0.18em]">
+      <div className="shrink-0 flex items-center justify-between gap-2 px-3.5 sm:px-4 pt-3 pb-2 text-[10px] uppercase tracking-[0.18em] border-b border-white/[0.06]">
         <div className="min-w-0 truncate">
           <span className="text-white/45">On </span>
           <span className="text-white/90">{s.body}</span>
           {s.place && <span className="text-amber-200/90"> · {s.place}</span>}
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             onClick={() => onAction({ type: 'exit' })}
-            className="normal-case tracking-normal text-[10px] px-2 py-0.5 rounded-full border border-white/20 text-white/80 hover:text-white hover:border-white/50"
+            className="hud-pill-btn normal-case tracking-normal text-[10px] px-2.5 py-1 rounded-full border border-white/20 text-white/80 hover:text-white hover:border-white/50 whitespace-nowrap"
           >
             Back to orbit
           </button>
@@ -74,29 +83,31 @@ export const SurfacePanel: React.FC<SurfacePanelProps> = ({ status, onAction }) 
             onClick={() => setOpen((o) => !o)}
             aria-expanded={open}
             aria-label={open ? 'Collapse surface panel' : 'Expand surface panel'}
-            className="text-white/40 hover:text-white px-1 rounded focus-visible:ring-1 focus-visible:ring-white/60"
+            className="hud-icon-btn sm text-white/60 hover:text-white focus-visible:ring-1 focus-visible:ring-white/60"
           >
             {open ? '–' : '+'}
           </button>
         </div>
       </div>
 
-      {s.deepTime && (
-        <div className="mx-4 mb-2 rounded-lg border border-[color:var(--sol-mint)]/30 bg-black/30 px-3 py-2.5" aria-live="polite">
-          <div className="text-[9px] uppercase tracking-[0.22em] text-[color:var(--sol-mint)]">{s.deepTime.when}</div>
-          <div className="mt-1 text-[13px] text-white/95">{s.deepTime.title}</div>
-          <p className="mt-1 text-[10.5px] leading-snug text-white/60">{s.deepTime.blurb}</p>
-          <button
-            onClick={() => onAction({ type: 'deepTimeOff' })}
-            className="mt-2 text-[10px] px-2 py-0.5 rounded-full border border-white/20 text-white/80 hover:text-white hover:border-white/50"
-          >
-            Back to today's sky
-          </button>
-        </div>
-      )}
+      {(s.deepTime || open) && (
+        <div className="flex-1 min-h-0 overflow-y-auto hud-scroll">
+          {s.deepTime && (
+            <div className="mx-3.5 sm:mx-4 mt-2.5 mb-2 rounded-lg border border-[color:var(--sol-mint)]/30 bg-black/30 px-3 py-2.5" aria-live="polite">
+              <div className="text-[9px] uppercase tracking-[0.22em] text-[color:var(--sol-mint)]">{s.deepTime.when}</div>
+              <div className="mt-1 text-[13px] text-white/95">{s.deepTime.title}</div>
+              <p className="mt-1 text-[10.5px] leading-snug text-white/60">{s.deepTime.blurb}</p>
+              <button
+                onClick={() => onAction({ type: 'deepTimeOff' })}
+                className="hud-pill-btn mt-2 text-[10px] px-2.5 py-1 rounded-full border border-white/20 text-white/80 hover:text-white hover:border-white/50"
+              >
+                Back to today's sky
+              </button>
+            </div>
+          )}
 
-      {open && (
-        <div className="px-4 pb-3 flex flex-col gap-2.5 text-[11px]">
+          {open && (
+            <div className="px-3.5 sm:px-4 pt-2 pb-3 flex flex-col gap-2.5 text-[11px]">
           <div className="flex justify-between font-mono text-[10px] text-amber-200/90" aria-live="polite">
             <span>{fmtLatLon(s.lat, s.lon)}</span>
             <span>
@@ -182,7 +193,7 @@ export const SurfacePanel: React.FC<SurfacePanelProps> = ({ status, onAction }) 
                 <li key={o.name}>
                   <button
                     onClick={() => onAction({ type: 'lookAt', name: o.name })}
-                    className="w-full text-left grid grid-cols-[1fr_auto_auto] gap-2 px-2 py-1 rounded-md hover:bg-white/10 focus-visible:ring-1 focus-visible:ring-white/60"
+                    className="hud-row w-full text-left grid grid-cols-[1fr_auto_auto] gap-2 px-2 py-1.5 rounded-md hover:bg-white/10 focus-visible:ring-1 focus-visible:ring-white/60"
                   >
                     <span className="text-white/85 truncate">{o.name}</span>
                     <span className="text-white/45 font-mono text-[10px]">
@@ -205,6 +216,8 @@ export const SurfacePanel: React.FC<SurfacePanelProps> = ({ status, onAction }) 
           <div className="text-[9px] text-white/35 leading-snug">
             Drag to look around · scroll to zoom like a telescope · double-click to reset · Esc to leave
           </div>
+            </div>
+          )}
         </div>
       )}
     </section>

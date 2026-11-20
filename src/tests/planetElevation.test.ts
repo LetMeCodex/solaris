@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { decodeGrey, elevationFor, planetElevation, RELIEF_BODIES } from '../explorer/PlanetElevation';
+import { describe, expect, it, vi } from 'vitest';
+import { decodeGrey, elevationFor, planetElevation, PlanetElevation, RELIEF_BODIES } from '../explorer/PlanetElevation';
 import { decodeLerc1 } from '../explorer/Lerc1';
 import { BODY_IMAGERY, imageryEyeKm } from '../explorer/ImageryRegistry';
 import { LANDMARKS, angularDistanceDeg } from '../explorer/Landmarks';
@@ -24,6 +24,41 @@ describe('Planet elevation', () => {
 
   it('rejects data that is not LERC1', () => {
     expect(() => decodeLerc1(new TextEncoder().encode('not a raster at all').buffer)).toThrow();
+  });
+
+  it('does not turn valid DEM edge samples into zero-height walls beside no-data pixels', () => {
+    const elevation = new PlanetElevation('test', [{ url: () => '', format: 'lerc1', tileSize: 2, maxZ: 0, south: -90, north: 90 }], 0);
+    const state = elevation as unknown as { tiles: Map<string, unknown> };
+    state.tiles.set('0/0/0/0', {
+      heights: new Float32Array([2, NaN, 2, NaN]), w: 2, h: 2, corner: true,
+      promise: Promise.resolve(), lastUsed: 0,
+    });
+    expect(elevation.heightKm(90, -180, 0)).toBe(2);
+    expect(elevation.heightKm(0, -135, 0)).toBe(2);
+  });
+
+  it('briefly caches failed DEM requests instead of retrying a coverage hole on every frame', async () => {
+    vi.useFakeTimers();
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => Date.now());
+    try {
+      const elevation = new PlanetElevation('test', [{ url: () => '', format: 'lerc1', tileSize: 2, maxZ: 0, south: -90, north: 90 }], 0);
+      const state = elevation as unknown as { fetchTileOnce: () => Promise<never> };
+      const fetch = vi.spyOn(state, 'fetchTileOnce').mockRejectedValue(new Error('offline'));
+      const first = elevation.ensure(1, -100, 2, -99, 0);
+      await vi.advanceTimersByTimeAsync(650);
+      await first;
+      expect(fetch).toHaveBeenCalledTimes(2);
+      await elevation.ensure(1, -100, 2, -99, 0);
+      expect(fetch).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(20_001);
+      const retry = elevation.ensure(1, -100, 2, -99, 0);
+      await vi.advanceTimersByTimeAsync(650);
+      await retry;
+      expect(fetch).toHaveBeenCalledTimes(4);
+    } finally {
+      clock.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
 

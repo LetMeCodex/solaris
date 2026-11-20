@@ -371,9 +371,13 @@ export const FlyPreloader: React.FC<{
     // Development only: the film's parts, for inspecting it from the console
     if (import.meta.env.DEV) (window as unknown as { __flyfilm?: object }).__flyfilm = { renderer, scene, camera, composer, bloom };
 
+    let vw = canvas.clientWidth || window.visualViewport?.width || window.innerWidth;
+    let vh = canvas.clientHeight || window.visualViewport?.height || window.innerHeight;
     const resize = (): void => {
-      const w = window.innerWidth;
-      const h = window.innerHeight;
+      const w = Math.max(1, Math.round(canvas.clientWidth || window.visualViewport?.width || window.innerWidth));
+      const h = Math.max(1, Math.round(canvas.clientHeight || window.visualViewport?.height || window.innerHeight));
+      vw = w;
+      vh = h;
       renderer.setSize(w, h, false);
       composer.setSize(w, h);
       // The glow at full size: at half size its smallest level was 16 x 10 pixels and bright
@@ -383,7 +387,11 @@ export const FlyPreloader: React.FC<{
       camera.updateProjectionMatrix();
     };
     resize();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null;
+    ro?.observe(canvas);
     window.addEventListener('resize', resize);
+    window.addEventListener('orientationchange', resize);
+    window.visualViewport?.addEventListener('resize', resize);
 
     // Act 3, the Earth approach: from the night side round the limb to over the city
     const target = dirFor(20, -30).applyQuaternion(earthQ);
@@ -468,8 +476,8 @@ export const FlyPreloader: React.FC<{
       const sysK = 1 - THREE.MathUtils.smoothstep(p, ACT1 * 0.8, ACT1 + 0.12);
       orbitMat.opacity = 0.16 * sysK;
       for (const o of orbitLines) o.visible = sysK > 0.01;
-      const w = window.innerWidth;
-      const h = window.innerHeight;
+      const w = vw;
+      const h = vh;
       for (const { el, obj } of labelEls) {
         obj.getWorldPosition(proj).project(camera);
         const on = sysK > 0.02 && proj.z < 1 && Math.abs(proj.x) < 1.1 && Math.abs(proj.y) < 1.1;
@@ -498,7 +506,10 @@ export const FlyPreloader: React.FC<{
     return () => {
       stopped = true;
       cancelAnimationFrame(raf);
+      ro?.disconnect();
       window.removeEventListener('resize', resize);
+      window.removeEventListener('orientationchange', resize);
+      window.visualViewport?.removeEventListener('resize', resize);
       for (const { el } of labelEls) el.remove();
       composer.dispose();
       scene.traverse((o) => {

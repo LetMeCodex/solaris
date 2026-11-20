@@ -12,7 +12,27 @@
   background: transparent;
   color: rgba(255, 255, 255, 0.72);
   cursor: pointer;
+  touch-action: manipulation;
   transition: color 0.25s ease, background-color 0.25s ease, transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@media (pointer: coarse) {
+  .ib {
+    min-width: 44px;
+    min-height: 44px;
+    width: 44px;
+    height: 44px;
+  }
+}
+@media (pointer: coarse) and (max-width: 360px) {
+  .ib {
+    min-width: 40px;
+    min-height: 44px;
+    width: 40px;
+    height: 44px;
+  }
+}
+@media (hover: none) {
+  .ib__tip { display: none; }
 }
 .ib svg { overflow: visible; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6)); }
 .ib:hover { color: #fff; background: rgba(255, 255, 255, 0.07); transform: translateY(-1px); }
@@ -129,9 +149,9 @@
    the place and speed readouts in the corners (see JetHUD's isPhone) */
 @media (pointer: coarse) and (max-width: 559px), (pointer: coarse) and (max-height: 499px) {
   .photoreal-attribution {
-    left: 10px !important;
-    right: 10px !important;
-    bottom: 2px !important;
+    left: max(10px, env(safe-area-inset-left, 0px)) !important;
+    right: max(10px, env(safe-area-inset-right, 0px)) !important;
+    bottom: max(2px, env(safe-area-inset-bottom, 0px)) !important;
     max-width: none !important;
     text-align: center !important;
     font-size: 8px !important;

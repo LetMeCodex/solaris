@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { EarthElevation, earthElevation } from '../explorer/Elevation';
-import { bodyLatLonToLocal } from '../explorer/TileMath';
+import { EarthElevation, earthElevation, type EarthHeightSampler } from '../explorer/Elevation';
+import { bodyLatLonToLocal, EARTH_FLATTENING } from '../explorer/TileMath';
 import { SUN_WORLD } from './RenderOrigin';
 import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR } from './AerialPerspective';
 
@@ -36,6 +36,7 @@ const LEVELS: Array<{ spanKm: number; z: number; dropM: number; n: number }> = [
 ];
 const KM = 1 / 6378.137;
 const ROWS_PER_FRAME = 30;
+const INIT_ROWS_PER_FRAME = 96;
 
 const vertexShader = /* glsl */ `
 attribute vec3 aUp;
@@ -47,21 +48,31 @@ varying vec3 vN;
 varying vec3 vUpW;
 varying vec3 vUpL;
 varying float vH;
-varying vec3 vAxX;
-varying vec3 vAxZ;
+varying vec3 vAxE;
+varying vec3 vAxN;
 varying vec2 vMf;
+varying vec2 vMg;
 uniform vec2 uOriginM;
+uniform vec3 uPatchE;
+uniform vec3 uPatchN;
+uniform float uOffsetKm;
 void main() {
-  // Metres from the patch's own origin (exact in 32 bits, where metres from Earth's centre are
-  // only good to ~0.6 m): the fine detail is laid out on these
-  vMf = position.xz * 6.378137e6 + uOriginM;
-  vAxX = normalize(mat3(modelMatrix) * vec3(1.0, 0.0, 0.0));
-  vAxZ = normalize(mat3(modelMatrix) * vec3(0.0, 0.0, 1.0));
-  vec4 w = modelMatrix * vec4(position, 1.0);
+  vec3 upLen = length(aUp) > 1e-9 ? normalize(aUp) : vec3(0.0, 1.0, 0.0);
+  // True orthonormal East/North horizontal axes in Earth-local space (never collapses at equator or stretches vertically on mountains)
+  vec3 eRaw = cross(vec3(0.0, 1.0, 0.0), upLen);
+  vec3 eL = length(eRaw) > 1e-5 ? normalize(eRaw) : vec3(1.0, 0.0, 0.0);
+  vec3 nL = normalize(cross(upLen, eL));
+  vAxE = normalize(mat3(modelMatrix) * eL);
+  vAxN = normalize(mat3(modelMatrix) * nL);
+  vec3 shifted = position + upLen * (uOffsetKm * ${KM.toFixed(12)});
+  vec2 patchM = vec2(dot(position, uPatchE), dot(position, uPatchN)) * 6.378137e6;
+  vMf = patchM + uOriginM;
+  vMg = patchM;
+  vec4 w = modelMatrix * vec4(shifted, 1.0);
   vWorld = w.xyz;
   vN = normalize(mat3(modelMatrix) * normal);
-  vUpW = normalize(mat3(modelMatrix) * aUp);
-  vUpL = aUp;
+  vUpW = normalize(mat3(modelMatrix) * upLen);
+  vUpL = upLen;
   vH = aH;
   vShadow = aShadow;
   gl_Position = projectionMatrix * viewMatrix * w;
@@ -77,18 +88,19 @@ uniform float uHaze;
 uniform float uDoy;
 uniform float uFade;
 uniform float uTime;
-uniform vec3 uHoleC;
-uniform vec3 uHoleE;
-uniform vec3 uHoleN;
-uniform float uHoleHalf;
+uniform vec2 uHoleLat;
+uniform vec2 uHoleLon;
+uniform float uHoleLonMid;
+uniform float uHoleActive;
 varying vec3 vWorld;
 varying vec3 vN;
 varying vec3 vUpW;
 varying vec3 vUpL;
 varying float vH;
-varying vec3 vAxX;
-varying vec3 vAxZ;
+varying vec3 vAxE;
+varying vec3 vAxN;
 varying vec2 vMf;
+varying vec2 vMg;
 varying float vShadow;
 ${AERIAL_PERSPECTIVE_GLSL}
 
@@ -119,43 +131,61 @@ float tFbm(vec2 m, vec2 mf, float pxM) {
 }
 
 void main() {
-  vec3 upW = normalize(vUpW);
-  vec3 nl = normalize(vUpL);
-  // Where the finer patch inside this one is drawn, this one is not (smoother, it would stand
-  // over the finer one's valleys)
-  vec3 hd = nl - uHoleC;
-  if (uHoleHalf > 0.0 && abs(dot(hd, uHoleE)) < uHoleHalf && abs(dot(hd, uHoleN)) < uHoleHalf) discard;
-  float latDeg = degrees(asin(clamp(nl.y, -1.0, 1.0)));
+  float upLen = length(vUpW);
+  vec3 upW = upLen > 1e-9 ? vUpW / upLen : vec3(0.0, 1.0, 0.0);
+  float nlLen = length(vUpL);
+  vec3 nl = nlLen > 1e-9 ? vUpL / nlLen : vec3(0.0, 1.0, 0.0);
+  // aUp is in the sphere's reduced-latitude frame. Hole bounds and the DEM are geodetic;
+  // comparing asin(nl.y) against those bounds shifts ring cuts by ~9 km at Everest.
+  float geodeticLat = atan(nl.y, length(nl.xz) * ${(1 - EARTH_FLATTENING).toFixed(12)});
+  float latDeg = degrees(geodeticLat);
+  float lonDeg = degrees(atan(-nl.z, nl.x));
+  // Cut the inner lat/lon patch region cleanly (matches the trapezoidal lat/lon patch grid with zero wedge gaps)
+  if (uHoleActive > 0.5 && latDeg > uHoleLat.x && latDeg < uHoleLat.y) {
+    float dLon = mod(lonDeg - uHoleLonMid + 540.0, 360.0) - 180.0;
+    float halfLon = (uHoleLon.y - uHoleLon.x) * 0.5;
+    if (abs(dLon) < halfLon) discard;
+  }
   float absLat = abs(latDeg);
-  vec2 uvG = vec2(fract(atan(nl.z, -nl.x) / 6.2831853), 1.0 - acos(clamp(nl.y, -1.0, 1.0)) / 3.14159265);
-  // Metres on the ground (east, north-ish), for the generated detail
-  vec2 m = nl.xz * 6.378137e6;
+  vec2 uvG = vec2(fract(atan(nl.z, -nl.x) / 6.2831853), 0.5 + geodeticLat / 3.14159265);
+  // True horizontal ground coordinates in metres (east, north)
+  vec3 axE = length(vAxE) > 1e-9 ? normalize(vAxE) : vec3(1.0, 0.0, 0.0);
+  vec3 axN = length(vAxN) > 1e-9 ? normalize(vAxN) : vec3(0.0, 0.0, 1.0);
   vec2 mf = vMf;
-  float pxM = max(length(fwidth(mf)), 0.01);
+  vec2 m = vMf;
+  float pxM = max(length(fwidth(vMg)), 0.01);
   float hKm = vH;
-  if (vH < 0.0004) {
+  // Sample Earth's day map up front so un-loaded land tiles (vH == 0) never render as ocean waves.
+  vec3 sat = uHasMap > 0.5 ? texture2D(uDayMap, uvG).rgb : vec3(0.32, 0.36, 0.24);
+  float mapWater = uHasMap > 0.5 ? smoothstep(0.32, 0.08, sat.r) * smoothstep(0.08, 0.22, sat.b) : 0.0;
+  if (vH < 0.0004 && mapWater > 0.25) {
     // The sea, made here too: deep water under the sky's reflection, swell and wind ripples, the
     // Sun's (and Moon's) glitter path, paler over the shallows by the shore
-    vec3 sunDirS = normalize(uSunWorld - vWorld);
+    vec3 sunRawS = uSunWorld - vWorld;
+    vec3 sunDirS = length(sunRawS) > 1e-9 ? normalize(sunRawS) : vec3(1.0, 0.0, 0.0);
     float sunUpS = dot(upW, sunDirS);
     float dayS = smoothstep(-0.10, 0.16, sunUpS);
-    vec3 Vs = normalize(cameraPosition - vWorld);
+    vec3 vRawS = cameraPosition - vWorld;
+    vec3 Vs = length(vRawS) > 1e-9 ? normalize(vRawS) : upW;
     float t = uTime;
     vec2 sl = vec2(0.0);
     sl += vec2(0.8, 0.3) * cos(dot(m, vec2(0.011, 0.004)) + t * 1.3) * (1.0 - smoothstep(60.0, 400.0, pxM));
     sl += vec2(-0.3, 0.9) * cos(dot(m, vec2(-0.006, 0.017)) + t * 1.7) * (1.0 - smoothstep(60.0, 400.0, pxM));
     sl += vec2(0.5, -0.6) * cos(dot(m, vec2(0.031, -0.022)) + t * 2.6) * 0.5 * (1.0 - smoothstep(20.0, 150.0, pxM));
     sl += (vec2(tNoise(mf / 7.0 + t * 0.4), tNoise(mf / 7.0 - t * 0.35 + 9.0)) - 0.5) * 1.4 * (1.0 - smoothstep(1.0, 8.0, pxM));
-    vec3 Nw = normalize(upW + 0.05 * (normalize(vAxX) * sl.x + normalize(vAxZ) * sl.y));
+    vec3 nwRaw = upW + 0.05 * (axE * sl.x + axN * sl.y);
+    vec3 Nw = length(nwRaw) > 1e-9 ? normalize(nwRaw) : upW;
     float fres = 0.02 + 0.98 * pow(1.0 - max(dot(Nw, Vs), 0.0), 5.0);
-    float shallow = smoothstep(0.0004, 0.0, vH) ;
+    float shallow = smoothstep(0.0004, 0.0, vH);
     vec3 deep = mix(vec3(0.03, 0.16, 0.20), vec3(0.008, 0.045, 0.10), shallow);
     vec3 skyRef = apSky(sunUpS) * (0.25 + 0.75 * dayS) + uNightAir;
     vec3 sunColS = mix(vec3(1.0, 0.62, 0.38), vec3(1.0, 0.96, 0.9), smoothstep(0.02, 0.32, sunUpS));
     vec3 wcol = mix(deep * (0.15 + 0.85 * dayS), skyRef, fres);
-    float gl = max(dot(Nw, normalize(Vs + sunDirS)), 0.0);
+    vec3 hsRaw = Vs + sunDirS;
+    float gl = length(hsRaw) > 1e-9 ? max(dot(Nw, normalize(hsRaw)), 0.0) : 0.0;
     wcol += sunColS * (pow(gl, 260.0) * 9.0 + pow(gl, 40.0) * 0.25) * dayS;
-    float gm = max(dot(Nw, normalize(Vs + uMoonDir)), 0.0);
+    vec3 hmRaw = Vs + uMoonDir;
+    float gm = length(hmRaw) > 1e-9 ? max(dot(Nw, normalize(hmRaw)), 0.0) : 0.0;
     wcol += uMoonLight * (pow(gm, 220.0) * 6.0 + pow(gm, 30.0) * 0.12) * (1.0 - dayS);
     float dKm = length(cameraPosition - vWorld) * uKmPerUnit;
     wcol = aerialPerspective(wcol, dKm, max(0.0, uCamAltKm * 0.5), uHaze, Vs, sunDirS, sunUpS);
@@ -167,26 +197,26 @@ void main() {
 
   // Fine relief: the data's posts are 47 m apart at best; rills, ledges and boulders are made
   // between them, tilting the surface (so they catch the light) more on steep ground
-  vec3 N = normalize(vN);
+  vec3 N = length(vN) > 1e-9 ? normalize(vN) : upW;
   float e = max(pxM, 1.5);
   float f0 = tFbm(m, mf, pxM);
   float fx = tFbm(m + vec2(e, 0.0), mf + vec2(e, 0.0), pxM);
   float fy = tFbm(m + vec2(0.0, e), mf + vec2(0.0, e), pxM);
   float slope0 = 1.0 - clamp(dot(N, upW), 0.0, 1.0);
-  // The detail's two axes (the body's X and Z, as m is laid out) in the world
-  vec3 tilt = (normalize(vAxX) * (fx - f0) + normalize(vAxZ) * (fy - f0)) / e;
+  // The detail's two axes (local tangent East & North) in the world
+  vec3 tilt = (axE * (fx - f0) + axN * (fy - f0)) / e;
   tilt -= upW * dot(tilt, upW);
-  float rough = mix(18.0, 120.0, smoothstep(0.08, 0.4, slope0));
-  N = normalize(N - tilt * rough);
-  // Erosion: gullies and spurs running down the fall line of every slope (noise stretched along
-  // the way water runs), cut into the surface: the knife ridges and fluted faces of real
-  // mountains, which posts 47 m apart cannot hold
+  float rough = mix(18.0, 96.0, smoothstep(0.08, 0.4, slope0));
+  vec3 nPerturb = N - tilt * rough;
+  N = length(nPerturb) > 1e-9 ? normalize(nPerturb) : N;
+  // Erosion: gullies and spurs running down the fall line of every slope
   vec3 fall = -upW + N * dot(N, upW);
   float fl = length(fall);
   float gully = 0.0;
   if (fl > 0.03) {
     fall /= fl;
-    vec2 d2 = normalize(vec2(dot(fall, normalize(vAxX)), dot(fall, normalize(vAxZ))) + 1e-5);
+    vec2 fproj = vec2(dot(fall, axE), dot(fall, axN));
+    vec2 d2 = length(fproj) > 1e-5 ? normalize(fproj) : vec2(1.0, 0.0);
     vec2 pq = vec2(dot(m, vec2(-d2.y, d2.x)), dot(m, d2));
     float w1 = 1.0 - smoothstep(0.3, 1.0, pxM / 70.0);
     float w2 = 1.0 - smoothstep(0.3, 1.0, pxM / 18.0);
@@ -195,14 +225,15 @@ void main() {
     float g2 = abs(tGn(vec2(pq.x / 38.0 + 7.0, pq.y / 420.0))) * 2.8;
     float g2x = abs(tGn(vec2((pq.x + 1.5) / 38.0 + 7.0, pq.y / 420.0))) * 2.8;
     float amt = smoothstep(0.03, 0.22, slope0);
-    vec3 side = normalize(cross(upW, fall));
-    N = normalize(N - side * ((g1x - g1) / 4.0 * 60.0 * w1 + (g2x - g2) / 1.5 * 14.0 * w2) * amt);
+    vec3 sideRaw = cross(upW, fall);
+    vec3 side = length(sideRaw) > 1e-6 ? normalize(sideRaw) : axE;
+    vec3 nGully = N - side * ((g1x - g1) / 4.0 * 50.0 * w1 + (g2x - g2) / 1.5 * 12.0 * w2) * amt;
+    N = length(nGully) > 1e-9 ? normalize(nGully) : N;
     gully = ((1.0 - g1) * w1 * 0.6 + (1.0 - g2) * w2 * 0.4) * amt;
   }
   float slope = 1.0 - clamp(dot(N, upW), 0.0, 1.0);
 
   // What the satellite sees there: the colour of the land from orbit (deserts, forests, fields)
-  vec3 sat = uHasMap > 0.5 ? texture2D(uDayMap, uvG).rgb : vec3(0.32, 0.36, 0.24);
   float satLum = dot(sat, vec3(0.2126, 0.7152, 0.0722));
   float green = smoothstep(-0.01, 0.06, sat.g - max(sat.r, sat.b) * 0.96);
   float arid = smoothstep(0.02, 0.12, sat.r - sat.b) * (1.0 - green);
@@ -272,20 +303,25 @@ void main() {
   alb = mix(alb, vec3(0.86, 0.89, 0.94) * (0.94 + 0.2 * f0), snow);
 
   // Light: the real Sun, the sky's own light on what faces up, the Moon by night
-  vec3 sunDir = normalize(uSunWorld - vWorld);
+  vec3 sunRaw = uSunWorld - vWorld;
+  vec3 sunDir = length(sunRaw) > 1e-9 ? normalize(sunRaw) : vec3(1.0, 0.0, 0.0);
   float sunUp = dot(upW, sunDir);
   float day = smoothstep(-0.10, 0.16, sunUp);
   vec3 sunCol = mix(vec3(1.0, 0.62, 0.38), vec3(1.0, 0.96, 0.9), smoothstep(0.02, 0.32, sunUp));
   float ndl = max(dot(N, sunDir), 0.0);
   // Ridges shade the slopes behind them: the data's own normal turned from the Sun darkens more
-  float shade = smoothstep(-0.08, 0.2, dot(normalize(vN), sunDir)) * vShadow;
+  vec3 vnSafe = length(vN) > 1e-9 ? normalize(vN) : upW;
+  float shade = smoothstep(-0.08, 0.2, dot(vnSafe, sunDir)) * vShadow;
   vec3 skyAmb = mix(vec3(0.16, 0.22, 0.38), vec3(0.30, 0.27, 0.30), 1.0 - smoothstep(0.0, 0.3, sunUp)) * (0.5 + 0.5 * dot(N, upW)) * (1.0 - 0.35 * gully);
   vec3 night = vec3(0.085, 0.1, 0.155) + uMoonLight * (smoothstep(-0.04, 0.2, dot(upW, uMoonDir)) * (0.4 + 0.6 * max(dot(N, uMoonDir), 0.0)));
   vec3 lit = (sunCol * ndl * shade * 1.45 + skyAmb * 0.55) * day + night * (1.0 - day);
   vec3 col = alb * lit;
   // Snow glints towards a low Sun
-  vec3 V = normalize(cameraPosition - vWorld);
-  col += sunCol * pow(max(dot(N, normalize(V + sunDir)), 0.0), 60.0) * snow * 0.35 * day * shade;
+  vec3 vRaw = cameraPosition - vWorld;
+  vec3 V = length(vRaw) > 1e-9 ? normalize(vRaw) : upW;
+  vec3 hSpecRaw = V + sunDir;
+  float specDot = length(hSpecRaw) > 1e-9 ? max(dot(N, normalize(hSpecRaw)), 0.0) : 0.0;
+  col += sunCol * pow(specDot, 60.0) * snow * 0.35 * day * shade;
 
   float distKm = length(cameraPosition - vWorld) * uKmPerUnit;
   float hMean = max(0.0, (uCamAltKm + hKm) * 0.5);
@@ -304,7 +340,27 @@ interface Patch {
   /** Where the drawn patch is centred, and where the one being built is. */
   lat: number;
   lon: number;
-  build: { lat: number; lon: number; row: number; srow: number; origin: THREE.Vector3; pos: Float32Array; up: Float32Array; h: Float32Array; sh: Float32Array; version: number } | null;
+  patchE: THREE.Vector3;
+  patchN: THREE.Vector3;
+  latMin: number;
+  latMax: number;
+  lonMin: number;
+  lonMax: number;
+  build: {
+    lat: number;
+    lon: number;
+    row: number;
+    srow: number;
+    origin: THREE.Vector3;
+    patchE: THREE.Vector3;
+    patchN: THREE.Vector3;
+    pos: Float32Array;
+    up: Float32Array;
+    h: Float32Array;
+    sh: Float32Array;
+    version: number;
+    heightKm: EarthHeightSampler;
+  } | null;
   builtVersion: number;
   built: boolean;
   scratch?: { pos: Float32Array; up: Float32Array; h: Float32Array; sh: Float32Array };
@@ -314,7 +370,10 @@ export class ProceduralTerrain {
   public readonly group = new THREE.Group();
   private readonly material: THREE.ShaderMaterial;
   private readonly patches: Patch[] = [];
-  private asked = { lat: 999, lon: 999, t: 0 };
+  private readonly askedLevel = LEVELS.map(() => ({ lat: 999, lon: 999, t: 0 }));
+  private lastEleCheck = 0;
+  private lastEleCount = -1;
+  private readonly levelPending = LEVELS.map(() => false);
   /** Per patch: bumped when new heights for it arrive (or the light or the offset changes). */
   private readonly levelVersion = LEVELS.map(() => 0);
   private readonly levelSeen = LEVELS.map(() => -1);
@@ -348,26 +407,25 @@ export class ProceduralTerrain {
         uFade: { value: 1 },
         uTime: { value: 0 },
         uOriginM: { value: new THREE.Vector2() },
-        uHoleC: { value: new THREE.Vector3() },
-        uHoleE: { value: new THREE.Vector3(1, 0, 0) },
-        uHoleN: { value: new THREE.Vector3(0, 1, 0) },
-        uHoleHalf: { value: 0 },
+        uPatchE: { value: new THREE.Vector3(1, 0, 0) },
+        uPatchN: { value: new THREE.Vector3(0, 1, 0) },
+        uOffsetKm: { value: -0.11 },
+        uHoleLat: { value: new THREE.Vector2() },
+        uHoleLon: { value: new THREE.Vector2() },
+        uHoleLonMid: { value: 0 },
+        uHoleActive: { value: 0 },
         uNightAir: NIGHT_AIR,
         uMoonLight: MOON_LIGHT,
         uMoonDir: MOON_DIR,
       },
       vertexShader,
       fragmentShader,
-      // Drawn after the tiles and only where there is no tile: Google's tiles mark their pixels
-      // with alpha 0 (PhotorealEarth) and this blends by the alpha already there, so the terrain
-      // can never cover a tile, however the two heights differ; the globe and the sky are alpha 1
-      transparent: true,
+      // Real opaque ground, depth-tested underneath the photogrammetry. Destination-alpha
+      // compositing depends on which sky/lens pass last wrote alpha and produced missing
+      // terrain faces / wire-like ridges when those passes changed.
+      transparent: false,
       depthWrite: true,
-      blending: THREE.CustomBlending,
-      blendSrc: THREE.DstAlphaFactor,
-      blendDst: THREE.OneMinusDstAlphaFactor,
-      blendSrcAlpha: THREE.DstAlphaFactor,
-      blendDstAlpha: THREE.OneMinusDstAlphaFactor,
+      blending: THREE.NoBlending,
     });
     const indexFor = (N: number): THREE.BufferAttribute => {
       const index = new Uint32Array((N - 1) * (N - 1) * 6);
@@ -402,27 +460,47 @@ export class ProceduralTerrain {
       const level = l;
       mesh.onBeforeRender = () => this.setHole(level);
       this.group.add(mesh);
-      this.patches.push({ mesh, pos, up, h, lat: 999, lon: 999, build: null, builtVersion: -1, built: false });
+      this.patches.push({
+        mesh,
+        pos,
+        up,
+        h,
+        lat: 999,
+        lon: 999,
+        patchE: new THREE.Vector3(1, 0, 0),
+        patchN: new THREE.Vector3(0, 1, 0),
+        latMin: 0,
+        latMax: 0,
+        lonMin: 0,
+        lonMax: 0,
+        build: null,
+        builtVersion: -1,
+        built: false,
+      });
     }
     this.group.name = 'procedural_terrain';
     this.group.visible = false;
   }
 
-  private readonly holeTmp = new THREE.Vector3();
-
-  /** The finer patch inside patch `l` (its centre and half-width on the unit sphere), if drawn. */
+  /** The finer patch inside patch `l`, set as exact lat/lon bounds (zero wedge gaps). */
   private setHole(l: number): void {
     const u = this.material.uniforms;
-    const o = this.patches[l].mesh.position;
-    (u.uOriginM.value as THREE.Vector2).set((o.x * 6378137) % 1024, (o.z * 6378137) % 1024);
+    const patch = this.patches[l];
+    (u.uPatchE.value as THREE.Vector3).copy(patch.patchE);
+    (u.uPatchN.value as THREE.Vector3).copy(patch.patchN);
+    const latM = ((patch.lat * Math.PI) / 180) * 6378137;
+    const lonM = ((patch.lon * Math.PI) / 180) * 6378137 * Math.max(0.05, Math.cos((patch.lat * Math.PI) / 180));
+    (u.uOriginM.value as THREE.Vector2).set(lonM % 32768, latM % 32768);
     const inner = l > 0 ? this.patches[l - 1] : null;
     if (!inner || !inner.built || !inner.mesh.visible) {
-      u.uHoleHalf.value = 0;
+      u.uHoleActive.value = 0;
     } else {
-      const c = (u.uHoleC.value as THREE.Vector3).copy(inner.mesh.position).normalize();
-      const e = (u.uHoleE.value as THREE.Vector3).crossVectors(this.holeTmp.set(0, 1, 0), c).normalize();
-      (u.uHoleN.value as THREE.Vector3).crossVectors(c, e).normalize();
-      u.uHoleHalf.value = LEVELS[l - 1].spanKm * 0.47 * KM;
+      const insetLat = (inner.latMax - inner.latMin) * 0.025;
+      const insetLon = (inner.lonMax - inner.lonMin) * 0.025;
+      (u.uHoleLat.value as THREE.Vector2).set(inner.latMin + insetLat, inner.latMax - insetLat);
+      (u.uHoleLon.value as THREE.Vector2).set(inner.lonMin + insetLon, inner.lonMax - insetLon);
+      u.uHoleLonMid.value = inner.lon;
+      u.uHoleActive.value = 1;
     }
     this.material.uniformsNeedUpdate = true;
   }
@@ -463,77 +541,103 @@ export class ProceduralTerrain {
     u.uHaze.value = air.haze;
     u.uDoy.value = doy;
     u.uTime.value = (performance.now() / 1000) % 3600;
-    // Under the tiles' ground: 6 m once the offset between the two is measured, till then a safe
-    // 110 m (the geoid is up to ~100 m from the ellipsoid the tiles stand on)
-    const offsetKm = this.tileOffsetKm !== null ? this.tileOffsetKm - 0.006 : -0.11;
-    if (Number.isNaN(this.appliedOffsetKm) || Math.abs(offsetKm - this.appliedOffsetKm) > 0.004) {
-      this.appliedOffsetKm = offsetKm;
-      this.bumpAll();
-    }
+    // Under the tiles' ground: 18 m safety margin once measured so DEM variance never steals depth;
+    // -110 m before calibration. Adjusted via uOffsetKm at zero CPU rebuild cost.
+    const offsetKm = this.tileOffsetKm !== null ? this.tileOffsetKm - 0.018 : -0.11;
+    this.appliedOffsetKm = offsetKm;
+    u.uOffsetKm.value = offsetKm;
 
-    // The heights the patches need, asked for when the camera has moved on
+    // Ask per-level only when that patch's own footprint moves (or needs heights), avoiding z=6 backlog floods.
     const now = performance.now();
-    if (now - this.asked.t > 700 && (Math.abs(lat - this.asked.lat) > 0.004 || Math.abs(lon - this.asked.lon) > 0.004 || now - this.asked.t > 6000)) {
-      this.asked = { lat, lon, t: now };
+    if (now - this.lastEleCheck > 350) {
+      this.lastEleCheck = now;
+      if (earthElevation.loadedCount !== this.lastEleCount) {
+        this.lastEleCount = earthElevation.loadedCount;
+        for (let li = 0; li < LEVELS.length; li++) {
+          if ((this.levelPending[li] || earthElevation.loadedCount !== this.levelSeen[li]) && LEVELS[li].spanKm > altKm * 0.6) {
+            if (!this.levelPending[li]) this.levelSeen[li] = earthElevation.loadedCount;
+            this.levelVersion[li]++;
+          }
+        }
+      }
       const cosLat = Math.max(0.05, Math.cos((lat * Math.PI) / 180));
       for (let li = 0; li < LEVELS.length; li++) {
         const L = LEVELS[li];
-        if (L.spanKm < altKm * 0.6) continue;
-        const dLat = Math.min(40, (L.spanKm / 2 / 111.2) * 1.05);
-        const dLon = Math.min(80, dLat / cosLat);
-        void earthElevation.ensure(Math.max(-85, lat - dLat), lon - dLon, Math.min(85, lat + dLat), lon + dLon, L.z).then(() => {
-          // Only when new heights have come in (asked again, held ones answer with nothing new)
-          if (earthElevation.loadedCount !== this.levelSeen[li]) {
-            this.levelSeen[li] = earthElevation.loadedCount;
-            this.levelVersion[li]++;
-          }
-        });
+        if (L.spanKm <= altKm * 0.6) continue;
+        const a = this.askedLevel[li];
+        const moveDeg = Math.max(0.008, (L.spanKm / 8) / 111.2);
+        const moveLon = moveDeg / cosLat;
+        if (now - a.t > 900 && (Math.abs(lat - a.lat) > moveDeg || Math.abs(lon - a.lon) > moveLon || now - a.t > 12000)) {
+          a.lat = lat;
+          a.lon = lon;
+          a.t = now;
+          this.levelPending[li] = true;
+          const dLat = Math.min(40, (L.spanKm / 2 / 111.2) * 1.05);
+          const dLon = Math.min(80, dLat / cosLat);
+          const sLat = Math.max(-85, lat - dLat), nLat = Math.min(85, lat + dLat);
+          const wLon = lon - dLon, eLon = lon + dLon;
+          const waitDem = L.spanKm >= 256
+            ? Promise.all([earthElevation.ensure(sLat, wLon, nLat, eLon, L.z), earthElevation.ensure(sLat, wLon, nLat, eLon, 4)])
+            : earthElevation.ensure(sLat, wLon, nLat, eLon, L.z);
+          void waitDem.then(() => {
+            this.levelPending[li] = false;
+            if (earthElevation.loadedCount !== this.levelSeen[li]) {
+              this.levelSeen[li] = earthElevation.loadedCount;
+              this.levelVersion[li]++;
+            }
+          });
+        }
       }
     }
 
-    // Each patch being built gets its share of the frame's work (the finest had it all before,
-    // and the coarser ones waited behind it)
+    const unbuiltActive = this.patches.some((q, i) => LEVELS[i].spanKm > altKm * 0.6 && !q.built);
     const building = Math.max(1, this.patches.filter((q, i) => q.build || q.builtVersion !== this.levelVersion[i] || !q.built).length);
     EarthElevation.now = performance.now();
-    // And no more than ~4 ms of it a frame altogether (it was 15 ms on average, 80 at worst)
-    const until = performance.now() + 4;
+    const rowAllowance = unbuiltActive ? INIT_ROWS_PER_FRAME : ROWS_PER_FRAME;
+    const until = performance.now() + (unbuiltActive ? 10 : 4);
     for (let l = 0; l < LEVELS.length; l++) {
-      let budget = Math.max(2, ROWS_PER_FRAME / building);
+      let budget = Math.max(3, rowAllowance / building);
       const L = LEVELS[l];
       const N = L.n;
       const p = this.patches[l];
-      // From high up the finest patches are a few pixels: not drawn, not built
       const useful = L.spanKm > altKm * 0.6;
       p.mesh.visible = useful && p.built;
       if (!useful) continue;
       const stepDeg = L.spanKm / (N - 1) / 111.2;
-      // Snapped to the patch's own posts, so the ground does not swim as the patch follows you
       const snap = stepDeg * 8;
       const cLat = THREE.MathUtils.clamp(Math.round(lat / snap) * snap, -84, 84);
       const cosC = Math.max(0.05, Math.cos((cLat * Math.PI) / 180));
       const snapLon = snap / cosC;
       const cLon = Math.round(lon / snapLon) * snapLon;
       const moved = Math.abs(cLat - p.lat) > snap * 1.5 || Math.abs(cLon - p.lon) > snapLon * 1.5;
-      // New heights: built again, but not more than once a second and a half (they arrive a tile
-      // at a time)
       const stale = p.builtVersion !== this.levelVersion[l] && now - this.builtAt[l] > 1500;
       if (!p.build && (moved || stale || !p.built)) {
         const [ox, oy, oz] = bodyLatLonToLocal('Earth', cLat, cLon);
-        // The working arrays are kept from one build to the next (each was ~0.8 MB of garbage)
+        const origin = new THREE.Vector3(ox, oy, oz);
+        const upC = origin.clone().normalize();
+        const patchE = new THREE.Vector3(0, 1, 0).cross(upC);
+        if (patchE.lengthSq() < 1e-8) patchE.set(1, 0, 0);
+        patchE.normalize();
+        const patchN = new THREE.Vector3().crossVectors(upC, patchE).normalize();
         const sc = (p.scratch ??= { pos: new Float32Array(N * N * 3), up: new Float32Array(N * N * 3), h: new Float32Array(N * N), sh: new Float32Array(N * N) });
-        p.build = { lat: cLat, lon: cLon, row: 0, srow: 0, origin: new THREE.Vector3(ox, oy, oz), pos: sc.pos, up: sc.up, h: sc.h, sh: sc.sh, version: this.levelVersion[l] };
+        const halfSpan = L.spanKm / 2 / 111.2;
+        const heightKm = earthElevation.captureSampler({
+          south: cLat - halfSpan, north: cLat + halfSpan,
+          west: cLon - halfSpan / cosC, east: cLon + halfSpan / cosC, z: L.z,
+        });
+        p.build = { lat: cLat, lon: cLon, row: 0, srow: 0, origin, patchE, patchN, pos: sc.pos, up: sc.up, h: sc.h, sh: sc.sh, version: this.levelVersion[l], heightKm };
       }
       const b = p.build;
       if (!b || budget <= 0) continue;
       const cosB = Math.max(0.05, Math.cos((b.lat * Math.PI) / 180));
       const half = (N - 1) / 2;
-      const drop = (this.appliedOffsetKm - L.dropM / 1000) * KM;
+      const drop = (-L.dropM / 1000) * KM;
       while (b.row < N && budget > 0 && performance.now() < until) {
         const j = b.row;
         const la = THREE.MathUtils.clamp(b.lat + (half - j) * stepDeg, -89.9, 89.9);
         for (let i = 0; i < N; i++) {
           const lo = b.lon + ((i - half) * stepDeg) / cosB;
-          const hk = earthElevation.heightKm(la, lo, L.z);
+          const hk = b.heightKm(la, lo, L.z);
           const [x, y, z] = bodyLatLonToLocal('Earth', la, lo);
           const s = 1 + hk * KM + drop;
           const k = (j * N + i) * 3;
@@ -548,9 +652,7 @@ export class ProceduralTerrain {
         b.row++;
         budget -= N / 129;
       }
-      // Shadows: from each post, a walk towards the Sun over the height data, out to ~12 km at the
-      // finest patch (to hundreds at the coarsest): where the ground rises above the line to the
-      // Sun the post is in shadow, softened by how far it is from clearing
+      // Fast shadow pass: evaluate every 2nd vertex with 9 exponential steps and interpolate neighbors (~8x faster)
       const sun = this.sunLocal;
       const postKm = L.spanKm / (N - 1);
       while (b.row >= N && b.srow < N && budget > 0 && performance.now() < until) {
@@ -558,10 +660,9 @@ export class ProceduralTerrain {
         const la = THREE.MathUtils.clamp(b.lat + (half - j) * stepDeg, -89.9, 89.9);
         const laR = (la * Math.PI) / 180;
         const cl = Math.cos(laR);
-        for (let i = 0; i < N; i++) {
+        for (let i = 0; i < N; i += 2) {
           const lo = b.lon + ((i - half) * stepDeg) / cosB;
           const loR = (lo * Math.PI) / 180;
-          // Local frame at the post (as bodyLatLonToLocal lays the sphere out: x, y up, -z)
           const ux = cl * Math.cos(loR), uy = Math.sin(laR), uz = -cl * Math.sin(loR);
           const ex = -Math.sin(loR), ez = -Math.cos(loR);
           const nx = -Math.sin(laR) * Math.cos(loR), ny = cl, nz = Math.sin(laR) * Math.sin(loR);
@@ -576,30 +677,64 @@ export class ProceduralTerrain {
           const tanE = sUp / hl;
           const h0 = b.h[j * N + i];
           let lit = 1;
-          let d = postKm * 0.9;
-          for (let k = 0; k < 22; k++) {
-            const gh = earthElevation.heightKm(la + ((sN / hl) * d) / 111.2, lo + ((sE / hl) * d) / (111.2 * Math.max(0.05, cl)), L.z);
-            // How far above the ground the line to the Sun passes there, against the distance
-            const clear = (h0 + 0.003 + tanE * d - d * d / 12742 - gh) / d;
+          let d = postKm * 1.1;
+          for (let k = 0; k < 10; k++) {
+            const gh = b.heightKm(la + ((sN / hl) * d) / 111.2, lo + ((sE / hl) * d) / (111.2 * Math.max(0.05, cl)), L.z);
+            const clear = (h0 + 0.003 + tanE * d - (d * d) / 12742 - gh) / d;
             lit = Math.min(lit, THREE.MathUtils.smoothstep(clear, -0.02, 0.025));
             if (lit <= 0) break;
-            d *= 1.28;
+            d *= 1.55;
           }
           b.sh[j * N + i] = lit;
         }
-        b.srow++;
-        budget -= (3 * N) / 129;
+        for (let i = 1; i + 1 < N; i += 2) {
+          b.sh[j * N + i] = 0.5 * (b.sh[j * N + i - 1] + b.sh[j * N + i + 1]);
+        }
+        b.srow += 2;
+        if (b.srow >= N && j + 1 < N) {
+          // Ensure final even row completes cleanly
+          b.srow = N;
+        }
+        budget -= N / 129;
       }
       if (b.row >= N && b.srow >= N) {
+        for (let j = 1; j + 1 < N; j += 2) {
+          for (let i = 0; i < N; i++) {
+            b.sh[j * N + i] = 0.5 * (b.sh[(j - 1) * N + i] + b.sh[(j + 1) * N + i]);
+          }
+        }
         const g = p.mesh.geometry;
         (g.getAttribute('aShadow') as THREE.BufferAttribute).copyArray(b.sh).needsUpdate = true;
         (g.getAttribute('position') as THREE.BufferAttribute).copyArray(b.pos).needsUpdate = true;
         (g.getAttribute('aUp') as THREE.BufferAttribute).copyArray(b.up).needsUpdate = true;
         (g.getAttribute('aH') as THREE.BufferAttribute).copyArray(b.h).needsUpdate = true;
         g.computeVertexNormals();
+        // Tuck perimeter vertices downward after normal calculation to seal ring transitions against coarse layers
+        if (l < LEVELS.length - 1) {
+          const rimDropM = LEVELS[l + 1].dropM - L.dropM + Math.max(45, L.spanKm * 0.7);
+          const rimDrop = (rimDropM / 1000) * KM;
+          const posAttr = g.getAttribute('position') as THREE.BufferAttribute;
+          const arr = posAttr.array as Float32Array;
+          for (let j = 0; j < N; j++) {
+            for (let i = 0; i < N; i++) {
+              if (j !== 0 && j !== N - 1 && i !== 0 && i !== N - 1) continue;
+              const k = (j * N + i) * 3;
+              arr[k] -= b.up[k] * rimDrop;
+              arr[k + 1] -= b.up[k + 1] * rimDrop;
+              arr[k + 2] -= b.up[k + 2] * rimDrop;
+            }
+          }
+          posAttr.needsUpdate = true;
+        }
         p.mesh.position.copy(b.origin);
+        p.patchE.copy(b.patchE);
+        p.patchN.copy(b.patchN);
         p.lat = b.lat;
         p.lon = b.lon;
+        p.latMin = THREE.MathUtils.clamp(b.lat - half * stepDeg, -89.9, 89.9);
+        p.latMax = THREE.MathUtils.clamp(b.lat + half * stepDeg, -89.9, 89.9);
+        p.lonMin = b.lon - (half * stepDeg) / cosB;
+        p.lonMax = b.lon + (half * stepDeg) / cosB;
         p.builtVersion = b.version;
         this.builtAt[l] = performance.now();
         p.built = true;

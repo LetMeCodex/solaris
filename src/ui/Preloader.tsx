@@ -127,7 +127,7 @@ export const Preloader: React.FC<{
         const el = rootRef.current;
         const start = performance.now();
         const dur = reduce ? 350 : 1500;
-        const maxR = Math.hypot(window.innerWidth, window.innerHeight) / 2 + 120;
+        const maxR = Math.hypot(el?.clientWidth || window.innerWidth, el?.clientHeight || window.innerHeight) / 2 + 120;
         const step = (now: number) => {
           const p = Math.min(1, (now - start) / dur);
           const e = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2; // easeInOutCubic

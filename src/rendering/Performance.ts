@@ -41,6 +41,13 @@ const TIERS: Record<QualityTier, TierSettings> = {
   low: { maxDpr: 1, minScale: 0.5, ao: false, smaa: false, shadowMap: 0, hiRes8k: false, rocksPerVariant: 220, envEvery: 60 },
 };
 
+/** Maximum rendered framebuffer pixels per frame per tier (caps 3x phones and 4K/5K monitors). */
+const MAX_BACKING_PIXELS: Record<QualityTier, number> = {
+  high: 4_500_000,
+  medium: 2_200_000,
+  low: 1_250_000,
+};
+
 function readOverride(): QualityTier | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -77,11 +84,18 @@ export function detectTier(info: {
 }): QualityTier {
   const gpu = info.gpu ?? '';
   // Software renderers and old integrated / mobile GPUs
-  if (/SwiftShader|llvmpipe|Basic Render|Mali-[GT]?[4-7]\d|Adreno \(TM\) [3-5]\d\d|PowerVR|Intel\(R\) (HD|UHD) Graphics( [1-6]\d\d)?\b/i.test(gpu)) return 'low';
-  const phone = info.coarsePointer && info.shortSide < 900;
-  if (phone) return (info.memoryGb !== null && info.memoryGb <= 4) || info.cores <= 6 ? 'low' : 'medium';
-  if (info.cores <= 4 || (info.memoryGb !== null && info.memoryGb <= 4)) return 'low';
-  if (/Intel|Iris|Radeon\(TM\) Graphics|Vega \d|Apple M1\b|Adreno|Mali/i.test(gpu)) return 'medium';
+  if (/SwiftShader|llvmpipe|virgl|Software Rasterizer|Basic Render|ANGLE.*Microsoft|Mali-[GT]?[3-5]\d|Mali-G6[0-8]|Mali-G7[0-6]|Adreno \(TM\) ([3-5]\d\d|61\d)|PowerVR|Intel\(R\) HD Graphics( [1-6]\d\d)?\b|Intel\(R\) UHD Graphics( [1-6]\d\d)?\b/i.test(gpu)) {
+    return 'low';
+  }
+  const lowMem = info.memoryGb !== null && info.memoryGb <= 4;
+  // Touch devices (phones and tablets): clamp to medium max so high-DPI mobile WebGL avoids OOM/thermal throttling
+  if (info.coarsePointer) {
+    const phone = info.shortSide < 900;
+    if (phone) return lowMem || info.cores <= 6 ? 'low' : 'medium';
+    return lowMem || info.cores <= 4 ? 'low' : 'medium';
+  }
+  if (info.cores <= 4 || lowMem) return 'low';
+  if (/Intel|Iris|UHD Graphics|Arc\(TM\) A3|Radeon\(TM\) Graphics|Radeon Graphics|Vega \d|Apple M1\b|Adreno|Mali/i.test(gpu)) return 'medium';
   return 'high';
 }
 
@@ -147,21 +161,65 @@ export class PerformanceGovernor {
       const rates = [60, 75, 90, 120, 144, 165, 240];
       const nearest = rates.reduce((best, r) => (Math.abs(r - hz) < Math.abs(best - hz) ? r : best), 60);
       this.refreshHz = nearest;
-      this.targetMs = 1000 / Math.min(120, nearest);
+      // Target 60 fps max so 120 Hz / ProMotion phones & laptops running steady 60 fps aren't flagged as lagging
+      this.targetMs = 1000 / Math.min(60, nearest);
       this.avgMs = this.targetMs;
     };
     requestAnimationFrame(step);
   }
 
   /** The pixel ratio to draw at, for a mode that would like at most `cap`. */
-  public pixelRatio(cap: number): number {
-    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-    return Math.max(0.5, Math.min(dpr, cap, this.settings.maxDpr) * this.scale);
+  /** Effective pixel ratio clamped by device DPR, tier cap, total backing-pixel budget, and dynamic scale. */
+  public pixelRatio(cap: number, width?: number, height?: number): number {
+    const hasWin = typeof window !== 'undefined';
+    const dpr = hasWin ? window.devicePixelRatio || 1 : 1;
+    const w = width ?? (hasWin ? window.innerWidth : 0);
+    const h = height ?? (hasWin ? window.innerHeight : 0);
+    let budgetCap = Infinity;
+    if (w > 0 && h > 0) {
+      budgetCap = Math.sqrt(MAX_BACKING_PIXELS[this.tier] / (w * h));
+    }
+    // Do not apply a DPR floor after the budget: at 8K even 0.5 exceeds the low tier's
+    // entire framebuffer allowance. A minimum one-pixel dimension is the only hard floor.
+    const minimum = w > 0 && h > 0 ? 1 / Math.min(w, h) : 0.01;
+    return Math.max(minimum, Math.min(dpr, cap, this.settings.maxDpr, budgetCap) * this.scale);
   }
 
-  /** Called when the resolution scale changes (resize the render targets). */
-  public onChange(fn: () => void): void {
+  /** Adaptive AO toggle: sheds GTAO under sustained frame-time pressure before crushing resolution further. */
+  public get aoEnabled(): boolean {
+    return this.settings.ao && this.scale >= 0.78;
+  }
+
+  /** Adaptive SMAA toggle: drops to lightweight FXAA when frame budget dips on medium/high tiers. */
+  public get smaaEnabled(): boolean {
+    return this.settings.smaa && this.scale >= 0.72;
+  }
+
+  /** Adaptive CloudSea render target scale (half-res down to quarter-res as quality scales). */
+  public get cloudScale(): number {
+    const hi = this.tier === 'high' ? 0.62 : this.tier === 'medium' ? 0.5 : 0.36;
+    const lo = this.tier === 'high' ? 0.34 : 0.25;
+    const span = Math.max(1e-3, 1 - this.settings.minScale);
+    const t = Math.max(0, Math.min(1, (this.scale - this.settings.minScale) / span));
+    return lo + (hi - lo) * t;
+  }
+
+  /** Adaptive CloudSea raymarch step multiplier (1.0 at full scale down to 0.55 under load). */
+  public get cloudStepScale(): number {
+    const hi = this.tier === 'low' ? 0.78 : 1.0;
+    const lo = this.tier === 'low' ? 0.5 : 0.6;
+    const span = Math.max(1e-3, 1 - this.settings.minScale);
+    const t = Math.max(0, Math.min(1, (this.scale - this.settings.minScale) / span));
+    return lo + (hi - lo) * t;
+  }
+
+  /** Called when the resolution scale changes (resize the render targets). Returns an unsubscribe callback. */
+  public onChange(fn: () => void): () => void {
     this.listeners.push(fn);
+    return () => {
+      const idx = this.listeners.indexOf(fn);
+      if (idx >= 0) this.listeners.splice(idx, 1);
+    };
   }
 
   /**
@@ -170,7 +228,7 @@ export class PerformanceGovernor {
    */
   public frame(ms: number): void {
     // Ignore stalls (tab switches, shader compiles): they are not the steady cost of drawing
-    if (ms > 250) return;
+    if (!Number.isFinite(ms) || ms <= 0 || ms > 250) return;
     this.avgMs += (ms - this.avgMs) * 0.05;
     this.sinceChange += ms;
     this.sinceDrop += ms;

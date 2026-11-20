@@ -310,12 +310,14 @@ export class CameraRig {
   private static readonly MAX_LOOK_PITCH = THREE.MathUtils.degToRad(80);
 
   private domElement: HTMLElement;
+  private prevTouchAction: string = '';
 
   constructor(domElement: HTMLElement) {
     this.domElement = domElement;
+    const aspect = domElement.clientHeight > 0 ? domElement.clientWidth / domElement.clientHeight : 16 / 9;
     this.camera = new THREE.PerspectiveCamera(
       45,
-      domElement.clientWidth / domElement.clientHeight,
+      aspect,
       0.05,
       160000
     );
@@ -745,7 +747,24 @@ export class CameraRig {
    * body so the ground stays put under the camera, as in Google Earth.
    */
   public applyFrameRotation(q: THREE.Quaternion): void {
-    if (this.transition) return;
+    if (this.transition) {
+      const prevStartTheta = this.transition.startSpherical.theta;
+      const sv = new THREE.Vector3().setFromSpherical(this.transition.startSpherical).applyQuaternion(q);
+      this.transition.startSpherical.setFromVector3(sv);
+      while (this.transition.startSpherical.theta - prevStartTheta > Math.PI) this.transition.startSpherical.theta -= Math.PI * 2;
+      while (this.transition.startSpherical.theta - prevStartTheta < -Math.PI) this.transition.startSpherical.theta += Math.PI * 2;
+
+      const prevTargetTheta = this.transition.targetTheta;
+      const tv = new THREE.Vector3()
+        .setFromSphericalCoords(1, this.transition.targetPhi, this.transition.targetTheta)
+        .applyQuaternion(q);
+      const ts = new THREE.Spherical().setFromVector3(tv);
+      while (ts.theta - prevTargetTheta > Math.PI) ts.theta -= Math.PI * 2;
+      while (ts.theta - prevTargetTheta < -Math.PI) ts.theta += Math.PI * 2;
+      this.transition.targetPhi = ts.phi;
+      this.transition.targetTheta = ts.theta;
+      return;
+    }
     const v = new THREE.Vector3().setFromSpherical(this.spherical).applyQuaternion(q);
     const t = new THREE.Vector3().setFromSpherical(this.targetSpherical).applyQuaternion(q);
     this.spherical.setFromVector3(v);
@@ -789,7 +808,7 @@ export class CameraRig {
     this.targetPanOffset.set(0, 0, 0);
     this.panOffset.set(0, 0, 0);
 
-    this.transition = {
+    const tr: CameraTransition = {
       startPos: this.camera.position.clone(),
       startAimPoint: this.aimPoint.clone(),
       startFov: this.camera.fov,
@@ -810,12 +829,14 @@ export class CameraRig {
       startTime: performance.now(),
       durationMs,
       onComplete: () => {
+        targetSph.set(tr.targetDistance, tr.targetPhi, tr.targetTheta);
         this.spherical.copy(targetSph);
         this.targetSpherical.copy(targetSph);
         this.camera.fov = OBSERVATION_FOV_DEG;
         this.currentNdcOffset.set(0, 0);
       },
     };
+    this.transition = tr;
   }
 
   /** Smoothly return the free-look to the composed shot. */
@@ -1344,7 +1365,7 @@ export class CameraRig {
     if (this.isOrbiting) {
       // Near a globe the drag grabs the surface: the point under the cursor follows the cursor
       if (this.grabSurface(e.clientX, e.clientY)) return;
-      const rotateSpeed = 0.005 * Math.min(1, Math.max(0.0005, this.altitudeInRadii()));
+      const rotateSpeed = 0.005 * this.angularDragScale();
       this.targetSpherical.theta -= deltaX * rotateSpeed;
       this.targetSpherical.phi -= deltaY * rotateSpeed;
       // Clamp phi to prevent pole flip
@@ -1497,9 +1518,42 @@ export class CameraRig {
     e.preventDefault();
   };
 
+  private angularDragScale(): number {
+    // Allow drag sensitivity to scale all the way down into meter-level surface altitudes
+    return Math.min(1, Math.max(1e-5, this.altitudeInRadii()));
+  }
+
+  private isInteractiveUiTarget(target: EventTarget | null): boolean {
+    const el = target as HTMLElement | null;
+    if (!el || typeof el.tagName !== 'string') return false;
+    const tag = el.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'A' || tag === 'LABEL') return true;
+    return typeof el.closest === 'function' && !!el.closest('button,a,input,textarea,select,[role="button"],[role="slider"]');
+  }
+
+  private clearPointerState(): void {
+    this.heldLookKeys.clear();
+    this.isLooking = false;
+    this.isOrbiting = false;
+    this.isPanning = false;
+    this.grabLocal = null;
+    this.activeTouches.clear();
+    this.initialPinchDist = 0;
+  }
+
+  private syncPinchAnchor(): void {
+    const touches = Array.from(this.activeTouches.values());
+    if (touches.length < 2) {
+      this.initialPinchDist = 0;
+      return;
+    }
+    this.initialPinchDist = Math.hypot(touches[0].x - touches[1].x, touches[0].y - touches[1].y);
+    this.initialRadiusOnPinch = this.targetSpherical.radius;
+  }
+
   // Touch Support
   private onTouchStart = (e: TouchEvent): void => {
-    if (this.suspended) return;
+    if (this.suspended || this.isInteractiveUiTarget(e.target)) return;
     this.lastInteractionTime = performance.now();
     if (this.transition) {
       this.transition = null;
@@ -1513,32 +1567,63 @@ export class CameraRig {
       this.activeTouches.set(touch.identifier, { x: touch.clientX, y: touch.clientY });
     }
 
-    if (this.activeTouches.size === 2) {
-      const touches = Array.from(this.activeTouches.values());
-      this.initialPinchDist = Math.hypot(touches[0].x - touches[1].x, touches[0].y - touches[1].y);
-      this.initialRadiusOnPinch = this.targetSpherical.radius;
+    if (this.activeTouches.size >= 2) {
+      // Prevent browser multi-touch pinch-zoom on iOS/Android while preserving 1-finger tap clicks
+      if (e.cancelable) e.preventDefault();
+      this.grabLocal = null;
+      this.syncPinchAnchor();
+    } else if (this.activeTouches.size === 1) {
+      this.initialPinchDist = 0;
+      const first = Array.from(this.activeTouches.values())[0];
+      if (first) this.beginGrab(first.x, first.y);
     }
   };
 
   private onTouchMove = (e: TouchEvent): void => {
-    if (this.suspended) return;
+    if (this.activeTouches.size === 0) return;
+
+    let touchesCanvas = false;
+    let singlePrev: { x: number; y: number } | undefined;
+    let singleId: number | undefined;
+    if (this.activeTouches.size === 1) {
+      const entry = this.activeTouches.entries().next();
+      if (!entry.done) {
+        singleId = entry.value[0];
+        singlePrev = { x: entry.value[1].x, y: entry.value[1].y };
+      }
+    }
+
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      if (this.activeTouches.has(t.identifier)) {
+        touchesCanvas = true;
+        this.activeTouches.set(t.identifier, { x: t.clientX, y: t.clientY });
+      }
+    }
+    if (!touchesCanvas) return;
+
+    if (this.suspended) {
+      this.clearPointerState();
+      return;
+    }
+    if (e.cancelable) e.preventDefault();
     this.lastInteractionTime = performance.now();
-    if (this.activeTouches.size === 1 && e.touches.length === 1) {
-      const touch = e.touches[0];
-      const prev = this.activeTouches.get(touch.identifier);
-      if (prev) {
-        const deltaX = touch.clientX - prev.x;
-        const deltaY = touch.clientY - prev.y;
-        const touchSpeed = 0.006 * Math.min(1, Math.max(0.0005, this.altitudeInRadii()));
+
+    if (this.activeTouches.size === 1 && singlePrev && singleId !== undefined) {
+      const cur = this.activeTouches.get(singleId);
+      if (cur) {
+        if (this.grabSurface(cur.x, cur.y)) return;
+        const deltaX = cur.x - singlePrev.x;
+        const deltaY = cur.y - singlePrev.y;
+        const touchSpeed = 0.006 * this.angularDragScale();
         this.targetSpherical.theta -= deltaX * touchSpeed;
         this.targetSpherical.phi -= deltaY * touchSpeed;
         this.targetSpherical.phi = Math.max(0.02, Math.min(Math.PI - 0.02, this.targetSpherical.phi));
-        this.activeTouches.set(touch.identifier, { x: touch.clientX, y: touch.clientY });
       }
-    } else if (this.activeTouches.size >= 2 && e.touches.length >= 2) {
-      const touches = [e.touches[0], e.touches[1]];
-      const dist = Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
-      if (this.initialPinchDist > 0) {
+    } else if (this.activeTouches.size >= 2) {
+      const touches = Array.from(this.activeTouches.values());
+      const dist = Math.hypot(touches[0].x - touches[1].x, touches[0].y - touches[1].y);
+      if (this.initialPinchDist > 1 && dist > 1) {
         const scale = this.initialPinchDist / dist;
         const minDistance = this.minimumDistance();
         let next = this.initialRadiusOnPinch * scale;
@@ -1546,18 +1631,48 @@ export class CameraRig {
           next = this.focusedRadius + (this.initialRadiusOnPinch - this.focusedRadius) * scale;
         }
         this.targetSpherical.radius = Math.max(minDistance, Math.min(180000.0 * COSMIC_SCALE, next));
+      } else if (this.initialPinchDist <= 1 && dist > 1) {
+        this.initialPinchDist = dist;
+        this.initialRadiusOnPinch = this.targetSpherical.radius;
       }
     }
   };
 
-  private onTouchEnd = (e: TouchEvent): void => {
-    this.lastInteractionTime = performance.now();
+  private finishTouches(e: TouchEvent): void {
+    let removedCanvasTouch = false;
     for (let i = 0; i < e.changedTouches.length; i++) {
-      this.activeTouches.delete(e.changedTouches[i].identifier);
+      if (this.activeTouches.delete(e.changedTouches[i].identifier)) {
+        removedCanvasTouch = true;
+      }
     }
-    if (this.activeTouches.size < 2) {
+    if ((e.touches?.length ?? 1) === 0 && this.activeTouches.size > 0) {
+      this.activeTouches.clear();
+      removedCanvasTouch = true;
+    }
+    if (!removedCanvasTouch) return;
+
+    this.lastInteractionTime = performance.now();
+    if (this.activeTouches.size === 0 || this.suspended) {
       this.initialPinchDist = 0;
+      this.grabLocal = null;
+      return;
     }
+    if (this.activeTouches.size === 1) {
+      this.initialPinchDist = 0;
+      const remaining = Array.from(this.activeTouches.values())[0];
+      if (remaining) this.beginGrab(remaining.x, remaining.y);
+      return;
+    }
+    this.grabLocal = null;
+    this.syncPinchAnchor();
+  }
+
+  private onTouchEnd = (e: TouchEvent): void => {
+    this.finishTouches(e);
+  };
+
+  private onTouchCancel = (e: TouchEvent): void => {
+    this.finishTouches(e);
   };
 
   private static readonly LOOK_KEYS = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']);
@@ -1566,7 +1681,7 @@ export class CameraRig {
     if (this.suspended) return;
     if (!CameraRig.LOOK_KEYS.has(e.key)) return;
     const t = e.target as HTMLElement | null;
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
     e.preventDefault();
     this.heldLookKeys.add(e.key);
   };
@@ -1576,8 +1691,7 @@ export class CameraRig {
   };
 
   private onWindowBlur = (): void => {
-    this.heldLookKeys.clear();
-    this.isLooking = false;
+    this.clearPointerState();
   };
 
   private onDoubleClick = (): void => {
@@ -1587,11 +1701,15 @@ export class CameraRig {
 
   private setupEventListeners(element: HTMLElement): void {
     this.domElement = element;
+    if (element && element.style) {
+      this.prevTouchAction = element.style.touchAction;
+      element.style.touchAction = 'none';
+    }
     if (element && element.addEventListener) {
       element.addEventListener('mousedown', this.onMouseDown);
       element.addEventListener('wheel', this.onWheel, { passive: false });
       element.addEventListener('contextmenu', this.onContextMenu);
-      element.addEventListener('touchstart', this.onTouchStart, { passive: true });
+      element.addEventListener('touchstart', this.onTouchStart, { passive: false });
       element.addEventListener('dblclick', this.onDoubleClick);
     }
 
@@ -1599,22 +1717,25 @@ export class CameraRig {
       window.addEventListener('keydown', this.onKeyDown);
       window.addEventListener('keyup', this.onKeyUp);
       window.addEventListener('blur', this.onWindowBlur);
-    }
-
-    if (typeof window !== 'undefined') {
       window.addEventListener('mouseup', this.onMouseUp);
       window.addEventListener('mousemove', this.onMouseMove);
-      window.addEventListener('touchmove', this.onTouchMove, { passive: true });
+      window.addEventListener('touchmove', this.onTouchMove, { passive: false });
       window.addEventListener('touchend', this.onTouchEnd, { passive: true });
+      window.addEventListener('touchcancel', this.onTouchCancel, { passive: true });
     }
   }
 
   public handleResize(width: number, height: number): void {
+    if (width <= 0 || height <= 0) return;
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
   }
 
   public dispose(): void {
+    this.clearPointerState();
+    if (this.domElement && this.domElement.style) {
+      this.domElement.style.touchAction = this.prevTouchAction;
+    }
     if (this.domElement && this.domElement.removeEventListener) {
       this.domElement.removeEventListener('mousedown', this.onMouseDown);
       this.domElement.removeEventListener('wheel', this.onWheel);
@@ -1630,6 +1751,7 @@ export class CameraRig {
       window.removeEventListener('mousemove', this.onMouseMove);
       window.removeEventListener('touchmove', this.onTouchMove);
       window.removeEventListener('touchend', this.onTouchEnd);
+      window.removeEventListener('touchcancel', this.onTouchCancel);
     }
   }
 }

@@ -31,8 +31,13 @@ export function Segmented<T extends string | number>({
       setGlide(el ? { left: el.offsetLeft, width: el.offsetWidth } : null);
     };
     measure();
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
+    const ro = typeof ResizeObserver !== 'undefined' && wrap.current ? new ResizeObserver(measure) : null;
+    if (ro && wrap.current) ro.observe(wrap.current);
+    window.addEventListener('resize', measure, { passive: true });
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
   }, [value, items.length]);
 
   return (
@@ -233,10 +238,10 @@ export const TimeDeck: React.FC<{
   const idx = Math.max(0, SPEEDS.findIndex((s) => s.value === multiplier));
 
   return (
-    <div className="flex flex-col items-center gap-2">
+    <div className="relative flex flex-col items-center gap-2">
       {pickerOpen && (
         <form
-          className="hud-frame hud-menu flex items-center gap-2 px-3 py-2"
+          className="hud-frame hud-menu flex flex-wrap items-center justify-center gap-2 px-3 py-2 max-w-[calc(100vw-24px-var(--safe-l)-var(--safe-r))]"
           onSubmit={(e) => {
             e.preventDefault();
             const ms = Date.parse(draft);
@@ -255,7 +260,7 @@ export const TimeDeck: React.FC<{
             className="hud-input hud-num !w-auto !py-1 [color-scheme:dark]"
           />
           <button type="submit" className="hud-btn is-on">Jump</button>
-          <button type="button" onClick={() => setPickerOpen(false)} className="hud-icon-btn !w-6 !h-6" aria-label="Close date picker">
+          <button type="button" onClick={() => setPickerOpen(false)} className="hud-icon-btn sm" aria-label="Close date picker">
             <X size={11} />
           </button>
         </form>
@@ -325,7 +330,7 @@ export const TimeDeck: React.FC<{
       {missionsOpen && onMissionEvent && (
         <div
           onClick={(e) => e.stopPropagation()}
-          className="absolute bottom-full right-0 mb-2 w-80 max-w-[calc(100vw-24px)] rounded-xl bg-[#070b11]/95 border border-[#6ee7ff]/25 backdrop-blur-xl shadow-2xl p-2.5 z-40"
+          className="absolute bottom-full left-1/2 -translate-x-1/2 sm:left-auto sm:right-0 sm:translate-x-0 mb-2 w-80 max-w-[calc(100vw-24px-var(--safe-l)-var(--safe-r))] rounded-xl bg-[#070b11]/95 border border-[#6ee7ff]/25 backdrop-blur-xl shadow-2xl p-2.5 z-40"
         >
           <div className="flex items-center justify-between px-1.5 pb-2 mb-1.5 border-b border-white/10">
             <span className="font-mono text-[9.5px] uppercase tracking-[0.22em] text-[#6ee7ff]">
@@ -334,13 +339,13 @@ export const TimeDeck: React.FC<{
             <button
               type="button"
               onClick={() => setMissionsOpen(false)}
-              className="hud-icon-btn !w-6 !h-6"
+              className="hud-icon-btn sm"
               aria-label="Close missions popover"
             >
               <X size={11} />
             </button>
           </div>
-          <div className="max-h-72 overflow-y-auto flex flex-col gap-1 pr-0.5">
+          <div className="max-h-[min(18rem,calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-96px))] overflow-y-auto hud-scroll flex flex-col gap-1 pr-0.5">
             {missionEvents.map((ev) => (
               <button
                 key={ev.id}

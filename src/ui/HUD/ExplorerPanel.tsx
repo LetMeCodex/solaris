@@ -67,8 +67,18 @@ const SlateTabs: React.FC<{ tab: SlateTab; onTab: (t: SlateTab) => void; counts:
   const wrap = useRef<HTMLDivElement>(null);
   const [ink, setInk] = useState<{ left: number; width: number }>({ left: 0, width: 0 });
   useLayoutEffect(() => {
-    const el = wrap.current?.querySelector<HTMLButtonElement>('button[aria-selected="true"]');
-    if (el) setInk({ left: el.offsetLeft + 14, width: el.offsetWidth - 28 });
+    const syncInk = () => {
+      const el = wrap.current?.querySelector<HTMLButtonElement>('button[aria-selected="true"]');
+      if (el) setInk({ left: el.offsetLeft + 14, width: Math.max(0, el.offsetWidth - 28) });
+    };
+    syncInk();
+    const ro = typeof ResizeObserver !== 'undefined' && wrap.current ? new ResizeObserver(syncInk) : null;
+    if (ro && wrap.current) ro.observe(wrap.current);
+    window.addEventListener('resize', syncInk, { passive: true });
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener('resize', syncInk);
+    };
   }, [tab, counts.moons]);
   const tabs: Array<[SlateTab, string]> = [
     ['survey', 'Survey'],
@@ -96,7 +106,15 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
   // Collapsed to a slim altimeter until the camera is near the ground (or the user opens it);
   // phones stay collapsed so the globe keeps the screen
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const wide = typeof window === 'undefined' || window.innerWidth >= 640;
+  const [wide, setWide] = useState(() => typeof window === 'undefined' || window.innerWidth >= 768);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(min-width: 768px)');
+    const sync = () => setWide(mq.matches);
+    sync();
+    mq.addEventListener?.('change', sync);
+    return () => mq.removeEventListener?.('change', sync);
+  }, []);
   const open = userOpen ?? (autoOpen && wide);
   const setOpen = (fn: (o: boolean) => boolean) => setUserOpen(fn(open));
   const [query, setQuery] = useState('');
@@ -180,16 +198,24 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
     <section
       aria-label="Planetary explorer"
       data-tour="explorer"
-      className={`hud-frame hud-slide-in absolute right-3 md:right-7 top-[204px] sm:top-[76px] md:top-[92px] ${open ? 'w-[300px]' : 'w-auto'} max-w-[calc(100vw-24px)] max-h-[calc(100vh-330px)] sm:max-h-[calc(100vh-200px)] md:max-h-[calc(100vh-480px)] [@media(max-height:620px)]:max-h-[calc(100vh-200px)] overflow-y-auto overflow-x-hidden hud-scroll pointer-events-auto z-30 text-white/80 font-light`}
+      className={`hud-frame hud-slide-in absolute flex flex-col overflow-hidden pointer-events-auto z-30 text-white/80 font-light right-[max(10px,var(--safe-r))] bottom-[calc(var(--hud-footer-h)+8px)] ${
+        open
+          ? 'left-[max(10px,var(--safe-l))] max-h-[calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-18px)]'
+          : 'w-auto max-w-[calc(100vw-20px-var(--safe-l)-var(--safe-r))]'
+      } md:left-auto md:bottom-auto md:top-[calc(var(--hud-header-h)+10px)] md:right-[max(16px,var(--safe-r))] lg:right-[max(28px,var(--safe-r))] ${
+        open
+          ? 'md:w-[clamp(284px,24vw,336px)] md:max-h-[calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-22px)] lg:max-h-[calc(100dvh-var(--hud-header-h)-265px)] xl:max-h-[calc(100dvh-var(--hud-header-h)-300px)] [@media(max-height:620px)]:max-h-[calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-18px)]'
+          : 'md:w-auto'
+      }`}
     >
       {/* Breadcrumb */}
-      <div className={`flex items-center justify-between gap-3 px-4 ${open ? 'pt-3 pb-2' : 'py-2'} text-[10px] uppercase tracking-[0.18em]`}>
+      <div className={`shrink-0 flex items-center justify-between gap-3 px-3.5 sm:px-4 ${open ? 'pt-3 pb-2' : 'py-2'} text-[10px] uppercase tracking-[0.18em]`}>
         <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 min-w-0">
           <button onClick={onResetView} className="text-white/45 hover:text-white focus-visible:ring-1 focus-visible:ring-white/60 rounded">
             Solar System
           </button>
           <span className="text-white/25">›</span>
-          <button onClick={() => onSelectBody(body)} className="text-white/80 hover:text-white focus-visible:ring-1 focus-visible:ring-white/60 rounded">
+          <button onClick={() => onSelectBody(body)} className="text-white/80 hover:text-white focus-visible:ring-1 focus-visible:ring-white/60 rounded truncate">
             {body}
           </button>
           {status.landmark && (
@@ -200,21 +226,22 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
           )}
         </nav>
         {!open && (
-          <span className="hud-num text-[9.5px] tracking-[0.08em] text-[color:var(--sol-amber)] ml-auto mr-2 whitespace-nowrap">ALT {fmtDistance(status.altitudeKm)}</span>
+          <span className="hud-num text-[9.5px] tracking-[0.08em] text-[color:var(--sol-amber)] ml-auto mr-1 whitespace-nowrap">ALT {fmtDistance(status.altitudeKm)}</span>
         )}
         <button
           onClick={() => setOpen((o) => !o)}
           aria-expanded={open}
           aria-label={open ? 'Collapse explorer panel' : 'Expand explorer panel'}
-          className="hud-icon-btn !w-5 !h-5 text-[11px] leading-none"
+          className="hud-icon-btn sm shrink-0 text-[11px] leading-none"
         >
           <span className={`inline-block transition-transform duration-500 ${open ? 'rotate-45' : ''}`}>+</span>
         </button>
       </div>
 
       {open && (
-        <div className="flex flex-col text-[11px]">
+        <div className="flex-1 min-h-0 flex flex-col text-[11px]">
           <SlateTabs tab={tab} onTab={setTab} counts={{ waypoints: bodyLandmarks.length, moons: moons?.count ?? 0 }} />
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden hud-scroll">
 
           {tab === 'survey' && (
             <div key="survey" className="px-4 py-3 flex flex-col gap-3 hud-rise">
@@ -417,7 +444,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
                             onClick={() => onSkyFrom(m.name, moons.system)}
                             title={`Stand on ${m.name} and look up at ${moons.system}`}
                             aria-label={`Stand on ${m.name} and look up`}
-                            className="hud-icon-btn !w-6 !h-6 shrink-0 text-[11px]"
+                            className="hud-icon-btn sm shrink-0 text-[11px]"
                           >
                             ↑
                           </button>
@@ -435,6 +462,7 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
               <SkyDestinations current={null} onGo={onSkyFrom} onDeepTime={onDeepTime} />
             </div>
           )}
+          </div>
         </div>
       )}
     </section>

@@ -168,6 +168,10 @@ Rendering uses **3d-tiles-renderer** 0.4.28 (NASA-AMMOS, Apache-2.0), with the D
 
 ## Earth flight data (added)
 
+### Bundled elevation baseline
+
+`public/data/elevation/` contains a subset of the same Tilezen Terrain Tiles Terrarium PNGs used by `src/explorer/Elevation.ts`: zoom 3 global coverage and available zoom 8 coverage around Earth landmarks. Source: https://elevation-tiles-prod.s3.amazonaws.com/terrarium/ . The SRTM, GMTED2010, ETOPO1 and other original dataset credits and terms remain applicable: https://github.com/tilezen/joerd/blob/master/docs/attribution.md . `scripts/bundle_elevation.py` regenerates the subset and its `src/data/elevationTiles.json` index. These files provide offline coarse terrain; live elevation refines it. They are not Google Maps tiles.
+
 - **Live weather**: [Open-Meteo](https://open-meteo.com/) forecast API (current cloud cover, weather code, precipitation, wind, visibility), free, no key, CC BY 4.0. Asked again after 10 minutes or 80 km (`src/flight/EarthClouds.ts`).
 - **Place names**: OpenStreetMap Nominatim reverse geocoder (`src/explorer/ReverseGeocode.ts`) and search (`src/explorer/EarthSearch.ts`), © OpenStreetMap contributors, ODbL; within Nominatim's usage policy (at most one request a second, cached by area).
 - **Procedural buildings (experimental, off by default)**: building outlines and heights from [OpenFreeMap](https://openfreemap.org/) vector tiles (OpenMapTiles schema), © OpenMapTiles, data © OpenStreetMap contributors (`src/explorer/ProceduralCity.ts`). Google's Map Tiles policies should be checked before showing these together with Google's tiles publicly.

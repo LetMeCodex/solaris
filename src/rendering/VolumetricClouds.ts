@@ -68,6 +68,7 @@ uniform vec2 uDrift;
 uniform float uAge;
 uniform float uFrame;
 uniform float uSteps;
+uniform float uStepScale;
 uniform float uSunSteps;
 uniform float uDetail;
 uniform vec3 uSunDir;
@@ -175,7 +176,7 @@ vec2 sphere(vec3 ro, vec3 rd, vec3 c, float r) {
 }
 
 void main() {
-  float depth = texture(tDepth, vUv).x;
+  float depth = textureLod(tDepth, vUv, 0.0).x;
   vec4 vp = uProjInv * vec4(vUv * 2.0 - 1.0, -1.0, 1.0);
   vec3 dirV = normalize(vp.xyz / vp.w);
   vec3 rd = normalize(uCamRot * dirV);
@@ -206,7 +207,7 @@ void main() {
   t1 = min(t1, min(sceneKm, reach));
   if (t1 <= t0) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
 
-  float steps = max(uSteps, 1.0);
+  float steps = clamp(uSteps * uStepScale, 12.0, 96.0);
   float vGrow = pow(reach / (0.9 * uUnitKm), 1.0 / steps) - 1.0;
   float L = clamp(pow(t1 / max(t0, 0.9 * uUnitKm), 1.0 / steps) - 1.0, 0.0, vGrow);
   float E = t0 > uUnitKm ? 0.04 * uUnitKm : 0.28 * uUnitKm;
@@ -309,6 +310,7 @@ export class VolumetricCloudPass extends Pass {
     uAge: { value: 0 },
     uFrame: { value: 0 },
     uSteps: { value: 52 },
+    uStepScale: { value: 1 },
     uSunSteps: { value: 4 },
     uDetail: { value: 1 },
     uNightAir: NIGHT_AIR,
@@ -326,8 +328,12 @@ export class VolumetricCloudPass extends Pass {
   private readonly march: FullScreenQuad;
   private readonly composite: FullScreenQuad;
   private readonly compositeMat: THREE.ShaderMaterial;
-  private readonly target: THREE.WebGLRenderTarget;
+  private target: THREE.WebGLRenderTarget;
   private scale: number;
+  private lastWidth = 1;
+  private lastHeight = 1;
+  private targetChecked = false;
+  private readonly tmpClearColor = new THREE.Color();
   private cancelNoise: (() => void) | null = null;
   private noiseLoaded = false;
 
@@ -353,12 +359,58 @@ export class VolumetricCloudPass extends Pass {
       depthWrite: false,
     });
     this.composite = new FullScreenQuad(this.compositeMat);
-    this.target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false });
-    this.target.texture.minFilter = this.target.texture.magFilter = THREE.LinearFilter;
+    this.target = this.createTarget(1, 1, THREE.HalfFloatType);
+  }
+
+  private createTarget(w: number, h: number, type: THREE.TextureDataType): THREE.WebGLRenderTarget {
+    const rt = new THREE.WebGLRenderTarget(w, h, { type, depthBuffer: false });
+    rt.texture.minFilter = rt.texture.magFilter = THREE.LinearFilter;
+    return rt;
+  }
+
+  private ensureTargetCompatibility(renderer: THREE.WebGLRenderer): void {
+    if (this.targetChecked) return;
+    this.targetChecked = true;
+    const isWebGL2 = renderer.capabilities?.isWebGL2 ?? false;
+    const canHalfFloat = isWebGL2
+      ? renderer.extensions.has('EXT_color_buffer_float') || renderer.extensions.has('EXT_color_buffer_half_float')
+      : renderer.extensions.has('EXT_color_buffer_half_float');
+    if (!canHalfFloat && this.target.texture.type !== THREE.UnsignedByteType) {
+      const w = Math.max(1, Math.round(this.lastWidth * this.scale));
+      const h = Math.max(1, Math.round(this.lastHeight * this.scale));
+      this.target.dispose();
+      this.target = this.createTarget(w, h, THREE.UnsignedByteType);
+    }
+  }
+
+  /** Adaptively update CloudSea target resolution (half-res -> quarter-res) and raymarch step scale. */
+  public setAdaptiveQuality(scale: number, stepScale = 1): void {
+    const nextScale = Math.max(0.22, Math.min(0.8, scale));
+    this.u.uStepScale.value = Math.max(0.4, Math.min(1, stepScale));
+    const prevW = this.target.width;
+    const prevH = this.target.height;
+    this.scale = nextScale;
+    const nextW = Math.max(1, Math.round(this.lastWidth * this.scale));
+    const nextH = Math.max(1, Math.round(this.lastHeight * this.scale));
+    if (nextW !== prevW || nextH !== prevH) {
+      this.target.setSize(nextW, nextH);
+    }
+  }
+
+  /** Mark noise volume and target ready for re-upload after a WebGL context restore. */
+  public onContextRestored(): void {
+    this.targetChecked = false;
+    this.u.tNoise.value.needsUpdate = true;
   }
 
   public setSize(width: number, height: number): void {
-    this.target.setSize(Math.max(1, Math.round(width * this.scale)), Math.max(1, Math.round(height * this.scale)));
+    this.lastWidth = Math.max(1, width);
+    this.lastHeight = Math.max(1, height);
+    const w = Math.max(1, Math.round(this.lastWidth * this.scale));
+    const h = Math.max(1, Math.round(this.lastHeight * this.scale));
+    if (w !== this.target.width || h !== this.target.height) {
+      this.target.setSize(w, h);
+    }
   }
 
   /** Per frame, before the draw (camera at the floating origin's place). */
@@ -389,11 +441,13 @@ export class VolumetricCloudPass extends Pass {
   }
 
   public render(renderer: THREE.WebGLRenderer, writeBuffer: THREE.WebGLRenderTarget, readBuffer: THREE.WebGLRenderTarget): void {
+    if (renderer.getContext?.()?.isContextLost?.()) return;
+    this.ensureTargetCompatibility(renderer);
     if (!this.noiseLoaded) {
       this.warm();
       const prev = renderer.getRenderTarget();
       renderer.setRenderTarget(this.target);
-      const clear = renderer.getClearColor(new THREE.Color());
+      const clear = renderer.getClearColor(this.tmpClearColor);
       const clearA = renderer.getClearAlpha();
       renderer.setClearColor(0x000000, 1);
       renderer.clear(true, false, false);

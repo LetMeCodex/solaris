@@ -104,7 +104,7 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
         startedAt = now;
         if (st) say(`take-off  ${st.name}  ${Math.abs(st.lat).toFixed(3)}°${st.lat >= 0 ? 'N' : 'S'} ${Math.abs(st.lon).toFixed(3)}°${st.lon >= 0 ? 'E' : 'W'} · Sun high there now`);
       }
-      const r = sc?.flyReadiness() ?? { jet: false, aircraft: false, tilesPending: 0, tilesVisible: 0 };
+      const r = sc?.flyReadiness() ?? { jet: false, aircraft: false, tilesPending: 0, tilesVisible: 0, detailedTiles: 0 };
       const airframeName = sc?.jet.airframe.anchors.name ?? AIRFRAMES[chosenAirframe()].anchors.name;
       if (r.aircraft && !aircraftSaid) {
         aircraftSaid = true;
@@ -127,14 +127,26 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
       }
       const streaming = startedAt > 0 && r.jet;
       peakPending = Math.max(peakPending, r.tilesPending);
-      const tilesFrac = !streaming ? 0 : r.tilesVisible === 0 ? 0.05 : Math.min(1, 1 - r.tilesPending / Math.max(peakPending, 40));
-      if (streaming && r.tilesVisible > 0 && r.tilesPending <= 3) quietSince ||= now;
+      const isCompactFly = typeof window !== 'undefined' && (window.innerWidth < 820 || window.innerHeight < 480);
+      const targetDetailed = isCompactFly ? 4 : 8;
+      const settleDetailed = isCompactFly ? 3 : 5;
+      const tilesFrac = !streaming
+        ? 0
+        : r.tilesVisible === 0
+          ? 0.05
+          : Math.min(1, Math.max(1 - r.tilesPending / Math.max(peakPending, 40), Math.min(0.96, Math.max(r.detailedTiles / targetDetailed, r.tilesVisible / (targetDetailed * 2)))));
+      if (streaming && r.detailedTiles >= settleDetailed) quietSince ||= now;
       else quietSince = 0;
-      const settled = quietSince > 0 && now - quietSince > 1500;
-      // Ten seconds at least over the start, so the sharp tiles have come in, never more than 50
-      const timedOut = startedAt > 0 && now - startedAt > 50000;
+      const settled = quietSince > 0 && now - quietSince > 2200;
+      const enoughTiles = r.detailedTiles >= targetDetailed || (r.detailedTiles >= 3 && r.tilesPending <= 8);
+      // Root tiles are flat continents, not a ready launch view. Wait for building-scale
+      // photogrammetry before revealing; retain a bounded fallback for unavailable providers.
+      const timedOut = startedAt > 0 && now - startedAt > 20000;
       const toured = tourStep >= TOUR.length;
-      ready = ready || (load.done && r.jet && r.aircraft && ((toured && settled && now - startedAt > 10000) || timedOut));
+      ready = ready || (load.done && r.jet && r.aircraft && ((toured && (enoughTiles || settled)) || timedOut));
+      if (ready && sc && tourStep >= 0 && tourStep < TOUR.length) {
+        sc.jet.view = tourHome;
+      }
       const progress = (load.done ? 0.4 : load.progress * 0.4) + (r.aircraft ? 0.12 : 0) + (r.jet ? 0.08 : 0) + 0.4 * (ready ? 1 : tilesFrac * 0.97);
       const items: PreflightItem[] = [
         { label: 'OBSERVATORY', detail: load.done ? 'textures · shaders ready' : `${Math.round(load.progress * 100)}% · ${load.stage}`, done: load.done },
@@ -168,23 +180,52 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
   useEffect(() => {
     if (!containerRef.current) return;
 
+    const container = containerRef.current;
+    // Sync Three.js canvas when container dimensions or mobile browser visualViewport chrome change
+    let lastW = container.clientWidth || window.innerWidth;
+    let lastH = container.clientHeight || window.innerHeight;
+    let resizeRaf = 0;
+    const triggerSceneResize = (): void => {
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      resizeRaf = requestAnimationFrame(() => {
+        resizeRaf = 0;
+        const w = container.clientWidth || window.visualViewport?.width || window.innerWidth;
+        const h = container.clientHeight || window.visualViewport?.height || window.innerHeight;
+        if (Math.abs(w - lastW) >= 1 || Math.abs(h - lastH) >= 1) {
+          lastW = w;
+          lastH = h;
+          window.dispatchEvent(new Event('resize'));
+        }
+      });
+    };
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(triggerSceneResize) : null;
+    ro?.observe(container);
+    window.visualViewport?.addEventListener('resize', triggerSceneResize);
+
     // Instantiate core Three.js scene
-    const scene = new SolarSystemScene(containerRef.current, (data) => {
+    const scene = new SolarSystemScene(container, (data) => {
       setTelemetry(data);
     });
     sceneRef.current = scene;
-    (window as any).__solarisScene = scene;
+    (window as unknown as { __solarisScene?: SolarSystemScene }).__solarisScene = scene;
     // The jet reports every frame; React only needs to know when it takes off or lands
     let jetWas = false;
+    let exitTimer: number | null = null;
     scene.onJetLanding = (lm) => setLandedAt(lm ? lm.name : null);
     const unsubJet = scene.jet.subscribe((t) => {
       if (t.active !== jetWas) {
         jetWas = t.active;
         setJetActive(t.active);
+        if (t.active && exitTimer !== null) {
+          window.clearTimeout(exitTimer);
+          exitTimer = null;
+        }
         // The fly page is the jet: leaving it (not landing) goes back to the observatory
         if (!t.active && mode === 'fly') {
-          window.setTimeout(() => {
-            if (!landedRef.current) window.location.assign(SITE_URL);
+          if (exitTimer !== null) window.clearTimeout(exitTimer);
+          exitTimer = window.setTimeout(() => {
+            exitTimer = null;
+            if (!landedRef.current && !jetWas) window.location.assign(SITE_URL);
           }, 400);
         }
       }
@@ -200,6 +241,13 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
 
     return () => {
       delete (window as unknown as { __solaris_scene?: SolarSystemScene }).__solaris_scene;
+      if (exitTimer !== null) {
+        window.clearTimeout(exitTimer);
+        exitTimer = null;
+      }
+      if (resizeRaf) cancelAnimationFrame(resizeRaf);
+      ro?.disconnect();
+      window.visualViewport?.removeEventListener('resize', triggerSceneResize);
       unsubJet();
       scene.dispose();
       sceneRef.current = null;
@@ -369,7 +417,7 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
   }, []);
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-[#030206]" style={{ width: '100vw', height: '100vh', position: 'relative', overflow: 'hidden' }}>
+    <div className="relative w-full h-full overflow-hidden bg-[#030206]" style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
       {/* 3D WebGL Canvas Viewport */}
       <div ref={containerRef} className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
 
@@ -415,28 +463,44 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
 
       {/* Landed from the jet: stand and look, then take off again from the same spot */}
       {revealed && !jetActive && landedAt && (
-        // Top centre, under the header: at the bottom it sat under VELA's card (centred there too)
-        <div style={{ position: 'absolute', left: '50%', top: 'calc(env(safe-area-inset-top, 0px) + 84px)', transform: 'translateX(-50%)', zIndex: 40, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, pointerEvents: 'auto' }}>
+        <div
+          className="sol-landed-pill"
+          style={{
+            position: 'absolute',
+            left: '50%',
+            top: 'calc(var(--hud-header-h, calc(env(safe-area-inset-top, 0px) + 64px)) + 8px)',
+            transform: 'translateX(-50%)',
+            zIndex: 40,
+            maxWidth: 'calc(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px))',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 6,
+            pointerEvents: 'auto',
+          }}
+        >
           <FpsCounter style={{ fontFamily: 'Montserrat, system-ui, sans-serif' }} />
-          <span style={{ fontFamily: 'Montserrat, system-ui, sans-serif', fontSize: 9, letterSpacing: '0.35em', color: 'rgba(255,255,255,0.6)', textTransform: 'uppercase' }}>
+          <span style={{ fontFamily: 'Montserrat, system-ui, sans-serif', fontSize: 9, letterSpacing: '0.28em', color: 'rgba(255,255,255,0.68)', textTransform: 'uppercase', textAlign: 'center', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>
             Landed · {landedAt}
           </span>
-          <button type="button" className="hud-btn is-on" style={{ color: 'var(--sol-mint)', padding: '8px 18px' }} onClick={handleTakeOff}>
-            Take off
-          </button>
-          <button
-            type="button"
-            className="hud-btn"
-            style={{ padding: '4px 12px', fontSize: 9 }}
-            onClick={(e) => {
-              const sc = sceneRef.current;
-              if (!sc) return;
-              sc.avatarOn = !sc.avatarOn;
-              (e.currentTarget as HTMLButtonElement).textContent = sc.avatarOn ? 'Hide person' : 'Show person';
-            }}
-          >
-            Hide person
-          </button>
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: 6 }}>
+            <button type="button" className="hud-btn is-on sol-landed-takeoff" style={{ color: 'var(--sol-mint)', padding: '8px 18px' }} onClick={handleTakeOff}>
+              Take off
+            </button>
+            <button
+              type="button"
+              className="hud-btn sol-landed-avatar"
+              style={{ padding: '6px 12px', fontSize: 9 }}
+              onClick={(e) => {
+                const sc = sceneRef.current;
+                if (!sc) return;
+                sc.avatarOn = !sc.avatarOn;
+                (e.currentTarget as HTMLButtonElement).textContent = sc.avatarOn ? 'Hide person' : 'Show person';
+              }}
+            >
+              Hide person
+            </button>
+          </div>
         </div>
       )}
 

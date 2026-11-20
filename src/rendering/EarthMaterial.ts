@@ -76,9 +76,11 @@ export class EarthMaterial {
         varying vec3 vWorldPosition;
 
         void main() {
-          vec3 geomNormal = normalize(vWorldNormal);
-          vec3 sunDir = normalize(uSunWorld - vWorldPosition);
-          vec3 viewDir = normalize(cameraPosition - vWorldPosition);
+          vec3 geomNormal = dot(vWorldNormal, vWorldNormal) > 1e-10 ? normalize(vWorldNormal) : vec3(0.0, 1.0, 0.0);
+          vec3 sunRaw = uSunWorld - vWorldPosition;
+          vec3 sunDir = dot(sunRaw, sunRaw) > 1e-8 ? normalize(sunRaw) : vec3(1.0, 0.0, 0.0);
+          vec3 viewRaw = cameraPosition - vWorldPosition;
+          vec3 viewDir = dot(viewRaw, viewRaw) > 1e-10 ? normalize(viewRaw) : geomNormal;
 
           // Normal mapping perturbation
           vec3 normal = geomNormal;
@@ -92,10 +94,18 @@ export class EarthMaterial {
             vec2 duvdy = dFdy(vUv);
 
             vec3 N = geomNormal;
-            T = normalize(dpdx * duvdy.y - dpdy * duvdx.y);
-            B = -normalize(cross(N, T));
-            mat3 TBN = mat3(T, B, N);
-            normal = normalize(TBN * normalTex);
+            vec3 rawT = dpdx * duvdy.y - dpdy * duvdx.y;
+            vec3 orthoT = rawT - N * dot(N, rawT);
+            if (dot(orthoT, orthoT) > 1e-10) {
+              T = normalize(orthoT);
+              vec3 rawB = cross(N, T);
+              if (dot(rawB, rawB) > 1e-10) {
+                B = -normalize(rawB);
+                mat3 TBN = mat3(T, B, N);
+                vec3 perturbed = TBN * normalTex;
+                normal = dot(perturbed, perturbed) > 1e-10 ? normalize(perturbed) : N;
+              }
+            }
           }
 
           vec4 dayColor = texture2D(dayMap, vUv);
@@ -112,7 +122,8 @@ export class EarthMaterial {
           float dayFactor = smoothstep(-0.06, 0.22, NdotL);
 
           // 3. Restrained Ocean Specular reflection (Blinn-Phong lobe):
-          vec3 halfVec = normalize(sunDir + viewDir);
+          vec3 halfRaw = sunDir + viewDir;
+          vec3 halfVec = dot(halfRaw, halfRaw) > 1e-8 ? normalize(halfRaw) : viewDir;
           float NdotH = max(0.0, dot(normal, halfVec));
           float specularPower = 64.0;
           float oceanSpecular = pow(NdotH, specularPower) * waterMask * dayFactor * 1.35;
@@ -150,7 +161,7 @@ export class EarthMaterial {
           if (uNearAir > 0.001) {
             vec3 toEye = cameraPosition - vWorldPosition;
             float distKm = length(toEye) * uAirKmPerUnit;
-            float sunUp = dot(geomNormal, normalize(uSunWorld - vWorldPosition));
+            float sunUp = dot(geomNormal, sunDir);
             float dayK = smoothstep(-0.10, 0.16, sunUp);
             vec3 skyCol = apSky(sunUp);
             // The sea reflects the sky (Fresnel), as the tiles' water does
@@ -269,8 +280,9 @@ export class EarthMaterial {
           }
           if (cloudDensity < 0.025) discard;
 
-          vec3 normal = normalize(vWorldNormal);
-          vec3 sunDir = normalize(uSunWorld - vWorldPosition);
+          vec3 normal = dot(vWorldNormal, vWorldNormal) > 1e-10 ? normalize(vWorldNormal) : vec3(0.0, 1.0, 0.0);
+          vec3 sunRaw = uSunWorld - vWorldPosition;
+          vec3 sunDir = dot(sunRaw, sunRaw) > 1e-8 ? normalize(sunRaw) : vec3(1.0, 0.0, 0.0);
 
           // Sunlight on clouds
           float NdotL = dot(normal, sunDir);

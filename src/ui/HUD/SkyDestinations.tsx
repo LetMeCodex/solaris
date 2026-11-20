@@ -36,7 +36,7 @@ export const SkyDestinations: React.FC<Props> = ({ current, onGo, onDeepTime, de
           <button
             onClick={() => onGo(d.body, d.facing)}
             aria-current={current === d.body ? 'true' : undefined}
-            className="hud-row hud-rise group w-full flex items-center gap-3 px-2 py-1.5 text-left"
+            className="hud-row hud-rise group w-full flex items-center gap-3 px-2 py-2 text-left"
             style={{ ['--d' as string]: `${i * 30}ms` }}
           >
             <span className="w-4 text-center text-[color:var(--sol-amber)] opacity-70 group-hover:opacity-100 transition">{d.facing ? '◐' : '◌'}</span>
@@ -56,7 +56,7 @@ export const SkyDestinations: React.FC<Props> = ({ current, onGo, onDeepTime, de
                 onClick={() => onDeepTime(d.id)}
                 aria-current={deepCurrent === d.id ? 'true' : undefined}
                 title={d.blurb}
-                className="hud-row hud-rise group w-full flex items-center gap-3 px-2 py-1.5 text-left"
+                className="hud-row hud-rise group w-full flex items-center gap-3 px-2 py-2 text-left"
                 style={{ ['--d' as string]: `${(SKY_DESTINATIONS.length + i) * 30}ms` }}
               >
                 <span className="w-4 text-center text-[color:var(--sol-mint)] opacity-70 group-hover:opacity-100 transition">✦</span>

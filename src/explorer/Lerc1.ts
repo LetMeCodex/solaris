@@ -45,20 +45,23 @@ export function decodeLerc1(buffer: ArrayBuffer): Lerc1Raster {
   if (maskBytes > 0) {
     bitset = new Uint8Array(Math.ceil((width * height) / 8));
     const mv = new DataView(buffer, fp, maskBytes);
-    let cnt = mv.getInt16(0, true);
-    let ip = 2;
+    let ip = 0;
     let op = 0;
-    do {
+    while (ip + 2 <= maskBytes && op < bitset.length) {
+      let cnt = mv.getInt16(ip, true);
+      ip += 2;
+      if (cnt === 0) break;
       if (cnt > 0) {
-        while (cnt--) bitset[op++] = mv.getUint8(ip++);
+        const take = Math.min(cnt, maskBytes - ip, bitset.length - op);
+        for (let k = 0; k < take; k++) bitset[op++] = mv.getUint8(ip++);
+        if (take < cnt) break;
       } else {
+        if (ip >= maskBytes) break;
         const val = mv.getUint8(ip++);
-        cnt = -cnt;
+        cnt = Math.min(-cnt, bitset.length - op);
         while (cnt--) bitset[op++] = val;
       }
-      cnt = mv.getInt16(ip, true);
-      ip += 2;
-    } while (ip < maskBytes);
+    }
     fp += maskBytes;
   } else if (maskMax === 0) {
     allInvalid = true;
@@ -73,6 +76,22 @@ export function decodeLerc1(buffer: ArrayBuffer): Lerc1Raster {
   fp += 16;
   const actualY = numBlocksY + (height % numBlocksY > 0 ? 1 : 0);
   const actualX = numBlocksX + (width % numBlocksX > 0 ? 1 : 0);
+  const blockW = Math.floor(width / numBlocksX);
+  const blockH = Math.floor(height / numBlocksY);
+  const blockValidCount = (by: number, bx: number): number => {
+    if (allInvalid) return 0;
+    const h = by !== numBlocksY ? blockH : height % numBlocksY;
+    const w = bx !== numBlocksX ? blockW : width % numBlocksX;
+    if (!bitset) return w * h;
+    let count = 0;
+    for (let y = 0; y < h; y++) {
+      let o = (by * blockH + y) * width + bx * blockW;
+      for (let x = 0; x < w; x++, o++) {
+        if ((bitset[o >> 3] & (128 >> (o & 7))) !== 0) count++;
+      }
+    }
+    return count;
+  };
   const blocks: Block[] = [];
   for (let by = 0; by < actualY; by++) {
     for (let bx = 0; bx < actualX; bx++) {
@@ -123,11 +142,12 @@ export function decodeLerc1(buffer: ArrayBuffer): Lerc1Raster {
       fp += size;
       if (block.encoding === 3) continue;
       if (block.encoding === 0) {
-        const n = (pixBytes - 1) / 4;
-        const copy = new Uint8Array(n * 4);
-        copy.set(new Uint8Array(buffer, fp, n * 4));
+        const n = actualX === 1 && actualY === 1 ? Math.floor((pixBytes - size) / 4) : blockValidCount(by, bx);
+        const safeN = Math.min(n, Math.floor((buffer.byteLength - fp) / 4));
+        const copy = new Uint8Array(safeN * 4);
+        copy.set(new Uint8Array(buffer, fp, safeN * 4));
         block.raw = new Float32Array(copy.buffer);
-        fp += n * 4;
+        fp += safeN * 4;
       } else {
         const dataBytes = Math.ceil((block.numValidPixels * block.bitsPerPixel) / 8);
         const words = Math.ceil(dataBytes / 4);
@@ -140,8 +160,6 @@ export function decodeLerc1(buffer: ArrayBuffer): Lerc1Raster {
   }
 
   const out = new Float32Array(width * height);
-  const blockW = Math.floor(width / numBlocksX);
-  const blockH = Math.floor(height / numBlocksY);
   const scale = 2 * maxZError;
   const tmp = new Float32Array(blockW * blockH);
   let bi = 0;
@@ -173,8 +191,13 @@ export function decodeLerc1(buffer: ArrayBuffer): Lerc1Raster {
 }
 
 function unstuff(src: Uint32Array, bits: number, n: number, offset: number, scale: number, dest: Float32Array, maxValue: number): Float32Array {
-  const mask = bits >= 32 ? 0xffffffff : (1 << bits) - 1;
+  if (n <= 0) return dest;
   const nmax = Math.ceil((maxValue - offset) / scale);
+  if (bits === 0 || src.length === 0) {
+    dest.fill(0 < nmax ? offset : maxValue, 0, n);
+    return dest;
+  }
+  const mask = bits >= 32 ? 0xffffffff : ((1 << bits) - 1) >>> 0;
   const tailBytes = src.length * 4 - Math.ceil((bits * n) / 8);
   src[src.length - 1] <<= 8 * tailBytes;
   let i = 0;
@@ -187,14 +210,14 @@ function unstuff(src: Uint32Array, bits: number, n: number, offset: number, scal
     }
     let v: number;
     if (left >= bits) {
-      v = (buf >>> (left - bits)) & mask;
+      v = ((buf >>> (left - bits)) & mask) >>> 0;
       left -= bits;
     } else {
       const missing = bits - left;
-      v = ((buf & mask) << missing) & mask;
+      v = (((buf & mask) << missing) & mask) >>> 0;
       buf = src[i++];
       left = 32 - missing;
-      v += buf >>> left;
+      v = (v + (buf >>> left)) >>> 0;
     }
     dest[o] = v < nmax ? offset + v * scale : maxValue;
   }

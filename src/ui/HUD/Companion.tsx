@@ -120,6 +120,8 @@ export const Companion: React.FC<{
   tourOpen: boolean;
   horizon: { rRs: number; onShore: boolean } | null;
   surfaceActive: boolean;
+  /** True when the Explorer or Surface HUD panel renders a docked sheet bar on small viewports. */
+  bottomSheetActive?: boolean;
   orbitsOn: boolean;
   constellationsOn: boolean;
   worldsLogged: number;
@@ -131,7 +133,7 @@ export const Companion: React.FC<{
   lens: string;
   actions: CompanionActions;
   onTalkingChange?: (talking: boolean) => void;
-}> = ({ ready, current, inTransit, route, arrival, tourStep, tourOpen, horizon, surfaceActive, orbitsOn, constellationsOn, worldsLogged, explored, atlasOpen, sunClose, timeRate, lens, actions, onTalkingChange }) => {
+}> = ({ ready, current, inTransit, route, arrival, tourStep, tourOpen, horizon, surfaceActive, bottomSheetActive = false, orbitsOn, constellationsOn, worldsLogged, explored, atlasOpen, sunClose, timeRate, lens, actions, onTalkingChange }) => {
   const [beat, setBeat] = useState<Beat | null>(null);
   const [shown, setShown] = useState(0);
   const prefs = useSettings();
@@ -1010,7 +1012,7 @@ export const Companion: React.FC<{
         <div
           ref={boxRef}
           key={beat.id + (beat.choices ? 'c' : '')}
-          className={`vela-dialog ${inTransit ? 'in-transit' : ''} ${farewellOn ? 'is-farewell' : ''}`}
+          className={`vela-dialog ${inTransit ? 'in-transit' : ''} ${farewellOn ? 'is-farewell' : ''} ${surfaceActive ? 'on-surface' : ''} ${bottomSheetActive ? 'has-sheet' : ''}`}
           role="dialog"
           aria-live="polite"
           aria-label={`Vela says: ${text}`}
@@ -1053,7 +1055,7 @@ export const Companion: React.FC<{
 
       <button
         ref={orbRef}
-        className={`vela-orb ${farewellOn ? 'is-farewell' : ''} ${speaking ? 'speaking' : ''} ${quiet ? 'quiet' : ''} ${surfaceActive ? 'on-surface' : ''}`}
+        className={`vela-orb ${farewellOn ? 'is-farewell' : ''} ${speaking ? 'speaking' : ''} ${quiet ? 'quiet' : ''} ${surfaceActive ? 'on-surface' : ''} ${bottomSheetActive ? 'has-sheet' : ''}`}
         onClick={poke}
         aria-label="Talk to Vela"
         title="Vela · tap to talk"

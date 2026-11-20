@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { TextureGenerator } from './TextureGenerator';
 import { FastTextureLoader, applyBitmap, canUseBitmaps, decodeBitmap } from './FastTextureLoader';
+import { perf } from './Performance';
 
 export interface PlanetTextureSet {
   map: THREE.Texture;
@@ -21,10 +22,62 @@ export class TexturePipeline {
   private customLoader: THREE.TextureLoader | null = null;
   private cache: Map<string, THREE.Texture> = new Map();
   private inFlightRequests: Map<string, Promise<THREE.Texture>> = new Map();
-  private maxAnisotropy: number = 8;
+  private maxAnisotropy: number = perf.tier === 'low' ? 2 : perf.tier === 'medium' ? 4 : 8;
+  private maxCacheSize: number = TexturePipeline.defaultCacheLimit();
+  private readonly pinnedKeys: Set<string> = new Set();
   private baseUrl: string = (
     (typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL) || '/'
   ).replace(/\/?$/, '/');
+
+  private static defaultCacheLimit(): number {
+    return perf.tier === 'low' ? 20 : perf.tier === 'medium' ? 36 : 64;
+  }
+
+  private isProtectedKey(canonicalKey: string): boolean {
+    if (this.pinnedKeys.has(canonicalKey)) return true;
+    return /(?:earth_|2k_sun|milky_way_disk)/i.test(canonicalKey);
+  }
+
+  private touchCache(canonicalKey: string, texture: THREE.Texture): void {
+    this.cache.delete(canonicalKey);
+    this.cache.set(canonicalKey, texture);
+  }
+
+  private storeCache(canonicalKey: string, texture: THREE.Texture): void {
+    this.touchCache(canonicalKey, texture);
+    this.evictOverflow();
+  }
+
+  private evictOverflow(): void {
+    if (this.cache.size <= this.maxCacheSize) return;
+    for (const [key, tex] of this.cache) {
+      if (this.cache.size <= this.maxCacheSize) break;
+      if (this.pinnedKeys.has(key) || this.inFlightRequests.has(key) || this.isProtectedKey(key)) continue;
+      this.cache.delete(key);
+      // Free GPU texture handle while keeping image reference so active meshes can re-upload if revisited
+      tex.dispose();
+    }
+    // Second pass if unpinned set alone wasn't enough and explicitly non-pinned keys exceeded cap
+    if (this.cache.size > this.maxCacheSize) {
+      for (const [key, tex] of this.cache) {
+        if (this.cache.size <= this.maxCacheSize) break;
+        if (this.pinnedKeys.has(key) || this.inFlightRequests.has(key)) continue;
+        this.cache.delete(key);
+        tex.dispose();
+      }
+    }
+  }
+
+  /** Pin a texture URL so LRU eviction keeps it resident (e.g., active target planet). */
+  public pinTexture(url: string): void {
+    this.pinnedKeys.add(this.resolveUrl(url));
+  }
+
+  /** Set the LRU cache cap (protects 3D tile loading VRAM on low-memory devices). */
+  public setMaxCacheSize(limit: number): void {
+    this.maxCacheSize = Math.max(4, Math.floor(limit));
+    this.evictOverflow();
+  }
 
   private constructor() {}
 
@@ -73,7 +126,8 @@ export class TexturePipeline {
   }
 
   public setMaxAnisotropy(anisotropy: number): void {
-    this.maxAnisotropy = Math.max(1, anisotropy);
+    const tierCap = perf.tier === 'low' ? 2 : perf.tier === 'medium' ? 4 : 8;
+    this.maxAnisotropy = Math.min(tierCap, Math.max(1, anisotropy));
     for (const texture of this.cache.values()) {
       texture.anisotropy = this.maxAnisotropy;
       texture.needsUpdate = true;
@@ -125,6 +179,10 @@ export class TexturePipeline {
     }
     this.cache.clear();
     this.inFlightRequests.clear();
+    this.pinnedKeys.clear();
+    this.upgraded.clear();
+    this.upgrading.clear();
+    this.upgradeRetryAt.clear();
   }
 
   /**
@@ -133,6 +191,8 @@ export class TexturePipeline {
   public resetForTesting(): void {
     this.clearCache(false);
     this.customLoader = null;
+    this.maxCacheSize = TexturePipeline.defaultCacheLimit();
+    this.maxAnisotropy = perf.tier === 'low' ? 2 : perf.tier === 'medium' ? 4 : 8;
     this.baseUrl = (
       (typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL) || '/'
     ).replace(/\/?$/, '/');
@@ -152,15 +212,18 @@ export class TexturePipeline {
   ): THREE.Texture {
     const canonicalKey = this.resolveUrl(url);
 
-    // 1. Cache hit check with canonical key
+    // 1. Cache hit check with canonical key (refresh LRU recency)
     const cached = this.cache.get(canonicalKey);
-    if (cached) return cached;
+    if (cached) {
+      this.touchCache(canonicalKey, cached);
+      return cached;
+    }
 
     // 2. Headless test environment guard when no mock loader is provided
     if (typeof document === 'undefined' && !this.customLoader) {
       const dummyTex = new THREE.Texture();
       dummyTex.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-      this.cache.set(canonicalKey, dummyTex);
+      this.storeCache(canonicalKey, dummyTex);
       return dummyTex;
     }
 
@@ -226,9 +289,9 @@ export class TexturePipeline {
     texture.magFilter = THREE.LinearFilter;
     texture.anisotropy = this.maxAnisotropy;
 
-    // 4. Store in cache under canonical key if not already failed
+    // 4. Store in LRU cache under canonical key if not already failed
     if (!hasFailed) {
-      this.cache.set(canonicalKey, texture);
+      this.storeCache(canonicalKey, texture);
     }
     return texture;
   }
@@ -244,9 +307,12 @@ export class TexturePipeline {
   ): Promise<THREE.Texture> {
     const canonicalKey = this.resolveUrl(url);
 
-    // Cache hit
+    // Cache hit (refresh LRU recency)
     const cached = this.cache.get(canonicalKey);
-    if (cached) return Promise.resolve(cached);
+    if (cached) {
+      this.touchCache(canonicalKey, cached);
+      return Promise.resolve(cached);
+    }
 
     // In-flight deduplication
     const inFlight = this.inFlightRequests.get(canonicalKey);
@@ -270,7 +336,7 @@ export class TexturePipeline {
           tex.anisotropy = this.maxAnisotropy;
           tex.needsUpdate = true;
 
-          this.cache.set(canonicalKey, tex);
+          this.storeCache(canonicalKey, tex);
           this.inFlightRequests.delete(canonicalKey);
           resolve(tex);
         },
@@ -415,6 +481,8 @@ export class TexturePipeline {
     ],
   };
   private upgraded = new Set<string>();
+  private upgrading = new Set<string>();
+  private upgradeRetryAt = new Map<string, number>();
   private maxTextureSize = 4096;
 
   /** The GPU's limit: 8K maps are only used where they fit. */
@@ -427,20 +495,30 @@ export class TexturePipeline {
     return bodyName in TexturePipeline.HIRES;
   }
 
-  /** Swap a world's maps for the sharper ones (once; later calls do nothing). */
+  /** Swap a world's maps for the sharper ones (once; skipped on low tier to protect 3D tile VRAM). */
   public upgradeToHiRes(bodyName: string): void {
     const pairs = TexturePipeline.HIRES[bodyName];
-    if (!pairs || this.upgraded.has(bodyName) || typeof document === 'undefined') return;
-    this.upgraded.add(bodyName);
+    if (!pairs || typeof document === 'undefined') return;
+    // Low-VRAM devices stay on crisp 2K maps so 3D Tiles and SurfaceTileLayer keep GPU memory headroom
+    if (perf.tier === 'low') return;
     for (const [low, high] of pairs) {
-      const tex = this.cache.get(this.resolveUrl(low));
+      if (this.upgraded.has(high) || this.upgrading.has(high) || Date.now() < (this.upgradeRetryAt.get(high) ?? 0)) continue;
+      const lowKey = this.resolveUrl(low);
+      const tex = this.cache.get(lowKey);
       if (!tex) continue;
+      this.touchCache(lowKey, tex);
       const wants8k = high.includes('_8k');
-      if (wants8k && this.maxTextureSize < 8192) continue;
+      if (wants8k && (!perf.settings.hiRes8k || this.maxTextureSize < 8192)) continue;
+      this.upgrading.add(high);
       // The GPU copy was allocated at the old size and is immutable (texStorage2D): free it
       // first, so the next draw allocates fresh storage at the new size. Writing the bigger
       // image into the old storage fails and leaves the map garbled.
       const swap = (image: HTMLImageElement | ImageBitmap, flipY: boolean): void => {
+        if (this.cache.get(lowKey) !== tex) {
+          if ('close' in image) image.close();
+          this.upgrading.delete(high);
+          return;
+        }
         tex.dispose();
         if (image instanceof HTMLImageElement) {
           tex.image = image;
@@ -449,8 +527,15 @@ export class TexturePipeline {
         } else {
           applyBitmap(tex, image);
         }
+        this.upgrading.delete(high);
+        this.upgraded.add(high);
+        this.upgradeRetryAt.delete(high);
       };
-      const fail = (err: unknown): void => console.warn(`[TexturePipeline] Sharper map unavailable for ${bodyName}: ${high}`, err);
+      const fail = (err: unknown): void => {
+        this.upgrading.delete(high);
+        this.upgradeRetryAt.set(high, Date.now() + 30_000);
+        console.warn(`[TexturePipeline] Sharper map unavailable for ${bodyName}: ${high}`, err);
+      };
       if (canUseBitmaps) {
         // An 8K <img> froze the page for 0.45-0.8 s on upload; a bitmap decoded off the main
         // thread costs a fraction of that (see FastTextureLoader)

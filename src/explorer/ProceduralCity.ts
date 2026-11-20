@@ -100,7 +100,8 @@ void main() {
   vSeed = aSeed;
   vec4 w = modelMatrix * vec4(position, 1.0);
   vWorld = w.xyz;
-  vNormalW = normalize(mat3(modelMatrix) * normal);
+  vec3 nRaw = mat3(modelMatrix) * normal;
+  vNormalW = dot(nRaw, nRaw) > 1e-10 ? normalize(nRaw) : vec3(0.0, 1.0, 0.0);
   gl_Position = projectionMatrix * viewMatrix * w;
 }
 `;
@@ -121,11 +122,13 @@ float h(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
 float vn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
   return mix(mix(h(i), h(i + vec2(1.0, 0.0)), f.x), mix(h(i + vec2(0.0, 1.0)), h(i + vec2(1.0, 1.0)), f.x), f.y); }
 void main() {
-  vec3 up = normalize(vWorld - uEarthC);
-  vec3 sun = normalize(uSunW - uEarthC);
+  vec3 upRaw = vWorld - uEarthC;
+  vec3 up = dot(upRaw, upRaw) > 1e-10 ? normalize(upRaw) : vec3(0.0, 1.0, 0.0);
+  vec3 sunRaw = uSunW - uEarthC;
+  vec3 sun = dot(sunRaw, sunRaw) > 1e-10 ? normalize(sunRaw) : vec3(1.0, 0.0, 0.0);
   float sunUp = dot(up, sun);
   float day = smoothstep(-0.10, 0.12, sunUp);
-  vec3 n = normalize(vNormalW);
+  vec3 n = dot(vNormalW, vNormalW) > 1e-10 ? normalize(vNormalW) : up;
   float wall = 1.0 - abs(dot(n, up));
   // Painted plaster weathers: the paint's colour held back towards the grey of old concrete,
   // every building a little different
@@ -163,7 +166,8 @@ void main() {
   vec3 night = vec3(0.085, 0.1, 0.155) + uMoonLight * smoothstep(-0.04, 0.2, dot(up, uMoonDir));
   vec3 col = base * ((sunCol * lamb * 0.9 + amb) * day + night * (1.0 - day));
   // The sky in the glass
-  vec3 V = normalize(cameraPosition - vWorld);
+  vec3 vRaw = cameraPosition - vWorld;
+  vec3 V = dot(vRaw, vRaw) > 1e-10 ? normalize(vRaw) : up;
   float fres = pow(1.0 - max(dot(n, V), 0.0), 4.0);
   col += apSky(sunUp) * gloss * (0.08 + 0.5 * fres) * day;
   col += vec3(1.0, 0.72, 0.42) * glow * (1.0 - day) * 1.6;
@@ -204,8 +208,10 @@ float h2(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453)
 float n2(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
   return mix(mix(h2(i), h2(i + vec2(1.0, 0.0)), f.x), mix(h2(i + vec2(0.0, 1.0)), h2(i + vec2(1.0, 1.0)), f.x), f.y); }
 void main() {
-  vec3 up = normalize(vWorld - uEarthC);
-  vec3 sun = normalize(uSunW - uEarthC);
+  vec3 upRaw = vWorld - uEarthC;
+  vec3 up = dot(upRaw, upRaw) > 1e-10 ? normalize(upRaw) : vec3(0.0, 1.0, 0.0);
+  vec3 sunRaw = uSunW - uEarthC;
+  vec3 sun = dot(sunRaw, sunRaw) > 1e-10 ? normalize(sunRaw) : vec3(1.0, 0.0, 0.0);
   float sunUp = dot(up, sun);
   float day = smoothstep(-0.10, 0.12, sunUp);
   float k = floor(vKind + 0.5);
@@ -233,7 +239,8 @@ void main() {
   vec3 sunCol = mix(vec3(1.0, 0.7, 0.5), vec3(1.0, 0.97, 0.92), smoothstep(0.02, 0.3, sunUp));
   vec3 night = vec3(0.085, 0.1, 0.155) + uMoonLight * smoothstep(-0.04, 0.2, dot(up, uMoonDir));
   vec3 col = base * ((sunCol * max(sunUp, 0.0) * 1.1 + vec3(0.20, 0.24, 0.33)) * day + night * (1.0 - day));
-  vec3 V = normalize(cameraPosition - vWorld);
+  vec3 vRaw = cameraPosition - vWorld;
+  vec3 V = dot(vRaw, vRaw) > 1e-10 ? normalize(vRaw) : up;
   if (k >= 1.5 && k < 2.5) {
     float fres = 0.02 + 0.98 * pow(1.0 - max(dot(up, V), 0.0), 5.0);
     col = mix(col, apSky(sunUp) * (0.25 + 0.75 * day), fres);
@@ -272,9 +279,12 @@ export class ProceduralCity {
   private material: THREE.ShaderMaterial;
   private building: Promise<void> = Promise.resolve();
   private paceT = 0;
+  private disposed = false;
+  private aborts = new Set<AbortController>();
 
   /** Gives the frame back once this frame's few milliseconds of building are used. */
   private async pace(): Promise<void> {
+    if (this.disposed) return;
     const now = performance.now();
     if (!this.paceT) this.paceT = now;
     if (now - this.paceT < 5) return;
@@ -314,10 +324,10 @@ export class ProceduralCity {
       uniforms: { uSunW: SUN_WORLD, uEarthC: this.earthCentre, uKmPerUnit: this.kmPerUnit, uCamAltKm: this.camAltKm, uHaze: this.haze, uNightAir: NIGHT_AIR, uMoonLight: MOON_LIGHT, uMoonDir: MOON_DIR },
       vertexShader: groundVertex,
       fragmentShader: groundFragment,
-      // Over the terrain under it (a hand above it), never over a building; and only where there is
-      // no Google tile (they mark their pixels with alpha 0, see PhotorealEarth): their photographs
-      // carry the streets themselves
+      // Never write depth on the DstAlpha-masked street deck: where PhotorealEarth already drew
+      // (DstAlpha == 0), writing depth would occlude Google's 3D buildings/trees behind invisible streets.
       transparent: true,
+      depthWrite: false,
       blending: THREE.CustomBlending,
       blendSrc: THREE.DstAlphaFactor,
       blendDst: THREE.OneMinusDstAlphaFactor,
@@ -384,28 +394,46 @@ export class ProceduralCity {
   }
 
   private async loadCell(cell: Cell, tx: number, ty: number, region: PilotRegion): Promise<void> {
+    if (this.disposed) {
+      cell.loading = false;
+      return;
+    }
     const south = tileLat(ty + 1);
     const north = tileLat(ty);
     const west = tileLon(tx);
     const east = tileLon(tx + 1);
+    const abort = new AbortController();
+    this.aborts.add(abort);
+    const timer = window.setTimeout(() => abort.abort(), 10000);
     try {
       if (!this.tileUrl) {
-        const tj = await (await fetch(TILEJSON)).json();
+        const tjRes = await fetch(TILEJSON, { signal: abort.signal });
+        if (!tjRes.ok) throw new Error(String(tjRes.status));
+        const tj = await tjRes.json();
         this.tileUrl = (tj.tiles?.[0] as string) ?? null;
         if (!this.tileUrl) throw new Error('no tiles');
       }
-      const res = await fetch(this.tileUrl.replace('{z}', String(Z)).replace('{x}', String(tx)).replace('{y}', String(ty)));
+      if (this.disposed) return;
+      const res = await fetch(
+        this.tileUrl.replace('{z}', String(Z)).replace('{x}', String(tx)).replace('{y}', String(ty)),
+        { signal: abort.signal },
+      );
       if (!res.ok) {
         this.backoffMs = Math.min(20000, this.backoffMs * 2);
         throw new Error(String(res.status));
       }
       this.backoffMs = 400;
-      const vt = new VectorTile(new Pbf(new Uint8Array(await res.arrayBuffer())));
+      const buf = await res.arrayBuffer();
+      if (this.disposed) return;
+      const vt = new VectorTile(new Pbf(new Uint8Array(buf)));
       const layer = vt.layers.building;
       const prints: Footprint[] = [];
       if (layer) {
         for (let i = 0; i < layer.length; i++) {
-          if (i % 150 === 0) await this.pace();
+          if (i % 150 === 0) {
+            await this.pace();
+            if (this.disposed) return;
+          }
           const f = layer.feature(i);
           if (f.type !== 3) continue;
           const gj = f.toGeoJSON(tx, ty, Z);
@@ -432,7 +460,9 @@ export class ProceduralCity {
       // Where the map has streets and built-up land but few or no outlines (most of India), the
       // town is made by rule: houses along the streets and across the residential land
       await this.generate(vt, tx, ty, south, west, north, east, prints);
+      if (this.disposed) return;
       await this.prepareGround?.(south, west, north, east);
+      if (this.disposed) return;
       // The offset between the elevation data and Google's drawn ground (the geoid: tens of metres).
       // Measured on the sharp tiles only: a coarse tile still standing in is a flat chord that sags
       // hundreds of metres below the ground, and buildings placed on it were buried. Until a
@@ -454,12 +484,22 @@ export class ProceduralCity {
       // One cell built at a time, a few milliseconds a frame (built in one go, nine cells of a
       // city froze the page for a second)
       const turn = this.building.then(async () => {
+        if (this.disposed) return { mesh: null, ground: null };
         const mesh = await this.build(prints, region, offsetKm);
+        if (this.disposed) {
+          mesh?.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+          return { mesh: null, ground: null };
+        }
         const ground = mesh ? await this.buildGround(vt, tx, ty, offsetKm) : null;
         return { mesh, ground };
       });
       this.building = turn.then(() => undefined, () => undefined);
       const made = await turn;
+      if (this.disposed) {
+        made.mesh?.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+        made.ground?.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+        return;
+      }
       cell.mesh = made.mesh;
       if (cell.mesh) {
         // The streets, parks and water go with it (children of the buildings' mesh, one unit)
@@ -471,8 +511,10 @@ export class ProceduralCity {
         this.group.add(cell.mesh);
       }
     } catch {
-      // Network error: left empty, asked again later (with a growing wait)
+      // Network error or abort: left empty, asked again later (with a growing wait)
     } finally {
+      window.clearTimeout(timer);
+      this.aborts.delete(abort);
       cell.loading = false;
     }
   }
@@ -901,7 +943,14 @@ export class ProceduralCity {
   }
 
   public dispose(): void {
-    for (const c of this.cells.values()) c.mesh?.geometry.dispose();
+    this.disposed = true;
+    for (const a of this.aborts) a.abort();
+    this.aborts.clear();
+    for (const c of this.cells.values()) {
+      c.mesh?.traverse((o) => {
+        if (o instanceof THREE.Mesh) o.geometry?.dispose();
+      });
+    }
     this.cells.clear();
     this.group.removeFromParent();
     this.material.dispose();

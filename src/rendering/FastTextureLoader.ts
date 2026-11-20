@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { perf } from './Performance';
 
 /**
  * Images for the GPU, decoded off the main thread.
@@ -17,11 +18,61 @@ export const canUseBitmaps = typeof createImageBitmap !== 'undefined' && typeof 
 
 export const BITMAP_OPTIONS: ImageBitmapOptions = { imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none' };
 
+const MAX_CONCURRENT_DECODES = perf.tier === 'low' ? 4 : perf.tier === 'medium' ? 6 : 10;
+let activeDecodes = 0;
+const waitQueue: Array<() => void> = [];
+
+function acquireDecodeSlot(): Promise<void> {
+  if (activeDecodes < MAX_CONCURRENT_DECODES) {
+    activeDecodes++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    waitQueue.push(() => {
+      activeDecodes++;
+      resolve();
+    });
+  });
+}
+
+function releaseDecodeSlot(): void {
+  activeDecodes = Math.max(0, activeDecodes - 1);
+  const next = waitQueue.shift();
+  if (next) next();
+}
+
+class HttpStatusError extends Error {
+  constructor(status: number, url: string) {
+    super(`${status} ${url}`);
+  }
+}
+
 /** Decode an image file to an upload-ready bitmap (worker thread), or reject. */
 export async function decodeBitmap(url: string): Promise<ImageBitmap> {
-  const res = await fetch(url, { credentials: 'same-origin' });
-  if (!res.ok) throw new Error(`${res.status} ${url}`);
-  return createImageBitmap(await res.blob(), BITMAP_OPTIONS);
+  await acquireDecodeSlot();
+  try {
+    const res = await fetch(url, { credentials: 'same-origin' });
+    if (!res.ok) throw new HttpStatusError(res.status, url);
+    return await createImageBitmap(await res.blob(), BITMAP_OPTIONS);
+  } finally {
+    releaseDecodeSlot();
+  }
+}
+
+function loadViaImageElement(url: string, texture: THREE.Texture): Promise<THREE.Texture> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.decoding = 'async';
+    img.onload = (): void => {
+      texture.image = img;
+      texture.flipY = true;
+      texture.needsUpdate = true;
+      resolve(texture);
+    };
+    img.onerror = (err): void => reject(err);
+    img.src = url;
+  });
 }
 
 /** Put a decoded bitmap into a texture (already flipped: flipY off). */
@@ -51,6 +102,21 @@ export class FastTextureLoader extends THREE.TextureLoader {
         this.manager.itemEnd(full);
       })
       .catch((err) => {
+        // Fallback to HTMLImageElement if ImageBitmap decode options fail on a browser/codec quirk,
+        // without retrying real HTTP 4xx/5xx failures.
+        if (!(err instanceof HttpStatusError) && typeof Image !== 'undefined') {
+          loadViaImageElement(full, texture)
+            .then((tex) => {
+              onLoad?.(tex);
+              this.manager.itemEnd(full);
+            })
+            .catch((imgErr) => {
+              onError?.(imgErr);
+              this.manager.itemError(full);
+              this.manager.itemEnd(full);
+            });
+          return;
+        }
         onError?.(err);
         this.manager.itemError(full);
         this.manager.itemEnd(full);
