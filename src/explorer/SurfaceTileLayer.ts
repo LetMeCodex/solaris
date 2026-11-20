@@ -198,6 +198,7 @@ export class SurfaceTileLayer {
   private loader: TileImageLoader;
   private tiles = new Map<string, TileEntry>();
   private queue: TileEntry[] = [];
+  private maskedDrawIds = new Set<string>();
   private inFlight = 0;
   private consecutiveFailures = 0;
   private consecutiveRequestErrors = 0;
@@ -381,12 +382,16 @@ export class SurfaceTileLayer {
           entry.retryAfter = undefined;
         }
         if (entry.state === 'queued' && (!entry.nextRetryAt || now >= entry.nextRetryAt)) {
-          ancestorQueues[up].push(entry);
+          ancestorQueues[ak.z - selectMinLevel].push(entry);
         }
       }
     }
-    for (let up = ancestorLevels - 1; up >= 0; up--) this.queue.push(...ancestorQueues[up]);
-    this.queue.push(...leafQueue);
+    // Give the nearest detailed tile a slot alongside coarse coverage on every queue refill.
+    const ancestors = ancestorQueues.flat();
+    for (let i = 0; i < Math.max(ancestors.length, leafQueue.length); i++) {
+      if (i < ancestors.length) this.queue.push(ancestors[i]);
+      if (i < leafQueue.length) this.queue.push(leafQueue[i]);
+    }
 
     // Abort requests that are no longer useful (fast scrolling / body switch) without burning attempts,
     // while letting coarse anchor tiles (z <= 2) finish so low-res stand-ins appear rapidly during descent
@@ -399,68 +404,40 @@ export class SurfaceTileLayer {
     }
     this.pump();
 
-    // Draw: each wanted tile, or its nearest loaded ancestor. On raised ground a family of tiles
-    // replaces its parent while siblings are actively loading; permanently missing siblings do not
-    // deadlock the healthy quarters forever.
+    // Each ready child can appear immediately. Its parent covers pending siblings, and
+    // the coverage mask removes the overlap even when the two meshes have different relief.
     const relief = !!this.elevation && !this.elevation.disabled;
-    const families = new Map<string, TileKey[]>();
-    if (relief) {
-      for (const k of wanted) {
-        const pk = parentTile(k);
-        if (!pk) continue;
-        const pid = tileId(pk);
-        const list = families.get(pid) ?? [];
-        list.push(k);
-        families.set(pid, list);
-      }
-    }
-    const familyReady = (k: TileKey): boolean => {
-      const pk = parentTile(k);
-      const fam = pk ? families.get(tileId(pk)) : undefined;
-      return !fam || fam.every((m) => {
-        const st = this.tiles.get(tileId(m))?.state;
-        return st === 'loaded' || st === 'missing';
-      });
-    };
     const drawIds = new Set<string>();
     for (const k of wanted) {
-      let cur: TileKey | null = k;
-      let fallbackId: string | undefined;
-      let fallbackZ = -1;
-      while (cur) {
-        const e = this.tiles.get(tileId(cur));
-        if (e && e.state === 'loaded') {
-          if (fallbackId === undefined) {
-            fallbackId = e.id;
-            fallbackZ = cur.z;
-          }
-          if (!relief || cur !== k || familyReady(cur)) {
-            drawIds.add(e.id);
-            deepest = Math.max(deepest, cur.z);
-            fallbackId = undefined;
-            break;
-          }
+      let drawable: TileEntry | undefined;
+      for (let cur: TileKey | null = k; cur; cur = parentTile(cur)) {
+        const entry = this.tiles.get(tileId(cur));
+        if (entry?.state !== 'loaded') continue;
+        drawable ??= entry;
+        // Do not cut a sea-level hole in an already raised mountain while the new DEM loads.
+        if (entry.heights || !relief) {
+          drawable = entry;
+          break;
         }
-        cur = parentTile(cur);
+        if (!entry.preparingRelief && entry === drawable) this.prepareRelief(entry);
       }
-      if (fallbackId !== undefined) {
-        drawIds.add(fallbackId);
-        deepest = Math.max(deepest, fallbackZ);
+      if (drawable) {
+        drawIds.add(drawable.id);
+        deepest = Math.max(deepest, drawable.key.z);
       }
     }
     for (const entry of this.tiles.values()) {
       const visible = drawIds.has(entry.id);
-      if (visible && relief && !entry.heights && entry.mesh) {
-        // Keep the existing image and mesh visible until relief is ready; never refetch imagery
-        // or remove the fallback merely because its independent elevation endpoint recovered.
-        this.prepareRelief(entry);
-      }
       if (visible && !entry.mesh && entry.texture) entry.mesh = this.createMesh(entry);
       if (entry.mesh) entry.mesh.visible = visible;
       if (visible) entry.lastDrawn = this.frame;
     }
     const hasAnyRelief = relief || [...drawIds].some((id) => !!this.tiles.get(id)?.heights);
-    if (hasAnyRelief) this.cutCovered(drawIds);
+    const maskIds = hasAnyRelief ? drawIds : new Set<string>();
+    if (maskIds.size !== this.maskedDrawIds.size || [...maskIds].some(id => !this.maskedDrawIds.has(id))) {
+      this.cutCovered(maskIds);
+      this.maskedDrawIds = maskIds;
+    }
 
     this.evict();
 
@@ -702,6 +679,11 @@ export class SurfaceTileLayer {
             const previous = entry.mesh;
             entry.mesh = this.createMesh(entry);
             entry.mesh.visible = previous.visible;
+            const prevUniforms = (previous.material as THREE.ShaderMaterial).uniforms;
+            const uniforms = (entry.mesh.material as THREE.ShaderMaterial).uniforms;
+            uniforms.uCover.value = prevUniforms.uCover.value;
+            uniforms.uHasCover.value = prevUniforms.uHasCover.value;
+            entry.mesh.userData.covered = previous.userData.covered;
             this.group.remove(previous);
             previous.geometry.dispose();
             (previous.material as THREE.Material).dispose();
@@ -718,6 +700,7 @@ export class SurfaceTileLayer {
       this.cancelRequest(entry);
       this.disposeEntry(entry);
     }
+    this.maskedDrawIds.clear();
     this.tiles.clear();
     this.queue = [];
     this.inFlight = 0;
@@ -963,6 +946,7 @@ export class SurfaceTileLayer {
       this.cancelRequest(entry);
       this.disposeEntry(entry);
     }
+    this.maskedDrawIds.clear();
     this.tiles.clear();
     this.queue = [];
     this.inFlight = 0;

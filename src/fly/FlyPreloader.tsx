@@ -496,12 +496,14 @@ export const FlyPreloader: React.FC<{
     };
     // Shaders compiled in parallel by the driver first (a blocking compile froze the first frame)
     let stopped = false;
-    renderer
-      .compileAsync(scene, camera)
-      .catch(() => undefined)
-      .then(() => {
+    // Start on the first live frame so an immediately unmounted opening never submits work.
+    let compiling: Promise<unknown> | undefined;
+    raf = requestAnimationFrame(() => {
+      compiling = renderer.compileAsync(scene, camera).catch(() => undefined);
+      void compiling.then(() => {
         if (!stopped) raf = requestAnimationFrame(frame);
       });
+    });
 
     return () => {
       stopped = true;
@@ -511,16 +513,21 @@ export const FlyPreloader: React.FC<{
       window.removeEventListener('orientationchange', resize);
       window.visualViewport?.removeEventListener('resize', resize);
       for (const { el } of labelEls) el.remove();
-      composer.dispose();
-      scene.traverse((o) => {
-        const m = o as THREE.Mesh;
-        m.geometry?.dispose();
-        const mat = m.material as THREE.Material | THREE.Material[] | undefined;
-        if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
-        else mat?.dispose();
-      });
-      for (const t of textures) t.dispose();
-      renderer.dispose();
+      // Three polls material programs until compileAsync settles. Keep them alive for that poll.
+      const disposeGraphics = (): void => {
+        composer.dispose();
+        scene.traverse((o) => {
+          const m = o as THREE.Mesh;
+          m.geometry?.dispose();
+          const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+          if (Array.isArray(mat)) mat.forEach((x) => x.dispose());
+          else mat?.dispose();
+        });
+        for (const t of textures) t.dispose();
+        renderer.dispose();
+      };
+      if (compiling) void compiling.then(disposeGraphics);
+      else disposeGraphics();
     };
   }, []);
 

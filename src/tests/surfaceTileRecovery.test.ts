@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { SurfaceTileLayer, type TileImageLoader } from '../explorer/SurfaceTileLayer';
+import { selectTiles, tileId } from '../explorer/TileMath';
 import { BODY_IMAGERY } from '../explorer/ImageryRegistry';
 import type { ElevationSource } from '../explorer/PlanetElevation';
 
@@ -34,6 +35,35 @@ describe('Surface tile recovery', () => {
     const zooms = images.urls.map(url => Number(url.split('/').at(-3)));
     expect(Math.min(...zooms)).toBe(0);
     expect(zooms[0]).toBe(0);
+    layer.dispose();
+  });
+
+  it('streams and displays the nearest detailed tile while siblings are pending', async () => {
+    const images = new Images();
+    const provider = BODY_IMAGERY.Moon.provider!;
+    const layer = new SurfaceTileLayer(provider, images);
+    const pendingDem: Array<() => void> = [];
+    layer.elevation = {
+      disabled: false, zoomFor: () => 3, heightKm: () => 2,
+      ensure: () => new Promise<void>(resolve => pendingDem.push(resolve)),
+    };
+    layer.radiusKm = 1737.4;
+    const nearest = selectTiles(provider, camera, 1.3, 160)[0];
+    layer.update(camera);
+    expect(images.urls[1]).toContain(`/${nearest.z}/${nearest.y}/${nearest.x}.`);
+    images.pending[0]();
+    pendingDem.shift()!();
+    await Promise.resolve(); await Promise.resolve();
+    images.pending[1]();
+    layer.update(camera);
+    const visible = () => layer.group.children.filter(mesh => mesh.visible).map(mesh => mesh.name);
+    const leaf = `tile_${tileId(nearest)}`;
+    expect(visible().length).toBeGreaterThan(0);
+    expect(visible()).not.toContain(leaf);
+    pendingDem.shift()!();
+    await Promise.resolve(); await Promise.resolve();
+    layer.update(camera);
+    expect(visible()).toContain(leaf);
     layer.dispose();
   });
 
