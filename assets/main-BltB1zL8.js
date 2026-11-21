@@ -1,1 +1,0 @@
-import{a as o,j as t}from"./KeplerSolver-DcQXPC1H.js";import{R as r}from"./react-nf7bT_Uh.js";import{A as e}from"./index-eefvdM2i.js";import{s as m}from"./logo-DKA6sBLo.js";import"./three-B2XPjePg.js";m();o.createRoot(document.getElementById("root")).render(t.jsx(r.StrictMode,{children:t.jsx(e,{})}));
