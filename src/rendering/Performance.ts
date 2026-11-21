@@ -36,9 +36,9 @@ export interface TierSettings {
 }
 
 const TIERS: Record<QualityTier, TierSettings> = {
-  high: { maxDpr: 2, minScale: 0.6, ao: true, smaa: true, shadowMap: 2048, hiRes8k: true, rocksPerVariant: 700, envEvery: 12 },
-  medium: { maxDpr: 1.5, minScale: 0.55, ao: false, smaa: true, shadowMap: 1024, hiRes8k: false, rocksPerVariant: 420, envEvery: 24 },
-  low: { maxDpr: 1, minScale: 0.5, ao: false, smaa: false, shadowMap: 0, hiRes8k: false, rocksPerVariant: 220, envEvery: 60 },
+  high: { maxDpr: 2, minScale: 0.7, ao: true, smaa: true, shadowMap: 2048, hiRes8k: true, rocksPerVariant: 700, envEvery: 12 },
+  medium: { maxDpr: 1.5, minScale: 0.65, ao: false, smaa: true, shadowMap: 1024, hiRes8k: false, rocksPerVariant: 420, envEvery: 24 },
+  low: { maxDpr: 1, minScale: 0.55, ao: false, smaa: false, shadowMap: 0, hiRes8k: false, rocksPerVariant: 220, envEvery: 60 },
 };
 
 /** Maximum rendered framebuffer pixels per frame per tier (caps 3x phones and 4K/5K monitors). */
@@ -187,12 +187,12 @@ export class PerformanceGovernor {
 
   /** Adaptive AO toggle: sheds GTAO under sustained frame-time pressure before crushing resolution further. */
   public get aoEnabled(): boolean {
-    return this.settings.ao && this.scale >= 0.78;
+    return this.settings.ao && this.scale >= 0.82;
   }
 
   /** Adaptive SMAA toggle: drops to lightweight FXAA when frame budget dips on medium/high tiers. */
   public get smaaEnabled(): boolean {
-    return this.settings.smaa && this.scale >= 0.72;
+    return this.settings.smaa && this.scale >= 0.76;
   }
 
   /** Adaptive CloudSea render target scale (half-res down to quarter-res as quality scales). */
@@ -232,19 +232,20 @@ export class PerformanceGovernor {
     this.avgMs += (ms - this.avgMs) * 0.05;
     this.sinceChange += ms;
     this.sinceDrop += ms;
-    // A drop sets a ceiling for a while: the scale that was too slow is not retried for 30 s
-    if (this.sinceDrop > 30000) this.ceiling = 1;
+    // A drop sets a temporary ceiling so transient streaming bursts don't oscillate resolution,
+    // while releasing promptly (12 s) so crisp world tiles and text recover quickly.
+    if (this.sinceDrop > 12000) this.ceiling = 1;
     let next = this.scale;
     // Frame times come from the display's refresh (16.7 ms at 60 Hz, 8.3 at 120), so "headroom"
-    // means holding the display's rate (up to 120 fps); ~30% under it, the picture steps down
-    if (this.avgMs > this.targetMs * 1.4 && this.sinceChange > 1500) {
-      next = Math.max(this.settings.minScale, this.scale * 0.85);
+    // means holding the display's rate; ~42% over target steps down gently instead of crushing clarity.
+    if (this.avgMs > this.targetMs * 1.42 && this.sinceChange > 1800) {
+      next = Math.max(this.settings.minScale, this.scale * 0.9);
       this.ceiling = this.scale;
       this.sinceDrop = 0;
-    } else if (this.avgMs < this.targetMs * 1.07 && this.sinceChange > 5000) {
-      next = Math.min(1, this.ceiling * 0.999, this.scale * 1.1);
+    } else if (this.avgMs < this.targetMs * 1.1 && this.sinceChange > 3500) {
+      next = Math.min(1, this.ceiling * 0.999, this.scale * 1.08);
     }
-    if (Math.abs(next - this.scale) > 0.01) {
+    if (Math.abs(next - this.scale) > 0.02) {
       this.scale = next;
       this.sinceChange = 0;
       for (const fn of this.listeners) fn();

@@ -798,7 +798,7 @@ export class LensPipeline {
     const w = Math.max(1, Math.round(width));
     const h = Math.max(1, Math.round(height));
     const pr = this.composerRatio(w, h);
-    if (w !== this.lastWidth || h !== this.lastHeight || Math.abs(pr - this.lastPixelRatio) > 1e-3) {
+    if (w !== this.lastWidth || h !== this.lastHeight || Math.abs(pr - this.lastPixelRatio) > 5e-3) {
       this.lastWidth = w;
       this.lastHeight = h;
       this.lastPixelRatio = pr;
@@ -809,7 +809,10 @@ export class LensPipeline {
     this.syncAdaptivePasses();
     this.lensPass.uniforms.uResolution.value.set(w * pr, h * pr);
     this.fxaaPass.uniforms.resolution.value.set(1 / Math.max(1, w * pr), 1 / Math.max(1, h * pr));
-    this.aoPass?.setSize(w * pr, h * pr);
+    if (this.aoPass) {
+      const aoPr = Math.min(1, pr);
+      this.aoPass.setSize(Math.max(1, Math.round(w * aoPr)), Math.max(1, Math.round(h * aoPr)));
+    }
   }
 
   /** Sync expensive overlay post-FX (GTAO / SMAA vs FXAA fallback) with current dynamic quality scale. */
@@ -895,11 +898,11 @@ export class LensPipeline {
     // Ambient occlusion on the jet: only where the GPU has room for it
     const size = this.renderer.getSize(this.tmpSize);
     if (on && scene && camera && !this.aoPass && perf.settings.ao) {
-      const pr = perf.pixelRatio(1.5, size.x, size.y);
-      this.aoPass = new OverlayAOPass(scene, camera, Math.max(1, size.x * pr), Math.max(1, size.y * pr));
-      this.aoPass.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1.2, thickness: 1.2, scale: 1.1, samples: 12 });
-      this.aoPass.updatePdMaterial({ radius: 6, rings: 2, samples: 12 });
-      this.aoPass.blendIntensity = 0.9;
+      const aoPr = Math.min(1, perf.pixelRatio(1, size.x, size.y));
+      this.aoPass = new OverlayAOPass(scene, camera, Math.max(1, Math.round(size.x * aoPr)), Math.max(1, Math.round(size.y * aoPr)));
+      this.aoPass.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1.2, thickness: 1.2, scale: 1.1, samples: 8 });
+      this.aoPass.updatePdMaterial({ radius: 5, rings: 2, samples: 8 });
+      this.aoPass.blendIntensity = 0.85;
       this.composer.insertPass(this.aoPass, this.composer.passes.indexOf(this.overlayPass) + 1);
     }
     if (on === this.overlayPass.enabled) return;

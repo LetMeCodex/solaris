@@ -204,38 +204,42 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
           : 'w-auto max-w-[calc(100vw-20px-var(--safe-l)-var(--safe-r))]'
       } md:left-auto md:bottom-auto md:top-[calc(var(--hud-header-h)+10px)] md:right-[max(16px,var(--safe-r))] lg:right-[max(28px,var(--safe-r))] ${
         open
-          ? 'md:w-[clamp(284px,24vw,336px)] md:max-h-[calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-22px)] lg:max-h-[calc(100dvh-var(--hud-header-h)-265px)] xl:max-h-[calc(100dvh-var(--hud-header-h)-300px)] [@media(max-height:620px)]:max-h-[calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-18px)]'
+          ? 'md:w-[clamp(308px,25vw,368px)] md:max-h-[calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-22px)] lg:max-h-[calc(100dvh-var(--hud-header-h)-265px)] xl:max-h-[calc(100dvh-var(--hud-header-h)-300px)] [@media(max-height:620px)]:max-h-[calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-18px)]'
           : 'md:w-auto'
       }`}
     >
-      {/* Breadcrumb */}
-      <div className={`shrink-0 flex items-center justify-between gap-3 px-3.5 sm:px-4 ${open ? 'pt-3 pb-2' : 'py-2'} text-[10px] uppercase tracking-[0.18em]`}>
-        <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 min-w-0">
-          <button onClick={onResetView} className="text-white/45 hover:text-white focus-visible:ring-1 focus-visible:ring-white/60 rounded">
-            Solar System
-          </button>
-          <span className="text-white/25">›</span>
-          <button onClick={() => onSelectBody(body)} className="text-white/80 hover:text-white focus-visible:ring-1 focus-visible:ring-white/60 rounded truncate">
-            {body}
-          </button>
-          {status.landmark && (
-            <>
-              <span className="text-white/25">›</span>
-              <span className="text-amber-200/90 truncate">{status.landmark.name}</span>
-            </>
+      {/* Breadcrumb & Landmark Header (never shrinks body name to "Ea..." or mid-word truncates landmark) */}
+      <div className={`shrink-0 flex flex-col gap-1 px-3.5 sm:px-4 ${open ? 'pt-3 pb-2' : 'py-2'}`}>
+        <div className="flex items-center justify-between gap-2.5 text-[10px] uppercase tracking-[0.14em]">
+          <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 min-w-0">
+            <button onClick={onResetView} className="shrink-0 text-white/50 hover:text-white focus-visible:ring-1 focus-visible:ring-white/60 rounded whitespace-nowrap">
+              Solar System
+            </button>
+            <span className="shrink-0 text-white/30">›</span>
+            <button onClick={() => onSelectBody(body)} className="shrink-0 text-white/92 font-medium hover:text-white focus-visible:ring-1 focus-visible:ring-white/60 rounded whitespace-nowrap">
+              {body}
+            </button>
+          </nav>
+          {!open && (
+            <span className="hud-num text-[9.5px] tracking-[0.08em] text-[color:var(--sol-amber)] ml-auto mr-1 whitespace-nowrap">ALT {fmtDistance(status.altitudeKm)}</span>
           )}
-        </nav>
-        {!open && (
-          <span className="hud-num text-[9.5px] tracking-[0.08em] text-[color:var(--sol-amber)] ml-auto mr-1 whitespace-nowrap">ALT {fmtDistance(status.altitudeKm)}</span>
+          <button
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            aria-label={open ? 'Collapse explorer panel' : 'Expand explorer panel'}
+            className="hud-icon-btn sm shrink-0 text-[11px] leading-none"
+          >
+            <span className={`inline-block transition-transform duration-500 ${open ? 'rotate-45' : ''}`}>+</span>
+          </button>
+        </div>
+        {status.landmark && (
+          <div
+            title={status.landmark.name}
+            className="text-[11px] uppercase tracking-[0.12em] font-medium text-amber-200/95 leading-snug break-words"
+          >
+            {status.landmark.name}
+          </div>
         )}
-        <button
-          onClick={() => setOpen((o) => !o)}
-          aria-expanded={open}
-          aria-label={open ? 'Collapse explorer panel' : 'Expand explorer panel'}
-          className="hud-icon-btn sm shrink-0 text-[11px] leading-none"
-        >
-          <span className={`inline-block transition-transform duration-500 ${open ? 'rotate-45' : ''}`}>+</span>
-        </button>
       </div>
 
       {open && (
@@ -262,8 +266,8 @@ export const ExplorerPanel: React.FC<ExplorerPanelProps> = ({ status, onFlyToLan
               </div>
 
               <button onClick={onStandHere} className="hud-btn is-on w-full justify-between !py-2 !text-amber-50 group">
-                <span>Stand {status.landmark ? `at ${status.landmark.name}` : 'here'} · look up</span>
-                <span aria-hidden className="transition-transform duration-300 group-hover:-translate-y-0.5">↑</span>
+                <span className="min-w-0 truncate text-left">Stand {status.landmark ? `at ${status.landmark.name}` : 'here'} · look up</span>
+                <span aria-hidden className="shrink-0 transition-transform duration-300 group-hover:-translate-y-0.5">↑</span>
               </button>
 
               {body === 'Earth' && (

@@ -18,20 +18,22 @@ export const canUseBitmaps = typeof createImageBitmap !== 'undefined' && typeof 
 
 export const BITMAP_OPTIONS: ImageBitmapOptions = { imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none' };
 
-const MAX_CONCURRENT_DECODES = perf.tier === 'low' ? 4 : perf.tier === 'medium' ? 6 : 10;
+const MAX_CONCURRENT_DECODES = perf.tier === 'low' ? 3 : perf.tier === 'medium' ? 5 : 6;
 let activeDecodes = 0;
 const waitQueue: Array<() => void> = [];
 
-function acquireDecodeSlot(): Promise<void> {
+function acquireDecodeSlot(priority = false): Promise<void> {
   if (activeDecodes < MAX_CONCURRENT_DECODES) {
     activeDecodes++;
     return Promise.resolve();
   }
   return new Promise((resolve) => {
-    waitQueue.push(() => {
+    const grant = () => {
       activeDecodes++;
       resolve();
-    });
+    };
+    if (priority) waitQueue.unshift(grant);
+    else waitQueue.push(grant);
   });
 }
 
@@ -48,8 +50,8 @@ class HttpStatusError extends Error {
 }
 
 /** Decode an image file to an upload-ready bitmap (worker thread), or reject. */
-export async function decodeBitmap(url: string): Promise<ImageBitmap> {
-  await acquireDecodeSlot();
+export async function decodeBitmap(url: string, priority = false): Promise<ImageBitmap> {
+  await acquireDecodeSlot(priority);
   try {
     const res = await fetch(url, { credentials: 'same-origin' });
     if (!res.ok) throw new HttpStatusError(res.status, url);
@@ -67,6 +69,10 @@ function loadViaImageElement(url: string, texture: THREE.Texture): Promise<THREE
     img.onload = (): void => {
       texture.image = img;
       texture.flipY = true;
+      if (texture.generateMipmaps) {
+        texture.minFilter = THREE.LinearMipmapLinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+      }
       texture.needsUpdate = true;
       resolve(texture);
     };
@@ -75,10 +81,14 @@ function loadViaImageElement(url: string, texture: THREE.Texture): Promise<THREE
   });
 }
 
-/** Put a decoded bitmap into a texture (already flipped: flipY off). */
+/** Put a decoded bitmap into a texture (already flipped: flipY off) with crisp trilinear mipmaps. */
 export function applyBitmap(texture: THREE.Texture, bitmap: ImageBitmap): void {
   texture.image = bitmap;
   texture.flipY = false;
+  if (texture.generateMipmaps) {
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+  }
   texture.needsUpdate = true;
 }
 

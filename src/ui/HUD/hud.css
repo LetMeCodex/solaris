@@ -1474,14 +1474,88 @@
 .neb-visit .gal-ghost { align-self: flex-start; margin-top: 4px; }
 .neb-card img { background: #020306; }
 
-/* The left list: worlds or nebulae */
-.hud-navmode { position: relative; display: grid; grid-template-columns: 1fr 1fr; width: 168px; margin: 0 0 6px 0; padding: 3px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.1); background: rgba(6, 8, 12, 0.4); backdrop-filter: blur(6px); }
-.hud-navmode button { position: relative; z-index: 1; padding: 5px 0; font-size: 8.5px; letter-spacing: 0.24em; text-transform: uppercase; color: rgba(236, 242, 239, 0.5); background: none; border: 0; cursor: pointer; transition: color 0.25s; }
+/* The left list: worlds or nebulae — frosted obsidian backdrop so white text stays crisp over snow, clouds & sunlit oceans */
+.hud-world-rail {
+  padding: 12px 14px 12px 12px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(6, 8, 14, 0.78), rgba(4, 5, 10, 0.68));
+  -webkit-backdrop-filter: blur(14px) saturate(1.25);
+  backdrop-filter: blur(14px) saturate(1.25);
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+.hud-navmode { position: relative; display: grid; grid-template-columns: 1fr 1fr; width: 168px; margin: 0 0 6px 0; padding: 3px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.14); background: rgba(4, 6, 10, 0.65); backdrop-filter: blur(6px); }
+.hud-navmode button { position: relative; z-index: 1; padding: 5px 0; font-size: 8.5px; letter-spacing: 0.24em; text-transform: uppercase; color: rgba(236, 242, 239, 0.68); background: none; border: 0; cursor: pointer; transition: color 0.25s; }
 .hud-navmode button[aria-selected='true'] { color: #10140f; }
 .hud-navmode button:not([aria-selected='true']):hover { color: #fff; }
 .hud-navmode .ink { position: absolute; left: 3px; top: 3px; bottom: 3px; width: calc(50% - 3px); border-radius: 999px; background: linear-gradient(90deg, #ffe2ae, #ffd28a); box-shadow: 0 0 14px rgba(255, 210, 138, 0.35); transition: transform 0.45s cubic-bezier(0.2, 0.9, 0.2, 1); }
 .hud-nav-in { animation: hud-nav-in 0.45s cubic-bezier(0.2, 0.9, 0.2, 1) both; }
 @keyframes hud-nav-in { from { opacity: 0; transform: translateX(-10px); } }
+
+/* Landed jet controls: high-contrast frosted obsidian glass pills over bright daytime sky & snow */
+.sol-landed-pill {
+  padding: 8px 16px 10px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(6, 9, 15, 0.86), rgba(4, 6, 11, 0.8));
+  -webkit-backdrop-filter: blur(16px) saturate(1.25);
+  backdrop-filter: blur(16px) saturate(1.25);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.sol-landed-label {
+  font-family: 'Montserrat', system-ui, sans-serif;
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.26em;
+  color: rgba(248, 245, 238, 0.94);
+  text-transform: uppercase;
+  text-align: center;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.sol-landed-takeoff {
+  border-radius: 999px;
+  padding: 8px 20px;
+  background: linear-gradient(180deg, rgba(10, 34, 27, 0.94), rgba(6, 20, 17, 0.92)) !important;
+  border: 1px solid rgba(109, 252, 192, 0.72) !important;
+  color: #93ffd4 !important;
+  font-weight: 600;
+  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.45), inset 0 0 14px rgba(109, 252, 192, 0.14);
+}
+.sol-landed-takeoff:hover {
+  background: linear-gradient(180deg, rgba(14, 48, 38, 0.98), rgba(8, 28, 23, 0.96)) !important;
+  border-color: #6dfcc0 !important;
+  color: #ffffff !important;
+}
+.sol-landed-avatar {
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 9px;
+  font-weight: 500;
+  background: linear-gradient(180deg, rgba(14, 18, 26, 0.9), rgba(8, 10, 16, 0.88)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.34) !important;
+  color: rgba(248, 245, 238, 0.95) !important;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.42);
+}
+.sol-landed-avatar:hover {
+  background: linear-gradient(180deg, rgba(24, 30, 42, 0.96), rgba(14, 18, 26, 0.94)) !important;
+  border-color: rgba(255, 255, 255, 0.62) !important;
+  color: #ffffff !important;
+}
+
+/* Suppress deep-space/orbital body & spacecraft markers when zoomed close onto a planetary surface or landed */
+.sol-surface-close .sol-markers {
+  display: none !important;
+}
+/* Stronger top/bottom legibility gradient over snow-covered peaks and bright daytime skies */
+.sol-surface-close .hud-visor {
+  background:
+    radial-gradient(120% 95% at 50% 50%, transparent 62%, rgba(2, 4, 9, 0.55) 100%),
+    linear-gradient(180deg, rgba(2, 4, 9, 0.74) 0%, rgba(2, 4, 9, 0.36) 11%, transparent 21%, transparent 82%, rgba(2, 4, 9, 0.62) 100%);
+}
 
 /* The Solaris mark beside the title */
 .sol-logo { flex-shrink: 0; overflow: visible; filter: drop-shadow(0 0 6px rgba(220, 171, 118, 0.28)); transition: filter 0.4s, transform 0.6s cubic-bezier(0.2, 0.9, 0.2, 1); }

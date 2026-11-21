@@ -10,7 +10,14 @@ import { DEEP_TIME_SCENES } from '../explorer/DeepTime';
 import { JET_RESUME_KEY, formatDistance, formatEta, formatSpeed } from './worlds';
 import { searchEarthPlaces } from '../explorer/EarthSearch';
 import { placeNameAt } from '../explorer/ReverseGeocode';
-import { drawTactical } from './TacticalHud';
+import {
+  drawTactical,
+  formatAltitudeMeters,
+  resolveAltitudeTelemetry,
+  tacticalExclusionZones,
+  tacticalHeadingBottom,
+  type HudRect,
+} from './TacticalHud';
 import { Landmark, landmarksFor } from '../explorer/Landmarks';
 import { CatalogueManager } from '../data/CatalogueManager';
 
@@ -248,6 +255,7 @@ function drawFull(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number): 
         : 'VACUUM';
   box(leftX, speedLbl, formatSpeed(shownSpeedMps), speedSub, 'left');
 
+  const altInfo = resolveAltitudeTelemetry(t);
   const psStr =
     t.airDensity > 0 && t.specificExcessPowerMps !== undefined
       ? `Ps ${t.specificExcessPowerMps >= 0 ? '+' : ''}${Math.round(t.specificExcessPowerMps)}${t.specificExcessPowerMps >= 2 ? '▲' : t.specificExcessPowerMps <= -2 ? '▼' : ''}`
@@ -255,11 +263,21 @@ function drawFull(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number): 
   const twStr = t.twRatio !== undefined ? `T/W ${t.twRatio.toFixed(2)}` : '';
   const rightSub =
     t.airWorld
-      ? [twStr, psStr, `ρ ${t.airDensity >= 0.01 ? t.airDensity.toFixed(2) : t.airDensity.toExponential(1)}`].filter(Boolean).join(' · ')
+      ? `MSL ${formatAltitudeMeters(altInfo.mslM)}${twStr ? ` · ${twStr}` : ''}${psStr ? ` · ${psStr}` : ''}`
       : t.anchor
         ? `RIDING ${t.anchor.toUpperCase()}`
         : 'HELIOCENTRIC';
-  box(rightX, t.nearest ? `ALT · ${t.nearest.toUpperCase()}` : 'ALT', formatDistance(t.altKm), rightSub, 'right');
+  const altLabel = t.airWorld
+    ? (t.nearest ? `AGL · ${t.nearest.toUpperCase()}` : 'AGL')
+    : (t.nearest ? `ALT · ${t.nearest.toUpperCase()}` : 'ALT');
+  const altDisplay = t.airWorld ? formatDistance(altInfo.aglM / 1000) : formatDistance(t.altKm);
+  box(rightX, altLabel, altDisplay, rightSub, 'right');
+  if (t.airWorld) {
+    ctx.font = font(9.5);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = MINT_DIM;
+    ctx.fillText(`ρ ${t.airDensity >= 0.01 ? t.airDensity.toFixed(2) : t.airDensity.toExponential(1)} kg/m³`, rightX, boxY + 34);
+  }
 
   // --- Throttle, AB/fuel & mode pills (bottom left)
   const gx = leftX;
@@ -296,10 +314,34 @@ function drawFull(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number): 
     ctx.fillText('ALIGNING', gx + 34, gy - 16);
   }
 
-  // --- Other worlds: small ticks with names
+  // --- Other worlds: small ticks with names (clipped clear of HUD boxes & bottom bars)
+  const insetsFull = safeInsets();
+  const fullExclusions: HudRect[] = [
+    ...tacticalExclusionZones(w, h, creditsHeight() + insetsFull.bottom, insetsFull.top),
+    // Full-HUD speed/altitude side boxes and bottom-left throttle/bottom-right target readouts
+    { l: leftX - 24, t: boxY - 40, r: leftX + 165, b: boxY + 42 },
+    { l: rightX - 180, t: boxY - 40, r: rightX + 24, b: boxY + 48 },
+    { l: leftX - 16, t: gy - 78, r: leftX + 220, b: gy + 38 },
+    { l: rightX - 180, t: gy - 72, r: rightX + 16, b: gy + 10 },
+  ];
+  const overlapsRect = (a: HudRect, b: HudRect): boolean =>
+    a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
+  const placedFullMarkers: HudRect[] = [];
+
   ctx.shadowColor = 'rgba(0,0,0,0.6)';
   ctx.shadowBlur = 4;
+  ctx.font = font(9.5);
+  ctx.textAlign = 'left';
   for (const m of t.markers) {
+    const upper = m.name.toUpperCase();
+    const distTxt = formatDistance(m.distKm);
+    const labelW = Math.max(ctx.measureText(upper).width, ctx.measureText(distTxt).width);
+    const boxM: HudRect = { l: m.x - 6, t: m.y - 12, r: m.x + 10 + labelW, b: m.y + 13 };
+    if (boxM.l < 8 || boxM.t < 8 || boxM.r > w - 8 || boxM.b > h - 8) continue;
+    if (fullExclusions.some((z) => overlapsRect(boxM, z))) continue;
+    if (placedFullMarkers.some((p) => overlapsRect(boxM, p))) continue;
+    placedFullMarkers.push(boxM);
+
     ctx.strokeStyle = 'rgba(238,233,222,0.55)';
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -308,12 +350,10 @@ function drawFull(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number): 
     ctx.moveTo(m.x, m.y - 4);
     ctx.lineTo(m.x, m.y + 4);
     ctx.stroke();
-    ctx.font = font(9.5);
-    ctx.textAlign = 'left';
     ctx.fillStyle = TEXT_DIM;
-    ctx.fillText(m.name.toUpperCase(), m.x + 8, m.y - 2);
+    ctx.fillText(upper, m.x + 8, m.y - 2);
     ctx.fillStyle = 'rgba(238,233,222,0.38)';
-    ctx.fillText(formatDistance(m.distKm), m.x + 8, m.y + 9);
+    ctx.fillText(distTxt, m.x + 8, m.y + 9);
   }
 
   // --- Target: a box on the real world, or an arrow at the edge pointing to it
@@ -374,12 +414,27 @@ function drawFull(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number): 
 
   // --- Warnings & Maneuver Cautions
   const blink = Math.floor(t.timeSec * 4) % 2 === 0;
+  const gpwsPullUp =
+    altInfo.gpwsMode === 'pull-up' ||
+    (altInfo.terrainWarning && altInfo.gpwsMode !== 'caution') ||
+    t.warning === 1;
+  const gpwsCaution = !gpwsPullUp && altInfo.gpwsMode === 'caution';
   ctx.textAlign = 'center';
-  if (t.warning === 1 && blink) {
+  if (gpwsPullUp && blink) {
     ctx.fillStyle = RED;
     ctx.shadowColor = 'rgba(255,90,70,0.7)';
     ctx.font = font(22, 700);
-    ctx.fillText('PULL UP', w / 2, h * 0.68);
+    ctx.fillText('TERRAIN · PULL UP', w / 2, h * 0.66);
+    ctx.font = font(11, 600);
+    ctx.fillStyle = 'rgba(255,220,210,0.95)';
+    ctx.fillText(`AGL ${formatAltitudeMeters(altInfo.aglM)}  ·  MSL ${formatAltitudeMeters(altInfo.mslM)}`, w / 2, h * 0.66 + 20);
+  } else if (gpwsCaution && blink) {
+    ctx.fillStyle = AMBER;
+    ctx.shadowColor = 'rgba(244,205,114,0.6)';
+    ctx.font = font(18, 700);
+    ctx.fillText('CAUTION · TERRAIN', w / 2, h * 0.66);
+    ctx.font = font(10.5, 600);
+    ctx.fillText(`AGL ${formatAltitudeMeters(altInfo.aglM)}  ·  MSL ${formatAltitudeMeters(altInfo.mslM)}`, w / 2, h * 0.66 + 18);
   } else if (t.warning === 2) {
     ctx.fillStyle = blink ? RED : AMBER;
     ctx.font = font(16, 700);
@@ -400,7 +455,7 @@ function drawFull(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number): 
   if (t.maneuver && t.maneuver !== 'none') {
     ctx.fillStyle = CYAN;
     ctx.font = font(12, 700);
-    ctx.fillText(`MANEUVER · ${t.maneuver.toUpperCase()}`, w / 2, h * 0.21);
+    ctx.fillText(`MANEUVER · ${t.maneuver.toUpperCase()}`, w / 2, h * 0.26);
   }
   if (t.heat > 0.15 && t.warning !== 2) {
     ctx.fillStyle = AMBER;
@@ -505,20 +560,35 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
   const soft = 'rgba(255,255,255,0.92)';
   const faint = 'rgba(255,255,255,0.55)';
 
-  // Other worlds: a dot and a name, nothing more
+  // Other worlds: a dot and a name — strictly skipped inside LOC / FLT / bottom-bar / header safe zones
+  const insetsMin = safeInsets();
+  const minExclusions = tacticalExclusionZones(w, h, creditsHeight() + insetsMin.bottom, insetsMin.top);
+  const overlapsMin = (a: HudRect, b: HudRect): boolean =>
+    a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
+  const placedMinMarkers: HudRect[] = [];
+
   ctx.shadowColor = 'rgba(0,0,0,0.55)';
   ctx.shadowBlur = 6;
+  ctx.font = `500 9px ${SANS}`;
+  ctx.letterSpacing = '2px';
+  ctx.textAlign = 'left';
   for (const m of t.markers) {
+    const upper = m.name.toUpperCase();
+    const labelW = ctx.measureText(upper).width;
+    const boxM: HudRect = { l: m.x - 5, t: m.y - 9, r: m.x + 10 + labelW, b: m.y + 9 };
+    if (boxM.l < 8 || boxM.t < 8 || boxM.r > w - 8 || boxM.b > h - 8) continue;
+    if (minExclusions.some((z) => overlapsMin(boxM, z))) continue;
+    if (placedMinMarkers.some((p) => overlapsMin(boxM, p))) continue;
+    placedMinMarkers.push(boxM);
+
     ctx.fillStyle = 'rgba(255,255,255,0.7)';
     ctx.beginPath();
     ctx.arc(m.x, m.y, 1.8, 0, Math.PI * 2);
     ctx.fill();
-    ctx.font = `500 9px ${SANS}`;
-    ctx.letterSpacing = '2px';
     ctx.fillStyle = 'rgba(255,255,255,0.5)';
-    ctx.textAlign = 'left';
-    ctx.fillText(m.name.toUpperCase(), m.x + 7, m.y + 3);
+    ctx.fillText(upper, m.x + 7, m.y + 3);
   }
+  ctx.letterSpacing = '0px';
 
   // Target: four thin corner brackets on the world itself, or a chevron at the edge
   const ts = t.targetScreen;
@@ -684,9 +754,9 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
     // screen, smaller, just above the map credits; the stick and buttons stand above them
     const phone = isPhone(w, h);
     const side = phone && w >= 560;
-    const altStr = t.altKm < 100
-      ? `${Math.round(t.altKm * 1000).toLocaleString('en-US')} M`
-      : `${Math.round(t.altKm).toLocaleString('en-US')} KM`;
+    const altInfo = resolveAltitudeTelemetry(t);
+    const aglStr = formatAltitudeMeters(altInfo.aglM);
+    const mslStr = formatAltitudeMeters(altInfo.mslM);
     const speedKmh = Math.round(t.speedMps * 3.6);
     let padR = w - Math.max(14, safeInsets().right + 8);
     let botR = h - 20;
@@ -701,10 +771,10 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
       ctx.strokeStyle = 'rgba(109, 252, 192, 0.55)';
       ctx.lineWidth = 1.2;
       ctx.beginPath();
-      ctx.moveTo(padL, base - 42);
+      ctx.moveTo(padL, base - 46);
       ctx.lineTo(padL, base + 2);
       ctx.lineTo(padL + 46, base + 2);
-      ctx.moveTo(padR, base - 42);
+      ctx.moveTo(padR, base - 52);
       ctx.lineTo(padR, base + 2);
       ctx.lineTo(padR - 46, base + 2);
       ctx.stroke();
@@ -722,17 +792,19 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
         const lw = ctx.measureText(label).width;
         minRightX = Math.min(minRightX, padR - 9 - vw - 6 - lw);
       };
-      row('ALT', altStr, base - 29, 12, '#ffffff');
-      row('SPD', `${speedKmh.toLocaleString('en-US')} KM/H`, base - 16, 12, '#ffffff');
-      row('MACH', t.mach.toFixed(2), base - 1, 14, t.mach >= 1.0 ? 'rgba(109, 252, 192, 0.95)' : '#ffffff');
-      const maxLocW = Math.max(w / 2 - padL - 10, minRightX - (padL + 9) - 18);
+      const aglColor = altInfo.gpwsMode === 'pull-up' ? RED : altInfo.gpwsMode === 'caution' ? AMBER : '#ffffff';
+      row('AGL', aglStr, base - 40, 11.5, aglColor);
+      row('MSL', mslStr, base - 28, 10, CYAN);
+      row('SPD', `${speedKmh.toLocaleString('en-US')} KM/H`, base - 15, 11.5, '#ffffff');
+      row('MACH', t.mach.toFixed(2), base - 1, 13.5, t.mach >= 1.0 ? 'rgba(109, 252, 192, 0.95)' : '#ffffff');
+      const maxLocW = Math.max(84, Math.min(w * 0.56, minRightX - (padL + 9) - 14));
       ctx.textAlign = 'left';
-      ctx.font = `700 12.5px ${MONO}`;
+      ctx.font = `700 12px ${MONO}`;
       ctx.fillStyle = '#ffffff';
-      ctx.fillText(fitText(ctx, loc.title, maxLocW), padL + 9, base - 28);
+      ctx.fillText(fitText(ctx, loc.title, maxLocW), padL + 9, base - 29);
       ctx.font = `500 10px ${SANS}`;
       ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
-      ctx.fillText(fitText(ctx, loc.subtitle, maxLocW), padL + 9, base - 15);
+      ctx.fillText(fitText(ctx, loc.subtitle, maxLocW), padL + 9, base - 16);
       if (loc.coords) {
         ctx.font = `500 9px ${MONO}`;
         ctx.fillStyle = 'rgba(109, 252, 192, 0.9)';
@@ -812,12 +884,25 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
   const blink = Math.floor(t.timeSec * 4) % 2 === 0;
   // (on a big screen the tactical overlay draws its own warning box)
   const small = isPhone(w, h);
-  if (small && t.warning === 1 && blink) {
+  const altInfoWarn = resolveAltitudeTelemetry(t);
+  const smallPullUp = altInfoWarn.gpwsMode === 'pull-up' || (altInfoWarn.terrainWarning && altInfoWarn.gpwsMode !== 'caution') || t.warning === 1;
+  const smallCaution = !smallPullUp && altInfoWarn.gpwsMode === 'caution';
+  if (small && smallPullUp && blink) {
     ctx.fillStyle = RED;
-    ctx.font = `600 13px ${SANS}`;
-    ctx.letterSpacing = '6px';
+    ctx.font = `700 13px ${SANS}`;
+    ctx.letterSpacing = '4px';
     ctx.textAlign = 'center';
-    ctx.fillText('PULL UP', w / 2, h * 0.66);
+    ctx.fillText('TERRAIN · PULL UP', w / 2, h * 0.64);
+    ctx.font = `600 9.5px ${MONO}`;
+    ctx.letterSpacing = '1px';
+    ctx.fillStyle = 'rgba(255,228,220,0.95)';
+    ctx.fillText(`AGL ${formatAltitudeMeters(altInfoWarn.aglM)} · MSL ${formatAltitudeMeters(altInfoWarn.mslM)}`, w / 2, h * 0.64 + 16);
+  } else if (small && smallCaution && blink) {
+    ctx.fillStyle = AMBER;
+    ctx.font = `700 12px ${SANS}`;
+    ctx.letterSpacing = '4px';
+    ctx.textAlign = 'center';
+    ctx.fillText('CAUTION · TERRAIN', w / 2, h * 0.64);
   } else if (small && t.warning === 2) {
     ctx.fillStyle = blink ? RED : AMBER;
     ctx.font = `600 12px ${SANS}`;
@@ -979,16 +1064,20 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
         const fuelPct = Math.round(Math.max(0, Math.min(1, t.fuelFrac ?? t.boostEnergy)) * 100);
         const maneuver: ManeuverKind = t.maneuver ?? 'none';
 
+        const altInfoSlow = resolveAltitudeTelemetry(t);
         let promptText = '';
         let promptTone: 'mint' | 'amber' | 'red' = 'mint';
-        if (t.spinWarning) {
-          promptText = 'SPIN RECOVERY · STICK FORWARD + OPPOSITE Q / E RUDDER';
+        if (altInfoSlow.terrainWarning) {
+          // TacticalHud / drawFull renders the dedicated GPWS TERRAIN · PULL UP alert; keep the lower hint lane clear
+          promptText = '';
+        } else if (t.spinWarning) {
+          promptText = 'SPIN RECOVERY · STICK FWD + OPP Q / E RUDDER';
           promptTone = 'red';
         } else if (t.gearDown && t.onGround && t.speedMps > 4) {
           promptText = 'ROLLOUT · HOLD TAB / ; FOR WHEEL BRAKES';
           promptTone = 'mint';
-        } else if (t.gearDown && t.airDensity > 0 && t.altKm > 0.0005 && t.altKm < 0.035 && !t.onGround) {
-          promptText = 'FLARE 11–13° α IN E-BRACKET · TAB / ; BRAKES ON TOUCHDOWN';
+        } else if (t.gearDown && t.airDensity > 0 && altInfoSlow.aglM > 0.5 && altInfoSlow.aglM < 35 && !t.onGround) {
+          promptText = 'FLARE 11–13° α IN E-BRACKET · TAB BRAKES ON TOUCHDOWN';
           promptTone = 'mint';
         } else if (
           t.airDensity > 0.05 &&
@@ -999,7 +1088,7 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
         ) {
           cobraHintSecRef.current += 0.25;
           if (cobraHintSecRef.current <= 6.5) {
-            promptText = 'PSM ENVELOPE · TAP V COBRA · HOLD V PSM-TVC · SPACE+TAB HIGH-G DRIFT';
+            promptText = 'PSM ENVELOPE · V COBRA · HOLD V TVC · SPACE+TAB DRIFT';
             promptTone = 'amber';
           }
         }
@@ -1209,9 +1298,15 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
                 }
               : {
                   position: 'absolute',
-                  top: 'max(16px, calc(env(safe-area-inset-top, 0px) + 10px))',
-                  left: 'max(22px, calc(env(safe-area-inset-left, 0px) + 14px))',
+                  top: 'max(14px, calc(env(safe-area-inset-top, 0px) + 8px))',
+                  left: 'max(18px, calc(env(safe-area-inset-left, 0px) + 12px))',
                   maxWidth: 'min(320px, calc(50vw - 170px))',
+                  padding: '7px 11px',
+                  borderRadius: 8,
+                  background: 'rgba(4, 10, 14, 0.48)',
+                  border: '1px solid rgba(255, 255, 255, 0.09)',
+                  backdropFilter: 'blur(6px)',
+                  WebkitBackdropFilter: 'blur(6px)',
                   fontFamily: 'Montserrat, system-ui, sans-serif',
                   textShadow: '0 1px 4px rgba(0,0,0,0.85)',
                   pointerEvents: 'none',
@@ -1240,7 +1335,7 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
         <FpsCounter style={{ marginTop: 4 }} />
       </div>
 
-      {/* Non-intrusive maneuver banner and contextual micro-prompt */}
+      {/* Non-intrusive maneuver banner and contextual micro-prompt (strictly inside center lane between LOC and FLT cards) */}
       {(slow.maneuver !== 'none' || slow.promptText) && (
         <div
           style={{
@@ -1249,36 +1344,42 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
             bottom: touch
               ? 'calc(env(safe-area-inset-bottom, 0px) + 92px)'
               : compact
-                ? 'calc(env(safe-area-inset-bottom, 0px) + 76px)'
-                : 'calc(env(safe-area-inset-bottom, 0px) + 62px)',
+                ? 'calc(env(safe-area-inset-bottom, 0px) + 74px)'
+                : 'calc(env(safe-area-inset-bottom, 0px) + 58px)',
             transform: 'translateX(-50%)',
             pointerEvents: 'none',
             zIndex: 3,
-            maxWidth: 'min(92vw, 680px)',
+            maxWidth: compact
+              ? 'min(92vw, 500px)'
+              : `${Math.max(230, Math.min(400, Math.round(vw - 920)))}px`,
             textAlign: 'center',
-            padding: '5px 12px',
+            lineHeight: 1.45,
+            padding: '5px 11px',
+            borderRadius: 4,
+            backdropFilter: 'blur(8px)',
+            WebkitBackdropFilter: 'blur(8px)',
             background:
               slow.promptTone === 'red'
-                ? 'rgba(56, 10, 10, 0.72)'
+                ? 'rgba(56, 10, 10, 0.8)'
                 : slow.promptTone === 'amber'
-                  ? 'rgba(26, 20, 8, 0.68)'
-                  : 'rgba(6, 18, 16, 0.66)',
+                  ? 'rgba(20, 16, 7, 0.78)'
+                  : 'rgba(6, 18, 16, 0.76)',
             border: `1px solid ${
               slow.promptTone === 'red'
                 ? 'rgba(255, 110, 96, 0.7)'
                 : slow.promptTone === 'amber'
-                  ? 'rgba(244, 205, 114, 0.45)'
-                  : 'rgba(109, 252, 192, 0.42)'
+                  ? 'rgba(244, 205, 114, 0.48)'
+                  : 'rgba(109, 252, 192, 0.44)'
             }`,
             fontFamily: 'var(--sol-mono)',
-            fontSize: narrow ? 8.5 : 9.5,
-            letterSpacing: narrow ? '0.1em' : '0.16em',
+            fontSize: narrow ? 8.5 : 9,
+            letterSpacing: narrow ? '0.08em' : '0.13em',
             color:
               slow.promptTone === 'red'
                 ? 'rgba(255, 130, 116, 0.96)'
                 : slow.promptTone === 'amber'
-                  ? 'rgba(244, 205, 114, 0.92)'
-                  : 'rgba(109, 252, 192, 0.92)',
+                  ? 'rgba(244, 205, 114, 0.94)'
+                  : 'rgba(109, 252, 192, 0.94)',
           }}
         >
           {slow.maneuver !== 'none' ? MANEUVER_HINTS[slow.maneuver] : slow.promptText}
@@ -2090,38 +2191,63 @@ const TravelButtons: React.FC<{ controller: JetController }> = ({ controller }) 
   );
 };
 
-/** Radio calls as a subtitle near the bottom of the frame (transit, arrival, speed tier, cloud). */
+/**
+ * Radio calls in a dedicated upper-center comms lane directly beneath the heading tape on desktop
+ * (and a non-overlapping safe lane on touch/mobile), so subtitles NEVER collide with the bottom-left
+ * LOC card, bottom-right FLT card, PSM ENVELOPE bar, or lower-cockpit 3D MFDs.
+ */
 const RadioSubtitle: React.FC<{ controller: JetController }> = ({ controller }) => {
   const [text, setText] = useState('');
-  const { touch, landscapeShort } = useScreen();
+  const { compact, touch, narrow, landscapeShort, vw, vh } = useScreen();
   useEffect(() => {
     const id = window.setInterval(() => setText(controller.telemetry.radio), 150);
     return () => window.clearInterval(id);
   }, [controller]);
   if (!text) return null;
+
+  const useBottomLane = touch && !narrow && !landscapeShort;
+  const headingClearPx = Math.max(114, tacticalHeadingBottom(vw, vh, false, 0) + 12);
+  const posStyle: React.CSSProperties = useBottomLane
+    ? { bottom: 'calc(env(safe-area-inset-bottom, 0px) + 224px)' }
+    : landscapeShort
+      ? { top: 'calc(env(safe-area-inset-top, 0px) + 56px)' }
+      : narrow
+        ? { top: 'calc(env(safe-area-inset-top, 0px) + 126px)' }
+        : { top: `calc(env(safe-area-inset-top, 0px) + ${headingClearPx}px)` };
+
   return (
     <div
+      className="jet-radio-subtitle"
+      role="status"
+      aria-live="polite"
       style={{
         position: 'absolute',
         left: '50%',
-        bottom: landscapeShort
-          ? 'calc(env(safe-area-inset-bottom, 0px) + 64px)'
-          : touch
-            ? 'calc(env(safe-area-inset-bottom, 0px) + 148px)'
-            : 'calc(env(safe-area-inset-bottom, 0px) + 120px)',
+        ...posStyle,
         transform: 'translateX(-50%)',
-        maxWidth: 'min(640px, 88vw)',
+        maxWidth: narrow ? 'min(90vw, 420px)' : compact ? 'min(480px, 68vw)' : 'min(520px, calc(100vw - 320px))',
         pointerEvents: 'none',
+        zIndex: 4,
         textAlign: 'center',
+        padding: compact ? '5px 12px' : '7px 16px',
+        borderRadius: 8,
+        background: 'rgba(5, 10, 14, 0.74)',
+        border: '1px solid rgba(244, 205, 114, 0.3)',
+        backdropFilter: 'blur(8px)',
+        WebkitBackdropFilter: 'blur(8px)',
+        boxShadow: '0 6px 20px rgba(0, 0, 0, 0.45)',
         fontFamily: 'Georgia, "Times New Roman", serif',
         fontStyle: 'italic',
-        fontSize: 'clamp(12px, 2.2vw, 15px)',
-        color: 'rgba(255,255,255,0.92)',
-        textShadow: '0 1px 8px rgba(0,0,0,0.8)',
+        fontSize: 'clamp(11.5px, 1.8vw, 14px)',
+        lineHeight: 1.35,
+        color: 'rgba(255,255,255,0.95)',
+        textShadow: '0 1px 6px rgba(0,0,0,0.85)',
         letterSpacing: '0.02em',
       }}
     >
-      <div style={{ fontFamily: 'Montserrat, system-ui, sans-serif', fontStyle: 'normal', fontSize: 8.5, letterSpacing: '0.4em', color: 'rgba(244,205,114,0.85)', marginBottom: 4 }}>RADIO</div>
+      <div style={{ fontFamily: 'Montserrat, system-ui, sans-serif', fontStyle: 'normal', fontSize: 8, fontWeight: 600, letterSpacing: '0.38em', color: 'rgba(244,205,114,0.92)', marginBottom: 3 }}>
+        RADIO
+      </div>
       “{text}”
     </div>
   );

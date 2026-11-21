@@ -37,6 +37,11 @@ import { AliveWorld } from './AliveWorld';
 import { elevationFor, groundHeightKm } from '../explorer/PlanetElevation';
 import { RadioDirector } from './audio/RadioDirector';
 import { placeAtSea, placeNameAt } from '../explorer/ReverseGeocode';
+import {
+  clearSkyStarVisibility,
+  computeAtmosphericStarVisibility,
+  setSkyStarVisibility,
+} from '../rendering/AerialPerspective';
 
 const NAV_WORLDS = ['Mercury', 'Venus', 'Earth', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto'];
 
@@ -150,6 +155,12 @@ export class JetController {
   private wasInCloud = false;
   private lastSunUp = 0;
   private lastSunDir = new THREE.Vector3(0, 1, 0);
+  /** World-space jet velocity vector (render units/sec), exposed for tile prefetch lookahead. */
+  public readonly velocityWorld = new THREE.Vector3();
+  /** Predicted world-space position `secondsAhead` along the current velocity vector. */
+  public getLookaheadPoint(secondsAhead: number, out = new THREE.Vector3()): THREE.Vector3 {
+    return out.copy(this.flight.position).addScaledVector(this.flight.velocity, Math.max(0, secondsAhead));
+  }
   /** The Sun's height where the jet is (sine of its elevation; below 0 under the horizon). */
   public get sunElevation(): number {
     return this.lastSunUp;
@@ -437,13 +448,15 @@ export class JetController {
     this.overlayScene.add(this.jetGroup, this.field.mesh);
     this.jetGroup.add(this.shock.group);
     this.overlayScene.add(this.sun, this.sun.target, this.planetShine, this.ambient);
-    // The jet's own shadows (on itself): softer and sharper where the GPU allows
+    // The jet's own shadows (on itself): tight frustum around the 40 m light distance to avoid wing shadow acne
     this.sun.castShadow = perf.settings.shadowMap > 0;
     this.sun.shadow.mapSize.set(Math.max(256, perf.settings.shadowMap), Math.max(256, perf.settings.shadowMap));
     const sc = this.sun.shadow.camera;
-    sc.left = -11; sc.right = 11; sc.top = 11; sc.bottom = -11; sc.near = 1; sc.far = 80;
-    this.sun.shadow.bias = -0.0004;
-    this.sun.shadow.normalBias = 0.02;
+    sc.left = -9.5; sc.right = 9.5; sc.top = 9.5; sc.bottom = -9.5; sc.near = 24; sc.far = 58;
+    sc.updateProjectionMatrix();
+    this.sun.shadow.bias = -0.00012;
+    this.sun.shadow.normalBias = 0.042;
+    this.sun.shadow.radius = 2.5;
     this.overlayScene.environment = this.envTarget.texture;
     this.vortex.addTo(this.overlayScene);
     this.overlayScene.add(this.smoke.mesh, this.flare.group, this.asteroids.group, this.weather.group, this.sky.group);
@@ -481,9 +494,10 @@ export class JetController {
           // Close behind: the jet fills the frame (wheel + Shift pulls back)
           this.chaseDist = model.length * 0.82;
           this.shock.group.scale.setScalar(model.length / JET_LENGTH_M);
-          const half = model.length * 0.62;
+          const half = model.length * 0.56;
           const sc = this.sun.shadow.camera;
           sc.left = -half; sc.right = half; sc.top = half; sc.bottom = -half;
+          sc.near = 24; sc.far = 58;
           sc.updateProjectionMatrix();
           if (anchors.cockpit) this.controls = new CockpitControls(model, anchors.cockpit);
           if (model.hud) {
@@ -599,6 +613,14 @@ export class JetController {
     this.wasOnGround = false;
     this.prevAbStage = 0;
     this.localGroundKm = 0;
+    this.photoGround = null;
+    this.tileGround = null;
+    this.holdSpawnAglKm = null;
+    this.lastSurfR = null;
+    this.gpwsMode = 'none';
+    this.terrainWarning = false;
+    this.lastGpwsRadioAt = 0;
+    this.lastFrameMs = 0;
     if (options.takeOffFrom) this.placeAtLandmark(options.takeOffFrom);
     this.vortex.clear();
     this.smoke.clear();
@@ -627,13 +649,21 @@ export class JetController {
   public exit(): void {
     if (!this.active) return;
     this.active = false;
+    clearSkyStarVisibility('jet');
+    this.weather.resetOvercast();
     PhotorealEarth.current?.setGroundProbe(null);
     PhotorealEarth.current?.setLookahead(null);
     PhotorealEarth.current?.setSurround(null);
     this.groundCover?.setVisible(false);
     this.alive?.setVisible(false);
     this.photoGround = null;
+    this.tileGround = null;
     this.localGroundKm = 0;
+    this.holdSpawnAglKm = null;
+    this.lastSurfR = null;
+    this.gpwsMode = 'none';
+    this.terrainWarning = false;
+    this.lastFrameMs = 0;
     this.transit = null;
     this.clearHeldInputs();
     window.removeEventListener('keydown', this.onKeyDown, true);
@@ -1187,56 +1217,104 @@ export class JetController {
   }
 
   /**
-   * Radius of a world's drawn surface in the direction of a point: the ellipsoid its surface mesh
-   * is scaled to (equatorial radius across, polar radius along its spin axis).
+   * Authoritative surface sample at a world point: returns both sea-level / ellipsoid radius
+   * (`ellipR`, render units), displaced terrain + landmark surface radius (`surfR`, render units),
+   * and ground elevation above sea level (`elevKm`). Uses the exact `R = 1.0 + elevKm / radiusKm`
+   * convention shared with `SurfaceTileLayer` and `EarthElevation` (z=13).
    */
-  private surfaceRadius(b: BodyInfo, point: THREE.Vector3): number {
+  private surfaceSample(
+    b: BodyInfo,
+    point: THREE.Vector3,
+    useCachedProbe = true,
+  ): { ellipR: number; surfR: number; elevKm: number } {
     const mesh = b.bundle.surfaceMesh;
     const ps = mesh.scale.x > 0 ? mesh.scale.y / mesh.scale.x : 1;
     const relief = b.name !== 'Earth' && elevationFor(b.name) !== null;
-    if (Math.abs(ps - 1) < 1e-6 && b.name !== 'Earth' && !relief) return b.radius;
+    if (Math.abs(ps - 1) < 1e-6 && b.name !== 'Earth' && !relief) {
+      return { ellipR: b.radius, surfR: b.radius, elevKm: 0 };
+    }
     mesh.getWorldQuaternion(this.qSurf);
     const d = this.vSurf.subVectors(point, b.center).normalize().applyQuaternion(this.qSurf.invert());
     const R = b.radius;
-    const ellipR = Math.abs(ps - 1) < 1e-6 ? R : 1 / Math.sqrt((d.x * d.x + d.z * d.z) / (R * R) + (d.y * d.y) / (R * ps * R * ps));
+    const ellipR =
+      Math.abs(ps - 1) < 1e-6
+        ? R
+        : 1 / Math.sqrt((d.x * d.x + d.z * d.z) / (R * R) + (d.y * d.y) / (R * ps * R * ps));
     if (b.name === 'Earth') {
-      // Clear local takeoff ground bias once the jet leaves the landmark neighbourhood (> 15 km)
-      if (this.localGroundKm > 0 && point.distanceTo(this.localGroundPos) * (b.radiusKm / b.radius) > 15) {
+      const unitsPerKm = b.radius / b.radiusKm;
+      const kmPerUnit = b.radiusKm / b.radius;
+      const ll = bodyLocalToLatLon('Earth', d.x, d.y, d.z);
+      const demKm = earthElevation.heightKm(ll.lat, ll.lon, 13);
+      // Clear local takeoff DEM fallback as soon as real DEM resolves or jet moves > 0.5 km away
+      // (never allow a skyscraper/bridge-tower rooftop height to inflate terrainElevationM over water).
+      if (useCachedProbe && this.localGroundKm > 0 && (demKm > 0 || point.distanceTo(this.localGroundPos) * kmPerUnit > 0.5)) {
         this.localGroundKm = 0;
       }
-      // Over Google's 3D Earth the ground is the drawn one (rooftops, bridges, real slopes),
-      // measured under the jet a few times a second (probePhotoGround)
-      const pg = this.photoGround;
-      if (pg && point.distanceToSquared(pg.at) < pg.reach * pg.reach) {
-        return Math.max(pg.r, ellipR + this.localGroundKm * (b.radius / b.radiusKm));
-      }
-      const ll = bodyLocalToLatLon('Earth', d.x, d.y, d.z);
-      let elevKm = Math.max(this.localGroundKm, earthElevation.heightKm(ll.lat, ll.lon, 11));
+      let elevKm = demKm;
+      if (useCachedProbe && this.localGroundKm > elevKm) elevKm = this.localGroundKm;
       const solidKm = getLandmarkSolidElevationKm(ll.lat, ll.lon);
       if (solidKm > elevKm) elevKm = solidKm;
-      return ellipR + elevKm * (b.radius / b.radiusKm);
+      let surfR = ellipR + elevKm * unitsPerKm;
+      if (useCachedProbe) {
+        // Over Google's 3D Earth (rooftops, bridges, real slopes) OR visible displaced SurfaceTileLayer
+        // meshes, take the higher of DEM/landmark height and the live raycasted mesh surface.
+        const pg = this.photoGround;
+        if (pg && point.distanceToSquared(pg.at) < pg.reach * pg.reach) {
+          surfR = Math.max(surfR, pg.r);
+        } else {
+          const tg = this.tileGround;
+          if (tg && point.distanceToSquared(tg.at) < tg.reach * tg.reach) {
+            surfR = Math.max(surfR, tg.r);
+          }
+        }
+      }
+      const finalElevKm = Math.max(0, (surfR - ellipR) * kmPerUnit);
+      return { ellipR, surfR, elevKm: finalElevKm };
     }
-    this.localGroundKm = 0;
+    if (useCachedProbe) this.localGroundKm = 0;
     // The Moon and Mars: the real relief (DEM) the explorer draws, from height tiles already loaded
     if (relief) {
       const ll = bodyLocalToLatLon(b.name, d.x, d.y, d.z);
-      return ellipR + groundHeightKm(b.name, ll.lat, ll.lon) * (b.radius / b.radiusKm);
+      const elevKm = groundHeightKm(b.name, ll.lat, ll.lon);
+      return { ellipR, surfR: ellipR + elevKm * (b.radius / b.radiusKm), elevKm };
     }
-    return ellipR;
+    return { ellipR, surfR: ellipR, elevKm: 0 };
   }
 
-  /** Keep the height tiles under the jet loaded on worlds with real relief (about once a second). */
+  /**
+   * Radius of a world's drawn surface in the direction of a point: the ellipsoid its surface mesh
+   * is scaled to (equatorial radius across, polar radius along its spin axis), plus displaced terrain.
+   */
+  private surfaceRadius(b: BodyInfo, point: THREE.Vector3): number {
+    return this.surfaceSample(b, point, true).surfR;
+  }
+
+  /** Keep the height tiles under and ahead of the jet loaded on worlds with real relief. */
   private reliefAsked = 0;
   private ensureRelief(b: BodyInfo, altKm: number): void {
     if (b.name === 'Earth') {
-      // The height map under the jet, always: it is the ground whenever the 3D tiles are not
-      // there yet (and what keeps the jet out of mountains it has not streamed)
-      if (altKm > 40) return;
+      // Stream z=13 DEM around the jet and predictively ahead along velocity so steep ridges
+      // (Everest, Grand Canyon, SF) are always loaded before the aircraft reaches them.
+      if (altKm > 60) return;
       const now = performance.now();
-      if (now - this.reliefAsked < 1000) return;
+      if (now - this.reliefAsked < 750) return;
       this.reliefAsked = now;
       const ll = this.earthLatLon();
-      if (ll) void earthElevation.ensure(ll.lat - 0.25, ll.lon - 0.25, ll.lat + 0.25, ll.lon + 0.25, 11);
+      if (!ll) return;
+      const targetZ = altKm < 12 ? 13 : altKm < 28 ? 12 : 11;
+      const pad = altKm < 12 ? 0.08 : 0.22;
+      void earthElevation.ensure(ll.lat - pad, ll.lon - pad, ll.lat + pad, ll.lon + pad, targetZ, -40);
+      // Predictive DEM prefetch along velocity corridor (4-6 seconds ahead)
+      if (this.flight.velocity.lengthSq() > 1e-16) {
+        const aheadPos = this.getLookaheadPoint(1.0, this.lv4);
+        const aheadLocal = aheadPos.applyMatrix4(this.m1.copy(b.bundle.surfaceMesh.matrixWorld).invert());
+        const aheadLl = bodyLocalToLatLon('Earth', aheadLocal.x, aheadLocal.y, aheadLocal.z);
+        const dLat = aheadLl.lat - ll.lat;
+        let dLon = aheadLl.lon - ll.lon;
+        if (dLon > 180) dLon -= 360;
+        else if (dLon < -180) dLon += 360;
+        void earthElevation.prefetchAlong(ll.lat, ll.lon, dLat, dLon, 6, Math.min(13, targetZ));
+      }
       return;
     }
     if (altKm > 120) return;
@@ -1257,6 +1335,13 @@ export class JetController {
   private camLookQuat = new THREE.Quaternion();
   private localGroundKm = 0;
   private localGroundPos = new THREE.Vector3();
+  private holdSpawnAglKm: number | null = null;
+  private lastSurfR: number | null = null;
+  private gpwsMode: 'none' | 'caution' | 'pull-up' = 'none';
+  private terrainWarning = false;
+  private lastGpwsRadioAt = 0;
+  private lastFrameMs = 0;
+  private lookaheadPos = new THREE.Vector3();
 
   /** A click inside the cockpit: operate a switch, destination display, or any MFD bezel tab. */
   private clickCockpit(cx: number, cy: number): boolean {
@@ -1340,10 +1425,21 @@ export class JetController {
   /** Engage the landing autopilot to a landmark on a world in the catalogue. */
   public startLanding(lm: Landmark): void {
     if (!this.bodyIndex.has(lm.body)) return;
+    this.transit = null;
+    this.hop = null;
+    this.cutscene = null;
+    this.siteFix = null;
     this.landing = lm;
     this.landMenu = false;
     this.target = lm.body;
     this.assist = true;
+    const lat = lm.vantageLat ?? lm.lat;
+    const lon = lm.vantageLon ?? lm.lon;
+    if (lm.body === 'Earth') {
+      void earthElevation.ensure(lat - 0.12, lon - 0.12, lat + 0.12, lon + 0.12, 13, -100);
+    } else {
+      void elevationFor(lm.body)?.ensure(lat - 0.15, lon - 0.15, lat + 0.15, lon + 0.15, 8);
+    }
   }
 
   // ------------------------------------------------------------------ Earth travel
@@ -1489,8 +1585,8 @@ export class JetController {
     const to = earthLocal('Earth', lat, lon);
     const plan = planTransit(distKm, Math.min(heightKm, 400));
     // Hand over a safe height above the ground there
-    plan.endKm = Math.max(plan.endKm, earthElevation.heightKm(lat, lon, 8) + 1.6);
-    void earthElevation.ensure(lat - 0.3, lon - 0.3, lat + 0.3, lon + 0.3, 9);
+    plan.endKm = Math.max(plan.endKm, earthElevation.heightKm(lat, lon, 13) + 1.2);
+    void earthElevation.ensure(lat - 0.2, lon - 0.2, lat + 0.2, lon + 0.2, 13, -60);
     this.transit = { plan, from, to, name, t: 0, last: null, lat, lon };
     this.radio(`Transit to ${name} · ${Math.round(distKm).toLocaleString('en-US')} km · climbing to ${Math.round(plan.cruiseKm)} km`);
     return true;
@@ -1514,8 +1610,17 @@ export class JetController {
       return;
     }
     tr.t += dt;
-    const { along, heightKm, done } = transitAt(tr.plan, tr.t);
+    // Re-evaluate destination & under-track elevation as high-res DEM tiles stream in
+    const destGroundKm = Math.max(
+      earthElevation.heightKm(tr.lat, tr.lon, 13),
+      getLandmarkSolidElevationKm(tr.lat, tr.lon),
+    );
+    tr.plan.endKm = Math.max(tr.plan.endKm, destGroundKm + 1.0);
+    const { along, heightKm: plannedKm, done } = transitAt(tr.plan, tr.t);
     const dir = slerpUnit(tr.from, tr.to, along);
+    const curLl = bodyLocalToLatLon('Earth', dir[0], dir[1], dir[2]);
+    const trackGroundKm = earthElevation.heightKm(curLl.lat, curLl.lon, 11);
+    const heightKm = Math.max(plannedKm, trackGroundKm + 0.5);
     const r = 1 + heightKm / b.radiusKm;
     const mesh = b.bundle.surfaceMesh;
     mesh.updateWorldMatrix(true, false);
@@ -1574,7 +1679,7 @@ export class JetController {
     return b;
   }
 
-  /** Start just above a landmark (taking off again after landing there), facing its view. */
+  /** Start cleanly above a landmark in trimmed level cruise (near 0 m/min VS), facing its view. */
   private placeAtLandmark(lm: Landmark): void {
     const site = new THREE.Vector3();
     const up = new THREE.Vector3();
@@ -1583,38 +1688,67 @@ export class JetController {
     const kmNear = b.radiusKm / b.radius;
     const lat = lm.vantageLat ?? lm.lat;
     const lon = lm.vantageLon ?? lm.lon;
+    const pole = new THREE.Vector3(0, 1, 0).applyQuaternion(b.bundle.bodyGroup.quaternion);
+    const north = pole.addScaledVector(up, -pole.dot(up)).normalize();
+    const east = new THREE.Vector3().crossVectors(north, up).normalize();
+    const h = THREE.MathUtils.degToRad(lm.viewHeadingDeg ?? 0);
+    const fwd = north.clone().multiplyScalar(Math.cos(h)).addScaledVector(east, Math.sin(h)).normalize();
+
+    let groundMslKm = 0;
     if (lm.body === 'Earth') {
-      const solidKm = Math.max(getLandmarkSolidElevationKm(lat, lon), getLandmarkSolidElevationKm(lm.lat, lm.lon) * 0.70);
-      const demKm = earthElevation.heightKm(lat, lon, 13);
+      // Immediately warm high-res DEM around and ahead of the landmark so mountain peaks resolve fast
+      void earthElevation.ensure(lat - 0.14, lon - 0.14, lat + 0.14, lon + 0.14, 13, -100);
+      const solidKm = Math.max(getLandmarkSolidElevationKm(lat, lon), getLandmarkSolidElevationKm(lm.lat, lm.lon) * 0.85);
+      const rawDemKm = earthElevation.heightKm(lat, lon, 13);
+      let demKm = rawDemKm;
+      // Also sample 0.5 km and 1.5 km ahead along heading so steep ridges (Everest, Grand Canyon) are cleared
+      const cosLat = Math.max(0.15, Math.cos(THREE.MathUtils.degToRad(lat)));
+      for (const distKm of [0.5, 1.5]) {
+        const aLat = lat + (distKm * Math.cos(h)) / 111.32;
+        const aLon = lon + (distKm * Math.sin(h)) / (111.32 * cosLat);
+        demKm = Math.max(demKm, earthElevation.heightKm(aLat, aLon, 13), getLandmarkSolidElevationKm(aLat, aLon));
+      }
       const elevKm = Math.max(demKm, solidKm);
       site.addScaledVector(up, elevKm / kmNear);
       const g = this.drawnGround(b, site, up);
       const extraUnits = g !== null ? Math.max(g, -0.08 / kmNear) : 0;
       site.addScaledVector(up, extraUnits);
-      this.localGroundKm = Math.max(solidKm, elevKm + extraUnits * kmNear);
+      groundMslKm = Math.max(solidKm, elevKm + extraUnits * kmNear);
+      // Only cache raw ground DEM (never a skyscraper/bridge spire rooftop) as a short-range fallback
+      this.localGroundKm = rawDemKm;
       this.localGroundPos.copy(site);
     } else {
       // Real relief (Moon, Mars): stand on the drawn ground, not the bare sphere
-      const gKm = groundHeightKm(lm.body, lat, lon);
-      site.addScaledVector(up, gKm / kmNear);
+      groundMslKm = groundHeightKm(lm.body, lat, lon);
+      site.addScaledVector(up, groundMslKm / kmNear);
       this.localGroundKm = 0;
     }
-    const climbStartKm = Math.max(0.32, (lm.vantageAltKm ?? 0.05) + 0.25);
-    this.flight.position.copy(site).addScaledVector(up, climbStartKm / kmNear);
-    const pole = new THREE.Vector3(0, 1, 0).applyQuaternion(b.bundle.bodyGroup.quaternion);
-    const north = pole.addScaledVector(up, -pole.dot(up)).normalize();
-    const east = new THREE.Vector3().crossVectors(north, up).normalize();
-    const h = THREE.MathUtils.degToRad(lm.viewHeadingDeg ?? 0);
-    const fwd = north.multiplyScalar(Math.cos(h)).addScaledVector(east, Math.sin(h)).normalize();
-    // Climbing away at 14° nose up above all local terrain and 3D tiles
-    fwd.addScaledVector(up, 0.25).normalize();
-    this.m1.lookAt(new THREE.Vector3(), fwd, up);
+
+    const startAglKm = Math.max(0.35, (lm.vantageAltKm ?? 0.05) + 0.25);
+    this.holdSpawnAglKm = startAglKm;
+    this.flight.position.copy(site).addScaledVector(up, startAglKm / kmNear);
+
+    // Spawn in stable level cruise (purely horizontal velocity -> VS = 0 m/min) with subtle ~1.8°
+    // positive AoA trim so 1G aerodynamic lift balances weight immediately without uncommanded climb.
+    const spawnMslKm = groundMslKm + startAglKm;
+    const spawnAir = AIR[b.name];
+    const spawnRho = spawnAir
+      ? airDensity(spawnMslKm, spawnAir.scaleHeightKm, spawnAir.topKm, spawnAir.surfaceDensity)
+      : 0;
+    const cruiseMps = spawnRho > 0.02
+      ? THREE.MathUtils.clamp(195 / Math.sqrt(Math.max(0.30, spawnRho)), 185, 255)
+      : 195;
+    const trimAoA = spawnRho > 0.02 ? THREE.MathUtils.clamp(0.028 / Math.sqrt(Math.max(0.35, spawnRho)), 0.022, 0.052) : 0;
+    const noseDir = fwd.clone().addScaledVector(up, Math.sin(trimAoA)).normalize();
+    this.m1.lookAt(new THREE.Vector3(), noseDir, up);
     this.flight.quaternion.setFromRotationMatrix(this.m1);
+    this.flight.rates.set(0, 0, 0);
     this.chaseQuat.copy(this.flight.quaternion);
     this.headQuat.copy(this.flight.quaternion);
-    this.flight.speed = 160 * unitsPerMps(kmNear);
+    this.flight.speed = cruiseMps * unitsPerMps(kmNear);
     this.flight.velocity.copy(fwd).multiplyScalar(this.flight.speed);
-    this.throttle = 0.65;
+    this.velocityWorld.copy(this.flight.velocity);
+    this.throttle = spawnRho > 0.02 ? THREE.MathUtils.clamp(0.48 + (1 - Math.min(1, spawnRho)) * 0.14, 0.48, 0.62) : 0.45;
     this.anchor = b;
     this.anchorPrev.copy(b.center);
     this.target = b.name;
@@ -1686,7 +1820,7 @@ export class JetController {
       const startR = f.position.distanceTo(centre);
       this.hop = {
         t: 0,
-        T: horizKm < 12 ? 0 : THREE.MathUtils.clamp(8 + 4 * Math.log10(1 + horizKm / 100), 8, 22),
+        T: horizKm < 12 ? 0 : THREE.MathUtils.clamp(6 + 2.5 * Math.log10(1 + horizKm / 100), 6, 12),
         startDir: f.position.clone().sub(centre).normalize(),
         startR,
         back: back.clone(),
@@ -1776,9 +1910,9 @@ export class JetController {
     const f = this.flight;
     const lm = this.landing!;
     const groundReady = !this.groundReady || this.groundReady();
-    if (c.t > 0 || groundReady || (c.hold = (c.hold ?? 0) + dt) > 3.5) c.t += dt;
-    const APPROACH = 5.0;
-    const ROLL = 1.6;
+    if (c.t > 0 || groundReady || (c.hold = (c.hold ?? 0) + dt) > 1.8) c.t += dt;
+    const APPROACH = 4.2;
+    const ROLL = 1.4;
     const endAltKm = lm.body === 'Earth' ? Math.max(0.045, lm.vantageAltKm ?? 0.045) : 0.005;
     let outKm: number;
     let altKm: number;
@@ -1842,7 +1976,7 @@ export class JetController {
     const b = this.landmarkFrame(lm, site, up);
     if (!b) return false;
     const kmNear = b.radiusKm / b.radius;
-    const progress = THREE.MathUtils.clamp(c.t / 6.6, 0, 1);
+    const progress = THREE.MathUtils.clamp(c.t / 5.6, 0, 1);
     const sideOffsetKm = 0.008 * (1 - 0.65 * progress);
     const backOffsetKm = 0.024 * (1 - 0.25 * progress);
     const upOffsetKm = 0.0055;
@@ -1903,6 +2037,8 @@ export class JetController {
 
   /** The drawn ground under the jet on Google's 3D Earth: its distance from Earth's centre (render units). */
   private photoGround: { r: number; at: THREE.Vector3; reach: number } | null = null;
+  /** The drawn ground under the jet on displaced SurfaceTileLayer meshes (when Google 3D Earth is absent). */
+  private tileGround: { r: number; at: THREE.Vector3; reach: number } | null = null;
   /** Google's ground minus the height data's under the jet, km (null until measured). */
   public tileGroundOffsetKm: number | null = null;
   private photoProbeTick = 0;
@@ -1914,23 +2050,15 @@ export class JetController {
   private pnm = new THREE.Matrix3();
 
   /**
-   * Solid ground on Google's 3D Earth. Two rays against the tiles on screen, every third frame
-   * while low:
-   *  - straight down from just above the jet: the real surface under it (a rooftop, a bridge
-   *    deck, a mountainside), which the altitude, the ground contact and "pull up" then use in
-   *    place of the coarse height map (that has no buildings, and is 10 to 100 m off Google's
-   *    heights, which are measured from the ellipsoid and not from sea level);
-   *  - ahead along the flight path: a wall or a cliff about to be flown into. The jet glances off
-   *    it (velocity reflected, most of the speed kept) and is shaken.
+   * Solid ground on Earth: raycasts Google 3D Tiles when active, OR visible displaced
+   * SurfaceTileLayer `tile_*` meshes when Google 3D Tiles are absent, so collision and AGL
+   * always match the rendered mountain/city mesh to the metre.
    */
   private probePhotoGround(b: BodyInfo, dt: number): void {
     const f = this.flight;
     const kmNear = b.radiusKm / b.radius;
     const target = b.name === 'Earth' && !this.scripted ? PhotorealEarth.current?.raycastTarget() ?? null : null;
-    // Only near the ground (within 4 km of the height map's ground): higher up the map is enough
     const rough = f.position.distanceTo(b.center) - b.radius;
-    // Fetch the ground ahead of the jet while it is low enough to see detail: about 4 s of travel
-    // ahead (less when very fast, so the view ahead stays on the ground it is about to cross)
     const constrained = perf.tier === 'low' || perf.scale < 0.72;
     const photo = PhotorealEarth.current;
     if (photo && b.name === 'Earth') {
@@ -1948,9 +2076,52 @@ export class JetController {
         photo.setSurround(null);
       }
     }
-    if (!target || rough * kmNear > 13) {
+    if (!target) {
       this.photoGround = null;
-      if (b.name === 'Earth' || !target) PhotorealEarth.current?.setGroundProbe(null);
+      if (b.name === 'Earth') PhotorealEarth.current?.setGroundProbe(null);
+      // Fallback: raycast visible displaced SurfaceTileLayer `tile_*` meshes on Earth
+      if (b.name !== 'Earth' || this.scripted || rough * kmNear > 18) {
+        this.tileGround = null;
+        return;
+      }
+      if (this.photoProbeTick++ % (constrained ? 6 : 3) !== 0) return;
+      const tileMeshes: THREE.Object3D[] = [];
+      b.bundle.surfaceMesh.traverse((o) => {
+        if (o.name.startsWith('tile_') && o.visible && o.parent?.visible !== false) tileMeshes.push(o);
+      });
+      if (tileMeshes.length === 0) {
+        this.tileGround = null;
+        return;
+      }
+      const up = this.pv1.subVectors(f.position, b.center).normalize();
+      const fromKm = 12;
+      const ray = this.photoRay;
+      (ray as THREE.Raycaster & { firstHitOnly?: boolean }).firstHitOnly = false;
+      ray.set(this.pv2.copy(f.position).addScaledVector(up, fromKm / kmNear), this.pv3.copy(up).negate());
+      ray.far = (fromKm + 14) / kmNear;
+      const zOf = (o: THREE.Object3D): number => Number(o.name.slice(5).split('/')[0]) || 0;
+      const hits = ray.intersectObjects(tileMeshes, false);
+      if (hits.length > 0) {
+        hits.sort((p, q) => zOf(q.object) - zOf(p.object));
+        const best = hits[0];
+        const hitR = best.point.distanceTo(b.center);
+        // Sanity check: terrain sits between -0.5 km and +10.5 km relative to mean Earth radius
+        const elevCheckKm = (hitR - b.radius) * kmNear;
+        if (elevCheckKm >= -0.5 && elevCheckKm <= 10.5) {
+          const at = this.tileGround?.at ?? new THREE.Vector3();
+          at.copy(f.position);
+          const reach = Math.max(0.08 / kmNear, f.velocity.length() * 0.35);
+          this.tileGround = { r: hitR, at, reach };
+        }
+      } else {
+        this.tileGround = null;
+      }
+      return;
+    }
+    this.tileGround = null;
+    if (rough * kmNear > 13) {
+      this.photoGround = null;
+      PhotorealEarth.current?.setGroundProbe(null);
       return;
     }
     // The ground straight under the jet is off the bottom of the screen: keep it loaded
@@ -2145,7 +2316,13 @@ export class JetController {
     if (Math.abs(camera.aspect - nextAspect) > 1e-4) {
       camera.aspect = nextAspect;
     }
-    // Held (behind the fly page's preloader): time almost stands still while the world streams in
+    // Held (behind the fly page's preloader): time almost stands still while the world streams in.
+    // Track bounded wall-clock dt for purely parametric scripted landing hops/cutscenes so heavy
+    // terrain streaming frames never stretch a 15 s landing into a >75 s timeout.
+    const nowMs = performance.now();
+    const wallDt = this.lastFrameMs > 0 ? Math.min(0.4, Math.max(0, (nowMs - this.lastFrameMs) / 1000)) : dt;
+    this.lastFrameMs = nowMs;
+    const scriptDt = this.hold ? 1e-4 : Math.max(Math.min(dt, 0.25), wallDt);
     dt = this.hold ? 1e-4 : Math.min(dt, 0.05);
     const f = this.flight;
 
@@ -2246,21 +2423,39 @@ export class JetController {
       }
     }
 
-    // --- Environment: altitude, scale, air
+    // --- Environment: authoritative altitude (MSL + AGL), scale, air
     const kmNear = nearest.radiusKm / nearest.radius; // km per unit at that world's surface
-    // Worlds are drawn oblate (Earth 1/298, Saturn 1/10): measure height above that shape, not a sphere
+    this.velocityWorld.copy(f.velocity);
+    // Worlds are drawn oblate (Earth 1/298, Saturn 1/10): measure height above real displaced terrain
     this.probePhotoGround(nearest, dt);
     this.ensureRelief(nearest, (f.position.distanceTo(nearest.center) - nearest.radius) * kmNear);
-    const surfR = this.surfaceRadius(nearest, f.position);
-    nearestAlt = f.position.distanceTo(nearest.center) - surfR;
+    const surf = this.surfaceSample(nearest, f.position, true);
+    const surfR = surf.surfR;
+    // While held behind the preloader, lift seamlessly with newly streamed mountain DEMs (e.g. Everest)
+    if (this.hold && this.holdSpawnAglKm !== null && !nearest.noSurface && !nearest.cloud) {
+      const targetR = surfR + this.holdSpawnAglKm / kmNear;
+      const curR = f.position.distanceTo(nearest.center);
+      if (curR < targetR) {
+        const upHold = this.v1.subVectors(f.position, nearest.center).normalize();
+        f.position.copy(nearest.center).addScaledVector(upHold, targetR);
+      }
+    } else if (!this.hold) {
+      this.holdSpawnAglKm = null;
+    }
+    const prevSurfR = this.lastSurfR;
+    this.lastSurfR = surfR;
+    const distFromCenter = f.position.distanceTo(nearest.center);
+    nearestAlt = distFromCenter - surfR;
     const altUnits = Math.max(0, nearestAlt);
     this.lastAltUnits = Math.max(altUnits, 1e-6);
-    const altKm = altUnits * kmNear;
+    const altKm = altUnits * kmNear; // AGL km above displaced terrain / buildings
+    const altMslKm = Math.max(0, (distFromCenter - surf.ellipR) * kmNear); // MSL km above sea level / ellipsoid
     const kmPerUnit = localKmPerUnit(altUnits, nearest.radius, nearest.radiusKm);
     this.lastKmPerUnit = kmPerUnit;
     this.vVertical.subVectors(f.position, nearest.center).normalize();
     const air = AIR[nearest.name];
-    const density = air ? airDensity(altKm, air.scaleHeightKm, air.topKm, air.surfaceDensity) : 0;
+    // Real atmospheric density depends on MSL pressure altitude (e.g. thin Himalayan air at 8.8 km MSL!)
+    const density = air ? airDensity(altMslKm, air.scaleHeightKm, air.topKm, air.surfaceDensity) : 0;
 
     // --- Fly
     const input = this.readInput(dt);
@@ -2307,9 +2502,9 @@ export class JetController {
     }
     this.aligning = false;
     this.scripted = false;
-    if (this.transit) this.flyTransit(dt, input);
+    if (this.transit) this.flyTransit(scriptDt, input);
     if (this.landing) {
-      this.flyLanding(dt, input);
+      this.flyLanding(scriptDt, input);
       // Touchdown hands over to the surface view (the jet has exited): stop this frame here, or
       // the rest of it would publish the jet as active again
       if (!this.active) return;
@@ -2324,15 +2519,91 @@ export class JetController {
     const tier = nearest.name === 'Earth' ? SPEED_TIERS[this.speedTier] : SPEED_TIERS[0];
     const isSun = nearest.bundle.definition.category === 'star';
     const vMps = 1 / unitsPerMps(kmPerUnit);
-    const clearance = isSun ? nearest.radius * 0.08 : nearest.cloud ? nearest.radius * 0.002 : nearest.noSurface ? nearest.radius * 0.5 : 0.003 / kmNear;
+    const solidWorld = !isSun && !nearest.cloud && !nearest.noSurface;
+    // Realistic airframe belly clearance (5.5 m) vs gear-down wheel height (2.2 m)
+    const clearance = isSun
+      ? nearest.radius * 0.08
+      : nearest.cloud
+        ? nearest.radius * 0.002
+        : nearest.noSurface
+          ? nearest.radius * 0.5
+          : (this.gearDown ? 0.0022 : 0.0055) / kmNear;
     const radialSpeedMps = f.velocity.dot(this.vVertical) * vMps;
+    const preSpeedMps = f.velocity.length() * vMps;
     const onGround =
-      !isSun &&
-      !nearest.cloud &&
-      !nearest.noSurface &&
-      nearestAlt <= clearance + 0.0012 / kmNear &&
+      solidWorld &&
+      nearestAlt <= clearance + 0.0018 / kmNear &&
       radialSpeedMps < 6;
     const sinkRateMps = Math.max(0, -radialSpeedMps);
+
+    // --- Forward Terrain Lookahead (GPWS) & Automatic Soft Terrain-Avoidance (Auto-GCAS) ---
+    let lookaheadImpactT = Infinity;
+    let minLookaheadClearM = Infinity;
+    if (solidWorld && !this.scripted && !this.hold && altKm < 12 && preSpeedMps > 20) {
+      const lookHorizons = [1.0, 2.2, 4.0, 6.5];
+      for (const tSec of lookHorizons) {
+        const stepDistKm = (preSpeedMps * tSec) / 1000;
+        if (stepDistKm > 6.5) continue;
+        this.lookaheadPos.copy(f.position).addScaledVector(f.velocity, tSec);
+        const predSurf = this.surfaceSample(nearest, this.lookaheadPos, false);
+        const predClearM = (this.lookaheadPos.distanceTo(nearest.center) - predSurf.surfR) * kmNear * 1000;
+        if (predClearM < minLookaheadClearM) minLookaheadClearM = predClearM;
+        if (predClearM < 24 && tSec < lookaheadImpactT) lookaheadImpactT = tSec;
+      }
+    }
+    const preTti = radialSpeedMps < -1 ? (altKm * 1000) / -radialSpeedMps : Infinity;
+    const bestTti = Math.min(preTti, lookaheadImpactT);
+    const altAglMPre = altKm * 1000;
+    if (!solidWorld || this.scripted || this.hold || altKm > 12) {
+      this.gpwsMode = 'none';
+      this.terrainWarning = false;
+    } else if (
+      (!this.gearDown &&
+        (bestTti < 4.0 ||
+          (altAglMPre < 45 && radialSpeedMps < -5) ||
+          (minLookaheadClearM < 20 && preSpeedMps > 45))) ||
+      (this.gearDown && preTti < 3.0 && sinkRateMps > 12)
+    ) {
+      this.gpwsMode = 'pull-up';
+      this.terrainWarning = true;
+    } else if (
+      !this.gearDown &&
+      (bestTti < 7.0 || (altAglMPre < 100 && preSpeedMps > 70 && minLookaheadClearM < 75))
+    ) {
+      this.gpwsMode = 'caution';
+      this.terrainWarning = true;
+    } else {
+      this.gpwsMode = 'none';
+      this.terrainWarning = false;
+    }
+
+    // Auto-GCAS soft terrain-avoidance pull-up: prevents accidental CFIT into rising mountains
+    // when flying hands-off or glancing a ridge with FBW assist enabled and gear retracted.
+    if (
+      this.gpwsMode === 'pull-up' &&
+      !this.gearDown &&
+      !this.scripted &&
+      !this.hold &&
+      this.assist &&
+      density > 0.01 &&
+      preSpeedMps > 45 &&
+      input.pitch > -0.75 &&
+      (lookaheadImpactT < 2.4 || minLookaheadClearM < 18 || (altAglMPre < 35 && radialSpeedMps < -4))
+    ) {
+      const urgency = THREE.MathUtils.clamp(1.2 - Math.min(lookaheadImpactT, preTti) * 0.35, 0.45, 0.92);
+      input.pitch = Math.max(input.pitch, urgency);
+      // Roll gently back toward wings-level so the pull-up goes away from the terrain
+      const jetRight = this.v2.set(1, 0, 0).applyQuaternion(f.quaternion);
+      const bankSin = jetRight.dot(this.vVertical);
+      if (Math.abs(bankSin) > 0.12 && Math.abs(input.roll) < 0.25) {
+        input.roll = THREE.MathUtils.clamp(-bankSin * 1.4, -0.7, 0.7);
+      }
+      if (timeSec - this.lastGpwsRadioAt > 4.5) {
+        this.lastGpwsRadioAt = timeSec;
+        this.radio('TERRAIN · AUTO PULL-UP', 2.4);
+      }
+    }
+
     const tierKind = this.speedTier === 2 ? 'scramjet' : this.speedTier === 1 ? 'hypersonic' : 'jet';
     if (!this.scripted) {
       let inspectFloorUnitsPerS: number | undefined;
@@ -2356,7 +2627,7 @@ export class JetController {
         inspectBlend,
         airframeId: this.airframeId,
         bodyName: nearest.name,
-        altKm,
+        altKm: altMslKm,
         upWorld: this.vVertical,
         groundClearanceM: altKm * 1000,
         onGround,
@@ -2365,6 +2636,7 @@ export class JetController {
         speedTier: tierKind,
       });
     }
+    this.velocityWorld.copy(f.velocity);
     // Home: where the jet first came into Earth's air
     if (!this.home && nearest.name === 'Earth' && density > 0.01) {
       const ll = this.earthLatLon();
@@ -2381,57 +2653,122 @@ export class JetController {
       f.speed = f.velocity.length();
     }
 
-    // --- Contact & Solid Physics Collision ---
-    const contactSurfR = this.surfaceRadius(nearest, f.position);
+    // --- Authoritative Solid Terrain & Mountain Contact ---
+    const contactSample = this.surfaceSample(nearest, f.position, true);
+    const contactSurfR = contactSample.surfR;
+    const minAllowedR = contactSurfR + clearance;
+    const distBeforeClamp = f.position.distanceTo(nearest.center);
+    const penetrationUnits = Math.max(0, minAllowedR - distBeforeClamp);
+    const penetrationM = penetrationUnits * kmNear * 1000;
+    const surfJumpM = prevSurfR !== null ? (contactSurfR - prevSurfR) * kmNear * 1000 : 0;
     const hit = resolveSurfaceContact(f.position, f.velocity, nearest.center, contactSurfR, clearance) * vMps;
-    if (hit > 0 && hit < 30) {
-      // A glancing touch or wheeled touchdown: keep skimming smoothly; nose only nudges if gear retracted or nose buried
+
+    // Handle BOTH vertical touchdown (hit > 0) AND horizontal penetration into rising mountains
+    // (penetrationUnits > 0 even when radial velocity vr >= 0!)
+    if (hit > 0 || penetrationUnits > 0) {
       const upNorm = this.v1.subVectors(f.position, nearest.center).normalize();
-      const fwdNow = f.forward(this.v2);
-      const down = Math.asin(THREE.MathUtils.clamp(-fwdNow.dot(upNorm), -1, 1));
-      if (down > 0 && (!this.gearDown || hit > 4.5)) {
-        const right = this.v3.crossVectors(fwdNow, upNorm).normalize();
-        f.quaternion.premultiply(this.q1.setFromAxisAngle(right, down * 0.35)).normalize();
-        f.rates.x = Math.max(f.rates.x, 0);
+      // If a mountain DEM tile just finished streaming in right underneath us (> 35 m jump in 1 frame),
+      // lift the jet cleanly above the newly resolved peak without a bogus crash rebound.
+      if (surfJumpM > 35 && penetrationM > 15 && !this.gearDown) {
+        const safeLiftR = minAllowedR + 0.045 / kmNear;
+        f.position.copy(nearest.center).addScaledVector(upNorm, safeLiftR);
+        const vrNow = f.velocity.dot(upNorm);
+        if (vrNow < 0) f.velocity.addScaledVector(upNorm, -vrNow);
+        f.speed = f.velocity.length();
+      } else {
+        // Strictly clamp jet above terrain + clearance so clipping underground is impossible
+        const currentDist = f.position.distanceTo(nearest.center);
+        if (currentDist < minAllowedR) {
+          f.position.copy(nearest.center).addScaledVector(upNorm, minAllowedR);
+        }
+        const effectiveImpactMps = Math.max(hit, penetrationM / Math.max(dt, 0.016));
+        const fwdNow = f.forward(this.v2);
+        const downRad = Math.asin(THREE.MathUtils.clamp(-fwdNow.dot(upNorm), -1, 1));
+
+        if (this.gearDown && effectiveImpactMps < 18) {
+          // Intentional wheeled landing / runway roll: realistic rolling resistance + braking
+          if (downRad > 0 && effectiveImpactMps > 3.5) {
+            const right = this.v3.crossVectors(fwdNow, upNorm).normalize();
+            f.quaternion.premultiply(this.q1.setFromAxisAngle(right, downRad * 0.4)).normalize();
+            f.rates.x = Math.max(f.rates.x, 0);
+          }
+          const rollDecel = this.throttle < 0.25 ? Math.exp(-dt * 0.65) : Math.exp(-dt * 0.12);
+          f.velocity.multiplyScalar(rollDecel);
+          f.speed = f.velocity.length();
+          if (effectiveImpactMps > 4.5) this.shake = Math.min(0.6, this.shake + 0.04 + effectiveImpactMps / 260);
+        } else if (effectiveImpactMps >= 18 || penetrationM > 2.0) {
+          // Hard terrain / mountainside impact: elastic upward recovery rebound + nose-up deflection
+          const reboundMps = Math.min(85, Math.max(24, effectiveImpactMps * 0.55));
+          const vrCur = f.velocity.dot(upNorm);
+          if (vrCur < 0) f.velocity.addScaledVector(upNorm, -vrCur);
+          f.velocity.addScaledVector(upNorm, reboundMps * unitsPerMps(kmPerUnit));
+          const liftNoseRad = Math.max(downRad + 0.20, 0.16);
+          const right = this.v3.crossVectors(fwdNow, upNorm);
+          if (right.lengthSq() > 1e-8) {
+            right.normalize();
+            f.quaternion.premultiply(this.q1.setFromAxisAngle(right, liftNoseRad * 0.55)).normalize();
+          }
+          f.rates.x = Math.max(f.rates.x, 1.35);
+          // Significant impact energy loss so the jet never ghost-skims at 600 km/h
+          f.velocity.multiplyScalar(0.80);
+          f.speed = f.velocity.length();
+          this.shake = Math.min(1.8, this.shake + 0.85 + effectiveImpactMps / 200);
+          if (timeSec - this.lastGpwsRadioAt > 4.0) {
+            this.lastGpwsRadioAt = timeSec;
+            this.radio('TERRAIN IMPACT · PULLING CLEAR', 2.8);
+          }
+        } else {
+          // Belly-on-ground scrape with gear retracted: strong deceleration + gentle pitch recovery
+          // (no 600 km/h endless sliding on a flat sphere!)
+          const right = this.v3.crossVectors(fwdNow, upNorm);
+          if (right.lengthSq() > 1e-8) {
+            right.normalize();
+            const targetLift = this.throttle > 0.65 ? Math.max(downRad + 0.10, 0.08) : Math.max(0, downRad);
+            if (targetLift > 0.001) {
+              f.quaternion.premultiply(this.q1.setFromAxisAngle(right, targetLift * 0.45)).normalize();
+              f.rates.x = Math.max(f.rates.x, 0.35);
+            }
+          }
+          // Strong belly friction braking: decelerates smoothly to stop unless pilot climbs away
+          const bellyBrake = Math.exp(-dt * 1.85);
+          f.velocity.multiplyScalar(bellyBrake);
+          // If pilot is actively throttling up to climb away, add small upward recovery lift
+          if (this.throttle > 0.65 && f.velocity.length() * vMps > 55) {
+            f.velocity.addScaledVector(upNorm, 12 * unitsPerMps(kmPerUnit));
+          }
+          f.speed = f.velocity.length();
+          this.shake = Math.min(0.85, this.shake + 0.12 + effectiveImpactMps / 150);
+        }
       }
-      if (!this.gearDown) f.velocity.multiplyScalar(0.997);
-      f.speed = f.velocity.length();
-      if (!this.gearDown || hit > 4.5) this.shake = Math.min(0.6, this.shake + 0.04 + hit / 300);
-      const currentDist = f.position.distanceTo(nearest.center);
-      if (currentDist < contactSurfR + clearance) {
-        f.position.copy(nearest.center).addScaledVector(upNorm, contactSurfR + clearance);
-      }
-    } else if (hit > 0) {
-      // A real impact: elastic rebound along local surface normal
-      const upNorm = this.v1.subVectors(f.position, nearest.center).normalize();
-      const reboundMps = Math.min(80, Math.max(16, hit * 0.45));
-      f.velocity.addScaledVector(upNorm, reboundMps * unitsPerMps(kmPerUnit));
-      // Deflect nose pitch upward away from ground / mountain face
-      f.rates.x = Math.max(f.rates.x, 1.3);
-      // Tangential scraping friction
-      f.velocity.multiplyScalar(0.86);
-      f.speed = f.velocity.length();
-      // Physical impact shake
-      this.shake = Math.min(1.8, this.shake + 0.8 + hit / 200);
-      // Ensure position is strictly clamped above surface clearance
-      const currentDist = f.position.distanceTo(nearest.center);
-      if (currentDist < contactSurfR + clearance) {
-        f.position.copy(nearest.center).addScaledVector(upNorm, contactSurfR + clearance);
-      }
+      this.velocityWorld.copy(f.velocity);
     }
+
+    // Recompute authoritative post-contact altitude for telemetry & warnings
+    const postDist = f.position.distanceTo(nearest.center);
+    const postAltAglKm = Math.max(0, (postDist - contactSurfR) * kmNear);
+    const postAltMslKm = Math.max(0, (postDist - contactSample.ellipR) * kmNear);
 
     // --- Warnings and heat
     const up = this.v1.subVectors(f.position, nearest.center).normalize();
     const radialMps = f.velocity.dot(up) * vMps;
-    const tti = radialMps < 0 ? (altKm * 1000) / -radialMps : Infinity;
+    const tti = radialMps < -0.5 ? (postAltAglKm * 1000) / -radialMps : Infinity;
     const speedMps = f.velocity.length() * vMps;
     const sunDist = f.position.length();
     const sun = this.bodyIndex.get('Sun');
     const sunRadius = sun ? sun.radius : 262;
     const heatTarget = isSun ? 1 - THREE.MathUtils.smoothstep(nearestAlt / sunRadius, 0.08, 1.5) : 0;
-    const plasma = density > 0 ? Math.min(1, density * Math.pow(speedMps / 2200, 3)) : 0;
-    this.heat += (Math.max(heatTarget, plasma) - this.heat) * (1 - Math.exp(-3 * dt));
-    this.warning = tti < 6 && altKm < nearest.radiusKm * 0.3 && !isSun ? 1 : heatTarget > 0.4 ? 2 : 0;
+    // Suppress atmospheric reentry plasma heating during scripted landing hops & approaches
+    const plasma = !this.scripted && !this.landing && density > 0 ? Math.min(1, density * Math.pow(speedMps / 2200, 3)) : 0;
+    const heatCoolRate = this.landing || this.cutscene ? 10 : 3;
+    this.heat += (Math.max(heatTarget, plasma) - this.heat) * (1 - Math.exp(-heatCoolRate * dt));
+    const terrainWarnNow =
+      this.terrainWarning ||
+      (Math.min(tti, lookaheadImpactT) < 6 && postAltAglKm < nearest.radiusKm * 0.3 && solidWorld);
+    this.terrainWarning = terrainWarnNow && !this.scripted && !this.hold;
+    if (this.terrainWarning && this.gpwsMode === 'none') {
+      this.gpwsMode = Math.min(tti, lookaheadImpactT) < 4 ? 'pull-up' : 'caution';
+    }
+    this.warning = this.terrainWarning ? 1 : heatTarget > 0.4 ? 2 : 0;
 
     // Sonic boom vapour cone + expanding shock collar on Mach 1 crossing
     const sound = f.soundMps > 1 ? f.soundMps : (air?.soundMps ?? 340.3);
@@ -2617,10 +2954,12 @@ export class JetController {
     }
     this.wasOnGround = f.onGround;
 
-    // Exhaust smoke: only where there is air to hold it; a burst when the afterburner lights
-    if (density > 0.02 && speedMps < 3000) {
+    // Exhaust smoke: only when moving through air (> 15 m/s) so a stationary/grounded jet never
+    // stacks overlapping puffs into a blinding white sphere around the airframe.
+    if (density > 0.02 && speedMps > 15 && speedMps < 3000 && !f.onGround) {
       const lightOff = f.boosting && !this.wasBoosting;
-      const haze = (0.05 + 0.1 * this.throttle) * (f.boosting ? 2.6 : 1) * Math.min(1, density * 3);
+      const speedFade = THREE.MathUtils.smoothstep(speedMps, 15, 45);
+      const haze = (0.05 + 0.1 * this.throttle) * (f.boosting ? 2.6 : 1) * Math.min(1, density * 3) * speedFade;
       const nCount = Math.min(this.model.nozzles.length, this.lastNozzleWorld.length);
       for (let n = 0; n < nCount; n++) {
         const now = emit(this.model.nozzles[n]).clone();
@@ -2629,15 +2968,17 @@ export class JetController {
           last.p.copy(now);
           last.valid = true;
         }
-        // Fill the path flown this frame so the trail has no gaps at speed (≤ 4 m apart)
+        // Fill the path flown this frame only when the nozzle has actually moved (≥ 1.5 m)
         const gapM = last.p.distanceTo(now) * mpu;
-        const steps = Math.min(8, Math.max(1, Math.ceil(gapM / 4)));
-        for (let k = 1; k <= steps; k++) {
-          const p = this.v1.lerpVectors(last.p, now, k / steps);
-          this.smoke.emit(p, this.model.length * 0.05, 3.2, 2.6, haze);
+        if (gapM >= 1.5) {
+          const steps = Math.min(8, Math.max(1, Math.ceil(gapM / 4)));
+          for (let k = 1; k <= steps; k++) {
+            const p = this.v1.lerpVectors(last.p, now, k / steps);
+            this.smoke.emit(p, this.model.length * 0.05, 3.2, 2.4, haze);
+          }
+          last.p.copy(now);
         }
-        if (lightOff) for (let k = 0; k < 6; k++) this.smoke.emit(now, this.model.length * 0.09, 7, 3.2, 0.42);
-        last.p.copy(now);
+        if (lightOff) for (let k = 0; k < 6; k++) this.smoke.emit(now, this.model.length * 0.09, 7, 3.0, 0.42);
       }
     } else {
       for (const l of this.lastNozzleWorld) l.valid = false;
@@ -2656,7 +2997,7 @@ export class JetController {
       this.subLon = ll.lon;
       this.subSunUp = sunUpRaw;
       const w = this.weather.update(dt, timeSec, {
-        world: nearest.name, latDeg: ll.lat, lonDeg: ll.lon, altKm, airDensity: density,
+        world: nearest.name, latDeg: ll.lat, lonDeg: ll.lon, altKm: postAltMslKm, airDensity: density,
         daylight: THREE.MathUtils.smoothstep(sunUp, -0.05, 0.25) * lit,
         airVelMps: this.lv1.copy(f.velocity).multiplyScalar(mpu), up: upN, camera, inside,
         hourIndex: Math.floor(timeSec / 900),
@@ -2665,6 +3006,21 @@ export class JetController {
       this.ambient.intensity += w.flash * 2.5;
       this.telemetry.weather = w.label;
       this.telemetry.localTime = this.localSolarTime(nearest, f.position);
+
+      // Daytime star & Milky Way extinction in /fly/ (and /) driven by true MSL altitude,
+      // atmospheric scale height, local solar elevation, and active storm overcast.
+      if (air && postAltMslKm < air.topKm) {
+        const starVis = computeAtmosphericStarVisibility({
+          altKm: postAltMslKm,
+          scaleHeightKm: air.scaleHeightKm,
+          topKm: air.topKm,
+          sunUp: sunUpRaw,
+          overcast: nearest.name === 'Earth' ? w.overcast : 0,
+        });
+        setSkyStarVisibility('jet', starVis, () => this.active);
+      } else {
+        clearSkyStarVisibility('jet');
+      }
     }
 
     // Asteroid belts: real rocks around the jet when it is in one (and slow enough to see them)
@@ -3103,15 +3459,24 @@ export class JetController {
   ): void {
     const f = this.flight;
     const t = this.telemetry;
-    // Shown altitude: the world's own scale close in, the true scale far out
-    const lift = nearest.radius - this.surfaceRadius(nearest, f.position); // oblateness under the jet
-    const shownAltKm = gapKm(nearest.center.distanceTo(f.position) + lift, nearest.radius, nearest.radiusKm);
+    // Shown altitude: both AGL (above actual displaced terrain/buildings) and MSL (above sea level / ellipsoid)
+    const surfSampleNow = this.surfaceSample(nearest, f.position, true);
+    const distNow = nearest.center.distanceTo(f.position);
+    const aglLift = nearest.radius - surfSampleNow.surfR;
+    const mslLift = nearest.radius - surfSampleNow.ellipR;
+    const shownAltKm = gapKm(distNow + aglLift, nearest.radius, nearest.radiusKm);
+    const shownMslKm = gapKm(distNow + mslLift, nearest.radius, nearest.radiusKm);
     t.active = true;
     t.width = width;
     t.height = height;
     t.timeSec = timeSec;
     t.speedMps = speedMps;
     t.altKm = shownAltKm;
+    t.altitudeAglM = Math.max(0, shownAltKm * 1000);
+    t.altitudeMslM = Math.max(0, shownMslKm * 1000);
+    t.terrainElevationM = Math.max(0, surfSampleNow.elevKm * 1000);
+    t.terrainWarning = this.scripted ? false : this.terrainWarning;
+    t.gpwsMode = this.scripted ? 'none' : this.gpwsMode;
     if (nearest.name === 'Earth') {
       const local = this.v1.copy(f.position).applyMatrix4(this.m1.copy(nearest.bundle.surfaceMesh.matrixWorld).invert());
       const ll = bodyLocalToLatLon('Earth', local.x, local.y, local.z);
@@ -3398,6 +3763,7 @@ export class JetController {
 
   public dispose(): void {
     this.exit();
+    clearSkyStarVisibility('jet');
     this.model?.dispose();
     this.cockpit?.dispose();
     this.field.dispose();

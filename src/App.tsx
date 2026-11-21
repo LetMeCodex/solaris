@@ -19,6 +19,18 @@ import { enterFullscreen } from './ui/fullscreen';
 
 const SITE_URL = import.meta.env.BASE_URL;
 const FLY_URL = `${import.meta.env.BASE_URL}fly/`;
+const DAY_MS = 86_400_000;
+
+/**
+ * Preserve the UTC calendar date of `anchorUtcMs` while keeping the sunlit UTC time-of-day from
+ * `candidateUtcMs`. Prevents Earth landmark teleports/landings from advancing the simulation date
+ * by multiple days (e.g. 2026-11-20 -> 2026-11-23) while retaining identical solar elevation.
+ */
+export function preserveCalendarDateUtcMs(anchorUtcMs: number, candidateUtcMs: number): number {
+  const anchorDayStart = Math.floor(anchorUtcMs / DAY_MS) * DAY_MS;
+  const timeOfDayMs = ((candidateUtcMs % DAY_MS) + DAY_MS) % DAY_MS;
+  return anchorDayStart + timeOfDayMs;
+}
 
 /**
  * `site`: the observatory (the Solar System, the opening orrery). `fly`: the fly page, straight
@@ -58,6 +70,7 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
   landedRef.current = landedAt;
   const loadRef = useRef(load);
   loadRef.current = load;
+  const lastEarthClockMsRef = useRef<number | null>(null);
   useEffect(() => {
     if (mode !== 'fly') return;
     let start = '';
@@ -67,7 +80,7 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
     let ready = false;
     let peakPending = 1;
     // The stream log: real events, as they happen (the observatory's stages, the aircraft, the
-    // tiles of the start arriving, a second at a time)
+    // tiles of the start arriving)
     const log: string[] = [];
     const say = (line: string): void => {
       const t = ((performance.now() - t0) / 1000).toFixed(1).padStart(5, ' ');
@@ -104,44 +117,52 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
         startedAt = now;
         if (st) say(`take-off  ${st.name}  ${Math.abs(st.lat).toFixed(3)}°${st.lat >= 0 ? 'N' : 'S'} ${Math.abs(st.lon).toFixed(3)}°${st.lon >= 0 ? 'E' : 'W'} · Sun high there now`);
       }
-      const r = sc?.flyReadiness() ?? { jet: false, aircraft: false, tilesPending: 0, tilesVisible: 0, detailedTiles: 0 };
+      const r = sc?.flyReadiness() ?? {
+        jet: false,
+        aircraft: false,
+        tilesPending: 0,
+        tilesVisible: 0,
+        detailedTiles: 0,
+        source: 'none' as const,
+        spawnTilesReady: false,
+      };
       const airframeName = sc?.jet.airframe.anchors.name ?? AIRFRAMES[chosenAirframe()].anchors.name;
       if (r.aircraft && !aircraftSaid) {
         aircraftSaid = true;
         say(`airframe  ${airframeName} glTF decoded · cockpit lit · displays live`);
       }
-      // Behind the film, every view is looked through once while the tiles load: the cockpit's own
-      // shaders, its reflections and displays, the GoPro's and the fly-by's are all made now, not
-      // the first time you switch to them (that froze the flight 0.3-0.5 s)
-      if (sc && r.aircraft && r.jet && tourStep < TOUR.length + 1 && now - tourAt > 1600) {
+      // Behind the film, briefly touch each camera view so cockpit/GoPro shaders warm up rapidly (~200ms/view)
+      if (sc && r.aircraft && r.jet && tourStep < TOUR.length && now - tourAt > 200) {
         if (tourStep === -1) tourHome = sc.jet.view;
         tourStep++;
         tourAt = now;
         sc.jet.view = tourStep < TOUR.length ? TOUR[tourStep] : tourHome;
       }
-      if (startedAt > 0 && now - lastTileSay > 1100 && (r.tilesVisible !== lastTiles || r.tilesPending > 0)) {
+      if (startedAt > 0 && now - lastTileSay > 700 && (r.tilesVisible !== lastTiles || r.tilesPending > 0)) {
         lastTileSay = now;
         const d = r.tilesVisible - lastTiles;
         lastTiles = r.tilesVisible;
-        say(`google 3d tiles  ${d >= 0 ? '+' : ''}${d} drawn · ${r.tilesVisible} over the city · ${r.tilesPending} streaming`);
+        const srcTag = r.source === 'surface' ? 'earth surface tiles' : 'google 3d tiles';
+        say(`${srcTag}  ${d >= 0 ? '+' : ''}${d} drawn · ${r.tilesVisible} visible · ${r.tilesPending} streaming`);
       }
       const streaming = startedAt > 0 && r.jet;
       peakPending = Math.max(peakPending, r.tilesPending);
       const isCompactFly = typeof window !== 'undefined' && (window.innerWidth < 820 || window.innerHeight < 480);
       const targetDetailed = isCompactFly ? 4 : 8;
-      const settleDetailed = isCompactFly ? 3 : 5;
+      const settleDetailed = isCompactFly ? 2 : 4;
       const tilesFrac = !streaming
         ? 0
-        : r.tilesVisible === 0
-          ? 0.05
-          : Math.min(1, Math.max(1 - r.tilesPending / Math.max(peakPending, 40), Math.min(0.96, Math.max(r.detailedTiles / targetDetailed, r.tilesVisible / (targetDetailed * 2)))));
+        : r.spawnTilesReady
+          ? 1
+          : r.tilesVisible === 0
+            ? 0.08
+            : Math.min(1, Math.max(1 - r.tilesPending / Math.max(peakPending, 24), Math.min(0.96, Math.max(r.detailedTiles / targetDetailed, r.tilesVisible / (targetDetailed * 2)))));
       if (streaming && r.detailedTiles >= settleDetailed) quietSince ||= now;
       else quietSince = 0;
-      const settled = quietSince > 0 && now - quietSince > 2200;
-      const enoughTiles = r.detailedTiles >= targetDetailed || (r.detailedTiles >= 3 && r.tilesPending <= 8);
-      // Root tiles are flat continents, not a ready launch view. Wait for building-scale
-      // photogrammetry before revealing; retain a bounded fallback for unavailable providers.
-      const timedOut = startedAt > 0 && now - startedAt > 20000;
+      const settled = quietSince > 0 && now - quietSince > 900;
+      const enoughTiles = Boolean(r.spawnTilesReady) || r.detailedTiles >= targetDetailed || (r.detailedTiles >= 3 && r.tilesPending <= 8);
+      // Bounded <= 3s spawn-tile cap once observatory + jet + airframe are ready so /fly/ cold start completes in <5s
+      const timedOut = startedAt > 0 && now - startedAt > 3000;
       const toured = tourStep >= TOUR.length;
       ready = ready || (load.done && r.jet && r.aircraft && ((toured && (enoughTiles || settled)) || timedOut));
       if (ready && sc && tourStep >= 0 && tourStep < TOUR.length) {
@@ -157,7 +178,7 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
       if (ready && log[log.length - 1]?.indexOf('cleared') === -1) say(`ready  ${r.tilesVisible} tiles · cleared for take-off`);
       setFly({ start, ll, items, progress, ready, log: [...log], tiles: ready ? 1 : tilesFrac });
       if (ready) window.clearInterval(id);
-    }, 250);
+    }, 120);
     return () => window.clearInterval(id);
   }, [mode]);
 
@@ -202,16 +223,35 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
     ro?.observe(container);
     window.visualViewport?.addEventListener('resize', triggerSceneResize);
 
-    // Instantiate core Three.js scene
-    const scene = new SolarSystemScene(container, (data) => {
-      setTelemetry(data);
-    });
+    // Instantiate core Three.js scene (pass { mode } so /fly/ skips deep-space preloading)
+    const scene = new SolarSystemScene(
+      container,
+      (data) => {
+        setTelemetry(data);
+        const curMs = sceneRef.current?.clock.getUtcMs() ?? (data.utcIso ? Date.parse(data.utcIso) : NaN);
+        if (Number.isFinite(curMs) && (lastEarthClockMsRef.current === null || Math.abs(curMs - lastEarthClockMsRef.current) < 6 * 3600_000)) {
+          lastEarthClockMsRef.current = curMs;
+        }
+      },
+      { mode },
+    );
     sceneRef.current = scene;
+    lastEarthClockMsRef.current = scene.clock.getUtcMs();
     (window as unknown as { __solarisScene?: SolarSystemScene }).__solarisScene = scene;
     // The jet reports every frame; React only needs to know when it takes off or lands
     let jetWas = false;
     let exitTimer: number | null = null;
-    scene.onJetLanding = (lm) => setLandedAt(lm ? lm.name : null);
+    scene.onJetLanding = (lm) => {
+      if (lm && lm.body === 'Earth' && lastEarthClockMsRef.current !== null) {
+        const afterMs = scene.clock.getUtcMs();
+        if (Math.floor(afterMs / DAY_MS) !== Math.floor(lastEarthClockMsRef.current / DAY_MS)) {
+          const snapped = preserveCalendarDateUtcMs(lastEarthClockMsRef.current, afterMs);
+          scene.clock.setUtcMs(snapped);
+          lastEarthClockMsRef.current = snapped;
+        }
+      }
+      setLandedAt(lm ? lm.name : null);
+    };
     const unsubJet = scene.jet.subscribe((t) => {
       if (t.active !== jetWas) {
         jetWas = t.active;
@@ -279,14 +319,17 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
 
   const handleSeekDate = useCallback((utcMs: number) => {
     sceneRef.current?.clock.setUtcMs(utcMs);
+    lastEarthClockMsRef.current = utcMs;
   }, []);
 
   const handleResetToJ2000 = useCallback(() => {
     sceneRef.current?.clock.resetToJ2000();
+    if (sceneRef.current) lastEarthClockMsRef.current = sceneRef.current.clock.getUtcMs();
   }, []);
 
   const handleResetToNow = useCallback(() => {
     sceneRef.current?.clock.resetToNow();
+    if (sceneRef.current) lastEarthClockMsRef.current = sceneRef.current.clock.getUtcMs();
   }, []);
 
   const handleToggleConstellations = useCallback(() => {
@@ -310,7 +353,17 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
   }, []);
 
   const handleFlyToLandmark = useCallback((id: string) => {
-    sceneRef.current?.flyToLandmark(id);
+    const sc = sceneRef.current;
+    if (!sc) return;
+    const beforeMs = sc.clock.getUtcMs();
+    const lm = sc.flyToLandmark(id);
+    if (lm?.body === 'Earth') {
+      const afterMs = sc.clock.getUtcMs();
+      if (Math.floor(afterMs / DAY_MS) !== Math.floor(beforeMs / DAY_MS)) {
+        sc.clock.setUtcMs(preserveCalendarDateUtcMs(beforeMs, afterMs));
+      }
+      lastEarthClockMsRef.current = sc.clock.getUtcMs();
+    }
   }, []);
 
   const handleExplorerDaylight = useCallback((on: boolean) => {
@@ -321,11 +374,35 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
     const sc = sceneRef.current;
     if (!sc) return;
     switch (a.type) {
-      case 'enter': sc.enterSurface(); break;
+      case 'enter': {
+        const beforeMs = sc.clock.getUtcMs();
+        sc.enterSurface();
+        const isEarthSurface = sc.getExplorerStatus().body === 'Earth' || sc.selectedBodyName() === 'Earth';
+        if (isEarthSurface) {
+          const afterMs = sc.clock.getUtcMs();
+          if (Math.floor(afterMs / DAY_MS) !== Math.floor(beforeMs / DAY_MS)) {
+            sc.clock.setUtcMs(preserveCalendarDateUtcMs(beforeMs, afterMs));
+          }
+          lastEarthClockMsRef.current = sc.clock.getUtcMs();
+        }
+        break;
+      }
       case 'exit': sc.exitSurface(); break;
       case 'magnification': sc.setSurfaceMagnification(a.value); break;
       case 'atmosphere': sc.setSurfaceAtmosphere(a.on); break;
-      case 'time': sc.setSurfaceTimeOfDay(a.what); break;
+      case 'time': {
+        const beforeMs = sc.clock.getUtcMs();
+        sc.setSurfaceTimeOfDay(a.what);
+        const isEarthSurface = sc.getExplorerStatus().body === 'Earth' || sc.selectedBodyName() === 'Earth';
+        if (isEarthSurface) {
+          const afterMs = sc.clock.getUtcMs();
+          if (Math.floor(afterMs / DAY_MS) !== Math.floor(beforeMs / DAY_MS)) {
+            sc.clock.setUtcMs(preserveCalendarDateUtcMs(beforeMs, afterMs));
+          }
+          lastEarthClockMsRef.current = sc.clock.getUtcMs();
+        }
+        break;
+      }
       case 'lookAt': sc.surfaceLookAt(a.name); break;
       case 'resetZoom': sc.resetSurfaceZoom(); break;
       case 'skyFrom': sc.enterSkyView(a.body, a.facing); break;
@@ -385,6 +462,7 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
 
   const handleMissionEvent = useCallback((dateUtc: string | null, target: string) => {
     sceneRef.current?.jumpToMissionEvent(dateUtc, target);
+    if (sceneRef.current) lastEarthClockMsRef.current = sceneRef.current.clock.getUtcMs();
   }, []);
 
   const handleSetComparison = useCallback((kind: ComparisonPropKind) => {
@@ -416,8 +494,19 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
     sceneRef.current?.exitJet();
   }, []);
 
+  const isSpacecraftTarget = telemetry?.activeTarget?.category === 'spacecraft';
+  const isSurfaceClose =
+    !isSpacecraftTarget &&
+    (jetActive ||
+      !!telemetry?.surface?.active ||
+      !!telemetry?.horizonView ||
+      (telemetry?.explorer?.altitudeRadii ?? Infinity) < 0.35);
+
   return (
-    <div className="relative w-full h-full overflow-hidden bg-[#030206]" style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}>
+    <div
+      className={`relative w-full h-full overflow-hidden bg-[#030206] ${isSurfaceClose ? 'sol-surface-close' : ''}`}
+      style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden' }}
+    >
       {/* 3D WebGL Canvas Viewport */}
       <div ref={containerRef} className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
 
@@ -480,17 +569,16 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
           }}
         >
           <FpsCounter style={{ fontFamily: 'Montserrat, system-ui, sans-serif' }} />
-          <span style={{ fontFamily: 'Montserrat, system-ui, sans-serif', fontSize: 9, letterSpacing: '0.28em', color: 'rgba(255,255,255,0.68)', textTransform: 'uppercase', textAlign: 'center', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%' }}>
+          <span className="sol-landed-label">
             Landed · {landedAt}
           </span>
-          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: 6 }}>
-            <button type="button" className="hud-btn is-on sol-landed-takeoff" style={{ color: 'var(--sol-mint)', padding: '8px 18px' }} onClick={handleTakeOff}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: 8 }}>
+            <button type="button" className="hud-btn is-on sol-landed-takeoff" onClick={handleTakeOff}>
               Take off
             </button>
             <button
               type="button"
               className="hud-btn sol-landed-avatar"
-              style={{ padding: '6px 12px', fontSize: 9 }}
               onClick={(e) => {
                 const sc = sceneRef.current;
                 if (!sc) return;

@@ -58,14 +58,14 @@ const ecl = (x: number, y: number, z: number): THREE.Vector3 => new THREE.Vector
 /** Film distance from the Sun for a true distance in AU (log-compressed, Earth at 26). */
 const filmR = (au: number): number => 26 * Math.log10(1 + au * 9);
 
-const PLANETS: Array<{ name: string; tex: string; size: number }> = [
-  { name: 'Mercury', tex: '2k_mercury.jpg', size: 0.45 },
-  { name: 'Venus', tex: '2k_venus_atmosphere.jpg', size: 0.9 },
-  { name: 'Mars', tex: '2k_mars.jpg', size: 0.62 },
-  { name: 'Jupiter', tex: '2k_jupiter.jpg', size: 2.3 },
-  { name: 'Saturn', tex: '2k_saturn.jpg', size: 1.95 },
-  { name: 'Uranus', tex: '2k_uranus.jpg', size: 1.25 },
-  { name: 'Neptune', tex: '2k_neptune.jpg', size: 1.2 },
+const PLANETS: Array<{ name: string; color: number; size: number }> = [
+  { name: 'Mercury', color: 0x9a948e, size: 0.45 },
+  { name: 'Venus', color: 0xe3c58f, size: 0.9 },
+  { name: 'Mars', color: 0xc86442, size: 0.62 },
+  { name: 'Jupiter', color: 0xd4b08a, size: 2.3 },
+  { name: 'Saturn', color: 0xe6d3a1, size: 1.95 },
+  { name: 'Uranus', color: 0x9fd8e0, size: 1.25 },
+  { name: 'Neptune', color: 0x5b7fe0, size: 1.2 },
 ];
 
 const earthVert = /* glsl */ `
@@ -231,23 +231,30 @@ export const FlyPreloader: React.FC<{
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x010103);
     const camera = new THREE.PerspectiveCamera(42, 1, 0.002, 5000);
-    // Images decoded off the main thread (see FastTextureLoader: the 8K Earth as an <img> froze the
-    // film for 0.4 s on upload), then sent to the GPU one a frame as they arrive, never together
+    // Share the exact 2K Earth + Sun maps already fetched by SolarSystemScene (HTTP cache hit,
+    // zero extra 8K/outer-planet downloads competing with `/fly/` cold start), decoded off-thread.
     const loader = new THREE.TextureLoader();
+    const maxAniso = Math.min(8, Math.max(1, renderer.capabilities.getMaxAnisotropy()));
     const textures: THREE.Texture[] = [];
     const arrived: Array<[THREE.Texture, ImageBitmap]> = [];
+    let disposed = false;
     const tex = (f: string, srgb = true): THREE.Texture => {
       const url = `${B}textures/${f}`;
       let t: THREE.Texture;
       if (canUseBitmaps) {
         t = new THREE.Texture();
         // Held until its turn in the frame loop
-        decodeBitmap(url).then((bmp) => arrived.push([t, bmp])).catch(() => undefined);
+        decodeBitmap(url, true)
+          .then((bmp) => {
+            if (disposed) bmp.close();
+            else arrived.push([t, bmp]);
+          })
+          .catch(() => undefined);
       } else {
         t = loader.load(url);
       }
       if (srgb) t.colorSpace = THREE.SRGBColorSpace;
-      t.anisotropy = 8;
+      t.anisotropy = maxAniso;
       textures.push(t);
       return t;
     };
@@ -279,9 +286,15 @@ export const FlyPreloader: React.FC<{
     const R = basis(sunDir, poleFilm).multiply(basis(dirFor(ss.lat, ss.lon), new THREE.Vector3(0, 1, 0)).transpose());
     const earthQ = new THREE.Quaternion().setFromRotationMatrix(R);
 
-    const clouds = tex('hires/earth_clouds_4k.webp', false);
+    const clouds = tex('2k_earth_clouds.jpg', false);
     clouds.wrapS = THREE.RepeatWrapping;
-    const earthU = { tDay: { value: tex('hires/earth_day_8k.webp') }, tNight: { value: tex('hires/earth_night_4k.webp') }, tClouds: { value: clouds }, uSun: { value: sunDir.clone() }, uCloudShift: { value: 0 } };
+    const earthU = {
+      tDay: { value: tex('2k_earth_daymap.jpg') },
+      tNight: { value: tex('2k_earth_nightmap.jpg') },
+      tClouds: { value: clouds },
+      uSun: { value: sunDir.clone() },
+      uCloudShift: { value: 0 },
+    };
     const earth = new THREE.Mesh(new THREE.SphereGeometry(1, 144, 96), new THREE.ShaderMaterial({ uniforms: earthU, vertexShader: earthVert, fragmentShader: earthFrag }));
     earth.quaternion.copy(earthQ);
     scene.add(earth);
@@ -329,11 +342,17 @@ export const FlyPreloader: React.FC<{
       const h = helio(p.name);
       const b = SOLAR_SYSTEM_BODIES.find((x) => x.name === p.name);
       if (!h || !b) continue;
-      const m = new THREE.Mesh(new THREE.SphereGeometry(p.size, 64, 32), new THREE.MeshStandardMaterial({ map: tex(p.tex), roughness: 1, metalness: 0 }));
+      const m = new THREE.Mesh(
+        new THREE.SphereGeometry(p.size, 32, 20),
+        new THREE.MeshStandardMaterial({ color: p.color, roughness: 0.9, metalness: 0 }),
+      );
       m.position.copy(toFilm(h)).add(sunPos);
       scene.add(m);
       if (p.name === 'Saturn') {
-        const ring = new THREE.Mesh(new THREE.RingGeometry(p.size * 1.25, p.size * 2.3, 128), new THREE.MeshBasicMaterial({ map: tex('2k_saturn_ring_alpha.png'), color: 0xe8d8b0, transparent: true, side: THREE.DoubleSide, depthWrite: false }));
+        const ring = new THREE.Mesh(
+          new THREE.RingGeometry(p.size * 1.25, p.size * 2.3, 64),
+          new THREE.MeshBasicMaterial({ color: 0xe8d8b0, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false }),
+        );
         ring.rotation.x = -Math.PI / 2 + 0.47;
         m.add(ring);
       }
@@ -349,7 +368,10 @@ export const FlyPreloader: React.FC<{
     scene.add(sunTag);
     label(sunTag, 'SUN');
 
-    const moon = new THREE.Mesh(new THREE.SphereGeometry(0.273, 96, 64), new THREE.MeshStandardMaterial({ map: tex('2k_moon.jpg'), roughness: 1, metalness: 0 }));
+    const moon = new THREE.Mesh(
+      new THREE.SphereGeometry(0.273, 40, 28),
+      new THREE.MeshStandardMaterial({ color: 0xb6b6ba, roughness: 1, metalness: 0 }),
+    );
     scene.add(moon);
 
     const sky = stars(6000);
@@ -433,11 +455,11 @@ export const FlyPreloader: React.FC<{
       const L = live.current;
       if (L.start) targetGoal.copy(dirFor(L.start.lat, L.start.lon)).applyQuaternion(earthQ);
       target.lerp(targetGoal, Math.min(1, dt * 1.5)).normalize();
-      // At least 12 s of film even when everything is cached; loading drives it on from there
-      const minRun = Math.min(1, time / 12);
-      const want = Math.min(L.progress, 0.2 + 0.8 * minRun, 1);
-      shown += (Math.max(shown, want) - shown) * Math.min(1, dt * 1.4);
-      const p = L.phase === 'loading' ? Math.min(shown, 0.985) : Math.min(1, shown + dt * 0.4);
+      // Snappy ~2.2 s orbital approach paced with real loading progress (never artificially stalling)
+      const minRun = Math.min(1, time / 2.2);
+      const want = Math.min(L.progress, 0.25 + 0.75 * minRun, 1);
+      shown += (Math.max(shown, want) - shown) * Math.min(1, dt * 3.2);
+      const p = L.phase === 'loading' ? Math.min(shown, 0.985) : Math.min(1, shown + dt * 0.75);
       if (L.phase !== 'loading') shown = p;
       let diveK = 0;
       if (p < ACT1) {
@@ -452,7 +474,7 @@ export const FlyPreloader: React.FC<{
         slerp(startDir, target, ease(Math.min(1, q * 1.08)), dir);
         let dist = 1.0 + 17.0 * Math.pow(1 - e, 2.2) + 0.85;
         if (L.phase === 'dive') {
-          diveK = Math.min(1, (time2 - L.diveT0) / 2100);
+          diveK = Math.min(1, (time2 - L.diveT0) / 1200);
           dist = THREE.MathUtils.lerp(dist, 1.004, Math.pow(diveK, 2.4));
         }
         const drift = tmp.crossVectors(dir, up).normalize().multiplyScalar(0.06 * Math.sin(time * 0.21) * (1 - diveK));
@@ -507,7 +529,9 @@ export const FlyPreloader: React.FC<{
 
     return () => {
       stopped = true;
+      disposed = true;
       cancelAnimationFrame(raf);
+      while (arrived.length > 0) arrived.pop()![1].close();
       ro?.disconnect();
       window.removeEventListener('resize', resize);
       window.removeEventListener('orientationchange', resize);
@@ -539,7 +563,7 @@ export const FlyPreloader: React.FC<{
     window.setTimeout(() => {
       setPhase('gone');
       onFinished();
-    }, reduced ? 500 : 2900);
+    }, reduced ? 400 : 1500);
   };
 
   useEffect(() => {

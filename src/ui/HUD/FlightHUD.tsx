@@ -806,11 +806,11 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
           ======================================================== */}
       <nav
         data-tour="nav"
-        className={`hud-dim absolute left-[max(16px,var(--safe-l))] lg:left-[max(28px,var(--safe-l))] top-1/2 -translate-y-1/2 hidden md:flex flex-col gap-3 [@media(max-height:720px)]:gap-1 [@media(max-height:720px)]:top-[calc(50%+28px)] [@media(max-height:560px)]:hidden pointer-events-auto transition-all duration-1000 z-30 ${
+        className={`hud-dim hud-world-rail absolute left-[max(16px,var(--safe-l))] lg:left-[max(28px,var(--safe-l))] top-1/2 -translate-y-1/2 hidden md:flex flex-col gap-2.5 [@media(max-height:720px)]:gap-1 [@media(max-height:720px)]:top-[calc(50%+28px)] [@media(max-height:560px)]:hidden pointer-events-auto transition-all duration-1000 z-30 ${
           introPhase >= 1
             ? onSurfaceView || inHorizon
               ? 'opacity-0 -translate-x-8 pointer-events-none'
-              : exploring ? 'opacity-40 hover:opacity-100 translate-x-0' : 'opacity-100 translate-x-0'
+              : exploring ? 'opacity-85 hover:opacity-100 translate-x-0' : 'opacity-100 translate-x-0'
             : 'opacity-0 -translate-x-8'
         }`}
       >
@@ -832,18 +832,18 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               }}
               className="flex items-center gap-3.5 group text-left cursor-pointer transition-all duration-200 outline-none focus-visible:ring-1 focus-visible:ring-white/60 rounded hud-nav-in"
             >
-              <div className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center transition-all ${isSelected ? 'border-white' : 'border-white/35 group-hover:border-white/60'}`}>
+              <div className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center transition-all ${isSelected ? 'border-white' : 'border-white/45 group-hover:border-white/80'}`}>
                 {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
               </div>
               <div
-                className={`w-6 h-6 rounded-full bg-cover bg-center flex-shrink-0 transition-all duration-300 ${isSelected ? 'opacity-100 scale-125' : 'opacity-70 group-hover:opacity-100'}`}
-                style={{ backgroundImage: `url(${baseUrl}textures/nebulae/${n.name}_lite.webp)`, backgroundColor: '#020306', backgroundSize: NEBULA_SUB[n.name] ? 'cover' : '210%', boxShadow: isSelected ? '0 0 12px rgba(255,200,120,0.45)' : 'inset 0 0 0 1px rgba(255,255,255,0.08)' }}
+                className={`w-6 h-6 rounded-full bg-cover bg-center flex-shrink-0 transition-all duration-300 ${isSelected ? 'opacity-100 scale-125' : 'opacity-80 group-hover:opacity-100'}`}
+                style={{ backgroundImage: `url(${baseUrl}textures/nebulae/${n.name}_lite.webp)`, backgroundColor: '#020306', backgroundSize: NEBULA_SUB[n.name] ? 'cover' : '210%', boxShadow: isSelected ? '0 0 12px rgba(255,200,120,0.45)' : 'inset 0 0 0 1px rgba(255,255,255,0.12)' }}
               />
               <div className="flex flex-col">
-                <span className={`text-[11px] uppercase tracking-[0.22em] transition-colors duration-200 ${isSelected ? 'text-white font-medium' : 'text-white/40 group-hover:text-white/80'}`}>
+                <span className={`text-[11px] uppercase tracking-[0.22em] transition-colors duration-200 ${isSelected ? 'text-white font-medium' : 'text-white/75 group-hover:text-white'}`}>
                   {NEBULA_SHORT[n.name] ?? n.title}
                 </span>
-                <span className={`text-[9px] tracking-wider font-light transition-colors duration-200 ${isSelected ? 'text-white/50' : 'text-white/20 group-hover:text-white/40'}`}>
+                <span className={`text-[9px] tracking-wider font-light transition-colors duration-200 ${isSelected ? 'text-white/75' : 'text-white/45 group-hover:text-white/70'}`}>
                   {NEBULA_SUB[n.name] ?? 'Imagined'}
                 </span>
               </div>
@@ -875,7 +875,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center transition-all ${
                   isSelected
                     ? 'border-white'
-                    : 'border-white/35 group-hover:border-white/60'
+                    : 'border-white/45 group-hover:border-white/80'
                 }`}
               >
                 {isSelected && (
@@ -897,7 +897,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               ) : (
                 /* Inactive: 24px circular texture preview with 3D inset shadow */
                 <div
-                  className="w-6 h-6 rounded-full bg-cover bg-center transition-opacity duration-200 opacity-60 group-hover:opacity-90 flex-shrink-0"
+                  className="w-6 h-6 rounded-full bg-cover bg-center transition-opacity duration-200 opacity-80 group-hover:opacity-100 flex-shrink-0"
                   style={{
                     backgroundImage: `url(${thumbUrl})`,
                     boxShadow:
@@ -912,7 +912,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                   className={`text-[11px] uppercase tracking-[0.22em] transition-colors duration-200 ${
                     isSelected
                       ? 'text-white font-medium'
-                      : 'text-white/40 group-hover:text-white/80'
+                      : 'text-white/75 group-hover:text-white'
                   }`}
                 >
                   {planetName}
@@ -920,8 +920,8 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
                 <span
                   className={`text-[9px] tracking-wider transition-colors duration-200 font-light ${
                     isSelected
-                      ? 'text-white/50'
-                      : 'text-white/20 group-hover:text-white/40'
+                      ? 'text-white/75'
+                      : 'text-white/45 group-hover:text-white/70'
                   }`}
                 >
                   {itemNarrative?.distanceAU || ''}

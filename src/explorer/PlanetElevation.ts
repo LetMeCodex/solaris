@@ -13,16 +13,22 @@
  * - Mars: the HRSC + MOLA blended DEM (200 m) from Esri's astro ImageServer, as LERC1 float32 tiles
  *   (heights in metres about the 3396.19 km Mars 2000 sphere's areoid).
  *
+ * Tiles fetch through `TileCache` (deduplication, per-host concurrency, priority queue, persistence)
+ * and decode off-thread via `demDecode.worker.ts` (`DemDecoder`) with safe main-thread fallback.
+ *
  * Heights are returned above each world's lowest point (`datumKm`), never below 0: the drawn globe
- * is a smooth sphere and ground beneath it would be hidden by it. The offset is a few km on worlds
- * thousands of km across, invisible from orbit, and everything (tiles, the eye, landmark labels)
- * reads the same function, so the ground you stand on is the ground drawn.
+ * is a smooth sphere and ground beneath it would be hidden by it. Everything (tiles, the eye,
+ * landmark labels, aircraft collision) reads the same function, so the ground you stand on is the
+ * ground drawn.
  */
-import { decodeLerc1 } from './Lerc1';
-import { earthElevation } from './Elevation';
+import { earthElevation, type ElevationSample } from './Elevation';
 import { perf } from '../rendering/Performance';
+import { demDecoder, float32Pool, tileCache } from './TileCache';
+import { decodeTrek8Rgba } from './demDecode.worker';
 
-/** What the surface tiles and the surface view need from a height source. */
+export type { ElevationSample };
+
+/** What the surface tiles, surface view, and flight physics need from a height source. */
 export interface ElevationSource {
   /** The service could not be reached: the ground stays flat. */
   disabled: boolean;
@@ -30,6 +36,14 @@ export interface ElevationSource {
   ensure(south: number, west: number, north: number, east: number, z: number): Promise<void>;
   /** Height (km) at a point from the best loaded tile at or below zoom z. */
   heightKm(latDeg: number, lonDeg: number, z: number): number;
+  /** Optional authoritative height in metres (`heightKm * 1000`). */
+  heightMeters?(latDeg: number, lonDeg: number, z?: number): number;
+  /** Optional detailed sync sample with loaded zoom level and readiness state. */
+  sampleElevation?(latDeg: number, lonDeg: number, z?: number): ElevationSample;
+  /** Optional async sample that awaits covering DEM tiles up to `timeoutMs`. */
+  sampleElevationAsync?(latDeg: number, lonDeg: number, z?: number, timeoutMs?: number): Promise<ElevationSample>;
+  /** Optional coverage check at or above `minZoom`. */
+  hasCoverage?(latDeg: number, lonDeg: number, minZoom?: number): boolean;
   /** A height zoom for a patch of ground `spanDeg` across (about one height sample per vertex). */
   zoomFor(spanDeg: number): number;
   /** Abort in-flight/queued height fetches when switching away from a world. */
@@ -60,6 +74,7 @@ interface HeightTile {
   corner: boolean;
   promise: Promise<void>;
   lastUsed: number;
+  z?: number;
   retryAt?: number;
 }
 
@@ -68,7 +83,6 @@ const TILE_TIMEOUT_MS = 18_000;
 const COOLDOWN_MS = 20_000;
 
 const TIER_CACHE = { low: 90, medium: 150, high: 220 } as const;
-const TIER_CONCURRENT = { low: 3, medium: 5, high: 8 } as const;
 
 class HttpStatusError extends Error {
   constructor(public readonly status: number) {
@@ -78,8 +92,6 @@ class HttpStatusError extends Error {
 
 export class PlanetElevation implements ElevationSource {
   private tiles = new Map<string, HeightTile>();
-  private inFlight = 0;
-  private waiting: Array<{ grant: () => void; cancel: () => void }> = [];
   private activeAborts = new Set<() => void>();
   private epoch = 0;
   private failures = 0;
@@ -108,21 +120,24 @@ export class PlanetElevation implements ElevationSource {
     public readonly datumKm: number
   ) {}
 
+  private get cachePrefix(): string {
+    return `dem:${this.body}:`;
+  }
+
   public zoomFor(spanDeg: number): number {
     // One height tile per surface tile (as on Earth): 256–512 samples for its 32 vertices, so every
     // vertex reads well-resolved heights and neighbouring levels of detail agree along their shared
-    // edges. Reading coarser height levels for coarser tiles made edges differ by hundreds of metres
-    // on crater walls, and the crack-hiding skirts stood up as grey walls across the view
+    // edges.
     const z = Math.floor(Math.log2(180 / Math.max(spanDeg, 1e-6)));
     return Math.max(0, this.layers[0].tileSize >= 512 ? z - 1 : z);
   }
 
   public ensure(south: number, west: number, north: number, east: number, z: number): Promise<void> {
-    if (this.disabled) return Promise.resolve();
+    if (this.disabled || ![south, west, north, east, z].every(Number.isFinite)) return Promise.resolve();
     const jobs: Promise<void>[] = [];
     for (const [li, l] of this.layers.entries()) {
       if (north < l.south || south > l.north) continue;
-      const queueZoom = (zz: number): void => {
+      const queueZoom = (zz: number, priority: number): void => {
         const span = 180 / 2 ** zz;
         const s = Math.max(south, l.south);
         const n = Math.min(north, l.north);
@@ -132,7 +147,9 @@ export class PlanetElevation implements ElevationSource {
         const x0 = Math.floor((west + 180) / span);
         const x1 = Math.floor((east + 180) / span);
         for (let y = y0; y <= y1; y++) {
-          for (let x = x0; x <= x1; x++) jobs.push(this.load(li, zz, y, ((x % cols) + cols) % cols));
+          for (let x = x0; x <= x1; x++) {
+            jobs.push(this.load(li, zz, y, ((x % cols) + cols) % cols, priority));
+          }
         }
       };
       const resolveZ = (target: number): number => {
@@ -140,23 +157,34 @@ export class PlanetElevation implements ElevationSource {
         while (r > 0 && l.skipZ?.includes(r)) r--;
         return r;
       };
-      const zz = resolveZ(z);
-      // Warm a coarse global baseline so partial-coverage 404s or slow high-z tiles never drop terrain to 0
+      const zz = resolveZ(Math.max(0, Math.floor(z)));
+      // Warm a coarse global baseline at highest priority so partial-coverage 404s or slow high-z tiles never drop terrain to 0
       const isGlobal = l.south <= -90 && l.north >= 90;
       if ((isGlobal || li === this.layers.length - 1) && zz > COARSE_FALLBACK_Z) {
-        queueZoom(resolveZ(Math.min(COARSE_FALLBACK_Z, l.maxZ)));
+        queueZoom(resolveZ(Math.min(COARSE_FALLBACK_Z, l.maxZ)), -500);
       }
-      queueZoom(zz);
+      queueZoom(zz, zz * 10 + li * 2);
     }
     return Promise.all(jobs).then(() => undefined);
   }
 
-  public heightKm(latDeg: number, lonDeg: number, z: number): number {
+  public heightKm(latDeg: number, lonDeg: number, z: number = 13): number {
+    return this.sampleElevation(latDeg, lonDeg, z).heightKm;
+  }
+
+  public heightMeters(latDeg: number, lonDeg: number, z: number = 13): number {
+    return this.heightKm(latDeg, lonDeg, z) * 1000;
+  }
+
+  public sampleElevation(latDeg: number, lonDeg: number, z: number = 13): ElevationSample {
+    if (!Number.isFinite(latDeg) || !Number.isFinite(lonDeg) || !Number.isFinite(z)) {
+      return { heightKm: 0, heightMeters: 0, loadedZoom: -1, ready: false };
+    }
     const lat = Math.max(-90, Math.min(90, latDeg));
     const lon = ((((lonDeg + 180) % 360) + 360) % 360) - 180;
     for (const [li, l] of this.layers.entries()) {
       if (lat < l.south || lat > l.north) continue;
-      for (let zz = Math.min(z, l.maxZ); zz >= 0; zz--) {
+      for (let zz = Math.min(Math.floor(z), l.maxZ); zz >= 0; zz--) {
         const span = 180 / 2 ** zz;
         const gx = (lon + 180) / span;
         const gy = (90 - lat) / span;
@@ -166,10 +194,46 @@ export class PlanetElevation implements ElevationSource {
         if (!t?.heights) continue;
         const h = this.sample(t, gx - tx, gy - ty);
         if (Number.isNaN(h)) continue;
-        return Math.max(0, h + this.datumKm);
+        const km = Math.max(0, h + this.datumKm);
+        return { heightKm: km, heightMeters: km * 1000, loadedZoom: zz, ready: true };
       }
     }
-    return 0;
+    return { heightKm: 0, heightMeters: 0, loadedZoom: -1, ready: false };
+  }
+
+  public async sampleElevationAsync(
+    latDeg: number,
+    lonDeg: number,
+    z: number = 13,
+    timeoutMs = 4000
+  ): Promise<ElevationSample> {
+    if (!Number.isFinite(latDeg) || !Number.isFinite(lonDeg)) {
+      return { heightKm: 0, heightMeters: 0, loadedZoom: -1, ready: false };
+    }
+    const maxZ = Math.max(...this.layers.map((l) => l.maxZ));
+    const targetZ = Math.max(0, Math.min(maxZ, Math.floor(z)));
+    const cur = this.sampleElevation(latDeg, lonDeg, targetZ);
+    if (cur.loadedZoom >= targetZ || this.disabled) return cur;
+    const eps = 1e-4;
+    const job = this.ensure(latDeg - eps, lonDeg - eps, latDeg + eps, lonDeg + eps, targetZ);
+    if (timeoutMs > 0 && Number.isFinite(timeoutMs)) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        job,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+      if (timer !== undefined) clearTimeout(timer);
+    } else {
+      await job;
+    }
+    return this.sampleElevation(latDeg, lonDeg, targetZ);
+  }
+
+  public hasCoverage(latDeg: number, lonDeg: number, minZoom = 0): boolean {
+    const sample = this.sampleElevation(latDeg, lonDeg, 16);
+    return sample.ready && sample.loadedZoom >= minZoom;
   }
 
   /** Bilinear height (km) at (u, v) in a tile, 0..1 from its north-west corner; NaN off the data. */
@@ -186,14 +250,20 @@ export class PlanetElevation implements ElevationSource {
     const H = t.heights!;
     // A no-data neighbour with zero weight must not poison a perfectly valid edge sample
     // (NaN * 0 is NaN). Renormalize available samples at sparse DEM coverage boundaries.
-    const samples = [H[y0 * t.w + x0], H[y0 * t.w + x1], H[y1 * t.w + x0], H[y1 * t.w + x1]];
-    const weights = [(1 - a) * (1 - b), a * (1 - b), (1 - a) * b, a * b];
-    let sum = 0, weight = 0;
-    for (let i = 0; i < samples.length; i++) {
-      if (!Number.isFinite(samples[i]) || weights[i] <= 0) continue;
-      sum += samples[i] * weights[i];
-      weight += weights[i];
-    }
+    const s00 = H[y0 * t.w + x0];
+    const s10 = H[y0 * t.w + x1];
+    const s01 = H[y1 * t.w + x0];
+    const s11 = H[y1 * t.w + x1];
+    const w00 = (1 - a) * (1 - b);
+    const w10 = a * (1 - b);
+    const w01 = (1 - a) * b;
+    const w11 = a * b;
+    let sum = 0;
+    let weight = 0;
+    if (Number.isFinite(s00) && w00 > 0) { sum += s00 * w00; weight += w00; }
+    if (Number.isFinite(s10) && w10 > 0) { sum += s10 * w10; weight += w10; }
+    if (Number.isFinite(s01) && w01 > 0) { sum += s01 * w01; weight += w01; }
+    if (Number.isFinite(s11) && w11 > 0) { sum += s11 * w11; weight += w11; }
     return weight > 0 ? sum / weight : NaN;
   }
 
@@ -213,37 +283,54 @@ export class PlanetElevation implements ElevationSource {
 
   public cancelPending(): void {
     this.epoch++;
+    tileCache.cancelAll(this.cachePrefix);
     for (const abort of [...this.activeAborts]) abort();
     this.activeAborts.clear();
-    while (this.waiting.length > 0) this.waiting.shift()?.cancel();
     for (const [k, t] of this.tiles) {
       if (!t.heights) this.tiles.delete(k);
     }
   }
 
-  private async fetchTileOnce(layer: DemLayer, url: string, reqEpoch: number): Promise<{ heights: Float32Array; w: number; h: number }> {
-    const acquired = await this.slot();
-    if (!acquired || this.epoch !== reqEpoch) {
-      if (acquired) this.release();
+  private async fetchTileOnce(
+    layer: DemLayer,
+    url: string,
+    reqEpoch: number,
+    cacheKey = `${this.cachePrefix}${url}`,
+    z = 4,
+    priority = z * 10
+  ): Promise<{ heights: Float32Array; w: number; h: number }> {
+    if (this.epoch !== reqEpoch) throw new HttpStatusError(0);
+    const res = await tileCache.fetchBuffer(cacheKey, url, {
+      priority,
+      z,
+      timeoutMs: TILE_TIMEOUT_MS,
+      hysteresisMs: 600,
+      persist: true,
+      detectEsriNoData: false,
+    });
+    if (this.epoch !== reqEpoch) throw new HttpStatusError(0);
+
+    if (res.status === 'ok' && res.data) {
+      if (layer.format === 'lerc1') {
+        const decoded = await demDecoder.decodeLerc1(res.data, 1000);
+        if (!decoded) throw new Error('lerc1 decode failed');
+        return { heights: decoded.heights, w: decoded.width, h: decoded.height };
+      }
+      const decoded = await demDecoder.decodeTrek8(res.data, layer.a ?? 0, layer.b ?? 1);
+      if (decoded) {
+        return { heights: decoded.heights, w: decoded.width, h: decoded.height };
+      }
+    }
+
+    if (res.httpStatus && res.httpStatus >= 400) {
+      throw new HttpStatusError(res.httpStatus);
+    }
+    if (res.status === 'aborted') {
       throw new HttpStatusError(0);
     }
-    try {
-      if (layer.format === 'lerc1') {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), TILE_TIMEOUT_MS);
-        const abortFn = () => controller.abort();
-        this.activeAborts.add(abortFn);
-        try {
-          const r = await fetch(url, { signal: controller.signal });
-          if (!r.ok) throw new HttpStatusError(r.status);
-          const d = decodeLerc1(await r.arrayBuffer());
-          for (let i = 0; i < d.pixels.length; i++) d.pixels[i] /= 1000;
-          return { heights: d.pixels, w: d.width, h: d.height };
-        } finally {
-          clearTimeout(timer);
-          this.activeAborts.delete(abortFn);
-        }
-      }
+
+    // Safe HTMLImageElement fallback for Trek 8-bit PNGs when OffscreenCanvas/fetch decode is unavailable
+    if (layer.format === 'trek8' && typeof Image !== 'undefined' && typeof document !== 'undefined') {
       const img = await loadImage(url, TILE_TIMEOUT_MS, this.activeAborts);
       const w = img.naturalWidth || img.width;
       const h = img.naturalHeight || img.height;
@@ -254,29 +341,39 @@ export class PlanetElevation implements ElevationSource {
       ctx.drawImage(img, 0, 0);
       const px = ctx.getImageData(0, 0, w, h).data;
       return { heights: decodeGrey(px, w, h, layer.a ?? 0, layer.b ?? 1), w, h };
-    } finally {
-      this.release();
     }
+
+    throw new Error('fetch failed');
   }
 
-  private load(li: number, z: number, y: number, x: number): Promise<void> {
+  private load(li: number, z: number, y: number, x: number, priority = z * 10): Promise<void> {
     const key = `${li}/${z}/${y}/${x}`;
     const have = this.tiles.get(key);
     if (have && (!have.retryAt || performance.now() < have.retryAt)) {
       have.lastUsed = performance.now();
+      if (!have.heights) tileCache.updatePriority(`${this.cachePrefix}${key}`, priority);
       return have.promise;
     }
     if (have) this.tiles.delete(key);
     const reqEpoch = this.epoch;
     const layer = this.layers[li];
     const partialBand = layer.south > -90 || layer.north < 90;
-    const tile: HeightTile = { heights: null, w: 0, h: 0, corner: layer.format === 'lerc1', promise: Promise.resolve(), lastUsed: performance.now() };
+    const tile: HeightTile = {
+      heights: null,
+      w: 0,
+      h: 0,
+      corner: layer.format === 'lerc1',
+      promise: Promise.resolve(),
+      lastUsed: performance.now(),
+      z,
+    };
     const url = layer.url(z, y, x);
+    const cacheKey = `${this.cachePrefix}${key}`;
     tile.promise = (async () => {
       try {
         let decoded: { heights: Float32Array; w: number; h: number };
         try {
-          decoded = await this.fetchTileOnce(layer, url, reqEpoch);
+          decoded = await this.fetchTileOnce(layer, url, reqEpoch, cacheKey, z, priority);
         } catch (err) {
           if (this.epoch !== reqEpoch) throw err;
           // Do not waste retries on 404/400 coverage edges or while offline cooldown is active
@@ -284,7 +381,7 @@ export class PlanetElevation implements ElevationSource {
           if (this.disabled) throw err;
           await new Promise((r) => setTimeout(r, 650));
           if (this.epoch !== reqEpoch) throw new HttpStatusError(0);
-          decoded = await this.fetchTileOnce(layer, url, reqEpoch);
+          decoded = await this.fetchTileOnce(layer, url, reqEpoch, cacheKey, z, priority);
         }
         tile.heights = decoded.heights;
         tile.w = decoded.w;
@@ -297,7 +394,9 @@ export class PlanetElevation implements ElevationSource {
         if (this.epoch !== reqEpoch) return;
         // Cache failures briefly too. Otherwise each new imagery tile re-requests the same
         // missing DEM edge, starving useful height requests during a landing.
-        tile.retryAt = performance.now() + (err instanceof HttpStatusError && (err.status === 404 || err.status === 400) ? 120_000 : COOLDOWN_MS);
+        tile.retryAt =
+          performance.now() +
+          (err instanceof HttpStatusError && (err.status === 404 || err.status === 400) ? 120_000 : COOLDOWN_MS);
         // Partial-latitude layers (e.g. Moon SLDEM ±60°) 404 at their border and fall back to global LOLA;
         // only full-globe layer errors trigger outage cooldown so polar 404s never kill terrain.
         if (!partialBand && !(err instanceof HttpStatusError && (err.status === 404 || err.status === 400))) {
@@ -311,34 +410,20 @@ export class PlanetElevation implements ElevationSource {
     return tile.promise;
   }
 
-  private slot(): Promise<boolean> {
-    const maxConcurrent = TIER_CONCURRENT[perf.tier];
-    if (this.inFlight < maxConcurrent) {
-      this.inFlight++;
-      return Promise.resolve(true);
-    }
-    return new Promise((r) =>
-      this.waiting.push({
-        grant: () => {
-          this.inFlight++;
-          r(true);
-        },
-        cancel: () => r(false),
-      })
-    );
-  }
-
-  private release(): void {
-    this.inFlight--;
-    this.waiting.shift()?.grant();
-  }
-
   private evict(): void {
     const maxCache = TIER_CACHE[perf.tier];
     if (this.tiles.size <= maxCache) return;
-    const cutoff = performance.now() - 15000;
-    const old = [...this.tiles.entries()].filter(([, t]) => (t.heights || t.retryAt) && t.lastUsed < cutoff).sort((p, q) => p[1].lastUsed - q[1].lastUsed);
-    for (const [k] of old.slice(0, this.tiles.size - maxCache)) this.tiles.delete(k);
+    const cutoff = performance.now() - 15_000;
+    const old = [...this.tiles.entries()]
+      .filter(([, t]) => (t.heights || t.retryAt) && (t.z ?? 10) > COARSE_FALLBACK_Z && t.lastUsed < cutoff)
+      .sort((p, q) => p[1].lastUsed - q[1].lastUsed);
+    for (const [k, t] of old.slice(0, this.tiles.size - maxCache)) {
+      this.tiles.delete(k);
+      if (t.heights) {
+        float32Pool.release(t.heights);
+        t.heights = null;
+      }
+    }
   }
 }
 
@@ -389,39 +474,7 @@ function loadImage(url: string, timeoutMs: number, activeAborts: Set<() => void>
  * the steps back into slopes without moving crater rims or peaks by more than a step.
  */
 export function decodeGrey(rgba: Uint8ClampedArray | Uint8Array, w: number, h: number, a: number, b: number): Float32Array {
-  if (w <= 0 || h <= 0) return new Float32Array(0);
-  let cur = new Float32Array(w * h);
-  for (let i = 0; i < w * h; i++) cur[i] = rgba[i * 4 + 3] === 0 ? NaN : a + b * rgba[i * 4];
-  for (let pass = 0; pass < 2; pass++) {
-    const next = new Float32Array(w * h);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const c = cur[y * w + x];
-        if (Number.isNaN(c)) {
-          next[y * w + x] = NaN;
-          continue;
-        }
-        let s = 0;
-        let n = 0;
-        for (let dy = -1; dy <= 1; dy++) {
-          const yy = y + dy;
-          if (yy < 0 || yy >= h) continue;
-          for (let dx = -1; dx <= 1; dx++) {
-            const xx = x + dx;
-            if (xx < 0 || xx >= w) continue;
-            const v = cur[yy * w + xx];
-            if (!Number.isNaN(v)) {
-              s += v;
-              n++;
-            }
-          }
-        }
-        next[y * w + x] = s / n;
-      }
-    }
-    cur = next;
-  }
-  return cur;
+  return decodeTrek8Rgba(rgba, w, h, a, b);
 }
 
 const TREK = (layer: string) => (z: number, y: number, x: number) =>
@@ -485,7 +538,21 @@ export function elevationFor(body: string): ElevationSource | null {
  * worlds without relief. For anything that moves over a world (e.g. the jet) and must not sink into
  * the raised terrain.
  */
-export function groundHeightKm(body: string, latDeg: number, lonDeg: number, z = 11): number {
+export function groundHeightKm(body: string, latDeg: number, lonDeg: number, z = 13): number {
   const e = elevationFor(body);
   return e && !e.disabled ? Math.max(0, e.heightKm(latDeg, lonDeg, z)) : 0;
+}
+
+/** Authoritative ground height in metres above the drawn sphere / datum (exact `groundHeightKm * 1000`). */
+export function groundHeightMeters(body: string, latDeg: number, lonDeg: number, z = 13): number {
+  return groundHeightKm(body, latDeg, lonDeg, z) * 1000;
+}
+
+/** Detailed synchronous ground elevation sample (km, metres, loadedZoom, ready) for any world. */
+export function sampleGroundElevation(body: string, latDeg: number, lonDeg: number, z = 13): ElevationSample {
+  const e = elevationFor(body);
+  if (!e || e.disabled) return { heightKm: 0, heightMeters: 0, loadedZoom: -1, ready: false };
+  if (e.sampleElevation) return e.sampleElevation(latDeg, lonDeg, z);
+  const km = Math.max(0, e.heightKm(latDeg, lonDeg, z));
+  return { heightKm: km, heightMeters: km * 1000, loadedZoom: km > 0 ? z : -1, ready: km > 0 };
 }

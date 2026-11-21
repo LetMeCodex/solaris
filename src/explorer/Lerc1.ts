@@ -25,6 +25,9 @@ interface Block {
 const IDENT = 'CntZImage ';
 
 export function decodeLerc1(buffer: ArrayBuffer): Lerc1Raster {
+  if (!buffer || buffer.byteLength < IDENT.length + 56) {
+    throw new Error('LERC1: truncated buffer');
+  }
   let fp = 0;
   const ident = String.fromCharCode(...new Uint8Array(buffer, 0, IDENT.length));
   if (ident !== IDENT) throw new Error('not a LERC1 raster');
@@ -33,6 +36,9 @@ export function decodeLerc1(buffer: ArrayBuffer): Lerc1Raster {
   const height = view.getUint32(8, true);
   const width = view.getUint32(12, true);
   const maxZError = view.getFloat64(16, true);
+  if (width === 0 || height === 0 || width > 4096 || height > 4096) {
+    throw new Error('LERC1: invalid raster dimensions');
+  }
   fp += 24;
 
   // Validity mask: 1 bit per pixel, run-length coded (int16 count: >0 literal bytes, <0 a repeat)

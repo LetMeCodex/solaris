@@ -6,6 +6,7 @@ import { DeepTimeSky, type DeepTimeScene, type SkyLook } from './DeepTime';
 import { DeepTimeLand } from './DeepTimeLand';
 import * as THREE from 'three';
 import { PhotorealEarth } from '../rendering/PhotorealEarth';
+import { ProceduralTerrain } from '../rendering/ProceduralTerrain';
 import { SkyAtmosphere, atmosphereFor, AtmosphereModel, transmittance } from './SkyAtmosphere';
 import { SkyBodies, SkyBodySource, SkyObjectInfo } from './SkyBodies';
 import { TILE_SHELL } from './SurfaceTileLayer';
@@ -101,7 +102,7 @@ function eyeHeightKm(body: SurfaceBody): number {
  * up, a flat facet's straight edges stick up above the true horizon as a wedge. The cap reaches a
  * few horizon distances out, so the horizon you see is the real curve.
  */
-function groundCap(centre: THREE.Vector3, horizonRad: number): THREE.BufferGeometry {
+function groundCap(centre: THREE.Vector3, horizonRad: number, shell = 1.0): THREE.BufferGeometry {
   const RINGS = 72;
   const SECTORS = 160;
   const reach = Math.min(Math.PI * 0.45, Math.max(horizonRad * 4, 0.04));
@@ -126,8 +127,8 @@ function groundCap(centre: THREE.Vector3, horizonRad: number): THREE.BufferGeome
     for (let j = 0; j <= SECTORS; j++) {
       const t = (j / SECTORS) * Math.PI * 2;
       p.copy(c).multiplyScalar(ca).addScaledVector(e1, sa * Math.cos(t)).addScaledVector(e2, sa * Math.sin(t)).normalize();
-      // A hair above the globe (where their vertices meet) and below the imagery tiles
-      pos.push(p.x * 1.00002, p.y * 1.00002, p.z * 1.00002);
+      // Sit flush on/just beneath the globe radius so streamed tiles at R = 1.0 never fight it
+      pos.push(p.x * shell, p.y * shell, p.z * shell);
       nor.push(p.x, p.y, p.z);
       const [u0, v] = uvOf(p);
       const u = uc + ((((u0 - uc + 0.5) % 1) + 1) % 1) - 0.5; // no jump across the date line
@@ -229,6 +230,7 @@ export class SurfaceObserver {
   private groundProbe = 0;
   /** Latest absolute surface elevation (km above baseShell) hit on streamed SurfaceTileLayer meshes. */
   private groundTileKm: number | null = null;
+  private groundTileZoom = -1;
   /** Absolute height (km above WGS84 sea level) locked on PhotorealEarth 3D tiles. */
   private lockedSurfaceKm: number | null = null;
   private lockedTileRadiusKm = Infinity;
@@ -250,8 +252,8 @@ export class SurfaceObserver {
    */
   private eye(b: SurfaceBody): number {
     if (this.customEyeKm !== null && this.customEyeKm !== undefined) return this.customEyeKm;
-    if (b.name === 'Earth' && !this.deep.scene?.land && PhotorealEarth.current) return 0.045;
-    if (b.name === 'Earth' && !this.deep.scene?.land && !elevationFor('Earth')!.disabled) return 0.0018;
+    if (b.name === 'Earth' && !this.deep.scene?.land && this.isPhotorealActive()) return 0.045;
+    if (b.name === 'Earth' && !this.deep.scene?.land && !elevationFor('Earth')!.disabled) return 0.0022;
     // Other worlds' streamed imagery is 10–1000 m per pixel: from a person's height it is a grey
     // smear of a few pixels and any rise a kilometre off hides the view, so stand high enough for the
     // map to stay sharp (imageryEyeKm: an overlook on the Moon and Mars, a low pass elsewhere).
@@ -293,9 +295,11 @@ export class SurfaceObserver {
     this.groundKm = 0;
     this.groundProbe = 0;
     this.groundTileKm = null;
+    this.groundTileZoom = -1;
     this.lockedSurfaceKm = null;
     this.lockedTileRadiusKm = Infinity;
     this.groundLocked = false;
+    ProceduralTerrain.reportSurfaceOffset(null);
     // Fetch the ground height here now (the eye stands on it; see computeFrame)
     if (bodyName === 'Earth') {
       const solid = getLandmarkSolidElevationKm(lat, lon);
@@ -303,11 +307,19 @@ export class SurfaceObserver {
     }
     const elev = elevationFor(bodyName);
     if (elev) {
-      const s9 = Math.max(-89.9, lat - 0.12), n9 = Math.min(89.9, lat + 0.12);
-      const s13 = Math.max(-89.9, lat - 0.03), n13 = Math.min(89.9, lat + 0.03);
-      // Warm an intermediate tile alongside z=13 so relief resolves quickly on high-latency cold fetches
-      void elev.ensure(s9, lon - 0.12, n9, lon + 0.12, 9);
-      void elev.ensure(s13, lon - 0.03, n13, lon + 0.03, 13);
+      // Read immediately from any cached/bundled DEM so frame 0 starts at true altitude (e.g. Everest 5.5 km)
+      if (!elev.disabled) {
+        const cachedKm = Math.max(0, elev.heightKm(lat, lon, 13));
+        if (cachedKm > this.groundKm) this.groundKm = cachedKm;
+      }
+      const s6 = Math.max(-85, lat - 0.65), n6 = Math.min(85, lat + 0.65);
+      const s9 = Math.max(-85, lat - 0.14), n9 = Math.min(85, lat + 0.14);
+      const s13 = Math.max(-85, lat - 0.035), n13 = Math.min(85, lat + 0.035);
+      // Warm coarse horizon (z=6), regional (z=9), and local high-res (z=13) DEM simultaneously
+      // so neither foreground nor distant mountain ranges have dark/flat gaps on landing.
+      void elev.ensure(s6, lon - 0.65, n6, lon + 0.65, 6);
+      void elev.ensure(s9, lon - 0.14, n9, lon + 0.14, 9);
+      void elev.ensure(s13, lon - 0.035, n13, lon + 0.035, 13);
     }
     this.model = atmosphereFor(bodyName);
     this.atmosphere.setModel(this.model);
@@ -345,6 +357,7 @@ export class SurfaceObserver {
     this.d.camera.updateProjectionMatrix();
     if (this.body) this.d.setSceneMode(false, this.body.name, 0);
     this.d.setGround(null, null);
+    ProceduralTerrain.reportSurfaceOffset(null);
     this.status = null;
   }
 
@@ -360,11 +373,14 @@ export class SurfaceObserver {
       }
     }
     const horizon = Math.sqrt((2 * (this.eye(body) + Math.max(0, this.groundKm))) / body.radiusKm);
-    this.cap = new THREE.Mesh(groundCap(new THREE.Vector3(...bodyLatLonToLocal(body.name, lat, lon)), horizon), mat);
+    const hasRelief = !!elevationFor(body.name);
+    const capShell = hasRelief ? 0.999999 : 1.000002;
+    this.cap = new THREE.Mesh(groundCap(new THREE.Vector3(...bodyLatLonToLocal(body.name, lat, lon)), horizon, capShell), mat);
     this.cap.name = 'surface_ground_cap';
     this.cap.renderOrder = body.surfaceMesh.renderOrder;
-    // Keep ready as fallback beneath SurfaceTileLayer when PhotorealEarth is inactive or still loading
-    this.cap.visible = !this.isPhotorealActive() && !this.deep.scene?.land;
+    // Keep ready as fallback beneath SurfaceTileLayer only while no Earth relief tiles or PhotorealEarth are drawn
+    const hideForEarthTiles = body.name === 'Earth' && this.hasVisibleTiles(body);
+    this.cap.visible = !this.isPhotorealActive() && !hideForEarthTiles && !this.deep.scene?.land;
     body.surfaceMesh.add(this.cap);
   }
 
@@ -484,7 +500,13 @@ export class SurfaceObserver {
     b.surfaceMesh.updateWorldMatrix(true, true);
     const isPhoto = this.isPhotorealActive();
     const expectsPhoto = this.expectsPhotoreal(b);
-    if (this.cap) this.cap.visible = !isPhoto && !this.deep.scene?.land;
+    const hasTiles = this.hasVisibleTiles(b);
+    if (this.cap) {
+      // Once Earth relief tiles are rendered, hide the sea-level cap so it never produces
+      // a foreground disc or dark ring gap against elevated mountains (e.g. Everest night landing).
+      const hideForEarthTiles = b.name === 'Earth' && hasTiles;
+      this.cap.visible = !isPhoto && !hideForEarthTiles && !this.deep.scene?.land;
+    }
     const eyeKm = this.eye(b);
     const kmPerUnit = b.radiusKm / b.visualRadius;
     // On Earth, Moon, and Mars the ground is raised to its real relief: stand cleanly above it
@@ -492,7 +514,7 @@ export class SurfaceObserver {
     const demKm = relief && !relief.disabled ? Math.max(0, relief.heightKm(this.lat, this.lon, 13)) : 0;
     const solidKm = b.name === 'Earth' ? getLandmarkSolidElevationKm(this.lat, this.lon) : 0;
     const baseGroundKm = Math.max(demKm, solidKm);
-    const baseShell = isPhoto || (expectsPhoto && !this.hasVisibleTiles(b)) ? 1.0 : TILE_SHELL;
+    const baseShell = isPhoto || (expectsPhoto && !hasTiles) ? 1.0 : TILE_SHELL;
     const [x, y, z] = bodyLatLonToLocal(b.name, this.lat, this.lon);
     const centre = b.bodyGroup.getWorldPosition(new THREE.Vector3());
     // Anchor sea-level reference independently of DEM arrival so groundKm and raycast heights never double-count
@@ -559,6 +581,9 @@ export class SurfaceObserver {
               if (bestHeightKm !== null && (this.lockedSurfaceKm === null || bestRadiusKm < this.lockedTileRadiusKm * 0.85)) {
                 this.lockedSurfaceKm = bestHeightKm;
                 this.lockedTileRadiusKm = bestRadiusKm;
+                if (demKm > 0 || Math.abs(bestHeightKm) < 0.2) {
+                  ProceduralTerrain.reportSurfaceOffset(bestHeightKm - demKm);
+                }
                 if (bestRadiusKm <= 0.45) this.groundLocked = true;
               }
             }
@@ -566,35 +591,53 @@ export class SurfaceObserver {
         }
         this.groundKm = this.lockedSurfaceKm !== null ? Math.max(this.lockedSurfaceKm, solidKm) : baseGroundKm;
       } else {
-        if (this.groundProbe++ % (this.groundTileKm === null ? 2 : 6) === 0) {
+        if (this.groundProbe++ % (this.groundTileKm === null || this.groundTileZoom < 11 ? 2 : 6) === 0) {
           const tiles: THREE.Object3D[] = [];
           b.surfaceMesh.traverse((o) => {
             if (o.name.startsWith('tile_') && o.visible && o.parent?.visible !== false) tiles.push(o);
           });
           if (tiles.length > 0) {
             this.ray.far = 80 / kmPerUnit;
-            let best: number | null = null;
-            const zOf = (o: THREE.Object3D): number => Number(o.name.slice(5).split('/')[0]);
-            for (let k = -1; k < 24; k++) {
-              const at = surfaceOrigin.clone();
-              if (k >= 0) {
-                const ringKm = [0.012, 0.04, 0.12][Math.floor(k / 8)];
-                const a = ((k % 8) / 8 + Math.floor(k / 8) / 16) * Math.PI * 2;
-                at.addScaledVector(this.frame.north, (Math.cos(a) * ringKm) / kmPerUnit).addScaledVector(this.frame.east, (Math.sin(a) * ringKm) / kmPerUnit);
-              }
+            let bestH: number | null = null;
+            let bestZ = -1;
+            const zOf = (o: THREE.Object3D): number => Number(o.name.slice(5).split('/')[0]) || 0;
+            // Probe tightly under the standing footprint (center + 4 m cardinal points) so steep
+            // mountain ridges or canyon rims 100 m away never float the camera into mid-air.
+            const footprint: Array<[number, number]> = [[0, 0], [0.004, 0], [-0.004, 0], [0, 0.004], [0, -0.004]];
+            for (const [dnKm, deKm] of footprint) {
+              const at = surfaceOrigin.clone()
+                .addScaledVector(this.frame.north, dnKm / kmPerUnit)
+                .addScaledVector(this.frame.east, deKm / kmPerUnit);
               this.ray.set(at.addScaledVector(up, 40 / kmPerUnit), up.clone().negate());
               const hit = this.ray.intersectObjects(tiles, false).sort((p, q) => zOf(q.object) - zOf(p.object))[0];
               if (!hit) continue;
+              const hz = zOf(hit.object);
               const hKm = hit.point.clone().sub(surfaceOrigin).dot(up) * kmPerUnit;
-              best = best === null ? hKm : Math.max(best, hKm);
+              if (!Number.isFinite(hKm)) continue;
+              if (bestH === null || hz > bestZ || (hz === bestZ && hKm > bestH)) {
+                bestH = hKm;
+                bestZ = hz;
+              }
             }
-            if (best !== null) this.groundTileKm = best;
+            if (bestH !== null && (bestZ >= 6 || demKm <= 0.05)) {
+              this.groundTileKm = bestH;
+              this.groundTileZoom = bestZ;
+            }
           }
         }
-        this.groundKm = this.groundTileKm !== null ? Math.max(this.groundTileKm, solidKm) : baseGroundKm;
+        // Until fine tiles (z >= 11) cover the standing spot, never drop below the authoritative DEM
+        // elevation (prevents coarse spherical chord sag from burying the eye inside mountains).
+        if (this.groundTileKm !== null) {
+          this.groundKm = this.groundTileZoom >= 11
+            ? Math.max(this.groundTileKm, solidKm)
+            : Math.max(this.groundTileKm, baseGroundKm);
+        } else {
+          this.groundKm = baseGroundKm;
+        }
       }
     } else {
       this.groundTileKm = null;
+      this.groundTileZoom = -1;
       this.groundKm = solidKm;
     }
     return surfaceOrigin.clone().addScaledVector(up, (eyeKm + this.groundKm) / kmPerUnit);

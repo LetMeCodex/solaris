@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { BITMAP_OPTIONS, canUseBitmaps } from './FastTextureLoader';
 import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 import { DEFAULT_GALAXY_CONFIG, GALAXY_UNITS_PER_KPC, SUN_HEIGHT_KPC } from './MilkyWayGalaxy';
+import { SKY_STAR_VISIBILITY, refreshSkyStarVisibility } from './AerialPerspective';
 
 /** Seeded PRNG (Mulberry32) so the sky looks the same on every load. */
 function mulberry32(seed: number): () => number {
@@ -123,6 +124,7 @@ export class MilkyWayVolume {
   // Shared by all layers
   private skyOpacity = { value: 1.0 };
   private diskOpacity = { value: 0.0 };
+  private daylightVisUniform = { value: 1.0 };
   private camLocalUniform = { value: new THREE.Vector3() };
   private pixelScaleUniform = { value: 1000.0 };
   /** > 0 in surface views: every particle is drawn on a sky shell of this radius around the camera. */
@@ -304,6 +306,8 @@ export class MilkyWayVolume {
           uBlur: { value: spec.blur },
           uBlack: { value: MilkyWayVolume.SKY_BLACK },
           uOpacity: this.skyOpacity,
+          uSkyVisibility: SKY_STAR_VISIBILITY,
+          uDaylightVis: this.daylightVisUniform,
           uCamLocal: this.camLocalUniform,
           uSkyDist: this.skyDistUniform,
         },
@@ -323,9 +327,14 @@ export class MilkyWayVolume {
           uniform float uBlur;
           uniform float uBlack;
           uniform float uOpacity;
+          uniform float uSkyVisibility;
+          uniform float uDaylightVis;
           varying vec3 vDir;
 
           void main() {
+            float skyVis = clamp(uSkyVisibility * uDaylightVis, 0.0, 1.0);
+            float effOpacity = uOpacity * skyVis;
+            if (effOpacity <= 0.001) discard;
             // Local frame → galactic: x̂ (to the centre) = −Z, ŷ (l = 90°) = −X, ẑ (NGP) = +Y
             vec3 d = normalize(vDir);
             float l = atan(-d.x, -d.z);
@@ -342,7 +351,7 @@ export class MilkyWayVolume {
             // edges fall off into a deep sky
             c = max(c - uBlack, 0.0) / (1.0 - uBlack);
             c *= smoothstep(0.0, 0.08, dot(c, vec3(0.2126, 0.7152, 0.0722)));
-            gl_FragColor = vec4(c * (uWeight * uOpacity), 1.0);
+            gl_FragColor = vec4(c * (uWeight * effOpacity), 1.0);
           }
         `,
         side: THREE.BackSide,
@@ -590,12 +599,14 @@ export class MilkyWayVolume {
     const soften = kind === 'stars' ? '' : ' * (1.0 - smoothstep(0.12, 0.25, d))';
     // Additive layers write premultiplied colour, so bright sprites are not limited by alpha ≤ 1
     const output = kind === 'dust'
-      ? 'gl_FragColor = vec4(vColor, a * vAlpha * uOpacity);'
-      : 'gl_FragColor = vec4(vColor * (a * vAlpha * uOpacity), 1.0);';
+      ? 'gl_FragColor = vec4(vColor, a * vAlpha * uOpacity * skyVis);'
+      : 'gl_FragColor = vec4(vColor * (a * vAlpha * uOpacity * skyVis), 1.0);';
 
     return new THREE.ShaderMaterial({
       uniforms: {
         uOpacity: family === 'sky' ? this.skyOpacity : this.diskOpacity,
+        uSkyVisibility: SKY_STAR_VISIBILITY,
+        uDaylightVis: this.daylightVisUniform,
         uCamLocal: this.camLocalUniform,
         uPixelScale: this.pixelScaleUniform,
         uSkyDist: this.skyDistUniform,
@@ -609,12 +620,22 @@ export class MilkyWayVolume {
         uniform float uPixelScale;
         uniform float uSkyDist;
         uniform float uOpacity;
+        uniform float uSkyVisibility;
+        uniform float uDaylightVis;
         uniform vec2 uNearFade;
         uniform vec2 uPointClamp;
         varying vec3 vColor;
         varying float vAlpha;
 
         void main() {
+          float skyVis = clamp(uSkyVisibility * uDaylightVis, 0.0, 1.0);
+          if (skyVis <= 0.001) {
+            vAlpha = 0.0;
+            vColor = vec3(0.0);
+            gl_PointSize = 0.0;
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            return;
+          }
           vec3 rel = position - uCamLocal;
           float dist = max(length(rel), 1.0);
           float s = aSize * uPixelScale / dist;
@@ -626,16 +647,20 @@ export class MilkyWayVolume {
           // Surface views: same directions as seen from the Sun, pulled onto a sky shell
           vec3 p = uSkyDist > 0.0 ? uCamLocal + rel / dist * uSkyDist : position;
           gl_PointSize = px;
-          bool hidden = vAlpha * uOpacity < 0.0005;
+          bool hidden = vAlpha * uOpacity * skyVis < 0.0005;
           gl_Position = hidden ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * modelViewMatrix * vec4(p, 1.0);
         }
       `,
       fragmentShader: `
         uniform float uOpacity;
+        uniform float uSkyVisibility;
+        uniform float uDaylightVis;
         varying vec3 vColor;
         varying float vAlpha;
 
         void main() {
+          float skyVis = clamp(uSkyVisibility * uDaylightVis, 0.0, 1.0);
+          if (skyVis <= 0.001) discard;
           vec2 c = gl_PointCoord - 0.5;
           float d = dot(c, c);
           if (d > 0.25) discard;
@@ -653,6 +678,11 @@ export class MilkyWayVolume {
     });
   }
 
+  /** Direct 0..1 daylight visibility multiplier (combined with shared SKY_STAR_VISIBILITY). */
+  public setDaylightVisibility(vis: number): void {
+    this.daylightVisUniform.value = Math.max(0, Math.min(1, vis));
+  }
+
   /** Surface view: draw the sky as seen from the Sun on a shell inside the short far plane. */
   public setGroundMode(on: boolean, skyRadius: number = 3): void {
     this.groundMode = on;
@@ -661,6 +691,7 @@ export class MilkyWayVolume {
   }
 
   public update(camera: THREE.Camera, viewportHeightPx: number): void {
+    refreshSkyStarVisibility();
     if (this.groundMode) this.group.position.copy(camera.position).divideScalar(this.unitScale);
     this.group.updateMatrixWorld();
     this.tmpCam.copy(camera.position);

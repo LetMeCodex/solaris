@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { SurfaceTileLayer, type TileImageLoader } from '../explorer/SurfaceTileLayer';
-import { selectTiles, tileId } from '../explorer/TileMath';
+import { SurfaceTileLayer, TILE_LEVEL_LIFT, TILE_SHELL, type TileImageLoader } from '../explorer/SurfaceTileLayer';
+import { bodyLatLonToLocal, selectTiles, tileId } from '../explorer/TileMath';
 import { BODY_IMAGERY } from '../explorer/ImageryRegistry';
 import type { ElevationSource } from '../explorer/PlanetElevation';
 
@@ -116,6 +116,103 @@ describe('Surface tile recovery', () => {
     expect([...positions].every(Number.isFinite)).toBe(true);
     // Stored relief is a 32 × 32 grid on the default high test tier, not a new flat 48 × 48 grid.
     expect(mesh.geometry.index!.array.every(i => i < mesh.geometry.attributes.position.count)).toBe(true);
+    layer.dispose();
+  });
+
+  it('anchors tiles to exact 1.0 + elevKm / radiusKm with FrontSide polygonOffset and non-protruding skirts', async () => {
+    expect(TILE_SHELL).toBe(1.0);
+    expect(TILE_LEVEL_LIFT).toBe(0);
+    const images = new Images();
+    const layer = new SurfaceTileLayer(BODY_IMAGERY.Earth.provider!, images);
+    const elevKm = 4.2;
+    layer.bodyName = 'Earth';
+    layer.radiusKm = 6371;
+    layer.elevation = {
+      disabled: false,
+      zoomFor: () => 8,
+      heightKm: () => elevKm,
+      ensure: () => Promise.resolve(),
+    };
+    const [sx, sy, sz] = bodyLatLonToLocal('Earth', 27.9883, 86.9253);
+    const cam = { position: [sx * 1.003, sy * 1.003, sz * 1.003] as [number, number, number], pixelsPerRadian: 900, bodyName: 'Earth' };
+    layer.update(cam);
+    images.pending.shift()!();
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    layer.update(cam);
+
+    const mesh = layer.group.children.find(child => child.visible) as THREE.Mesh;
+    expect(mesh).toBeDefined();
+    const mat = mesh.material as THREE.ShaderMaterial;
+    expect(mat.side).toBe(THREE.FrontSide);
+    expect(mat.polygonOffset).toBe(true);
+
+    const expectedR = 1.0 + elevKm / 6371;
+    const pos = mesh.geometry.attributes.position as THREE.BufferAttribute;
+    let maxR = 0;
+    let minTopR = Infinity;
+    let minSkirtR = Infinity;
+    // Mercator relief tile is 33×33 surface vertices; remaining vertices are radially dropped skirts (<= 120 m)
+    for (let i = 0; i < pos.count; i++) {
+      const vx = pos.getX(i) + mesh.position.x;
+      const vy = pos.getY(i) + mesh.position.y;
+      const vz = pos.getZ(i) + mesh.position.z;
+      const r = Math.hypot(vx, vy, vz);
+      maxR = Math.max(maxR, r);
+      if (i < 33 * 33) minTopR = Math.min(minTopR, r);
+      else minSkirtR = Math.min(minSkirtR, r);
+    }
+    // Every surface vertex sits at exact 1.0 + elevKm / radiusKm (never floating +637 m above globe!)
+    expect(Math.abs(maxR - expectedR) * 6371_000).toBeLessThan(1.0);
+    expect(Math.abs(minTopR - expectedR) * 6371_000).toBeLessThan(1.0);
+    // Skirts drop strictly downward by <= 120 m (never hanging multi-km curtains!)
+    expect((expectedR - minSkirtR) * 6371_000).toBeGreaterThanOrEqual(3.5);
+    expect((expectedR - minSkirtR) * 6371_000).toBeLessThanOrEqual(125);
+    layer.dispose();
+  });
+
+  it('renders parent-cropped UV fallback immediately on relief tiles and hot-swaps native texture on arrival', async () => {
+    const images = new Images();
+    const provider = BODY_IMAGERY.Earth.provider!;
+    const layer = new SurfaceTileLayer(provider, images);
+    layer.bodyName = 'Earth';
+    layer.radiusKm = 6371;
+    layer.elevation = {
+      disabled: false,
+      zoomFor: () => 8,
+      heightKm: () => 1.5,
+      hasCoverage: () => true,
+      ensure: () => Promise.resolve(),
+    };
+    const [sx, sy, sz] = bodyLatLonToLocal('Earth', 37.8199, -122.4783);
+    const cam = { position: [sx * 1.001, sy * 1.001, sz * 1.001] as [number, number, number], pixelsPerRadian: 900, bodyName: 'Earth' };
+    layer.update(cam);
+    // Resolve ONLY the z=0 global anchor image; leaf imagery stays pending
+    images.pending[0]();
+    await Promise.resolve(); await Promise.resolve();
+    layer.update(cam);
+
+    const visibleMeshes = layer.group.children.filter(c => c.visible) as THREE.Mesh[];
+    expect(visibleMeshes.length).toBeGreaterThan(0);
+    const croppedLeaf = visibleMeshes.find(m => {
+      const rect = (m.material as THREE.ShaderMaterial).uniforms.uUvRect.value as THREE.Vector4;
+      return rect.z < 1 || rect.w < 1;
+    });
+    expect(croppedLeaf).toBeDefined();
+    const croppedTexBefore = (croppedLeaf!.material as THREE.ShaderMaterial).uniforms.map.value;
+
+    // Now finish the leaf's own image request (index 1) and verify zero-rebuild hot-swap to uUvRect=(0,0,1,1)
+    const leafUrlIdx = images.urls.findIndex(u => u.includes(`/${croppedLeaf!.name.replace('tile_', '')}`));
+    if (leafUrlIdx >= 0 && images.pending[leafUrlIdx]) {
+      images.pending[leafUrlIdx]();
+      await Promise.resolve(); await Promise.resolve();
+      layer.update(cam);
+      const rectAfter = (croppedLeaf!.material as THREE.ShaderMaterial).uniforms.uUvRect.value as THREE.Vector4;
+      expect(rectAfter.x).toBe(0);
+      expect(rectAfter.y).toBe(0);
+      expect(rectAfter.z).toBe(1);
+      expect(rectAfter.w).toBe(1);
+      expect((croppedLeaf!.material as THREE.ShaderMaterial).uniforms.map.value).not.toBe(croppedTexBefore);
+    }
     layer.dispose();
   });
 });

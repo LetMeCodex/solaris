@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Pass, FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
-import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR } from './AerialPerspective';
+import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR, SKY_OVERCAST } from './AerialPerspective';
 import { createCloudNoiseFallback, loadCloudNoiseTexture } from './cloudNoiseLoader';
 
 /**
@@ -463,12 +463,13 @@ export class VolumetricCloudPass extends Pass {
     this.u.tDepth.value = readBuffer.depthTexture;
     this.lastDepth = readBuffer.depthTexture;
     const L = this.layer;
+    const ov = SKY_OVERCAST.value;
     this.u.uBase.value = L.baseKm;
     this.u.uTop.value = L.topKm;
-    this.u.uCover.value = L.cover;
+    this.u.uCover.value = Math.max(L.cover, ov * 0.92);
     this.u.uDeck.value = L.deck;
-    this.u.uStratus.value = L.stratus;
-    this.u.uDensity.value = L.density;
+    this.u.uStratus.value = Math.max(L.stratus, ov * 0.85);
+    this.u.uDensity.value = Math.max(L.density, ov * 0.9);
     this.u.uUnitKm.value = Math.max(0.05, L.unitKm);
     this.u.uReach.value = Math.max(10, L.reachKm);
     this.u.uDrift.value.copy(L.drift);

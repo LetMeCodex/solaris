@@ -336,29 +336,30 @@ const PLUME_FRAG = /* glsl */ `
   void main() {
     float t = clamp(vPos.z / uLength, 0.0, 1.0);           // 0 at the nozzle, 1 at the tail
     float facing = abs(dot(normalize(vNormalV), normalize(vViewDir)));
-    float body = pow(facing, mix(1.6, 3.0, uCore));          // thickest through the middle
+    float body = pow(facing, mix(1.9, 3.2, uCore));          // smooth feathered silhouette, thickest along core
+    float lipFade = smoothstep(0.0, 0.055, t);               // soft entry from nozzle lip (no hard ring)
     // Turbulence flowing downstream
     float ang = atan(vPos.y, vPos.x);
     float flow = noise(vec2(ang * 2.5, t * 9.0 - uTime * 26.0)) * 0.6 + noise(vec2(ang * 6.0, t * 22.0 - uTime * 55.0)) * 0.4;
-    // Mach disks: sharp bright rings at regular spacing, fading downstream (air only)
+    // Mach disks: crisp shock diamonds at regular spacing, prominent under afterburner (air only)
     float diamonds = 0.0;
     for (int k = 0; k < 6; k++) {
-      float x = 0.07 + float(k) * 0.085;
-      float d = (t - x) / 0.012;
+      float x = 0.075 + float(k) * 0.085;
+      float d = (t - x) / 0.013;
       diamonds += exp(-d * d) * (1.0 - float(k) / 6.0);
     }
-    diamonds *= (1.0 - uVacuum) * (0.35 + 0.65 * uBoost);
-    float fade = pow(1.0 - t, mix(mix(1.4, 2.4, uVacuum), 3.5, uCore));
-    vec3 white = vec3(1.0, 0.97, 0.92);
-    vec3 dry = vec3(0.45, 0.55, 1.0);                         // military power: faint blue-violet
-    vec3 ab = mix(vec3(1.0, 0.78, 0.38), vec3(1.0, 0.36, 0.12), smoothstep(0.1, 0.7, t)); // yellow → orange
+    diamonds *= (1.0 - uVacuum) * (0.14 + 0.86 * uBoost) * lipFade;
+    float fade = pow(1.0 - t, mix(mix(1.5, 2.4, uVacuum), 3.4, uCore)) * lipFade;
+    vec3 white = vec3(1.0, 0.96, 0.88);
+    vec3 dry = vec3(0.36, 0.56, 0.86);                       // military power: subtle realistic turbine heat-blue
+    vec3 ab = mix(vec3(1.0, 0.76, 0.34), vec3(1.0, 0.34, 0.10), smoothstep(0.10, 0.72, t)); // amber -> orange
     vec3 col = mix(dry, ab, uBoost);
-    col = mix(white, col, smoothstep(0.0, mix(0.18, 0.5, uCore), t));
-    col = mix(col, vec3(0.75, 0.6, 1.0), diamonds * 0.5);    // diamonds glow pink-violet
-    float power = (0.12 + 0.88 * uThrottle) * (1.0 + 1.1 * uBoost);
-    float a = body * fade * (0.55 + 0.6 * flow) * power + diamonds * body * power * 1.4;
-    a *= mix(1.0, 0.4, uVacuum) * mix(1.0, 1.8, uCore);
-    gl_FragColor = vec4(col * a * 1.25, 1.0);
+    col = mix(white, col, smoothstep(0.0, mix(0.20, 0.50, uCore), t));
+    col = mix(col, vec3(0.92, 0.94, 1.0), diamonds * 0.55);  // hot shock diamonds glow pale blue-white
+    float power = (0.10 + 0.75 * uThrottle) * (0.65 + 1.45 * uBoost);
+    float a = body * fade * (0.52 + 0.55 * flow) * power + diamonds * body * power * 1.25;
+    a *= mix(1.0, 0.4, uVacuum) * mix(1.0, 1.75, uCore);
+    gl_FragColor = vec4(col * a * 1.15, 1.0);
   }
 `;
 
@@ -1459,17 +1460,17 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
       anchor.add(nz);
       this.kestrelRig.irisPetals[i] = this.buildNozzleIris(anchor, 0.44, 0.55, 0.42, titanium);
 
-      const faceGeo = new THREE.CircleGeometry(0.42, 24);
+      const faceGeo = new THREE.CircleGeometry(0.42, 48);
       this.disposables.push(faceGeo);
       const face = new THREE.Mesh(faceGeo, this.nozzleGlowMat);
       face.position.set(0, 0, 0.35);
       anchor.add(face);
       this.nozzleFaces.push(face);
 
-      const g = new THREE.CylinderGeometry(0.36, 0.22, 9, 28, 48, true);
+      const g = new THREE.CylinderGeometry(0.36, 0.22, 9, 48, 48, true);
       g.rotateX(-Math.PI / 2); // along +Z
       g.translate(0, 0, 4.5);
-      const gc = new THREE.CylinderGeometry(0.26, 0.05, 9, 20, 24, true);
+      const gc = new THREE.CylinderGeometry(0.26, 0.05, 9, 36, 24, true);
       gc.rotateX(-Math.PI / 2);
       gc.translate(0, 0, 4.5);
       this.disposables.push(g, gc);
@@ -1877,19 +1878,20 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
     const petalMat =
       mat ??
       new THREE.MeshPhysicalMaterial({
-        color: 0x45434c,
-        roughness: 0.36,
-        metalness: 0.92,
-        iridescence: 0.65,
-        iridescenceIOR: 1.55,
-        iridescenceThicknessRange: [280, 680],
+        color: 0x2c2f36,
+        roughness: 0.44,
+        metalness: 0.88,
+        iridescence: 0.14,
+        iridescenceIOR: 1.4,
+        iridescenceThicknessRange: [180, 320],
         side: THREE.DoubleSide,
       });
     if (!mat) this.disposables.push(petalMat);
 
+    const petalCount = 20;
     const petalLen = Math.max(0.28, lengthM * 0.72);
-    const petalW = ((Math.PI * 2 * innerR) / 14) * 1.24;
-    const petalGeo = new THREE.BoxGeometry(petalW, 0.022, petalLen);
+    const petalW = ((Math.PI * 2 * innerR) / petalCount) * 1.28;
+    const petalGeo = new THREE.BoxGeometry(petalW, 0.016, petalLen);
     petalGeo.translate(0, 0, petalLen * 0.5);
     this.disposables.push(petalGeo);
 
@@ -1898,16 +1900,17 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
     ring.position.set(0, 0, hingeZ);
     parent.add(ring);
 
-    for (let k = 0; k < 14; k++) {
-      const ang = (k / 14) * Math.PI * 2;
-      const radialR = innerR * (k % 2 === 0 ? 1.0 : 0.96);
+    for (let k = 0; k < petalCount; k++) {
+      const ang = (k / petalCount) * Math.PI * 2;
+      const radialR = innerR * (k % 2 === 0 ? 1.0 : 0.975);
       const carrier = new THREE.Group();
       carrier.position.set(Math.cos(ang) * radialR, Math.sin(ang) * radialR, 0);
       // Local +Y of carrier points radially outward; +X is tangential clockwise.
       carrier.rotation.z = ang - Math.PI / 2;
       const pivot = new THREE.Group();
       const mesh = new THREE.Mesh(petalGeo, petalMat);
-      mesh.castShadow = mesh.receiveShadow = true;
+      mesh.castShadow = false;
+      mesh.receiveShadow = true;
       pivot.add(mesh);
       carrier.add(pivot);
       ring.add(carrier);

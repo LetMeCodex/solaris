@@ -387,8 +387,10 @@ export class ShockEffects {
     shell.renderOrder = 7;
     this.group.add(shell);
 
-    // Prandtl-Glauert condensation cone (apex at z = -2.7 forward, sharp shockwall base at z = +2.7 aft)
-    const CONE_LEN = 5.4;
+    // Prandtl-Glauert condensation cone: sleek translucent swept vapor collar seated aft of the
+    // cockpit over the wings & mid-fuselage so it never obscures the aircraft or blinds the camera.
+    const CONE_LEN = 3.8;
+    const CONE_RAD = 2.75;
     this.coneMat = new THREE.ShaderMaterial({
       uniforms: { uOpacity: { value: 0 }, uTime: { value: 0 }, uMach: { value: 1 } },
       vertexShader: /* glsl */ `
@@ -398,13 +400,17 @@ export class ShockEffects {
         varying float vAng;
         varying vec3 vN;
         varying vec3 vV;
+        varying float vLocalRad;
         void main() {
           vec3 p = position;
           // Cone rotated -PI/2 around X: z spans -CONE_LEN/2 (apex) .. +CONE_LEN/2 (rear wall)
-          vAxial = clamp(p.z / 5.4 + 0.5, 0.0, 1.0);
+          vAxial = clamp(p.z / 3.8 + 0.5, 0.0, 1.0);
           vAng = atan(p.y, p.x);
-          float wave = (sin(vAng * 5.0 + uTime * 28.0) + 0.5 * cos(vAng * 9.0 - uTime * 42.0)) * 0.06 * smoothstep(0.25, 0.95, vAxial);
-          p.xy *= (1.0 + wave);
+          // Slight aerodynamic pinch near the nose and subtle flutter toward the trailing lip
+          float pinch = pow(vAxial, 0.85);
+          float wave = (sin(vAng * 5.0 + uTime * 24.0) + 0.45 * cos(vAng * 8.0 - uTime * 36.0)) * 0.045 * smoothstep(0.3, 0.95, vAxial);
+          p.xy *= (0.86 + 0.14 * pinch) * (1.0 + wave);
+          vLocalRad = length(p.xy) / 2.75;
           vec4 mv = modelViewMatrix * vec4(p, 1.0);
           vN = normalize(normalMatrix * normal);
           vV = normalize(-mv.xyz);
@@ -417,6 +423,7 @@ export class ShockEffects {
         varying float vAng;
         varying vec3 vN;
         varying vec3 vV;
+        varying float vLocalRad;
         float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
         float noise(vec2 p) {
           vec2 i = floor(p), f = fract(p);
@@ -427,18 +434,22 @@ export class ShockEffects {
           return noise(p) * 0.55 + noise(p * 2.13 + 3.7) * 0.30 + noise(p * 4.41 - 1.9) * 0.15;
         }
         void main() {
-          float front = smoothstep(0.04, 0.45, vAxial);
-          float shockWall = exp(-pow((vAxial - 0.90) / 0.075, 2.0)) * 1.15;
-          float rearCut = 1.0 - smoothstep(0.92, 1.0, vAxial);
-          vec2 flowUv = vec2(vAng * 2.8, vAxial * 5.5 - uTime * 9.5);
-          float cloud = smoothstep(0.22, 0.85, fbm(flowUv) * 0.8 + 0.32 * smoothstep(0.55, 0.95, vAxial));
-          float viewSoft = pow(clamp(abs(dot(normalize(vN), normalize(vV))) * 0.7 + 0.3, 0.0, 1.0), 0.75);
-          float dens = (front * cloud * 0.75 + shockWall * (0.55 + 0.45 * cloud)) * rearCut * viewSoft;
-          float a = clamp(uOpacity * dens * 0.95, 0.0, 0.88);
+          // Keep the core fuselage / cockpit corridor clear so the jet silhouette stays crisp
+          float coreClear = smoothstep(0.16, 0.44, vLocalRad);
+          float front = smoothstep(0.08, 0.50, vAxial);
+          float shockWall = exp(-pow((vAxial - 0.88) / 0.085, 2.0)) * 0.85;
+          float rearCut = 1.0 - smoothstep(0.91, 1.0, vAxial);
+          vec2 flowUv = vec2(vAng * 2.8, vAxial * 5.0 - uTime * 9.0);
+          float cloud = smoothstep(0.28, 0.86, fbm(flowUv) * 0.82 + 0.24 * smoothstep(0.55, 0.92, vAxial));
+          // Edge-weighted condensation profile (denser along the grazed cone mantle, translucent face-on)
+          float ndv = abs(dot(normalize(vN), normalize(vV)));
+          float rimLift = mix(0.95, 0.42, pow(ndv, 0.85));
+          float dens = (front * cloud * 0.62 + shockWall * (0.42 + 0.45 * cloud)) * rearCut * coreClear * rimLift;
+          float a = clamp(uOpacity * dens * 0.52, 0.0, 0.40);
           if (a < 0.004) discard;
           vec3 skyMist = vec3(0.84, 0.91, 0.99);
-          vec3 pureWhite = vec3(0.99, 0.995, 1.0);
-          vec3 col = mix(skyMist, pureWhite, clamp(shockWall * 0.7 + dens * 0.35, 0.0, 1.0));
+          vec3 pureWhite = vec3(0.98, 0.99, 1.0);
+          vec3 col = mix(skyMist, pureWhite, clamp(shockWall * 0.6 + dens * 0.3, 0.0, 1.0));
           gl_FragColor = vec4(col, a);
         }`,
       transparent: true,
@@ -446,18 +457,18 @@ export class ShockEffects {
       side: THREE.DoubleSide,
       blending: THREE.NormalBlending,
     });
-    const coneGeo = new THREE.ConeGeometry(4.6, CONE_LEN, 64, 24, true);
+    const coneGeo = new THREE.ConeGeometry(CONE_RAD, CONE_LEN, 64, 24, true);
     coneGeo.rotateX(-Math.PI / 2); // apex forward
     this.cone = new THREE.Mesh(coneGeo, this.coneMat);
-    this.cone.position.z = 0.8;
+    this.cone.position.z = 1.9;
     this.cone.renderOrder = 7;
     this.cone.visible = false;
     this.group.add(this.cone);
 
-    // Perpendicular shockwall annulus closing the rear face of the vapor cone
+    // Subtle translucent shockwall annulus at the rear lip of the vapor cone (leaves fuselage & tailpipe clear)
     this.coneDiscMat = new THREE.ShaderMaterial({
       uniforms: { uOpacity: { value: 0 }, uTime: { value: 0 } },
-      vertexShader: `varying vec2 vP; void main(){ vP = position.xy / 4.6; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      vertexShader: `varying vec2 vP; void main(){ vP = position.xy / 2.75; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
       fragmentShader: /* glsl */ `
         uniform float uOpacity;
         uniform float uTime;
@@ -471,38 +482,38 @@ export class ShockEffects {
         void main() {
           float r = length(vP);
           float ang = atan(vP.y, vP.x);
-          float inner = smoothstep(0.18, 0.34, r);
-          float outer = 1.0 - smoothstep(0.78, 1.0, r);
-          float n = 0.65 + 0.35 * noise(vec2(ang * 3.0 + uTime * 4.0, r * 6.0));
-          float a = uOpacity * inner * outer * n * 0.42;
+          float inner = smoothstep(0.42, 0.68, r);
+          float outer = 1.0 - smoothstep(0.80, 1.0, r);
+          float n = 0.60 + 0.40 * noise(vec2(ang * 3.0 + uTime * 4.0, r * 6.0));
+          float a = uOpacity * inner * outer * n * 0.15;
           if (a < 0.003) discard;
-          gl_FragColor = vec4(0.95, 0.98, 1.0, a);
+          gl_FragColor = vec4(0.92, 0.96, 1.0, a);
         }`,
       transparent: true,
       depthWrite: false,
       side: THREE.DoubleSide,
       blending: THREE.NormalBlending,
     });
-    this.coneDisc = new THREE.Mesh(new THREE.RingGeometry(0.9, 4.6, 56), this.coneDiscMat);
-    this.coneDisc.position.z = 0.8 + CONE_LEN * 0.48;
+    this.coneDisc = new THREE.Mesh(new THREE.RingGeometry(1.15, CONE_RAD, 56), this.coneDiscMat);
+    this.coneDisc.position.z = 1.9 + CONE_LEN * 0.46;
     this.coneDisc.renderOrder = 7;
     this.coneDisc.visible = false;
     this.group.add(this.coneDisc);
 
-    // Expanding transient sonic boom / AB shock collar sweeping aft
+    // Delicate expanding transient sonic boom / AB shock ripple sweeping aft
     this.collarMat = new THREE.ShaderMaterial({
       uniforms: { uOpacity: { value: 0 } },
       vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
       fragmentShader: `uniform float uOpacity; varying vec2 vUv; void main(){
-        float ring = sin(vUv.y * 3.14159265);
-        gl_FragColor = vec4(vec3(0.85, 0.94, 1.0) * ring * uOpacity, 1.0);
+        float ring = pow(sin(vUv.y * 3.14159265), 1.6);
+        gl_FragColor = vec4(vec3(0.82, 0.92, 1.0) * ring * uOpacity, 1.0);
       }`,
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       side: THREE.DoubleSide,
     });
-    this.collar = new THREE.Mesh(new THREE.TorusGeometry(2.8, 0.42, 12, 56), this.collarMat);
+    this.collar = new THREE.Mesh(new THREE.TorusGeometry(2.1, 0.14, 12, 56), this.collarMat);
     this.collar.renderOrder = 8;
     this.collar.visible = false;
     this.group.add(this.collar);
@@ -575,25 +586,26 @@ export class ShockEffects {
     this.conePulse = Math.max(0, this.conePulse - dt * 1.45);
     this.collarLife = Math.max(0, this.collarLife - dt * 2.8);
 
-    // Sustained Prandtl-Glauert condensation window (Mach 0.955 .. 1.045) in moist air
-    const airFactor = THREE.MathUtils.smoothstep(airDensity, 0.04, 0.35);
-    const transonicRise = THREE.MathUtils.smoothstep(mach, 0.945, 0.992);
-    const transonicFall = 1 - THREE.MathUtils.smoothstep(mach, 1.008, 1.055);
-    const sustained = transonicRise * transonicFall * airFactor * (0.85 + 0.2 * THREE.MathUtils.clamp(Math.abs(aoaDeg) / 14, 0, 1));
-    const pulse = Math.pow(this.conePulse, 1.3) * 0.85 * Math.min(1, airFactor * 1.5 + 0.15);
-    const targetCone = Math.min(1, Math.max(sustained, pulse));
+    // Sustained Prandtl-Glauert condensation window (Mach 0.965 .. 1.035) in moist air
+    const airFactor = THREE.MathUtils.smoothstep(airDensity, 0.08, 0.45);
+    const transonicRise = THREE.MathUtils.smoothstep(mach, 0.96, 0.995);
+    const transonicFall = 1 - THREE.MathUtils.smoothstep(mach, 1.005, 1.04);
+    const sustained = transonicRise * transonicFall * airFactor * (0.72 + 0.2 * THREE.MathUtils.clamp(Math.abs(aoaDeg) / 14, 0, 1));
+    const pulse = Math.pow(this.conePulse, 1.45) * 0.65 * Math.min(1, airFactor * 1.4 + 0.1);
+    const targetCone = Math.min(0.85, Math.max(sustained, pulse));
     this.coneOpacity += (targetCone - this.coneOpacity) * (1 - Math.exp(-10 * dt));
 
-    const coneRadScale = THREE.MathUtils.clamp(1.22 - (mach - 0.95) * 3.0, 0.68, 1.25);
-    this.cone.scale.set(coneRadScale, coneRadScale, 1 + (1 - Math.max(this.conePulse, sustained * 0.5)) * 0.12);
-    this.cone.position.z = 0.65 + (mach - 0.96) * 6.5;
+    const coneRadScale = THREE.MathUtils.clamp(1.10 - (mach - 0.96) * 2.2, 0.72, 1.12);
+    this.cone.scale.set(coneRadScale, coneRadScale, 1 + (1 - Math.max(this.conePulse, sustained * 0.5)) * 0.08);
+    // Seated cleanly behind the cockpit/canards over the delta wing & aft fuselage
+    this.cone.position.z = 1.85 + THREE.MathUtils.clamp((mach - 0.97) * 5.0, -0.35, 1.25);
     this.coneMat.uniforms.uOpacity.value = this.coneOpacity;
     this.coneMat.uniforms.uTime.value = timeSec;
     this.coneMat.uniforms.uMach.value = mach;
     this.cone.visible = this.coneOpacity > 0.01;
 
     this.coneDisc.scale.setScalar(coneRadScale);
-    this.coneDisc.position.z = this.cone.position.z + 2.58;
+    this.coneDisc.position.z = this.cone.position.z + 1.75;
     this.coneDiscMat.uniforms.uOpacity.value = this.coneOpacity;
     this.coneDiscMat.uniforms.uTime.value = timeSec;
     this.coneDisc.visible = this.coneOpacity > 0.01;
@@ -601,9 +613,9 @@ export class ShockEffects {
     const cT = 1 - this.collarLife;
     this.collar.visible = this.collarLife > 0.01;
     if (this.collar.visible) {
-      this.collar.position.z = -1.5 + cT * 11.5;
-      this.collar.scale.setScalar(0.85 + cT * 1.6);
-      this.collarMat.uniforms.uOpacity.value = Math.pow(this.collarLife, 1.5) * 0.65 * Math.max(0.25, airFactor);
+      this.collar.position.z = 0.5 + cT * 9.5;
+      this.collar.scale.setScalar(0.85 + cT * 1.35);
+      this.collarMat.uniforms.uOpacity.value = Math.pow(this.collarLife, 1.6) * 0.28 * Math.max(0.2, airFactor);
     }
 
     if (mach > 1.15) {
@@ -681,8 +693,10 @@ export class ExhaustSmoke {
         void main() {
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
           gl_Position = projectionMatrix * mv;
-          gl_PointSize = clamp(aSize * uScale / max(0.1, -mv.z), 0.0, 512.0);
-          vAlpha = aAlpha;
+          float camDist = max(0.1, -mv.z);
+          gl_PointSize = clamp(aSize * uScale / camDist, 0.0, 220.0);
+          // Fade out puffs close to the lens so exhaust smoke never blinds the chase camera
+          vAlpha = aAlpha * smoothstep(1.8, 5.5, camDist);
           vTint = aColor;
           vSeed = fract(sin(dot(position.xy, vec2(12.9898, 78.233))) * 43758.5453);
         }`,

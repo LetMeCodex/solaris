@@ -31,18 +31,42 @@ export interface CompileGate {
   readonly skips: number;
   readonly hidden: number;
   /** Call once a frame before drawing: the frame's allowance for uploading images. */
-  beginFrame(uploadBudgetMs?: number): void;
+  beginFrame(uploadBudgetMs?: number, maxUploads?: number, maxPixels?: number): void;
+  /** Whether this frame still has GPU upload headroom for an additional texture. */
+  hasUploadBudget(estimatedPixels?: number): boolean;
+  /** Upload one texture through the shared per-frame budget; returns true if uploaded now. */
+  tryUploadTexture(texture: THREE.Texture): boolean;
 }
 
 type ProgramLike = { isReady(): boolean };
 type Known = WeakMap<object, number>;
+
+const MAX_HIDDEN_COMPILES_LIVE = 2;
+const MAX_FRESH_COMPILES_LIVE = 4;
+
+function texturePixelCount(t: THREE.Texture): number {
+  const img = t.image as { width?: number; height?: number; naturalWidth?: number; naturalHeight?: number } | undefined;
+  const w = img?.width || img?.naturalWidth || 512;
+  const h = img?.height || img?.naturalHeight || 512;
+  return Math.max(1, w * h);
+}
 
 export function installCompileGate(renderer: THREE.WebGLRenderer): CompileGate {
   const r = renderer;
   const draw = r.render.bind(r);
   // Without the extension a program reports ready at once: nothing is ever held back
   const parallel = r.extensions.has('KHR_parallel_shader_compile');
-  const state = { mode: 'off' as GateMode, skips: 0, hidden: 0, depth: 0, uploadUntil: 0, uploads: 0 };
+  const state = {
+    mode: 'off' as GateMode,
+    skips: 0,
+    hidden: 0,
+    depth: 0,
+    uploadUntil: 0,
+    uploads: 0,
+    uploadedPixels: 0,
+    maxUploads: 2,
+    maxPixels: 4_500_000,
+  };
   let contextLost = false;
 
   const canvas = r.domElement;
@@ -148,26 +172,39 @@ export function installCompileGate(renderer: THREE.WebGLRenderer): CompileGate {
     (t as THREE.Texture & { isRenderTargetTexture?: boolean }).isRenderTargetTexture === true ||
     !t.image ||
     t.version === 0 ||
-    (r.properties.get(t) as { __version?: number }).__version !== undefined;
+    (r.properties.get(t) as { __version?: number } | undefined)?.__version !== undefined;
   // A material that never reports ready (a driver quirk) must not hold the page forever: after
   // ~300 looks (5 s at 60 fps) it is let through and three.js compiles it as it always did
   const tries = new WeakMap<THREE.Material, number>();
   const programsReady = (m: THREE.Material): boolean => {
-    const progs = (r.properties.get(m) as { programs?: Map<string, ProgramLike> }).programs;
+    const progs = (r.properties.get(m) as { programs?: Map<string, ProgramLike | undefined> } | undefined)?.programs;
     let ready = !!progs;
-    if (progs) for (const p of progs.values()) if (!p.isReady()) ready = false;
+    if (progs) {
+      for (const p of progs.values()) {
+        if (p && typeof p.isReady === 'function' && !p.isReady()) ready = false;
+      }
+    }
     if (ready) return true;
     const n = (tries.get(m) ?? 0) + 1;
     tries.set(m, n);
     return n > 300;
   };
+  const canUpload = (pixels: number): boolean => {
+    if (state.uploads === 0) return true;
+    if (performance.now() > state.uploadUntil) return false;
+    if (state.uploads >= state.maxUploads) return false;
+    if (state.uploadedPixels + pixels > state.maxPixels) return false;
+    return true;
+  };
   /** Upload what the material shows, within the frame's allowance; true once all are up. */
   const uploadFor = (m: THREE.Material): boolean => {
     for (const t of texturesOf(m)) {
       if (isUploaded(t)) continue;
-      if (state.uploads > 0 && performance.now() > state.uploadUntil) return false;
+      const px = texturePixelCount(t);
+      if (!canUpload(px)) return false;
       r.initTexture(t);
       state.uploads++;
+      state.uploadedPixels += px;
     }
     return true;
   };
@@ -279,10 +316,15 @@ export function installCompileGate(renderer: THREE.WebGLRenderer): CompileGate {
 
     const notReady: THREE.Object3D[] = [];
     const castersNotReady: THREE.Object3D[] = [];
-    // Hidden things: their shaders started now, in the background; ready when they are shown
+    const compileStartMs = performance.now();
+    // Hidden things: compile in small per-frame batches while live so background meshes never hitch
     if (freshHidden.length > 0) {
-      compileObjects(freshHidden, scene, camera);
-      for (const o of freshHidden) for (const m of materialsOf(o)) hiddenDone.set(m, m.version);
+      const hiddenBatch =
+        state.mode === 'hide' && freshHidden.length > MAX_HIDDEN_COMPILES_LIVE
+          ? freshHidden.slice(0, MAX_HIDDEN_COMPILES_LIVE)
+          : freshHidden;
+      compileObjects(hiddenBatch, scene, camera);
+      for (const o of hiddenBatch) for (const m of materialsOf(o)) hiddenDone.set(m, m.version);
     }
     if (fresh.length > 0) {
       if (override && seenObjs) {
@@ -290,8 +332,23 @@ export function installCompileGate(renderer: THREE.WebGLRenderer): CompileGate {
         if (programsReady(override)) fresh.forEach((o) => seenObjs.set(o, 1));
         else notReady.push(...fresh);
       } else {
-        compileObjects(fresh, scene, camera);
-        for (const o of fresh) {
+        // Strictly cap per-frame shader compiles in live flight so streaming 30+ PhotorealEarth tiles
+        // never triggers a 140–194 ms spike; prioritize terrain coverage tiles first.
+        let compileBatch = fresh;
+        let deferredFresh: THREE.Object3D[] = [];
+        if (state.mode === 'hide' && fresh.length > MAX_FRESH_COMPILES_LIVE) {
+          const priority: THREE.Object3D[] = [];
+          const normal: THREE.Object3D[] = [];
+          for (const o of fresh) {
+            if (o.userData.solarisKeepCoverage === true) priority.push(o);
+            else normal.push(o);
+          }
+          const ordered = priority.length > 0 ? priority.concat(normal) : fresh;
+          compileBatch = ordered.slice(0, MAX_FRESH_COMPILES_LIVE);
+          deferredFresh = ordered.slice(compileBatch.length);
+        }
+        compileObjects(compileBatch, scene, camera);
+        for (const o of compileBatch) {
           let ready = true;
           for (const m of materialsOf(o)) {
             if (seenMats.get(m) === m.version) continue;
@@ -300,14 +357,19 @@ export function installCompileGate(renderer: THREE.WebGLRenderer): CompileGate {
           }
           if (!ready) notReady.push(o);
         }
+        if (deferredFresh.length > 0) notReady.push(...deferredFresh);
       }
     }
     if (shadowLight && r.shadowMap.enabled && casters.length > 0) {
-      const used = compileAs(casters, (o) => depthFor(materialsOf(o)[0]), scene, camera);
-      for (const o of casters) {
-        const d = used.get(o);
-        if (d && programsReady(d)) seenCasters.set(o, materialsOf(o)[0].version);
-        else castersNotReady.push(o);
+      if (state.mode === 'hide' && performance.now() - compileStartMs > 4) {
+        castersNotReady.push(...casters);
+      } else {
+        const used = compileAs(casters, (o) => depthFor(materialsOf(o)[0]), scene, camera);
+        for (const o of casters) {
+          const d = used.get(o);
+          if (d && programsReady(d)) seenCasters.set(o, materialsOf(o)[0].version);
+          else castersNotReady.push(o);
+        }
       }
     }
     return { ok: notReady.length === 0 && castersNotReady.length === 0, notReady, castersNotReady, shadowLight, shown: shownDrawables };
@@ -396,9 +458,24 @@ export function installCompileGate(renderer: THREE.WebGLRenderer): CompileGate {
     get hidden() {
       return state.hidden;
     },
-    beginFrame(uploadBudgetMs = 6) {
+    beginFrame(uploadBudgetMs = 3.5, maxUploads?: number, maxPixels?: number) {
       state.uploadUntil = performance.now() + uploadBudgetMs;
       state.uploads = 0;
+      state.uploadedPixels = 0;
+      state.maxUploads = maxUploads ?? (state.mode === 'hold' ? 6 : 2);
+      state.maxPixels = maxPixels ?? (state.mode === 'hold' ? 34_000_000 : 4_500_000);
+    },
+    hasUploadBudget(estimatedPixels = 1_000_000) {
+      return canUpload(estimatedPixels);
+    },
+    tryUploadTexture(texture: THREE.Texture) {
+      if (contextLost || !texture?.image) return false;
+      const px = texturePixelCount(texture);
+      if (!canUpload(px)) return false;
+      r.initTexture(texture);
+      state.uploads++;
+      state.uploadedPixels += px;
+      return true;
     },
   };
 }

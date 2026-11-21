@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { glowTexture } from './JetModel';
+import { setSkyOvercast } from '../rendering/AerialPerspective';
 
 /**
  * Weather in the air the jet flies through.
@@ -25,6 +26,8 @@ export interface WeatherState {
   strength: number;
   /** 0..1 how deep in cloud (a white-out) the jet is. */
   cloud: number;
+  /** 0..1 sky overcast cover driven into SkyAtmosphere / AtmosphereShader. */
+  overcast: number;
   /** A lightning flash now (0..1). */
   flash: number;
   /** Gusts: extra camera shake. */
@@ -46,16 +49,17 @@ export class Weather {
   public readonly group = new THREE.Group();
   public mode: WeatherMode = 'auto';
   /** Live weather where the jet is (Earth, Open-Meteo): used in 'auto' mode in place of the climate guess. */
-  public live: { kind: WeatherKind; strength: number; label: string } | null = null;
+  public live: { kind: WeatherKind; strength: number; label: string; cloudCover?: number } | null = null;
   /** 0..1 inside one of the drawn clouds (EarthClouds): a white-out. */
   public cloudInside = 0;
-  public state: WeatherState = { kind: 'clear', strength: 0, cloud: 0, flash: 0, shake: 0, label: 'Clear' };
+  public state: WeatherState = { kind: 'clear', strength: 0, cloud: 0, overcast: 0, flash: 0, shake: 0, label: 'Clear' };
 
   private pts = new Float32Array(N * 3);
   private positions = new Float32Array(N * 6);
   private colors = new Float32Array(N * 6);
+  private alphas = new Float32Array(N * 2);
   private streaks: THREE.LineSegments;
-  private streakMat: THREE.LineBasicMaterial;
+  private streakMat: THREE.ShaderMaterial;
   private flakes: THREE.Points;
   private flakePos = new Float32Array(N * 3);
   private flakeMat: THREE.PointsMaterial;
@@ -82,10 +86,33 @@ export class Weather {
     const sg = new THREE.BufferGeometry();
     sg.setAttribute('position', new THREE.BufferAttribute(this.positions, 3).setUsage(THREE.DynamicDrawUsage));
     sg.setAttribute('color', new THREE.BufferAttribute(this.colors, 3).setUsage(THREE.DynamicDrawUsage));
-    this.streakMat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+    sg.setAttribute('aAlpha', new THREE.BufferAttribute(this.alphas, 1).setUsage(THREE.DynamicDrawUsage));
+    this.streakMat = new THREE.ShaderMaterial({
+      vertexShader: /* glsl */ `
+        attribute vec3 color;
+        attribute float aAlpha;
+        varying vec3 vColor;
+        varying float vAlpha;
+        void main() {
+          vColor = color;
+          vAlpha = aAlpha;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: /* glsl */ `
+        varying vec3 vColor;
+        varying float vAlpha;
+        void main() {
+          if (vAlpha < 0.005) discard;
+          gl_FragColor = vec4(vColor, vAlpha);
+        }`,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+    });
     this.streaks = new THREE.LineSegments(sg, this.streakMat);
     this.streaks.frustumCulled = false;
     this.streaks.renderOrder = 9;
+    this.streaks.visible = false;
 
     const fg = new THREE.BufferGeometry();
     fg.setAttribute('position', new THREE.BufferAttribute(this.flakePos, 3).setUsage(THREE.DynamicDrawUsage));
@@ -184,29 +211,68 @@ export class Weather {
     const st = this.state;
     if (ctx.airDensity <= 0.002) {
       st.kind = 'clear';
-      st.strength = st.cloud = st.flash = st.shake = 0;
+      st.strength = st.cloud = st.overcast = st.flash = st.shake = 0;
       st.label = 'Clear';
+      setSkyOvercast(0);
       this.group.visible = false;
       return st;
     }
     this.group.visible = true;
     let { kind, strength } = Weather.climate(ctx.world, ctx.latDeg, ctx.lonDeg, ctx.altKm, ctx.hourIndex);
-    if (this.mode === 'auto' && ctx.world === 'Earth' && this.live) {
-      kind = this.live.kind;
-      strength = this.live.strength;
-      // Above the weather nothing falls: rain and snow come from clouds a few km up at most
-      if (ctx.altKm > (kind === 'storm' ? 11 : 6)) kind = 'clear';
-      else if (kind === 'rain' && ctx.altKm > 4) kind = 'snow';
-    }
-    if (this.mode !== 'auto' && ctx.world === 'Earth') {
-      kind = this.mode === 'clear' ? 'clear' : this.mode;
-      strength = this.mode === 'clear' ? 0 : 0.85;
-      if (kind === 'rain' && ctx.altKm > 5) kind = 'snow';
+    if (ctx.world === 'Earth') {
+      if (this.mode === 'auto') {
+        if (this.live) {
+          kind = this.live.kind;
+          strength = this.live.strength;
+          // Gate precipitation so rain/snow never falls out of a bright cloudless sunny sky
+          const skyClearLive = this.live.cloudCover !== undefined && this.live.cloudCover < 0.45 && this.cloudInside < 0.35;
+          if (skyClearLive && (kind === 'rain' || kind === 'snow')) {
+            kind = 'clear';
+            strength = 0;
+          }
+          // Above the weather nothing falls: rain and snow come from clouds a few km up at most
+          if (ctx.altKm > (kind === 'storm' ? 11 : 6)) {
+            kind = 'clear';
+            strength = 0;
+          } else if (kind === 'rain' && ctx.altKm > 4) {
+            kind = 'snow';
+          }
+        } else {
+          // Before live weather loads (or when offline), keep Earth's clear sunny sky dry so
+          // phantom rain streaks never fall out of a bright blue sky.
+          kind = 'clear';
+          strength = 0;
+        }
+      } else {
+        kind = this.mode === 'clear' ? 'clear' : this.mode;
+        strength = this.mode === 'clear' ? 0 : 0.85;
+        if (ctx.altKm > (kind === 'storm' ? 11 : 6.5)) {
+          kind = 'clear';
+          strength = 0;
+        } else if (kind === 'rain' && ctx.altKm > 4.5) {
+          kind = 'snow';
+        }
+      }
     }
     st.kind = kind;
     st.strength = strength;
     st.label = { clear: 'Clear', rain: 'Rain', snow: 'Snow', storm: 'Thunderstorm', dust: strength > 0.5 ? 'Dust storm' : 'Dust haze', methane: 'Methane drizzle', acid: 'Sulphuric acid haze', turbulence: 'Storm turbulence' }[kind];
-    if (this.mode === 'auto' && ctx.world === 'Earth' && this.live) st.label = this.live.label;
+    if (this.mode === 'auto' && ctx.world === 'Earth' && this.live && kind !== 'clear') st.label = this.live.label;
+
+    // Couple Earth precipitation to an overcast sky deck in SkyAtmosphere & AtmosphereShader
+    const earthPrecip = ctx.world === 'Earth' && (kind === 'rain' || kind === 'snow' || kind === 'storm');
+    const belowDeck = 1 - THREE.MathUtils.smoothstep(ctx.altKm, 7, 12);
+    const liveOvercast =
+      ctx.world === 'Earth' && this.mode === 'auto' && this.live?.cloudCover !== undefined
+        ? Math.max(0, (this.live.cloudCover - 0.55) / 0.45) * 0.55
+        : 0;
+    st.overcast = ctx.world === 'Earth'
+      ? Math.max(
+          earthPrecip ? (kind === 'storm' ? 0.92 : 0.72) * Math.max(0.65, strength) * belowDeck : 0,
+          liveOvercast * belowDeck,
+        )
+      : 0;
+    setSkyOvercast(st.overcast);
 
     // Cloud: on Earth the deck where it is raining (1–9 km); dust and haze fill the air on Mars/Venus
     // Over Earth with the live weather the volumetric clouds are drawn in the scene itself
@@ -229,11 +295,13 @@ export class Weather {
       cloud = 0.1 + 0.16 * puffs;
       veilColor.setRGB(0.85 * light, 0.8 * light, 0.72 * light);
     } else {
-      const grey = kind === 'storm' ? 0.28 : 0.8;
-      veilColor.setRGB(grey * light, grey * light, (grey + 0.04) * light);
+      const grey = kind === 'storm' ? 0.26 : 0.58;
+      veilColor.setRGB(grey * light, (grey + 0.01) * light, (grey + 0.04) * light);
     }
-    // Under the deck while it rains or snows: an overcast grey sky, not a clear one
-    if (ctx.world === 'Earth' && kind !== 'clear' && !volumetric && ctx.altKm < 1.6) cloud = Math.max(cloud, (kind === 'storm' ? 0.42 : 0.28) * strength);
+    // Under the deck while it rains or snows: a moody overcast haze, not a clear sunny sky
+    if (ctx.world === 'Earth' && kind !== 'clear' && ctx.altKm < 2.2) {
+      cloud = Math.max(cloud, (kind === 'storm' ? 0.38 : 0.22) * Math.max(0.5, strength));
+    }
     st.cloud = cloud;
 
     // Lightning: thunderstorms, and the deep storms of Jupiter and Saturn
@@ -262,40 +330,53 @@ export class Weather {
     const shown = Math.min(rel.length(), 900);
     if (rel.lengthSq() > 0) rel.setLength(shown);
     const active = Math.round(N * strength * (kind === 'storm' ? 1 : 0.7));
-    const stretch = falls ? 0.045 : 0.02;
-    const tint = dusty ? [0.75, 0.5, 0.32] : kind === 'methane' ? [0.8, 0.6, 0.4] : [0.7, 0.78, 0.9];
-    const base = (falls ? (kind === 'storm' ? 0.95 : 0.7) : dusty ? 0.35 : 0) * (0.35 + 0.65 * light);
-    for (let i = 0; i < N; i++) {
-      let x = this.pts[i * 3] + rel.x * dt;
-      let y = this.pts[i * 3 + 1] + rel.y * dt;
-      let z = this.pts[i * 3 + 2] + rel.z * dt;
-      if (x < -BOX) x += BOX * 2; else if (x > BOX) x -= BOX * 2;
-      if (y < -BOX) y += BOX * 2; else if (y > BOX) y -= BOX * 2;
-      if (z < -BOX) z += BOX * 2; else if (z > BOX) z -= BOX * 2;
-      this.pts[i * 3] = x;
-      this.pts[i * 3 + 1] = y;
-      this.pts[i * 3 + 2] = z;
-      const o = i * 6;
-      this.positions[o] = x;
-      this.positions[o + 1] = y;
-      this.positions[o + 2] = z;
-      this.positions[o + 3] = x - rel.x * stretch;
-      this.positions[o + 4] = y - rel.y * stretch;
-      this.positions[o + 5] = z - rel.z * stretch;
-      const a = i < active && (falls || dusty) ? base * (0.4 + 0.6 * ((i * 7919) % 97) / 97) : 0;
-      this.colors[o] = this.colors[o + 1] = this.colors[o + 2] = 0;
-      this.colors[o + 3] = tint[0] * a;
-      this.colors[o + 4] = tint[1] * a;
-      this.colors[o + 5] = tint[2] * a;
-      this.flakePos[i * 3] = x;
-      this.flakePos[i * 3 + 1] = y;
-      this.flakePos[i * 3 + 2] = i < active && snowing ? z : 1e5;
+    const showStreaks = (falls || dusty) && active > 0;
+    this.streaks.visible = showStreaks;
+    const stretch = falls ? 0.036 : 0.02;
+    const tint = dusty ? [0.75, 0.5, 0.32] : kind === 'methane' ? [0.76, 0.58, 0.38] : [0.64, 0.70, 0.78];
+    const baseAlpha = (falls ? (kind === 'storm' ? 0.44 : 0.32) : dusty ? 0.24 : 0) * (0.4 + 0.6 * light);
+    if (showStreaks || snowing) {
+      for (let i = 0; i < N; i++) {
+        let x = this.pts[i * 3] + rel.x * dt;
+        let y = this.pts[i * 3 + 1] + rel.y * dt;
+        let z = this.pts[i * 3 + 2] + rel.z * dt;
+        if (x < -BOX) x += BOX * 2; else if (x > BOX) x -= BOX * 2;
+        if (y < -BOX) y += BOX * 2; else if (y > BOX) y -= BOX * 2;
+        if (z < -BOX) z += BOX * 2; else if (z > BOX) z -= BOX * 2;
+        this.pts[i * 3] = x;
+        this.pts[i * 3 + 1] = y;
+        this.pts[i * 3 + 2] = z;
+        const o = i * 6;
+        this.positions[o] = x;
+        this.positions[o + 1] = y;
+        this.positions[o + 2] = z;
+        this.positions[o + 3] = x - rel.x * stretch;
+        this.positions[o + 4] = y - rel.y * stretch;
+        this.positions[o + 5] = z - rel.z * stretch;
+        const a = i < active && (falls || dusty) ? baseAlpha * (0.4 + 0.6 * ((i * 7919) % 97) / 97) : 0;
+        this.colors[o] = tint[0];
+        this.colors[o + 1] = tint[1];
+        this.colors[o + 2] = tint[2];
+        this.colors[o + 3] = tint[0];
+        this.colors[o + 4] = tint[1];
+        this.colors[o + 5] = tint[2];
+        this.alphas[i * 2] = 0;
+        this.alphas[i * 2 + 1] = a;
+        this.flakePos[i * 3] = x;
+        this.flakePos[i * 3 + 1] = y;
+        this.flakePos[i * 3 + 2] = i < active && snowing ? z : 1e5;
+      }
+      if (showStreaks) {
+        this.streaks.geometry.attributes.position.needsUpdate = true;
+        this.streaks.geometry.attributes.color.needsUpdate = true;
+        this.streaks.geometry.attributes.aAlpha.needsUpdate = true;
+      }
+      if (snowing) {
+        this.flakes.geometry.attributes.position.needsUpdate = true;
+      }
     }
-    this.streaks.geometry.attributes.position.needsUpdate = true;
-    this.streaks.geometry.attributes.color.needsUpdate = true;
-    this.flakes.geometry.attributes.position.needsUpdate = true;
-    this.flakes.visible = snowing;
-    this.flakeMat.opacity = 0.9 * light;
+    this.flakes.visible = snowing && active > 0;
+    this.flakeMat.opacity = 0.85 * light;
 
     // Canopy drops: beads appear and run back over the glass; only seen from inside
     const wet = ctx.inside && (falls || (snowing && ctx.altKm < 2)) ? strength : 0;
@@ -325,7 +406,13 @@ export class Weather {
   }
   private tmp = new THREE.Vector3();
 
+  public resetOvercast(): void {
+    this.state.overcast = 0;
+    setSkyOvercast(0);
+  }
+
   public dispose(): void {
+    setSkyOvercast(0);
     this.streaks.geometry.dispose();
     this.streakMat.dispose();
     this.flakes.geometry.dispose();

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CoordinateFrames } from '../astronomy/CoordinateFrames';
+import { SKY_STAR_VISIBILITY, refreshSkyStarVisibility } from './AerialPerspective';
 
 /**
  * The real night sky: every Hipparcos star in public/data/stars.json (≈12,600, to V ≈ 7), drawn
@@ -64,6 +65,8 @@ export class CatalogueStars {
       uVelDir: { value: new THREE.Vector3(0, 0, -1) },
       uTwinkle: { value: 0.06 },
       uExposure: { value: 1 },
+      uSkyVisibility: SKY_STAR_VISIBILITY,
+      uDaylightVis: { value: 1 },
       uRadius: { value: radius },
     };
 
@@ -79,6 +82,8 @@ export class CatalogueStars {
         uniform vec3 uVelDir;
         uniform float uTwinkle;
         uniform float uExposure;
+        uniform float uSkyVisibility;
+        uniform float uDaylightVis;
         uniform float uRadius;
         varying vec3 vColor;
         varying float vAlpha;
@@ -95,6 +100,17 @@ export class CatalogueStars {
         }
 
         void main() {
+          float skyVis = clamp(uSkyVisibility * uDaylightVis, 0.0, 1.0);
+          if (skyVis <= 0.001) {
+            vAlpha = 0.0;
+            vColor = vec3(0.0);
+            vSpikes = 0.0;
+            vHalo = 0.0;
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            gl_PointSize = 0.0;
+            return;
+          }
+
           // Relativistic aberration: tilt the star's direction towards the heading
           vec3 d = normalize(position);
           float doppler = 1.0;
@@ -109,8 +125,9 @@ export class CatalogueStars {
           }
           vec3 p = d * uRadius;
 
-          // Pogson: relative flux of the star (m = 0 → 1)
-          float flux = pow(10.0, -0.4 * aMag) * pow(doppler, 3.0) * uExposure;
+          // Pogson: relative flux of the star (m = 0 → 1), smoothly extinguished in daylight sky
+          float effExposure = uExposure * pow(skyVis, 0.75);
+          float flux = pow(10.0, -0.4 * aMag) * pow(doppler, 3.0) * effExposure;
 
           // Scintillation (stronger and multi-frequency when there is air above us)
           float tw = 1.0 + uTwinkle * (
@@ -128,10 +145,11 @@ export class CatalogueStars {
 
           // Size from brightness: pin-pricks for the faint, a glow for the bright
           float size = 1.2 + 6.0 * pow(flux, 0.42);
-          vSpikes = smoothstep(1.5, -0.6, aMag + 2.5 * log(1.0 / max(doppler, 0.05)) / log(10.0)) * uExposure;
-          vHalo = smoothstep(3.0, 0.0, aMag);
+          vSpikes = smoothstep(1.5, -0.6, aMag + 2.5 * log(1.0 / max(doppler, 0.05)) / log(10.0)) * effExposure;
+          vHalo = smoothstep(3.0, 0.0, aMag) * skyVis;
           size *= 1.0 + vSpikes * 2.6;
-          vAlpha = clamp(pow(flux, 0.5) * 3.2, 0.05, 1.6);
+          // No residual 0.05 floor during daylight: faint stars drop out first, then bright stars fade cleanly to zero
+          vAlpha = clamp(pow(flux, 0.5) * 3.2, 0.05 * skyVis, 1.6) * smoothstep(0.0, 0.15, skyVis);
 
           vec4 mv = modelViewMatrix * vec4(p, 1.0);
           gl_Position = projectionMatrix * mv;
@@ -186,12 +204,18 @@ export class CatalogueStars {
     u.value += (e - u.value) * 0.06;
   }
 
+  /** Direct 0..1 daylight visibility multiplier (combined with shared SKY_STAR_VISIBILITY). */
+  public setDaylightVisibility(vis: number): void {
+    this.uniforms.uDaylightVis.value = Math.max(0, Math.min(1, vis));
+  }
+
   /**
    * Per frame. `velocity` is the camera's perceived velocity (scaled to the view, see
    * SolarSystemScene); the visual warp β
    * rises smoothly with it and relaxes when the flight ends.
    */
   public update(timeSec: number, velocity: THREE.Vector3, enabled: boolean): void {
+    refreshSkyStarVisibility();
     this.uniforms.uTime.value = timeSec;
     const speed = velocity.length();
     const target = enabled ? 0.62 * THREE.MathUtils.smoothstep(speed, 25, 600) : 0;

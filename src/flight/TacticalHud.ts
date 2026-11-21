@@ -16,11 +16,86 @@ const MINT = (a: number): string => `rgba(109, 252, 192, ${a})`;
 const WHITE = (a: number): string => `rgba(240, 244, 242, ${a})`;
 const AMBER = (a: number): string => `rgba(244, 205, 114, ${a})`;
 const CYAN = (a: number): string => `rgba(120, 220, 255, ${a})`;
+const RED = (a: number): string => `rgba(255, 108, 96, ${a})`;
 const HEAD = '"Rajdhani", "Montserrat", system-ui, sans-serif';
 const MONO = '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
-const GLYPHS = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789/#<>=+';
+const GLYPHS = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
 const AU_KM = 149597870.7;
 const C_KMS = 299792.458;
+
+export type GpwsMode = 'none' | 'caution' | 'pull-up';
+
+export interface AltitudeTelemetry {
+  aglM: number;
+  mslM: number;
+  terrainM: number;
+  hasSeparateMsl: boolean;
+  terrainWarning: boolean;
+  gpwsMode: GpwsMode;
+}
+
+/**
+ * Resolve AGL/MSL altitude and GPWS terrain warning telemetry cleanly, falling back safely
+ * to `altKm` / `warning` when older partial telemetry fixtures omit the terrain fields.
+ */
+export function resolveAltitudeTelemetry(t: JetTelemetry): AltitudeTelemetry {
+  const fallbackM = Math.max(0, t.altKm * 1000);
+  const aglM = typeof t.altitudeAglM === 'number' && Number.isFinite(t.altitudeAglM)
+    ? Math.max(0, t.altitudeAglM)
+    : fallbackM;
+  const terrainM = typeof t.terrainElevationM === 'number' && Number.isFinite(t.terrainElevationM)
+    ? t.terrainElevationM
+    : 0;
+  const mslM = typeof t.altitudeMslM === 'number' && Number.isFinite(t.altitudeMslM)
+    ? t.altitudeMslM
+    : aglM + terrainM;
+  const hasSeparateMsl =
+    (typeof t.altitudeMslM === 'number' && Number.isFinite(t.altitudeMslM)) ||
+    (typeof t.terrainElevationM === 'number' && Number.isFinite(t.terrainElevationM));
+  const gpwsMode: GpwsMode =
+    t.gpwsMode ?? (t.warning === 1 ? 'pull-up' : t.terrainWarning ? 'pull-up' : 'none');
+  const terrainWarning = Boolean(t.terrainWarning) || gpwsMode !== 'none' || t.warning === 1;
+  return { aglM, mslM, terrainM, hasSeparateMsl, terrainWarning, gpwsMode };
+}
+
+/** Format an altitude in metres cleanly (metres below 100 km, km above). */
+export function formatAltitudeMeters(meters: number): string {
+  const rounded = Math.round(meters);
+  if (Math.abs(rounded) < 100_000) return `${rounded.toLocaleString('en-US')} M`;
+  return `${(meters / 1000).toFixed(1)} KM`;
+}
+
+/** Measure string width under a font + letter-spacing (defensive when mock ctx ignores letterSpacing). */
+function measureSpacedText(ctx: CanvasRenderingContext2D, s: string, font: string, spacing = 0): number {
+  ctx.font = font;
+  ctx.letterSpacing = `${spacing}px`;
+  const w = ctx.measureText(s).width;
+  ctx.letterSpacing = '0px';
+  return w;
+}
+
+/** Truncate `raw` with a trailing ellipsis so it never overflows `maxW` pixels. */
+function fitCanvasText(
+  ctx: CanvasRenderingContext2D,
+  raw: string,
+  maxW: number,
+  font: string,
+  spacing = 0,
+): string {
+  if (!raw || maxW <= 8) return '';
+  ctx.font = font;
+  ctx.letterSpacing = `${spacing}px`;
+  if (ctx.measureText(raw).width <= maxW) {
+    ctx.letterSpacing = '0px';
+    return raw;
+  }
+  let s = raw;
+  while (s.length > 1 && ctx.measureText(`${s}…`).width > maxW) {
+    s = s.slice(0, -1);
+  }
+  ctx.letterSpacing = '0px';
+  return `${s.trimEnd()}…`;
+}
 
 // --------------------------------------------------------------------------------- coordinates
 
@@ -280,14 +355,33 @@ function locationCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, p: Place, 
   }
   const age = now - loc.shownAt;
   const k = ease(age / 0.5);
-  ctx.font = `700 30px ${HEAD}`;
-  ctx.letterSpacing = '3px';
-  const titleW = ctx.measureText(p.title).width;
-  ctx.letterSpacing = '0px';
-  const safeMaxW = Math.max(210, maxW);
-  const w = Math.max(Math.min(300, safeMaxW), Math.min(560, safeMaxW, titleW + 70));
+  const titleW30 = measureSpacedText(ctx, p.title, `700 30px ${HEAD}`, 3);
+  const safeMaxW = Math.max(210, Math.min(500, maxW));
+  const w = Math.max(Math.min(300, safeMaxW), Math.min(safeMaxW, titleW30 + 62));
   const h = 122;
   const y = bottom - h;
+  const innerW = Math.max(120, w - 24);
+  const titleBudget = Math.max(100, innerW - 18);
+
+  // Pick the largest display font size that lets long names (e.g. KHUMBU PASANGLAMHU) fit cleanly inside the box
+  const titleTiers: Array<[number, number]> = [
+    [30, 3],
+    [26, 2.4],
+    [23, 1.8],
+    [20, 1.3],
+    [18, 0.9],
+  ];
+  let titlePx = 18;
+  let titleSpace = 0.9;
+  for (const [px, sp] of titleTiers) {
+    if (measureSpacedText(ctx, p.title, `700 ${px}px ${HEAD}`, sp) <= titleBudget) {
+      titlePx = px;
+      titleSpace = sp;
+      break;
+    }
+  }
+  const titleFont = `700 ${titlePx}px ${HEAD}`;
+
   ctx.save();
   ctx.globalAlpha = 0.35 + 0.65 * k;
   panelBg(ctx, x, y, w, h, false);
@@ -295,6 +389,12 @@ function locationCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, p: Place, 
   // Accent bar on the left, pulsing softly
   ctx.fillStyle = MINT(0.55 + 0.35 * Math.sin(now * 2.2) ** 2);
   ctx.fillRect(x - 6, y + 10, 2, h - 20);
+
+  // Clip all interior copy strictly inside the panel bounds so text can never overflow the right border
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x + 2, y + 2, w - 4, h - 4);
+  ctx.clip();
 
   // Header: tag chip, a rule that draws itself out, the grid reference
   const hy = y + 18;
@@ -306,25 +406,42 @@ function locationCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, p: Place, 
     ctx.fillStyle = age < 1.5 ? AMBER(0.95) : MINT(0.9);
     ctx.fillRect(x + 52, hy - 6, 5, 5);
   }
-  const grid = decode(p.grid, age, 0.02, 0.3);
-  const gw = text(ctx, grid, x + w - 12, hy + 1, `500 11px ${MONO}`, WHITE(0.8), 'right', 1);
-  ctx.strokeStyle = MINT(0.3);
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(x + 64, hy - 3);
-  ctx.lineTo(x + 64 + (w - 64 - gw - 26) * k, hy - 3);
-  ctx.stroke();
-
-  // Title, decoding, with a block cursor while it does
-  const title = decode(p.title, age);
-  const tw = text(ctx, title, x + 12, y + 58, `700 30px ${HEAD}`, WHITE(0.97), 'left', 3);
-  if (age < 1.4 || blink) {
-    ctx.fillStyle = MINT(age < 1.4 ? 0.9 : 0.5);
-    ctx.fillRect(x + 16 + tw, y + 36, 11, 24);
+  const gridFont = `500 11px ${MONO}`;
+  const gridRaw = decode(p.grid, age, 0.018, 0.2);
+  const grid = fitCanvasText(ctx, gridRaw, Math.max(60, w - 76), gridFont, 0.8);
+  const gw = text(ctx, grid, x + w - 12, hy + 1, gridFont, WHITE(0.8), 'right', 0.8);
+  const ruleSpan = Math.max(0, w - 64 - gw - 24);
+  if (ruleSpan > 4) {
+    ctx.strokeStyle = MINT(0.3);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x + 64, hy - 3);
+    ctx.lineTo(x + 64 + ruleSpan * k, hy - 3);
+    ctx.stroke();
   }
-  text(ctx, decode(p.subtitle.toUpperCase(), age, 0.012, 0.45), x + 12, y + 78, `600 13px ${HEAD}`, WHITE(0.68), 'left', 2);
+
+  // Title, decoding cleanly within `titleBudget`, with an inset block cursor
+  const rawTitle = decode(p.title, age, 0.025, 0.08);
+  const shownTitle = fitCanvasText(ctx, rawTitle, titleBudget, titleFont, titleSpace);
+  const titleBaselineY = y + 58 - Math.round((30 - titlePx) * 0.2);
+  const tw = text(ctx, shownTitle, x + 12, titleBaselineY, titleFont, WHITE(0.97), 'left', titleSpace);
+  const cursorW = Math.max(7, Math.round(titlePx * 0.34));
+  const cursorH = Math.max(15, Math.round(titlePx * 0.78));
+  const cursorX = x + 15 + tw;
+  if ((age < 1.4 || blink) && cursorX + cursorW <= x + w - 8) {
+    ctx.fillStyle = MINT(age < 1.4 ? 0.9 : 0.5);
+    ctx.fillRect(cursorX, titleBaselineY - cursorH + 2, cursorW, cursorH);
+  }
+
+  const subFont = `600 13px ${HEAD}`;
+  const shownSub = fitCanvasText(ctx, decode(p.subtitle.toUpperCase(), age, 0.01, 0.3), innerW, subFont, 1.6);
+  text(ctx, shownSub, x + 12, y + 78, subFont, WHITE(0.72), 'left', 1.6);
+
   // Coordinates: the last figures tick (the fix updating)
-  text(ctx, decode(p.coords, age, 0.015, 0.6), x + 12, y + 97, `500 12px ${MONO}`, MINT(0.92), 'left', 0.5);
+  const coordsFont = `500 11.5px ${MONO}`;
+  const shownCoords = fitCanvasText(ctx, decode(p.coords, age, 0.012, 0.4), innerW, coordsFont, 0.4);
+  text(ctx, shownCoords, x + 12, y + 97, coordsFont, MINT(0.92), 'left', 0.4);
+
   // Footer: signal bars, local solar time, mission elapsed
   const fy = y + 113;
   for (let i = 0; i < 6; i++) {
@@ -333,16 +450,19 @@ function locationCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, p: Place, 
     ctx.fillRect(x + 12 + i * 5, fy - 2 - i * 1.2, 3, 3 + i * 1.2);
   }
   const lst = t.nearest ? `LST ${clock(t.localTime)}` : '';
-  // While the card decodes, the footer streams the fix coming in
-  const footer = age < 1.6
-    ? Array.from({ length: 7 }, () => Math.floor(Math.random() * 0xffff).toString(16).toUpperCase().padStart(4, '0')).join(' ')
+  const footerRaw = age < 1.1
+    ? Array.from({ length: 6 }, () => Math.floor(Math.random() * 0xffff).toString(16).toUpperCase().padStart(4, '0')).join(' ')
     : `${lst}${lst ? '   ' : ''}T+${elapsed(now - startT)}`;
-  text(ctx, footer, x + 48, fy, `500 10px ${MONO}`, age < 1.6 ? MINT(0.55) : WHITE(0.55), 'left', 1);
-  // A position reticle on the card's corner: a dashed ring turning, locking in as the card lands
+  const footerFont = `500 10px ${MONO}`;
+  const footer = fitCanvasText(ctx, footerRaw, Math.max(60, w - 58), footerFont, 0.8);
+  text(ctx, footer, x + 48, fy, footerFont, age < 1.1 ? MINT(0.55) : WHITE(0.58), 'left', 0.8);
+  ctx.restore();
+
+  // A compact position reticle on the card's corner: a dashed ring turning, locking in as the card lands
   {
-    const rx = x + w + 26;
-    const ry = y + 22;
-    const r = 11 + 10 * (1 - k);
+    const rx = x + w + 20;
+    const ry = y + 20;
+    const r = 9 + 8 * (1 - k);
     ctx.strokeStyle = MINT(0.75);
     ctx.lineWidth = 1.2;
     ctx.setLineDash([3, 3]);
@@ -353,8 +473,8 @@ function locationCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, p: Place, 
     ctx.setLineDash([]);
     ctx.beginPath();
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      ctx.moveTo(rx + dx * (r + 3), ry + dy * (r + 3));
-      ctx.lineTo(rx + dx * (r + 8), ry + dy * (r + 8));
+      ctx.moveTo(rx + dx * (r + 2.5), ry + dy * (r + 2.5));
+      ctx.lineTo(rx + dx * (r + 6.5), ry + dy * (r + 6.5));
     }
     ctx.stroke();
     ctx.fillStyle = age < 1.5 && Math.floor(now * 8) % 2 === 0 ? AMBER(0.95) : MINT(0.95);
@@ -376,17 +496,22 @@ function locationCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, p: Place, 
 }
 
 function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number, right: number, bottom: number): number {
-  const w = 328;
-  const h = 160;
+  const w = 342;
+  const h = 176;
   const x = right - w;
   const y = bottom - h;
   const space = !t.airWorld;
-  // Climb rate from the altitude's change (smoothed), m/min
-  if (Number.isFinite(climb.lastAlt) && now > climb.lastT) {
-    const r = ((t.altKm - climb.lastAlt) * 1000 * 60) / (now - climb.lastT);
+  const altInfo = resolveAltitudeTelemetry(t);
+
+  // Climb rate (m/min): prefer authoritative verticalSpeedMps when supplied, else barometric MSL derivative
+  if (typeof t.verticalSpeedMps === 'number' && Number.isFinite(t.verticalSpeedMps)) {
+    const targetRate = t.verticalSpeedMps * 60;
+    climb.rate += (targetRate - climb.rate) * Math.min(1, now > climb.lastT ? (now - climb.lastT) * 6 : 1);
+  } else if (Number.isFinite(climb.lastAlt) && now > climb.lastT) {
+    const r = ((altInfo.mslM / 1000 - climb.lastAlt) * 1000 * 60) / (now - climb.lastT);
     if (Math.abs(r) < 1e7) climb.rate += (r - climb.rate) * Math.min(1, (now - climb.lastT) * 2);
   }
-  climb.lastAlt = t.altKm;
+  climb.lastAlt = altInfo.mslM / 1000;
   climb.lastT = now;
 
   // Through the sound barrier: the card flashes, a shock ring runs out, SUPERSONIC slides in
@@ -399,8 +524,17 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
   ctx.save();
   ctx.globalAlpha = 0.2 + 0.8 * boot;
   panelBg(ctx, x, y, w, h, true);
-  brackets(ctx, x, y, w, h, boot, burst < 0.6 ? WHITE(0.95 - burst) : MINT(0.5));
-  ctx.fillStyle = MINT(0.55 + 0.35 * Math.sin(now * 2.2 + 1) ** 2);
+  const frameColour = altInfo.gpwsMode === 'pull-up'
+    ? RED(0.92)
+    : altInfo.gpwsMode === 'caution'
+      ? AMBER(0.85)
+      : burst < 0.6
+        ? WHITE(0.95 - burst)
+        : MINT(0.5);
+  brackets(ctx, x, y, w, h, boot, frameColour);
+  ctx.fillStyle = altInfo.terrainWarning
+    ? RED(0.6 + 0.35 * Math.sin(now * 8) ** 2)
+    : MINT(0.55 + 0.35 * Math.sin(now * 2.2 + 1) ** 2);
   ctx.fillRect(right + 4, y + 10, 2, h - 20);
   if (burst < 0.5) {
     ctx.fillStyle = WHITE(0.22 * (1 - burst / 0.5));
@@ -420,21 +554,21 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
   }
   if (!space) {
     const gc = g > 9 ? 'rgba(255, 108, 108, 0.96)' : g > 7 ? AMBER(0.95) : g > 4 ? WHITE(0.9) : WHITE(0.62);
-    text(ctx, `G ${t.gLoad.toFixed(1)}`, x + 16, y + 14, `600 10px ${MONO}`, gc, 'left', 1);
-    text(ctx, `PK ${gPeak.value.toFixed(1)}`, x + 64, y + 14, `500 10px ${MONO}`, WHITE(0.45), 'left', 1);
+    text(ctx, `G ${t.gLoad.toFixed(1)}`, x + 16, y + 15, `600 10px ${MONO}`, gc, 'left', 1);
+    text(ctx, `PK ${gPeak.value.toFixed(1)}`, x + 64, y + 15, `500 10px ${MONO}`, WHITE(0.48), 'left', 1);
     if (t.aoaDeg !== undefined) {
-      text(ctx, `α ${t.aoaDeg.toFixed(1)}°`, x + 122, y + 14, `600 10px ${MONO}`, t.alphaWarning ? AMBER(0.95) : MINT(0.85), 'left', 0.5);
+      text(ctx, `α ${t.aoaDeg.toFixed(1)}°`, x + 124, y + 15, `600 10px ${MONO}`, t.alphaWarning ? AMBER(0.95) : MINT(0.85), 'left', 0.5);
     }
     if (t.twRatio !== undefined) {
-      text(ctx, `T/W ${t.twRatio.toFixed(2)}`, right - 50, y + 14, `600 10px ${MONO}`, t.twRatio >= 1 ? CYAN(0.92) : WHITE(0.55), 'right', 0.5);
+      text(ctx, `T/W ${t.twRatio.toFixed(2)}`, right - 50, y + 15, `600 10px ${MONO}`, t.twRatio >= 1 ? CYAN(0.92) : WHITE(0.55), 'right', 0.5);
     }
   }
 
-  // Altitude tape on the right edge: ticks scroll with the height
+  // Altitude tape on the right edge: ticks scroll with AGL height in atmosphere (range in space)
   const tapeX = right - 34;
-  const tapeTop = y + 14;
-  const tapeH = h - 42;
-  const altM = t.altKm * 1000;
+  const tapeTop = y + 16;
+  const tapeH = h - 44;
+  const altM = space ? t.altKm * 1000 : altInfo.aglM;
   const step = altM < 20000 ? 100 : altM < 2e6 ? 10000 : 1e6;
   const pxPer = 9 / step;
   ctx.save();
@@ -453,7 +587,7 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
   }
   ctx.restore();
   // The caret on the tape
-  ctx.fillStyle = MINT(0.95);
+  ctx.fillStyle = altInfo.gpwsMode === 'pull-up' ? RED(0.98) : altInfo.gpwsMode === 'caution' ? AMBER(0.95) : MINT(0.95);
   ctx.beginPath();
   ctx.moveTo(tapeX - 2, midY);
   ctx.lineTo(tapeX - 8, midY - 4);
@@ -470,36 +604,57 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
   }
 
   const vx = tapeX - 16;
-  const row = (label: string, value: string | number, unit: string, yy: number, size: number, colour: string): void => {
-    text(ctx, label, x + 16, yy, `600 12px ${HEAD}`, WHITE(0.58), 'left', 2.5);
+  const row = (label: string, value: string | number, unit: string, yy: number, size: number, colour: string, labelColour = WHITE(0.62)): void => {
+    text(ctx, label, x + 16, yy, `600 12px ${HEAD}`, labelColour, 'left', 2.2);
     const uw = unit ? text(ctx, unit, vx, yy, `600 12px ${HEAD}`, WHITE(0.62), 'right', 1.5) + 5 : 0;
     if (typeof value === 'number') rollingNumber(ctx, value, vx - uw, yy, size, colour);
     else text(ctx, value, vx - uw, yy, `700 ${size}px ${HEAD}`, colour, 'right', 1);
   };
-  if (t.altKm < 100) row(space ? 'RANGE' : 'ALT', altM, 'M', y + 38, 25, WHITE(0.97));
-  else {
-    const alt = formatDistance(t.altKm).toUpperCase().split(' ');
-    row(space ? 'RANGE' : 'ALT', alt[0], alt[1] ?? '', y + 38, 25, WHITE(0.97));
+
+  // Primary altitude: explicit AGL above displaced terrain in air, RANGE in space
+  const aglColour =
+    !space && altInfo.gpwsMode === 'pull-up'
+      ? RED(0.98)
+      : !space && (altInfo.gpwsMode === 'caution' || (altInfo.aglM < 120 && !t.onGround))
+        ? AMBER(0.96)
+        : WHITE(0.97);
+  if (space) {
+    if (t.altKm < 100) row('RANGE', t.altKm * 1000, 'M', y + 40, 24, WHITE(0.97));
+    else {
+      const alt = formatDistance(t.altKm).toUpperCase().split(' ');
+      row('RANGE', alt[0], alt[1] ?? '', y + 40, 24, WHITE(0.97));
+    }
+  } else {
+    const aglKm = altInfo.aglM / 1000;
+    if (aglKm < 100) row('AGL', altInfo.aglM, 'M', y + 40, 24, aglColour, altInfo.terrainWarning ? RED(0.95) : MINT(0.86));
+    else {
+      const alt = formatDistance(aglKm).toUpperCase().split(' ');
+      row('AGL', alt[0], alt[1] ?? '', y + 40, 24, aglColour, MINT(0.86));
+    }
+    // Secondary row: authoritative MSL above sea level (left) + climb rate / Ps (right)
+    const mslTxt = `MSL ${formatAltitudeMeters(altInfo.mslM)}`;
+    text(ctx, mslTxt, x + 16, y + 56, `600 10px ${MONO}`, CYAN(0.9), 'left', 0.4);
+    const vs = Math.abs(climb.rate) < 1e5 ? `VS ${climb.rate >= 0 ? '+' : '−'}${Math.round(Math.abs(climb.rate)).toLocaleString('en-US')}` : '';
+    const psStr =
+      t.specificExcessPowerMps !== undefined
+        ? `${vs ? ' · ' : ''}Ps ${t.specificExcessPowerMps >= 0 ? '+' : ''}${Math.round(t.specificExcessPowerMps)}${t.specificExcessPowerMps >= 2 ? '▲' : t.specificExcessPowerMps <= -2 ? '▼' : ''}`
+        : '';
+    if (vs || psStr) {
+      text(ctx, `${vs}${psStr}`, vx, y + 56, `500 9.5px ${MONO}`, climb.rate >= 0 ? MINT(0.78) : AMBER(0.84), 'right', 0.3);
+    }
   }
-  const vs = Math.abs(climb.rate) < 1e5 ? `${climb.rate >= 0 ? '+' : '−'}${Math.round(Math.abs(climb.rate)).toLocaleString('en-US')} M/MIN` : '';
-  const psStr =
-    !space && t.specificExcessPowerMps !== undefined
-      ? `  ·  Ps ${t.specificExcessPowerMps >= 0 ? '+' : ''}${Math.round(t.specificExcessPowerMps)}${t.specificExcessPowerMps >= 2 ? '▲' : t.specificExcessPowerMps <= -2 ? '▼' : ''}`
-      : '';
-  if ((vs || psStr) && !space) {
-    text(ctx, `${vs ? 'VS ' + vs : ''}${psStr}`, vx, y + 52, `500 10px ${MONO}`, climb.rate >= 0 ? MINT(0.75) : AMBER(0.8), 'right', 0.4);
-  }
+
   if (space) {
     const [num, unit] = formatSpeed(t.speedMps).toUpperCase().split(' ');
-    row('VEL', num, unit ?? '', y + 76, 25, WHITE(0.97));
-    text(ctx, `SUN ${(t.sunDistKm / AU_KM).toFixed(3)} AU`, x + 16, y + 104, `500 11px ${MONO}`, AMBER(0.88), 'left', 0.5);
-    text(ctx, t.earthDistKm > 50000 ? `LIGHT-TIME TO EARTH ${lightTime(t.earthDistKm)}` : `EARTH ${formatDistance(t.earthDistKm).toUpperCase()}`, x + 16, y + 124, `500 11px ${MONO}`, CYAN(0.88), 'left', 0.5);
+    row('VEL', num, unit ?? '', y + 82, 24, WHITE(0.97));
+    text(ctx, `SUN ${(t.sunDistKm / AU_KM).toFixed(3)} AU`, x + 16, y + 112, `500 11px ${MONO}`, AMBER(0.88), 'left', 0.5);
+    text(ctx, t.earthDistKm > 50000 ? `LIGHT-TIME TO EARTH ${lightTime(t.earthDistKm)}` : `EARTH ${formatDistance(t.earthDistKm).toUpperCase()}`, x + 16, y + 132, `500 11px ${MONO}`, CYAN(0.88), 'left', 0.5);
   } else {
     const shownSpdMps = t.iasMps ?? t.speedMps;
-    row(t.iasMps !== undefined ? 'IAS' : 'SPD', shownSpdMps * 3.6, 'KM/H', y + 76, 25, WHITE(0.97));
+    row(t.iasMps !== undefined ? 'IAS' : 'SPD', shownSpdMps * 3.6, 'KM/H', y + 84, 24, WHITE(0.97));
     const kt = Math.round(shownSpdMps * 1.94384).toLocaleString('en-US');
     const tasTxt = t.tasMps !== undefined && Math.abs(t.tasMps - shownSpdMps) > 5 ? `TAS ${Math.round(t.tasMps)} M/S · ` : '';
-    text(ctx, `${tasTxt}${kt} KT`, vx, y + 90, `500 10px ${MONO}`, WHITE(0.55), 'right', 0.4);
+    text(ctx, `${tasTxt}${kt} KT`, vx, y + 99, `500 10px ${MONO}`, WHITE(0.58), 'right', 0.4);
     // Mach scale to 3
     const segs = 30;
     const sx = x + 16;
@@ -510,23 +665,42 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
       const sup = i >= 10;
       ctx.fillStyle = on ? (sup ? MINT(0.9) : WHITE(0.85)) : WHITE(0.12);
       const hh = i % 10 === 9 ? 9 : 6;
-      ctx.fillRect(sx + (i * sw) / segs, y + 125 - hh, sw / segs - 2, hh);
+      ctx.fillRect(sx + (i * sw) / segs, y + 138 - hh, sw / segs - 2, hh);
     }
-    text(ctx, t.supercruise ? 'SUPERCRUISE' : 'MACH', sx, y + 111, `600 11px ${HEAD}`, t.supercruise ? CYAN(0.92) : WHITE(0.58), 'left', 2);
-    text(ctx, t.mach.toFixed(2), vx, y + 128, `700 28px ${HEAD}`, t.mach >= 1 ? MINT(0.98) : WHITE(0.97), 'right', 1);
+    text(ctx, t.supercruise ? 'SUPERCRUISE' : 'MACH', sx, y + 123, `600 11px ${HEAD}`, t.supercruise ? CYAN(0.92) : WHITE(0.58), 'left', 2);
+    text(ctx, t.mach.toFixed(2), vx, y + 141, `700 28px ${HEAD}`, t.mach >= 1 ? MINT(0.98) : WHITE(0.97), 'right', 1);
     if (burst < 2.4) {
       const r = 10 + burst * 260;
       ctx.strokeStyle = WHITE(Math.max(0, 0.7 - burst * 0.9));
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(vx - 30, y + 117, r, Math.PI * 0.95, Math.PI * 1.55);
+      ctx.arc(vx - 30, y + 130, r, Math.PI * 0.95, Math.PI * 1.55);
       ctx.stroke();
       const a = burst < 0.2 ? burst / 0.2 : burst > 1.8 ? (2.4 - burst) / 0.6 : 1;
       const slide = (1 - ease(burst / 0.35)) * 40;
+      const regime = t.mach >= 1.2 ? 'SUPERSONIC' : 'TRANSONIC';
+      const speedKmh = Math.round(t.speedMps * 3.6).toLocaleString('en-US');
       ctx.save();
       ctx.globalAlpha = a;
+      const bannerSub = `MACH ${t.mach.toFixed(2)}  ·  ${regime}  ·  ${speedKmh} KM/H`;
+      const bannerW = Math.max(220, measureSpacedText(ctx, bannerSub, `600 10px ${MONO}`, 1.6) + 28);
+      const bg = ctx.createLinearGradient(right - bannerW, y - 54, right, y - 54);
+      bg.addColorStop(0, 'rgba(4, 10, 14, 0)');
+      bg.addColorStop(0.25, 'rgba(4, 10, 14, 0.56)');
+      bg.addColorStop(1, 'rgba(4, 10, 14, 0.72)');
+      ctx.fillStyle = bg;
+      ctx.fillRect(right - bannerW, y - 54, bannerW, 48);
       text(ctx, 'SUPERSONIC', right + slide, y - 14, `700 22px ${HEAD}`, MINT(0.98), 'right', 8);
-      text(ctx, decode(`MACH 1  ·  ${Math.round(t.speedMps * 3.6).toLocaleString('en-US')} KM/H`, burst, 0.02, 0.2), right, y - 40, `500 10px ${MONO}`, WHITE(0.75), 'right', 2);
+      text(
+        ctx,
+        bannerSub,
+        right,
+        y - 40,
+        `600 10px ${MONO}`,
+        WHITE(0.92),
+        'right',
+        1.6,
+      );
       ctx.restore();
     }
   }
@@ -547,7 +721,9 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
   ].filter(Boolean);
   ctx.fillStyle = WHITE(0.08);
   ctx.fillRect(x + 14, y + h - 24, w - 28, 1);
-  text(ctx, pills.join(' · '), x + 16, fy, `600 10px ${MONO}`, t.maneuver && t.maneuver !== 'none' ? CYAN(0.92) : fuelPct <= 15 ? AMBER(0.95) : MINT(0.82), 'left', 0.8);
+  const pillFont = `600 10px ${MONO}`;
+  const pillText = fitCanvasText(ctx, pills.join(' · '), w - 32, pillFont, 0.8);
+  text(ctx, pillText, x + 16, fy, pillFont, t.maneuver && t.maneuver !== 'none' ? CYAN(0.92) : fuelPct <= 15 ? AMBER(0.95) : MINT(0.82), 'left', 0.8);
 
   ctx.restore();
   return burst < 2.4 && !space ? y - 50 : y;
@@ -715,26 +891,46 @@ function centreReveal(ctx: CanvasRenderingContext2D, t: JetTelemetry, place: Pla
   ctx.restore();
 }
 
-/** Ground ahead / heat: a tactical warning box, hazard-striped, pulsing. Returns whether drawn. */
+/** Ground ahead / GPWS terrain / heat: a tactical warning box, hazard-striped, pulsing. Returns whether drawn. */
 function warning(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number): boolean {
-  if (!t.warning && !t.spinWarning) return false;
+  const altInfo = resolveAltitudeTelemetry(t);
+  const gpwsPullUp =
+    altInfo.gpwsMode === 'pull-up' ||
+    (altInfo.terrainWarning && altInfo.gpwsMode !== 'caution') ||
+    t.warning === 1;
+  const gpwsCaution = !gpwsPullUp && altInfo.gpwsMode === 'caution';
+  if (!gpwsPullUp && !gpwsCaution && !t.warning && !t.spinWarning) return false;
   const w = t.width;
   const h = t.height;
-  const label = t.warning === 1 ? 'PULL UP' : t.warning === 2 ? 'HEAT  ·  SOLAR CORONA' : 'SPIN  ·  STICK FWD + OPP Q/E';
-  const pulse = 0.55 + 0.45 * Math.abs(Math.sin(now * (t.warning === 1 || t.spinWarning ? 9 : 5)));
+  const label = gpwsPullUp
+    ? 'TERRAIN  ·  PULL UP'
+    : gpwsCaution
+      ? 'CAUTION  ·  TERRAIN'
+      : t.warning === 2
+        ? 'HEAT  ·  SOLAR CORONA'
+        : 'SPIN  ·  STICK FWD + OPP Q/E';
+  const subLabel =
+    gpwsPullUp || gpwsCaution
+      ? `AGL ${formatAltitudeMeters(altInfo.aglM)}  ·  MSL ${formatAltitudeMeters(altInfo.mslM)}`
+      : '';
+  const urgent = gpwsPullUp || t.spinWarning;
+  const isAmberOnly = gpwsCaution;
+  const pulse = 0.55 + 0.45 * Math.abs(Math.sin(now * (urgent ? 9 : 5)));
   const cx = w / 2;
-  const cy = h * 0.64;
+  const cy = h * 0.62;
+  const strokeRgb = isAmberOnly ? '244, 205, 114' : '255, 90, 80';
+  const bgRgb = isAmberOnly ? '38, 26, 4' : '42, 6, 6';
+  const fgRgb = isAmberOnly ? '250, 218, 134' : '255, 126, 110';
   ctx.save();
-  ctx.font = `700 26px ${HEAD}`;
-  ctx.letterSpacing = '10px';
-  const tw = ctx.measureText(label).width + 60;
-  ctx.letterSpacing = '0px';
+  const labelFont = `700 ${w < 960 ? 21 : 25}px ${HEAD}`;
+  const labelSpacing = w < 960 ? 6 : 9;
+  const tw = Math.min(w - 64, measureSpacedText(ctx, label, labelFont, labelSpacing) + 54);
   const bx = cx - tw / 2;
   const by = cy - 26;
-  ctx.fillStyle = `rgba(40, 6, 6, ${0.55 * pulse})`;
+  ctx.fillStyle = `rgba(${bgRgb}, ${0.68 * pulse})`;
   chamferPanel(ctx, bx, by, tw, 40, 10, false);
   ctx.fill();
-  ctx.strokeStyle = `rgba(255, 90, 80, ${pulse})`;
+  ctx.strokeStyle = `rgba(${strokeRgb}, ${pulse})`;
   ctx.lineWidth = 1.5;
   ctx.stroke();
   // Hazard stripes along the top and bottom edges
@@ -743,7 +939,7 @@ function warning(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number): b
   ctx.rect(bx, by - 8, tw, 5);
   ctx.rect(bx, by + 43, tw, 5);
   ctx.clip();
-  ctx.fillStyle = `rgba(255, 90, 80, ${0.85 * pulse})`;
+  ctx.fillStyle = `rgba(${strokeRgb}, ${0.85 * pulse})`;
   const shift = (now * 30) % 12;
   for (let sx = bx - 20 + shift; sx < bx + tw + 20; sx += 12) {
     ctx.beginPath();
@@ -755,14 +951,24 @@ function warning(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number): b
     ctx.fill();
   }
   ctx.restore();
-  text(ctx, label, cx + 5, cy + 2, `700 26px ${HEAD}`, `rgba(255, 120, 105, ${0.6 + 0.4 * pulse})`, 'center', 10);
+  text(ctx, label, cx + labelSpacing * 0.5, cy + 2, labelFont, `rgba(${fgRgb}, ${0.65 + 0.35 * pulse})`, 'center', labelSpacing);
+  if (subLabel) {
+    const subFont = `600 10.5px ${MONO}`;
+    const subW = measureSpacedText(ctx, subLabel, subFont, 1.2) + 20;
+    ctx.fillStyle = 'rgba(6, 10, 14, 0.78)';
+    ctx.fillRect(cx - subW / 2, by + 52, subW, 18);
+    ctx.strokeStyle = `rgba(${strokeRgb}, ${0.45 * pulse})`;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cx - subW / 2, by + 52, subW, 18);
+    text(ctx, subLabel, cx, by + 64, subFont, WHITE(0.94), 'center', 1.2);
+  }
   // Chevrons closing in from both sides
   const k = (now * 1.6) % 1;
   for (const s of [-1, 1]) {
     for (let i = 0; i < 3; i++) {
-      const off = tw / 2 + 24 + ((i + 1 - k) % 3) * 16;
+      const off = tw / 2 + 20 + ((i + 1 - k) % 3) * 14;
       const ax = cx + s * off;
-      ctx.strokeStyle = `rgba(255, 90, 80, ${0.25 + 0.25 * i})`;
+      ctx.strokeStyle = `rgba(${strokeRgb}, ${0.25 + 0.25 * i})`;
       ctx.lineWidth = 2.5;
       ctx.beginPath();
       ctx.moveTo(ax + s * 8, cy - 16);
@@ -776,21 +982,113 @@ function warning(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number): b
 }
 
 /**
- * Draws the tactical overlay (desktop and tablet). `earth` is the place name under the jet when
- * over Earth (null elsewhere). Returns the top of the flight card (for anything stacked above).
- */
-/**
  * The layout for a screen: how much the cards are scaled (1 at 1280x720; smaller on a small
  * window or tablet, larger on a big monitor), their margin, and whether they sit at the top (a
  * touch screen keeps its bottom corners for the thumbs: the stick and the throttle are there).
  */
 export function tacticalLayout(w: number, h: number, touch: boolean): { k: number; pad: number; top: boolean; tape: boolean } {
   // By the screen's size; but on a narrow or upright screen, as large as the two cards still fit
-  // side by side (they are ~640 px wide together at 1x, plus margins), so text stays readable
+  // side by side (they are ~660 px wide together at 1x, plus margins), so text stays readable
   const byScreen = Math.min(w / 1280, h / 720);
-  const byFit = Math.min(0.9, (w - 120) / 640, h / 600);
+  const byFit = Math.min(0.9, (w - 120) / 660, h / 600);
   const k = Math.max(0.58, Math.min(1.35, Math.max(byScreen, byFit)));
   return { k, pad: Math.max(14, Math.round(34 * k)), top: touch, tape: w >= 700 };
+}
+
+/** Bottom Y coordinate (CSS px) of the top heading tape & readout box, used to place radio subtitles safely underneath. */
+export function tacticalHeadingBottom(w: number, h: number, touch: boolean, topInset = 0): number {
+  const L = tacticalLayout(w, h, touch);
+  const tapeTop = (L.top ? Math.max(58, topInset + 50) : 58) * Math.max(0.8, Math.min(1.2, L.k));
+  return L.tape ? Math.ceil(tapeTop + 52 * L.k) : Math.ceil(topInset + 54);
+}
+
+export interface HudRect {
+  l: number;
+  t: number;
+  r: number;
+  b: number;
+}
+
+/**
+ * Screen-space rectangles occupied by tactical HUD panels (`LOC` card, `FLT` card, bottom-center
+ * throttle & PSM hint lane, top-left airframe status, top-right controls, and heading tape) so
+ * floating sky markers (`SATURN`, `JWST`, `ARTEMIS II`, etc.) never draw over/inside HUD boxes.
+ */
+export function tacticalExclusionZones(
+  w: number,
+  h: number,
+  bottomInset: number,
+  topInset = 0,
+  touch = isTouch(),
+): HudRect[] {
+  const L = tacticalLayout(w, h, touch);
+  const LOC_H = 122;
+  const FLT_H = 176;
+  const FLT_W = 342;
+  const tapeTop = (L.top ? Math.max(58, topInset + 50) : 58) * Math.max(0.8, Math.min(1.2, L.k));
+  const topClear = L.top ? Math.max(topInset + (w < 820 ? 132 : 96), (L.tape ? tapeTop + 62 * L.k : 70) + 12) : 0;
+  const locBottom = L.top ? topClear + LOC_H * L.k : h - Math.max(40, bottomInset + 12);
+  const fltBottom = L.top ? topClear + (FLT_H + 16) * L.k : locBottom;
+  const centerMarginPx = Math.max(130, 175 * L.k);
+  const byCenter = (w / 2 - L.pad - centerMarginPx) / L.k - 36;
+  const byFlightCard = (w - 2 * L.pad - FLT_W * L.k - 56) / L.k;
+  const locMaxW = Math.max(210, Math.min(500, Math.min(byCenter, byFlightCard)));
+
+  const zones: HudRect[] = [
+    // Bottom-left (or top-left on touch) LOC card + accent bar + corner reticle
+    {
+      l: Math.max(0, L.pad - 16),
+      t: locBottom - LOC_H * L.k - 14,
+      r: L.pad + (locMaxW + 42) * L.k,
+      b: locBottom + 16,
+    },
+    // Bottom-right (or top-right on touch) FLT card + right accent bar
+    {
+      l: w - L.pad - FLT_W * L.k - 14,
+      t: fltBottom - FLT_H * L.k - 18,
+      r: w,
+      b: fltBottom + 16,
+    },
+    // Bottom-center throttle bar, mode strip, PSM ENVELOPE / maneuver hint bar & map credits
+    {
+      l: Math.max(0, w / 2 - 240),
+      t: h - Math.max(114, bottomInset + 100),
+      r: Math.min(w, w / 2 + 240),
+      b: h,
+    },
+    // Top-left airframe status box
+    {
+      l: 0,
+      t: 0,
+      r: Math.min(w * 0.45, 348),
+      b: topInset + 132,
+    },
+    // Top-right icon controls bar
+    {
+      l: Math.max(0, w - 580),
+      t: 0,
+      r: w,
+      b: topInset + 64,
+    },
+  ];
+
+  if (L.tape) {
+    zones.push({
+      l: w / 2 - 245 * L.k,
+      t: Math.max(0, tapeTop - 12),
+      r: w / 2 + 245 * L.k,
+      b: tapeTop + 62 * L.k,
+    });
+  }
+  if (w < 560 || h < 500) {
+    zones.push({
+      l: 0,
+      t: h - Math.max(96, bottomInset + 86),
+      r: w,
+      b: h,
+    });
+  }
+  return zones;
 }
 
 let touchScreen: boolean | null = null;
@@ -820,15 +1118,21 @@ export function drawTactical(ctx: CanvasRenderingContext2D, t: JetTelemetry, ear
   const place = describePlace(t, earth);
   // Each card is drawn about its own anchor corner, scaled
   const LOC_H = 122;
-  const FLT_H = 160;
+  const FLT_H = 176;
+  const FLT_W = 342;
   const tapeTop = (L.top ? Math.max(58, topInset + 50) : 58) * Math.max(0.8, Math.min(1.2, L.k));
   const topClear = L.top ? Math.max(topInset + (w < 820 ? 132 : 96), (L.tape ? tapeTop + 62 * L.k : 70) + 12) : 0;
   const locBottom = L.top ? topClear + LOC_H * L.k : h - Math.max(40, bottomInset + 12);
   const fltBottom = L.top ? topClear + (FLT_H + 16) * L.k : locBottom;
+  // Keep LOC card + its right reticle strictly clear of both the center throttle/prompt lane and the flight card
+  const centerMarginPx = Math.max(130, 175 * L.k);
+  const byCenter = (w / 2 - L.pad - centerMarginPx) / L.k - 36;
+  const byFlightCard = (w - 2 * L.pad - FLT_W * L.k - 56) / L.k;
+  const locMaxW = Math.max(210, Math.min(byCenter, byFlightCard));
   ctx.save();
   ctx.translate(L.pad, locBottom);
   ctx.scale(L.k, L.k);
-  locationCard(ctx, t, place, now, 0, 0, (w / 2 - L.pad - Math.max(110, 170 * L.k)) / L.k);
+  locationCard(ctx, t, place, now, 0, 0, locMaxW);
   ctx.restore();
   ctx.save();
   ctx.translate(w - L.pad, fltBottom);
@@ -843,8 +1147,8 @@ export function drawTactical(ctx: CanvasRenderingContext2D, t: JetTelemetry, ear
     headingTape(ctx, t, 0, 0);
     ctx.restore();
   }
-  // The title sits in the upper third, or neatly below the top cards on tablets
-  centreReveal(ctx, t, place, earth, now, L.top ? Math.min(h * 0.62, Math.max(h * 0.44, fltBottom + 96)) : h * 0.3);
+  // The title sits clearly below the top heading tape + radio comms lane, or below the top cards on tablets
+  centreReveal(ctx, t, place, earth, now, L.top ? Math.min(h * 0.62, Math.max(h * 0.44, fltBottom + 96)) : h * 0.35);
   warning(ctx, t, now);
   ctx.restore();
 }

@@ -129,28 +129,49 @@ export function createSpaceEnvironmentMap(renderer: THREE.WebGLRenderer): THREE.
   return target.texture;
 }
 
+/** Canonical aliases preventing HTTP 404 requests for legacy/mismatched NASA model filenames. */
+const MODEL_PATH_ALIASES: Record<string, string> = {
+  '67p_churyumov_gerasimenko/comet_67p.gltf': '67p_churyumov_gerasimenko/67p_churyumov_gerasimenko.gltf',
+};
+
+/** Resolve a NASA model path to its verified on-disk asset path under `public/nasa/models/`. */
+export function resolveGltfModelPath(modelPath: string): string {
+  const clean = modelPath.replace(/^\/+/, '');
+  return MODEL_PATH_ALIASES[clean] ?? clean;
+}
+
 /**
  * Shared singleton GLTF / DRACO / KTX2 streaming bank for spacecraft, asteroid nuclei,
  * comets, comparison props, and magnetosphere overlays.
  */
 export class GltfModelBank {
   private static gltfLoader: GLTFLoader | null = null;
+  private static loadingManager: THREE.LoadingManager | null = null;
   private static dracoLoader: DRACOLoader | null = null;
   private static ktx2Loader: KTX2Loader | null = null;
   private static cache = new Map<string, Promise<NormalizedGltfAsset | null>>();
   private static queue: Array<() => void> = [];
+  private static deferredQueue: Array<() => void> = [];
+  private static backgroundDeferred = false;
+  private static maxAnisotropy = 8;
   private static activeLoads = 0;
   private static readonly MAX_CONCURRENT = 4;
 
   public static init(renderer: THREE.WebGLRenderer): void {
     if (this.gltfLoader) return;
     const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
+    this.maxAnisotropy = Math.min(8, Math.max(1, renderer.capabilities?.getMaxAnisotropy?.() ?? 8));
 
-    const draco = new DRACOLoader();
+    // Dedicated LoadingManager keeps background spacecraft & asteroid glTFs from stalling
+    // THREE.DefaultLoadingManager (which tracks critical planetary boot textures).
+    const manager = new THREE.LoadingManager();
+    this.loadingManager = manager;
+
+    const draco = new DRACOLoader(manager);
     draco.setDecoderPath(`${base}draco/`);
     this.dracoLoader = draco;
 
-    const ktx2 = new KTX2Loader();
+    const ktx2 = new KTX2Loader(manager);
     ktx2.setTranscoderPath(`${base}basis/`);
     try {
       ktx2.detectSupport(renderer);
@@ -159,10 +180,26 @@ export class GltfModelBank {
     }
     this.ktx2Loader = ktx2;
 
-    const loader = new GLTFLoader();
+    const loader = new GLTFLoader(manager);
     loader.setDRACOLoader(draco);
     loader.setKTX2Loader(ktx2);
     this.gltfLoader = loader;
+  }
+
+  /**
+   * Pause/resume non-priority background glTF downloads (asteroids, comets, distant spacecraft)
+   * during `/fly/` cold start or low-altitude Earth flight. Priority targets still load immediately.
+   */
+  public static setBackgroundDeferred(deferred: boolean): void {
+    this.backgroundDeferred = deferred;
+    if (!deferred && this.deferredQueue.length > 0) {
+      this.queue.push(...this.deferredQueue.splice(0, this.deferredQueue.length));
+      this.pumpQueue();
+    }
+  }
+
+  public static isBackgroundDeferred(): boolean {
+    return this.backgroundDeferred;
   }
 
   private static pumpQueue(): void {
@@ -203,17 +240,19 @@ export class GltfModelBank {
     if (typeof window === 'undefined' || typeof fetch === 'undefined') {
       return Promise.resolve(null);
     }
-    const key = `${mode}:${modelPath}`;
+    const resolvedPath = resolveGltfModelPath(modelPath);
+    const key = `${mode}:${resolvedPath}`;
     const existing = this.cache.get(key);
     if (existing) return existing;
 
     const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
-    const url = `${base}nasa/models/${modelPath}`;
+    const url = `${base}nasa/models/${resolvedPath}`;
 
     const promise = new Promise<NormalizedGltfAsset | null>((resolve) => {
       const run = () => {
         if (!this.gltfLoader) {
-          this.gltfLoader = new GLTFLoader();
+          this.loadingManager ??= new THREE.LoadingManager();
+          this.gltfLoader = new GLTFLoader(this.loadingManager);
         }
         this.gltfLoader
           .loadAsync(url)
@@ -236,10 +275,13 @@ export class GltfModelBank {
 
       if (priority) {
         this.queue.unshift(run);
+        this.pumpQueue();
+      } else if (this.backgroundDeferred) {
+        this.deferredQueue.push(run);
       } else {
         this.queue.push(run);
+        this.pumpQueue();
       }
-      this.pumpQueue();
     });
 
     this.cache.set(key, promise);
@@ -300,13 +342,19 @@ export class GltfModelBank {
         materials.push(m);
         const std = m as THREE.MeshStandardMaterial;
         if (std.isMeshStandardMaterial || (std as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial) {
+          for (const t of [std.map, std.emissiveMap, std.normalMap, std.roughnessMap, std.metalnessMap]) {
+            if (!t) continue;
+            t.anisotropy = this.maxAnisotropy;
+            t.generateMipmaps = true;
+            t.minFilter = THREE.LinearMipmapLinearFilter;
+            t.magFilter = THREE.LinearFilter;
+            textures.add(t);
+          }
           if (std.map) {
             std.map.colorSpace = THREE.SRGBColorSpace;
-            textures.add(std.map);
           }
           if (std.emissiveMap) {
             std.emissiveMap.colorSpace = THREE.SRGBColorSpace;
-            textures.add(std.emissiveMap);
           }
           if (mode === 'spacecraft') {
             std.envMapIntensity = std.metalness > 0.5 ? 1.75 : 1.05;
@@ -339,11 +387,15 @@ export class GltfModelBank {
 
   public static dispose(): void {
     this.queue = [];
+    this.deferredQueue = [];
+    this.backgroundDeferred = false;
+    this.activeLoads = 0;
     this.dracoLoader?.dispose();
     this.ktx2Loader?.dispose();
     this.dracoLoader = null;
     this.ktx2Loader = null;
     this.gltfLoader = null;
+    this.loadingManager = null;
   }
 }
 
@@ -679,10 +731,34 @@ export class SpacecraftLayerManager {
     jetActive: boolean;
     hudSelectorsReady?: boolean;
     deltaSec: number;
+    /** Hide deep-space/orbital spacecraft markers & suppress non-focused models near a planet surface. */
+    suppressForSurface?: boolean;
+    /** Defer non-focused spacecraft glTF & .dyn downloads during `/fly/` cold start / low-altitude Earth flight. */
+    deferStreaming?: boolean;
+    /** World position & radius of the currently focused planet/moon for reticle occlusion checks. */
+    focusedBodyPos?: THREE.Vector3 | null;
+    focusedBodyRadius?: number;
+    /** Camera altitude above the focused body in body radii (Infinity when in space). */
+    focusedBodyAltitudeRadii?: number;
+    /** Minimum screen Y (CSS px) to clear the top HUD navbar. */
+    topSafeY?: number;
     projectWorldToScreen?: (world: THREE.Vector3) => { x: number; y: number } | null;
   }): void {
     this.frameCounter++;
-    const { jdTDB, camera, resolver, focusedName, jetLockedName, projectWorldToScreen } = params;
+    const {
+      jdTDB,
+      camera,
+      resolver,
+      focusedName,
+      jetLockedName,
+      suppressForSurface = false,
+      deferStreaming = false,
+      focusedBodyPos = null,
+      focusedBodyRadius = 0,
+      focusedBodyAltitudeRadii = Infinity,
+      topSafeY,
+      projectWorldToScreen,
+    } = params;
     camera.getWorldPosition(this.tmpCam);
     const fullResolver: ParentResolver = {
       ...resolver,
@@ -715,6 +791,15 @@ export class SpacecraftLayerManager {
         (b.entry.name.toLowerCase() === lockedLower ||
           b.entry.id.toLowerCase() === lockedLower ||
           b.entry.shortName.toLowerCase() === lockedLower);
+
+      // During `/fly/` cold start or low-altitude Earth flight, skip non-targeted spacecraft so
+      // orbital satellites (`ICESat2`, `Landsat9`, `TROPICS`, etc.) never stall flight boot.
+      if (deferStreaming && !isFocused && !isLocked) {
+        b.lodTier = 3;
+        b.bodyGroup.visible = false;
+        continue;
+      }
+
       const hostMatchesFocus =
         focusedLower !== null && b.entry.hostBody.toLowerCase().includes(focusedLower);
 
@@ -726,7 +811,9 @@ export class SpacecraftLayerManager {
       }
 
       const ev = evaluateSpacecraftSceneState(b.entry, jdTDB, fullResolver, (dynFile) => {
-        if (isFocused || isLocked || hostMatchesFocus || isIconic || b.lodTier <= 2) {
+        if (isFocused || isLocked) {
+          void loadDynSegment(dynFile);
+        } else if (!suppressForSurface && (b.lodTier <= 2 || (isIconic && focusedBodyAltitudeRadii >= 1.2) || (hostMatchesFocus && focusedBodyAltitudeRadii >= 0.35))) {
           void loadDynSegment(dynFile);
         }
       });
@@ -749,8 +836,8 @@ export class SpacecraftLayerManager {
       // satellite in orbit loaded the moment the jet was over Earth, each a fraction of a pixel
       const screenH = typeof window !== 'undefined' ? window.innerHeight : 1080;
       const pxRadius = (b.visualRadius / Math.max(camDist, 1e-6)) * (screenH / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
-      const nearInspect = camDist < 120 && pxRadius > 2.5;
-      const nearPrefetch = camDist < 420 && pxRadius > 1;
+      const nearInspect = !suppressForSurface && camDist < 120 && pxRadius > 2.5;
+      const nearPrefetch = !suppressForSurface && camDist < 420 && pxRadius > 1.2;
 
       if (isFocused || isLocked || nearInspect) {
         b.lodTier = 1;
@@ -762,16 +849,21 @@ export class SpacecraftLayerManager {
           closestVisibleDist = camDist;
           closestVisibleBundle = b;
         }
-      } else if (nearPrefetch || hostMatchesFocus) {
+      } else if (nearPrefetch) {
         b.lodTier = 2;
-        b.bodyGroup.visible = nearPrefetch;
-        if (nearPrefetch || (hostMatchesFocus && camDist < 900)) {
-          this.ensureModelLoaded(b, ev.activeModelPath, false);
-          prefetchEntryDyn(b.entry);
-        }
-        if (camDist < closestVisibleDist && b.bodyGroup.visible) {
+        b.bodyGroup.visible = true;
+        this.ensureModelLoaded(b, ev.activeModelPath, false);
+        prefetchEntryDyn(b.entry);
+        if (camDist < closestVisibleDist) {
           closestVisibleDist = camDist;
           closestVisibleBundle = b;
+        }
+      } else if (hostMatchesFocus && !suppressForSurface && focusedBodyAltitudeRadii >= 0.35) {
+        b.lodTier = 2;
+        b.bodyGroup.visible = false;
+        // Keep trajectories warm in orbit without downloading dozens of sub-pixel satellite glTFs
+        if (camDist < 420) {
+          prefetchEntryDyn(b.entry);
         }
       } else {
         b.lodTier = 3;
@@ -843,7 +935,28 @@ export class SpacecraftLayerManager {
       if (this.comparisonGroup) this.comparisonGroup.visible = false;
     }
 
-    this.updateReticles(camera, focusedLower, lockedLower, resolver, projectWorldToScreen);
+    if (suppressForSurface && !focusedBundle && !lockedBundle) {
+      this.hideAllReticles();
+      return;
+    }
+
+    this.updateReticles(
+      camera,
+      focusedLower,
+      lockedLower,
+      resolver,
+      projectWorldToScreen,
+      focusedBodyPos,
+      focusedBodyRadius,
+      focusedBodyAltitudeRadii,
+      topSafeY,
+    );
+  }
+
+  private hideAllReticles(): void {
+    for (let i = 0; i < this.reticlePool.length; i++) {
+      this.reticlePool[i].style.display = 'none';
+    }
   }
 
   private updateReticles(
@@ -851,12 +964,18 @@ export class SpacecraftLayerManager {
     focusedLower: string | null,
     lockedLower: string | null,
     resolver: ParentResolver,
-    projectWorldToScreen?: (world: THREE.Vector3) => { x: number; y: number } | null
+    projectWorldToScreen?: (world: THREE.Vector3) => { x: number; y: number } | null,
+    focusedBodyPos?: THREE.Vector3 | null,
+    focusedBodyRadius = 0,
+    focusedBodyAltitudeRadii = Infinity,
+    topSafeY?: number,
   ): void {
     if (!this.reticleRoot) return;
     const width = this.container?.clientWidth ?? window.innerWidth;
     const height = this.container?.clientHeight ?? window.innerHeight;
     if (width <= 0 || height <= 0) return;
+
+    const minY = Math.max(76, topSafeY ?? 76);
 
     interface Candidate {
       bundle: SpacecraftBundle;
@@ -869,6 +988,18 @@ export class SpacecraftLayerManager {
     const candidates: Candidate[] = [];
     const camRight = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
     const toTarget = new THREE.Vector3();
+    const tmpOccl = new THREE.Vector3();
+    const tmpRay = new THREE.Vector3();
+    const isOccludedBySphere = (center: THREE.Vector3, rad: number, targetDist: number): boolean => {
+      if (rad <= 0) return false;
+      tmpOccl.subVectors(center, this.tmpCam);
+      const distSphere = tmpOccl.length();
+      if (targetDist <= distSphere) return false;
+      tmpRay.copy(toTarget).normalize();
+      const closest = tmpOccl.dot(tmpRay);
+      if (closest <= 0) return false;
+      return tmpOccl.distanceToSquared(tmpRay.multiplyScalar(closest)) < rad * rad * 0.96;
+    };
 
     for (const b of this.bundles) {
       if (!b.lastEval) continue;
@@ -877,6 +1008,10 @@ export class SpacecraftLayerManager {
       const isFocus = focusedLower === nm || focusedLower === idl || lockedLower === nm || lockedLower === idl;
       const isHostFocused = focusedLower !== null && b.entry.hostBody.toLowerCase().includes(focusedLower);
       const isIconic = ICONIC_DEEP_SPACE_IDS.has(b.entry.id);
+
+      // When orbiting close to a planet (< 1.5 radii), hide unrelated deep-space probes
+      // (Lucy, Messenger, Parker Solar Probe, Europa Clipper) so they never leak over planetary terrain.
+      if (!isFocus && !isHostFocused && focusedBodyAltitudeRadii < 1.5) continue;
 
       const d = this.tmpCam.distanceTo(b.lastEval.worldPosition);
       // Show marker if focused, near host of focused world, close to camera, or iconic deep-space mission
@@ -889,20 +1024,17 @@ export class SpacecraftLayerManager {
       toTarget.copy(b.lastEval.worldPosition).sub(this.tmpCam);
       if (toTarget.dot(camRight) <= 0) continue;
 
+      // Skip if occluded behind the currently focused planet globe (prevents deep-space markers shining through Earth)
+      if (!isFocus && focusedBodyPos && focusedBodyRadius > 0 && isOccludedBySphere(focusedBodyPos, focusedBodyRadius, d)) {
+        continue;
+      }
+
       // Also skip if behind parent planet globe
       if (!isFocus && b.lastEval.parentName !== 'Sun') {
         const pPos = resolver.getWorldPosition(b.lastEval.parentName, this.tmpParent);
         const pRad = resolver.getVisualRadius(b.lastEval.parentName);
-        if (pPos && pRad > 0) {
-          const camToPlanet = pPos.clone().sub(this.tmpCam);
-          const distPlanet = camToPlanet.length();
-          if (d > distPlanet) {
-            const rayDir = toTarget.clone().normalize();
-            const closest = camToPlanet.dot(rayDir);
-            if (closest > 0 && camToPlanet.distanceToSquared(rayDir.multiplyScalar(closest)) < pRad * pRad * 0.94) {
-              continue;
-            }
-          }
+        if (pPos && isOccludedBySphere(pPos, pRad, d)) {
+          continue;
         }
       }
 
@@ -919,7 +1051,7 @@ export class SpacecraftLayerManager {
         sx = (this.tmpProj.x * 0.5 + 0.5) * width;
         sy = (-this.tmpProj.y * 0.5 + 0.5) * height;
       }
-      if (sx < 16 || sx > width - 16 || sy < 48 || sy > height - 64) continue;
+      if (sx < 16 || sx > width - 16 || sy < minY || sy > height - 64) continue;
 
       const prio = (isFocus ? 1000 : 0) + (isHostFocused ? 200 : 0) + (isIconic ? 80 : 0) - Math.min(60, d * 0.01);
       candidates.push({ bundle: b, sx, sy, prio, isFocus });

@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { installCompileGate } from '../rendering/CompileGate';
 import { PhotorealEarth } from '../rendering/PhotorealEarth';
+import { SurfaceTileLayer, type TileImageLoader } from '../explorer/SurfaceTileLayer';
+import { BODY_IMAGERY } from '../explorer/ImageryRegistry';
+import { bodyLatLonToLocal } from '../explorer/TileMath';
 
 describe('terrain coverage during streaming', () => {
   it('does not call continent-scale Google meshes a ready 3D city', () => {
@@ -83,5 +86,78 @@ describe('terrain coverage during streaming', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('prefetches lookahead tiles along velocity vector without starving visible foreground tiles', () => {
+    const requested: string[] = [];
+    const loader: TileImageLoader = {
+      load(url, onLoad) {
+        requested.push(url);
+        const img = { src: url, width: 256, height: 256, naturalWidth: 256, naturalHeight: 256, complete: true } as HTMLImageElement;
+        onLoad(img);
+        return img;
+      },
+    };
+    const layer = new SurfaceTileLayer(BODY_IMAGERY.Earth.provider!, loader);
+    layer.bodyName = 'Earth';
+    layer.radiusKm = 6371;
+    const [x, y, z] = bodyLatLonToLocal('Earth', 37.82, -122.48);
+    // Moving East along the tangent at ~250 m/s (~4e-5 Earth radii/s)
+    const camStatic = {
+      position: [x * 1.0005, y * 1.0005, z * 1.0005] as [number, number, number],
+      pixelsPerRadian: 900,
+      bodyName: 'Earth',
+      isCapVisible: (c: [number, number, number]) => c[0] * x + c[1] * y + c[2] * z > 0.9995,
+    };
+    const layerStatic = new SurfaceTileLayer(BODY_IMAGERY.Earth.provider!, {
+      load(url, onLoad) {
+        const img = { src: url, width: 256, height: 256, naturalWidth: 256, naturalHeight: 256, complete: true } as HTMLImageElement;
+        onLoad(img);
+        return img;
+      },
+    });
+    layerStatic.bodyName = 'Earth';
+    layerStatic.radiusKm = 6371;
+    layerStatic.update(camStatic);
+
+    // East vector at (x, y, z)
+    const ex = -z, ez = x;
+    const el = Math.hypot(ex, ez) || 1;
+    layer.update({
+      ...camStatic,
+      velocity: [(ex / el) * 8e-5, 0, (ez / el) * 8e-5],
+      lookaheadSec: 4.0,
+    });
+    expect(layer.getStatus().cached).toBeGreaterThanOrEqual(layerStatic.getStatus().cached);
+    expect(layer.getStatus().drawn).toBeGreaterThan(0);
+    expect(requested.length).toBeGreaterThan(0);
+    layer.dispose();
+    layerStatic.dispose();
+  });
+
+  it('distinguishes local mountain/city PhotorealEarth coverage from coarse continent shells and hides Earth underlay strips', () => {
+    const earth = Object.create(PhotorealEarth.prototype) as PhotorealEarth;
+    Object.assign(earth, {
+      enabled: true,
+      disposed: false,
+      authFailed: false,
+      tiles: { visibleTiles: new Set([{ geometricError: 4109 }, { geometricError: 2500 }]) },
+    });
+    expect(earth.hasLocalCoverage).toBe(false);
+    Object.assign(earth, {
+      tiles: { visibleTiles: new Set([{ geometricError: 4109 }, { geometricError: 512 }]) },
+    });
+    expect(earth.hasLocalCoverage).toBe(true);
+
+    const layer = new SurfaceTileLayer(BODY_IMAGERY.Earth.provider!, {
+      load: (url) => ({ src: url } as HTMLImageElement),
+    });
+    layer.bodyName = 'Earth';
+    layer.setOpacity(1);
+    layer.setUnderlay(true);
+    expect(layer.group.visible).toBe(false);
+    layer.setUnderlay(false);
+    expect(layer.group.visible).toBe(true);
+    layer.dispose();
   });
 });

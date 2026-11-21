@@ -10,6 +10,7 @@ import {
   type MfdSlot,
 } from './JetTelemetry';
 import { formatDistance, formatEta, formatSpeed } from './worlds';
+import { formatAltitudeMeters, resolveAltitudeTelemetry } from './TacticalHud';
 
 /**
  * Interactive 3-screen cockpit MFD atlas (`dynamic_mfd` material on Gripen / Su-30 / cockpit mesh).
@@ -584,24 +585,48 @@ export class MfdDisplays {
     c.fillStyle = t.overGWarning ? RED : MINT;
     c.fillText(`G ${t.gLoad.toFixed(1)}`, lx, cy + 56);
 
-    // Right Tape: Alt, VSI, T/W, Ps
+    // Right Tape: AGL, MSL, VSI, Ps, T/W
+    const altInfo = resolveAltitudeTelemetry(t);
     const rx = r.x + r.w - 8;
+    const inAir = !!t.airWorld;
     c.textAlign = 'right';
-    c.fillStyle = MINT_DIM;
+    c.fillStyle = inAir && altInfo.terrainWarning ? RED : MINT_DIM;
     c.font = `600 10px ${MONO}`;
-    c.fillText('ALT', rx, cy - 26);
-    c.fillStyle = MINT;
+    c.fillText(inAir ? 'AGL' : 'ALT', rx, cy - 32);
+    c.fillStyle = inAir && altInfo.gpwsMode === 'pull-up' ? RED : inAir && altInfo.gpwsMode === 'caution' ? AMBER : MINT;
     c.font = `700 15px ${MONO}`;
-    c.fillText(formatDistance(t.altKm), rx, cy - 6);
-    c.font = `600 12px ${MONO}`;
+    c.fillText(inAir ? formatDistance(altInfo.aglM / 1000) : formatDistance(t.altKm), rx, cy - 13);
+    c.font = `600 10.5px ${MONO}`;
+    if (inAir) {
+      c.fillStyle = CYAN;
+      c.fillText(`MSL ${formatAltitudeMeters(altInfo.mslM)}`, rx, cy + 5);
+    }
+    c.font = `600 11.5px ${MONO}`;
     const vsi = Math.round(t.verticalSpeedMps ?? 0);
     c.fillStyle = vsi >= 0 ? MINT : AMBER;
-    c.fillText(`VS ${vsi >= 0 ? '+' : ''}${vsi}`, rx, cy + 16);
+    c.fillText(`VS ${vsi >= 0 ? '+' : ''}${vsi}`, rx, cy + 23);
     const ps = Math.round(t.specificExcessPowerMps ?? 0);
     c.fillStyle = ps >= 0 ? MINT : AMBER;
-    c.fillText(`Ps ${ps >= 0 ? '+' : ''}${ps}`, rx, cy + 36);
+    c.fillText(`Ps ${ps >= 0 ? '+' : ''}${ps}`, rx, cy + 41);
     c.fillStyle = MINT_DIM;
-    c.fillText(`T/W ${(t.twRatio ?? 0).toFixed(2)}`, rx, cy + 56);
+    c.fillText(`T/W ${(t.twRatio ?? 0).toFixed(2)}`, rx, cy + 59);
+
+    // PFD central GPWS banner when terrain warning triggers
+    if (inAir && altInfo.terrainWarning) {
+      const pull = altInfo.gpwsMode !== 'caution';
+      const bw = Math.min(r.w - tapeW * 2 - 14, 176);
+      const bx = cx - bw * 0.5;
+      const by = r.y + r.h - 62;
+      c.fillStyle = pull ? 'rgba(64, 8, 8, 0.88)' : 'rgba(54, 36, 6, 0.86)';
+      c.fillRect(bx, by, bw, 24);
+      c.strokeStyle = pull ? RED : AMBER;
+      c.lineWidth = 1.4;
+      c.strokeRect(bx, by, bw, 24);
+      c.fillStyle = pull ? RED : AMBER;
+      c.font = `700 12px ${MONO}`;
+      c.textAlign = 'center';
+      c.fillText(pull ? 'TERRAIN · PULL UP' : 'CAUTION · TERRAIN', cx, by + 16);
+    }
 
     // Bottom Strip: Target / Waypoint summary
     c.fillStyle = MINT;

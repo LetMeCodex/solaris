@@ -5,6 +5,7 @@ import { ExplorerBody, PlanetaryExplorer } from '../explorer/PlanetaryExplorer';
 import { BODY_IMAGERY } from '../explorer/ImageryRegistry';
 import { PlanetElevation } from '../explorer/PlanetElevation';
 import { SurfaceTileLayer, TileImageLoader } from '../explorer/SurfaceTileLayer';
+import { ProceduralCity } from '../explorer/ProceduralCity';
 import { PhotorealEarth } from '../rendering/PhotorealEarth';
 
 function makeDomElement(): HTMLDivElement {
@@ -222,5 +223,50 @@ describe('SurfaceTileLayer validation and hybrid fallback routing', () => {
     expect(fetchedUrls.some((u) => u.startsWith('mock://3/') || u.startsWith('mock://4/'))).toBe(false);
     expect(fetchedUrls.some((u) => u.startsWith('mock://2/'))).toBe(true);
     expect(elevation.heightKm(11, 11, 4)).toBeCloseTo(9.3, 4);
+  });
+});
+
+describe('ProceduralCity 3D iconic skylines and landmarks', () => {
+  it('recognizes Manhattan, San Francisco, Paris, and major metros and builds terrain-snapped 3D landmark meshes immediately', () => {
+    expect(ProceduralCity.regionAt(40.7484, -73.9857)?.name).toBe('New York');
+    expect(ProceduralCity.regionAt(37.8199, -122.4783)?.name).toBe('San Francisco');
+    expect(ProceduralCity.regionAt(48.8584, 2.2945)?.name).toBe('Paris');
+
+    const prevCurrent = PhotorealEarth.current;
+    PhotorealEarth.current = null;
+    try {
+      const surface = new THREE.Mesh();
+      surface.updateMatrixWorld(true);
+      const camPos = new THREE.Vector3(0, 0, 2.5);
+      const city = new ProceduralCity();
+      city.dataGroundKm = () => 0.04;
+
+      for (const [lat, lon, expectedMeshName] of [
+        [37.8199, -122.4783, 'hero_city_san_francisco'],
+        [40.7484, -73.9857, 'hero_city_new_york'],
+        [48.8584, 2.2945, 'hero_city_paris'],
+      ] as const) {
+        city.update(surface, camPos, lat, lon, 1.5, 2654);
+        expect(city.group.visible).toBe(true);
+        const hero = city.group.getObjectByName(expectedMeshName) as THREE.Mesh | undefined;
+        expect(hero).toBeDefined();
+        expect(hero!.visible).toBe(true);
+        const pos = hero!.geometry.attributes.position as THREE.BufferAttribute;
+        const nor = hero!.geometry.attributes.normal as THREE.BufferAttribute;
+        expect(pos.count).toBeGreaterThan(500);
+        expect([...pos.array].every(Number.isFinite)).toBe(true);
+        expect([...nor.array].every(Number.isFinite)).toBe(true);
+        // Anchor sits at exact 1.0 + 0.04 / 6371 (no +637m floating offset)
+        expect(Math.abs(hero!.position.length() - (1 + 0.04 / 6371)) * 6371_000).toBeLessThan(1.0);
+      }
+
+      // When Google Photorealistic 3D Tiles are actively showing, photorealFallbackOnly metros hide automatically
+      PhotorealEarth.current = { showing: true } as unknown as PhotorealEarth;
+      city.update(surface, camPos, 40.7484, -73.9857, 1.5, 2654);
+      expect(city.group.visible).toBe(false);
+      city.dispose();
+    } finally {
+      PhotorealEarth.current = prevCurrent;
+    }
   });
 });

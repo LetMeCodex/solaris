@@ -111,7 +111,18 @@ export interface JetTelemetry {
   active: boolean;
   speedMps: number;
   closingMps: number;
+  /** Height above actual local ground/terrain surface (AGL), kilometres. */
   altKm: number;
+  /** True height above Mean Sea Level / reference ellipsoid, metres. */
+  altitudeMslM?: number;
+  /** True height above local displaced terrain / landmark surface (AGL), metres. */
+  altitudeAglM?: number;
+  /** Sampled terrain / landmark elevation directly beneath the aircraft (MSL), metres. */
+  terrainElevationM?: number;
+  /** True when GPWS terrain proximity or terrain-closure warning is active. */
+  terrainWarning?: boolean;
+  /** Ground Proximity Warning System alert tier. */
+  gpwsMode?: 'none' | 'caution' | 'pull-up';
   nearest: string;
   anchor: string;
   airWorld: string;
@@ -281,6 +292,11 @@ export function createDefaultJetTelemetry(
     speedMps: 0,
     closingMps: 0,
     altKm: 0,
+    altitudeMslM: 0,
+    altitudeAglM: 0,
+    terrainElevationM: 0,
+    terrainWarning: false,
+    gpwsMode: 'none',
     nearest: 'Earth',
     anchor: 'Earth',
     airWorld: 'Earth',

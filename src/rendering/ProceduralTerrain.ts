@@ -27,16 +27,16 @@ import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR } from './Aeri
 
 const LEVELS: Array<{ spanKm: number; z: number; dropM: number; n: number }> = [
   // The two nearest at 257 posts (23 m and 94 m apart: the height data's own ~13-19 m at
-  // z13), the rest at 129
+  // z13), the rest at 129; modest outer drops seal the horizon without creating pale sky gaps.
   { spanKm: 6, z: 13, dropM: 0, n: 257 },
-  { spanKm: 24, z: 12, dropM: 12, n: 257 },
-  { spanKm: 96, z: 10, dropM: 50, n: 129 },
-  { spanKm: 384, z: 8, dropM: 200, n: 129 },
-  { spanKm: 1536, z: 6, dropM: 800, n: 129 },
+  { spanKm: 24, z: 12, dropM: 8, n: 257 },
+  { spanKm: 96, z: 10, dropM: 28, n: 129 },
+  { spanKm: 384, z: 8, dropM: 90, n: 129 },
+  { spanKm: 1536, z: 6, dropM: 220, n: 129 },
 ];
 const KM = 1 / 6378.137;
-const ROWS_PER_FRAME = 30;
-const INIT_ROWS_PER_FRAME = 96;
+const ROWS_PER_FRAME = 18;
+const INIT_ROWS_PER_FRAME = 48;
 
 const vertexShader = /* glsl */ `
 attribute vec3 aUp;
@@ -157,8 +157,8 @@ void main() {
   float hKm = vH;
   // Sample Earth's day map up front so un-loaded land tiles (vH == 0) never render as ocean waves.
   vec3 sat = uHasMap > 0.5 ? texture2D(uDayMap, uvG).rgb : vec3(0.32, 0.36, 0.24);
-  float mapWater = uHasMap > 0.5 ? smoothstep(0.32, 0.08, sat.r) * smoothstep(0.08, 0.22, sat.b) : 0.0;
-  if (vH < 0.0004 && mapWater > 0.25) {
+  float mapWater = uHasMap > 0.5 ? smoothstep(0.28, 0.06, sat.r) * smoothstep(0.10, 0.26, sat.b) : 0.0;
+  if (vH < 0.0002 && mapWater > 0.55) {
     // The sea, made here too: deep water under the sky's reflection, swell and wind ripples, the
     // Sun's (and Moon's) glitter path, paler over the shallows by the shore
     vec3 sunRawS = uSunWorld - vWorld;
@@ -387,7 +387,17 @@ export class ProceduralTerrain {
   private bumpAll(): void {
     for (let i = 0; i < this.levelVersion.length; i++) this.levelVersion[i]++;
   }
-  /** Tiles' ground minus the height data's, km (the geoid, tens of metres), measured under the jet. */
+  /** Latest geoid offset reported by SurfaceObserver when landed on PhotorealEarth (km). */
+  private static landedOffsetKm: number | null = null;
+  public static reportSurfaceOffset(offsetKm: number | null): void {
+    if (offsetKm === null) {
+      ProceduralTerrain.landedOffsetKm = null;
+    } else if (Number.isFinite(offsetKm) && offsetKm > -0.14 && offsetKm < 0.08) {
+      ProceduralTerrain.landedOffsetKm = offsetKm;
+    }
+  }
+
+  /** Tiles' ground minus the height data's, km (the geoid, tens of metres), measured under the jet or standing eye. */
   private tileOffsetKm: number | null = null;
   private appliedOffsetKm = Number.NaN;
   /** Towards the Sun in Earth's own frame (set each frame by the scene). */
@@ -426,6 +436,9 @@ export class ProceduralTerrain {
       transparent: false,
       depthWrite: true,
       blending: THREE.NoBlending,
+      polygonOffset: true,
+      polygonOffsetFactor: 1,
+      polygonOffsetUnits: 2,
     });
     const indexFor = (N: number): THREE.BufferAttribute => {
       const index = new Uint32Array((N - 1) * (N - 1) * 6);
@@ -495,8 +508,8 @@ export class ProceduralTerrain {
     if (!inner || !inner.built || !inner.mesh.visible) {
       u.uHoleActive.value = 0;
     } else {
-      const insetLat = (inner.latMax - inner.latMin) * 0.025;
-      const insetLon = (inner.lonMax - inner.lonMin) * 0.025;
+      const insetLat = (inner.latMax - inner.latMin) * 0.045;
+      const insetLon = (inner.lonMax - inner.lonMin) * 0.045;
       (u.uHoleLat.value as THREE.Vector2).set(inner.latMin + insetLat, inner.latMax - insetLat);
       (u.uHoleLon.value as THREE.Vector2).set(inner.lonMin + insetLon, inner.lonMax - insetLon);
       u.uHoleLonMid.value = inner.lon;
@@ -517,7 +530,10 @@ export class ProceduralTerrain {
 
   /** The tiles' ground minus the height data's under the jet, km, when it has been measured. */
   public setTileOffset(km: number | null): void {
-    if (km !== null && Number.isFinite(km) && Math.abs(km) < 0.25) this.tileOffsetKm = this.tileOffsetKm === null ? km : this.tileOffsetKm + (km - this.tileOffsetKm) * 0.05;
+    if (km !== null && Number.isFinite(km) && Math.abs(km) < 0.25) {
+      const clamped = THREE.MathUtils.clamp(km, -0.12, 0.02);
+      this.tileOffsetKm = this.tileOffsetKm === null ? clamped : this.tileOffsetKm + (clamped - this.tileOffsetKm) * 0.08;
+    }
   }
 
   /**
@@ -541,9 +557,10 @@ export class ProceduralTerrain {
     u.uHaze.value = air.haze;
     u.uDoy.value = doy;
     u.uTime.value = (performance.now() / 1000) % 3600;
-    // Under the tiles' ground: 18 m safety margin once measured so DEM variance never steals depth;
-    // -110 m before calibration. Adjusted via uOffsetKm at zero CPU rebuild cost.
-    const offsetKm = this.tileOffsetKm !== null ? this.tileOffsetKm - 0.018 : -0.11;
+    // Stay cleanly tucked just below Google 3D tiles (~14 m margin once geoid is measured by either
+    // the jet or landed SurfaceObserver; -32 m typical WGS84 geoid default instead of -110 m cliff).
+    const measured = ProceduralTerrain.landedOffsetKm ?? this.tileOffsetKm;
+    const offsetKm = measured !== null ? THREE.MathUtils.clamp(measured - 0.014, -0.14, 0.005) : -0.032;
     this.appliedOffsetKm = offsetKm;
     u.uOffsetKm.value = offsetKm;
 
@@ -594,7 +611,7 @@ export class ProceduralTerrain {
     const building = Math.max(1, this.patches.filter((q, i) => q.build || q.builtVersion !== this.levelVersion[i] || !q.built).length);
     EarthElevation.now = performance.now();
     const rowAllowance = unbuiltActive ? INIT_ROWS_PER_FRAME : ROWS_PER_FRAME;
-    const until = performance.now() + (unbuiltActive ? 10 : 4);
+    const until = performance.now() + (unbuiltActive ? 4.0 : 2.2);
     for (let l = 0; l < LEVELS.length; l++) {
       let budget = Math.max(3, rowAllowance / building);
       const L = LEVELS[l];
@@ -709,19 +726,23 @@ export class ProceduralTerrain {
         (g.getAttribute('aUp') as THREE.BufferAttribute).copyArray(b.up).needsUpdate = true;
         (g.getAttribute('aH') as THREE.BufferAttribute).copyArray(b.h).needsUpdate = true;
         g.computeVertexNormals();
-        // Tuck perimeter vertices downward after normal calculation to seal ring transitions against coarse layers
+        // Smoothly tuck the outer 2 perimeter rings downward after normal calculation to seal ring transitions
+        // against coarser outer layers without abrupt vertical cliff walls or horizon slits
         if (l < LEVELS.length - 1) {
-          const rimDropM = LEVELS[l + 1].dropM - L.dropM + Math.max(45, L.spanKm * 0.7);
+          const rimDropM = Math.min(260, LEVELS[l + 1].dropM - L.dropM + Math.max(24, L.spanKm * 0.35));
           const rimDrop = (rimDropM / 1000) * KM;
           const posAttr = g.getAttribute('position') as THREE.BufferAttribute;
           const arr = posAttr.array as Float32Array;
           for (let j = 0; j < N; j++) {
+            const distJ = Math.min(j, N - 1 - j);
             for (let i = 0; i < N; i++) {
-              if (j !== 0 && j !== N - 1 && i !== 0 && i !== N - 1) continue;
+              const distEdge = Math.min(distJ, Math.min(i, N - 1 - i));
+              if (distEdge > 1) continue;
+              const dropWeight = distEdge === 0 ? 1.0 : 0.35;
               const k = (j * N + i) * 3;
-              arr[k] -= b.up[k] * rimDrop;
-              arr[k + 1] -= b.up[k + 1] * rimDrop;
-              arr[k + 2] -= b.up[k + 2] * rimDrop;
+              arr[k] -= b.up[k] * rimDrop * dropWeight;
+              arr[k + 1] -= b.up[k + 1] * rimDrop * dropWeight;
+              arr[k + 2] -= b.up[k + 2] * rimDrop * dropWeight;
             }
           }
           posAttr.needsUpdate = true;

@@ -173,13 +173,17 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
   // Bare deciduous woods are brown, not grey, and many trees are evergreen: a light touch
   photo = mix(photo, vec3(lum * 1.12, lum * 0.94, lum * 0.74), green * bare * 0.28);
 
-  // --- Water: both the globe's map and the photograph must say so (coasts stay sharp)
+  // --- Water: require flat surface near sea level AND genuine blue/teal ocean chroma in the
+  // photograph itself — never flood coastal trees, asphalt roads, or houses (SF Presidio/Marina).
   float water = 0.0;
   if (uHasMaps > 0.5) {
     vec3 g = texture2D(uDayMap, uvG).rgb;
-    float mapWater = smoothstep(0.30, 0.08, g.r) * smoothstep(0.08, 0.25, g.b);
-    float photoWater = smoothstep(0.24, 0.07, photo.r) * smoothstep(-0.02, 0.03, photo.b - photo.r) * smoothstep(0.42, 0.18, lum);
-    water = mapWater * (0.25 + 0.75 * photoWater) * smoothstep(0.08, -0.02, hKm);
+    float mapWater = smoothstep(0.28, 0.06, g.r) * smoothstep(0.10, 0.26, g.b);
+    float blueOverRed = smoothstep(0.015, 0.055, photo.b - photo.r);
+    float notGreenFoliage = 1.0 - smoothstep(0.02, 0.075, photo.g - photo.b);
+    float darkEnough = smoothstep(0.20, 0.06, photo.r) * smoothstep(0.34, 0.14, lum);
+    float photoWater = blueOverRed * notGreenFoliage * darkEnough * smoothstep(0.86, 0.96, flatness);
+    water = mapWater * photoWater * smoothstep(0.018, -0.015, hKm);
   }
   float snowNoise = phNoise(nlPlane * 9000.0) * 0.6 + phNoise(nlPlane * 41000.0) * 0.4;
   float hN = hKm + (snowNoise - 0.5) * 0.5;
@@ -440,7 +444,7 @@ export class PhotorealEarth {
   private failedCount = 0;
   private dracoLoader: DRACOLoader;
   private surface: THREE.Object3D | null = null;
-  private maxAnisotropy = 8;
+  private maxAnisotropy = 16;
   private baseError = 14;
   private readonly downloadMaxJobs: number;
 
@@ -469,12 +473,10 @@ export class PhotorealEarth {
     const tier = perf.tier;
     const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
     this.dracoLoader = new DRACOLoader().setDecoderPath(`${import.meta.env.BASE_URL}draco/`);
-    this.dracoLoader.setWorkerLimit(tier === 'low' ? 2 : Math.max(2, Math.min(6, cores - 2)));
+    this.dracoLoader.setWorkerLimit(tier === 'low' ? 2 : Math.min(3, Math.max(2, cores - 2)));
     this.tiles.registerPlugin(new GLTFExtensionsPlugin({ dracoLoader: this.dracoLoader }));
-    // A tile's photograph goes to the GPU before the tile is shown, a few milliseconds' worth a
-    // frame: hundreds of tiles arriving together were all uploaded inside one draw (frames of
-    // 0.4-2 s on the fly page's opening). The tile waits its turn; the frame never does
-    this.uploadBudgetMs = tier === 'high' ? 8 : tier === 'medium' ? 5 : 3;
+    // Budget GPU texture uploads strictly so bursts of city tiles (Manhattan / Grand Canyon) stay smooth
+    this.uploadBudgetMs = tier === 'high' ? 2.0 : tier === 'medium' ? 1.5 : 1.0;
     this.tiles.registerPlugin({ name: 'SOLARIS_UPLOAD_BUDGET', processTileModel: (scene: THREE.Object3D) => this.uploadInTurn(scene) } as unknown as Parameters<TilesRenderer['registerPlugin']>[0]);
     if (PhotorealEarth.fade) this.tiles.registerPlugin(new TilesFadePlugin({ fadeDuration: 280, fadeRootTiles: false, maximumFadeOutTiles: tier === "low" ? 30 : 80 }));
     // Detail target (pixels): calibrated around Google Cloud Auth's recommended 20-px threshold so
@@ -488,9 +490,9 @@ export class PhotorealEarth {
     this.tiles.lruCache.maxBytesSize = (tier === 'high' ? 900 : tier === 'medium' ? 540 : 240) * mb;
     // Maximize HTTP/2 multiplexing so deep JSON trees + intermediate/leaf GLBs stream concurrently,
     // while keeping Draco/GLTF parsing and GPU upload budgets scaled by device tier.
-    this.downloadMaxJobs = tier === 'high' ? 32 : tier === 'medium' ? 24 : 14;
+    this.downloadMaxJobs = tier === 'high' ? 28 : tier === 'medium' ? 20 : 12;
     this.tiles.downloadQueue.maxJobs = this.downloadMaxJobs;
-    this.tiles.parseQueue.maxJobs = tier === 'high' ? 8 : tier === 'medium' ? 5 : 3;
+    this.tiles.parseQueue.maxJobs = tier === 'high' ? 4 : tier === 'medium' ? 3 : 2;
     this.tiles.autoDisableRendererCulling = false;
     // Direct leaf-targeted traversal avoids ancestor/sibling queue explosions while a brief
     // coarse-LOD bootstrap (in update()) fills the viewport solidly before refining to <=16 m leaves.
@@ -629,6 +631,15 @@ export class PhotorealEarth {
     return count;
   }
 
+  /** True when at least one local/mountain-scale tile (<= 1024 m error) is actively visible. */
+  public get hasLocalCoverage(): boolean {
+    if (!this.showing) return false;
+    for (const tile of this.tiles.visibleTiles) {
+      if (Number.isFinite(tile.geometricError) && tile.geometricError <= 1024) return true;
+    }
+    return false;
+  }
+
   /**
    * Per frame, before the draw (world coordinates unshifted): stream and select tiles for the
    * camera when `enabled`, else hide and stop loading.
@@ -657,7 +668,7 @@ export class PhotorealEarth {
     }
     if (active) {
       if (!this.tiles.hasCamera(camera)) this.tiles.setCamera(camera);
-      this.maxAnisotropy = Math.min(perf.tier === 'low' ? 2 : perf.tier === 'medium' ? 4 : 8, renderer.capabilities.getMaxAnisotropy());
+      this.maxAnisotropy = Math.min(perf.tier === 'low' ? 4 : perf.tier === 'medium' ? 8 : 16, renderer.capabilities.getMaxAnisotropy());
       this.renderer = renderer;
       const css = renderer.getSize(this.cssSize);
       const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
@@ -733,11 +744,11 @@ export class PhotorealEarth {
 
       camera.updateMatrixWorld();
       this.tiles.update();
-      // Regional meshes can depth-occlude a whole valley, leaving only mountain ridges.
-      // Continue refining parents, but let the bundled DEM draw until local geometry exists.
+      // Suppress only giant continent-scale sphere-chord skirts (> 2048 m error) while keeping
+      // rural mountain & canyon 3D tiles (Grand Canyon, Mount Everest) visible across the valley.
       for (const tile of this.tiles.visibleTiles) {
         const scene = (tile as unknown as { engineData?: { scene?: THREE.Object3D } }).engineData?.scene;
-        if (scene) scene.visible = (altKm ?? 100) >= 20 || tile.geometricError <= 256;
+        if (scene) scene.visible = (altKm ?? 100) >= 20 || tile.geometricError <= 2048;
       }
       if (alt < 40 && !this.bootstrapDone) {
         let nearLocal = 0;
@@ -1026,6 +1037,7 @@ export class PhotorealEarth {
     // 3D tiles are solid opaque photogrammetry meshes; must be opaque with depth write
     mat.transparent = false;
     mat.depthWrite = true;
+    mat.customProgramCacheKey = () => 'solaris-photoreal-earth-v2';
     const centre = this.earthCentre;
     const tint = this.sunTint;
     const daylight = this.daylight;
@@ -1071,7 +1083,7 @@ export class PhotorealEarth {
   }
 
   private renderer: THREE.WebGLRenderer | null = null;
-  private uploadBudgetMs = 4;
+  private uploadBudgetMs = 2.5;
   private uploadQueue: Array<() => void> = [];
   private uploadPump = 0;
 

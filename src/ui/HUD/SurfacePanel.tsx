@@ -62,32 +62,41 @@ export const SurfacePanel: React.FC<SurfacePanelProps> = ({ status, onAction }) 
           : 'w-auto max-w-[calc(100vw-20px-var(--safe-l)-var(--safe-r))]'
       } md:left-auto md:bottom-auto md:top-[calc(var(--hud-header-h)+10px)] md:right-[max(16px,var(--safe-r))] lg:right-[max(28px,var(--safe-r))] ${
         sheetOpen
-          ? 'md:w-[clamp(284px,25vw,340px)] md:max-h-[calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-24px)]'
+          ? 'md:w-[clamp(308px,25vw,368px)] md:max-h-[calc(100dvh-var(--hud-header-h)-var(--hud-footer-h)-24px)]'
           : 'md:w-auto'
       } pointer-events-auto z-30 text-white/80 font-light`}
     >
-      <div className="shrink-0 flex items-center justify-between gap-2 px-3.5 sm:px-4 pt-3 pb-2 text-[10px] uppercase tracking-[0.18em] border-b border-white/[0.06]">
-        <div className="min-w-0 truncate">
-          <span className="text-white/45">On </span>
-          <span className="text-white/90">{s.body}</span>
-          {s.place && <span className="text-amber-200/90"> · {s.place}</span>}
+      <div className="shrink-0 flex flex-col gap-1 px-3.5 sm:px-4 pt-3 pb-2 border-b border-white/[0.08]">
+        <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-[0.14em]">
+          <div className="shrink-0 whitespace-nowrap">
+            <span className="text-white/50">On </span>
+            <span className="text-white/95 font-medium">{s.body}</span>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              onClick={() => onAction({ type: 'exit' })}
+              className="hud-pill-btn normal-case tracking-normal text-[10px] px-2.5 py-1 rounded-full border border-white/20 text-white/85 hover:text-white hover:border-white/50 whitespace-nowrap"
+            >
+              Back to orbit
+            </button>
+            <button
+              onClick={() => setOpen((o) => !o)}
+              aria-expanded={open}
+              aria-label={open ? 'Collapse surface panel' : 'Expand surface panel'}
+              className="hud-icon-btn sm text-white/60 hover:text-white focus-visible:ring-1 focus-visible:ring-white/60"
+            >
+              {open ? '–' : '+'}
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            onClick={() => onAction({ type: 'exit' })}
-            className="hud-pill-btn normal-case tracking-normal text-[10px] px-2.5 py-1 rounded-full border border-white/20 text-white/80 hover:text-white hover:border-white/50 whitespace-nowrap"
+        {s.place && (
+          <div
+            title={s.place}
+            className="text-[11px] uppercase tracking-[0.12em] font-medium text-amber-200/95 leading-snug break-words"
           >
-            Back to orbit
-          </button>
-          <button
-            onClick={() => setOpen((o) => !o)}
-            aria-expanded={open}
-            aria-label={open ? 'Collapse surface panel' : 'Expand surface panel'}
-            className="hud-icon-btn sm text-white/60 hover:text-white focus-visible:ring-1 focus-visible:ring-white/60"
-          >
-            {open ? '–' : '+'}
-          </button>
-        </div>
+            {s.place}
+          </div>
+        )}
       </div>
 
       {(s.deepTime || open) && (

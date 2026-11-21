@@ -214,8 +214,9 @@ void main() {
     const up = this.w.copy(jet).divideScalar(jetR);
     const groundR = jetR - Math.max(0, altKm) * 1000 * METRE;
 
-    // --- Birds: low and by day
-    const birdsOn = altKm < 2.5 && sunUp > -0.03;
+    // --- Birds: low over habitable terrain and by day (not above 4.5 km MSL Himalayan peaks)
+    const groundMslKm = (groundR - 1) * (R_M / 1000);
+    const birdsOn = altKm < 2.5 && sunUp > -0.03 && groundMslKm < 4.5;
     for (let i = 0; i < this.flocks.length; i++) {
       const f = this.flocks[i];
       f.mesh.visible = birdsOn;

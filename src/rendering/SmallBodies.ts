@@ -118,18 +118,30 @@ export class SmallBodies {
   private pixelScale = { value: 1000 };
   private opacity = { value: 1 };
   private visible = true;
+  private surfaceSuppressed = false;
+  private loadStarted = false;
   public loaded = false;
   /** Comet nuclei for the tails, heliocentric elements; filled when the data arrive. */
   private comets: Array<{ name: string; q: number; e: number; i: number; node: number; peri: number; tp: number }> = [];
   private tails: CometTails | null = null;
   public counts: Record<string, number> = {};
 
-  constructor() {
+  constructor(options?: { deferLoad?: boolean }) {
     this.mesh.name = 'small_bodies';
+    if (!options?.deferLoad) {
+      this.ensureLoaded();
+    }
+  }
+
+  /** Lazily fetch & build small-body populations once (safe to call repeatedly). */
+  public ensureLoaded(): void {
+    if (this.loadStarted || this.loaded) return;
+    this.loadStarted = true;
     void this.load();
   }
 
   private async load(): Promise<void> {
+    this.loadStarted = true;
     try {
       const base = (import.meta.env?.BASE_URL || '/').replace(/\/?$/, '/');
       const res = await fetch(`${base}data/small-bodies.json`);
@@ -267,7 +279,14 @@ export class SmallBodies {
 
   public setVisible(v: boolean): void {
     this.visible = v;
-    this.mesh.visible = v;
+    this.mesh.visible = v && !this.surfaceSuppressed;
+  }
+
+  /** Hide deep-space asteroid/comet point clouds on planetary surfaces without losing the user's toggle state. */
+  public setSurfaceSuppressed(suppressed: boolean): void {
+    if (this.surfaceSuppressed === suppressed) return;
+    this.surfaceSuppressed = suppressed;
+    this.mesh.visible = this.visible && !this.surfaceSuppressed;
   }
 
   public dispose(): void {

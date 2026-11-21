@@ -1,6 +1,12 @@
 import * as THREE from 'three';
 import { SUN_WORLD } from './RenderOrigin';
 import { AIR, AirProfile } from './AirProfiles';
+import {
+  SKY_OVERCAST,
+  clearSkyStarVisibility,
+  computeAtmosphericStarVisibility,
+  setSkyStarVisibility,
+} from './AerialPerspective';
 
 /**
  * Atmospheres from real air.
@@ -59,7 +65,12 @@ const FRAG = /* glsl */ `
   uniform float uMieG;
   uniform vec3 uAbsorb;
   uniform float uSunPower;
+  uniform float uWeatherOvercast;
   varying vec3 vWorldPosition;
+
+  float ign(vec2 p) {
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+  }
 
   vec2 sphere(vec3 o, vec3 d, float r) {
     float b = dot(o, d);
@@ -102,7 +113,7 @@ const FRAG = /* glsl */ `
     if (hitsGround) t1 = min(t1, gnd.x);
     if (t1 <= t0) discard;
 
-    const int STEPS = 12;
+    const int STEPS = 16;
     float ds = (t1 - t0) / float(STEPS);
     vec3 sumR = vec3(0.0);
     vec3 sumM = vec3(0.0);
@@ -131,7 +142,9 @@ const FRAG = /* glsl */ `
     // whitened colour of that world's own sky (blue-white on Earth, a warm white on Mars). Where
     // the view crosses a lot of air with the Sun well up, the colour is drawn towards that,
     // keeping its brightness; at sunrise and sunset the warm horizon stays
-    float sunUpHere = dot(normalize(ro), sunDir);
+    vec3 upHere = normalize(ro);
+    float sunUpHere = dot(upHere, sunDir);
+    float camAltKm = length(ro) - uRadius;
     float thick = 1.0 - exp(-(uBetaR.g * odView.x + uBetaM * odView.y) * 0.9);
     float msK = thick * smoothstep(0.08, 0.35, sunUpHere) * 0.75;
     float inL = dot(inscatter, vec3(0.2126, 0.7152, 0.0722));
@@ -139,13 +152,50 @@ const FRAG = /* glsl */ `
     skyTint /= dot(skyTint, vec3(0.2126, 0.7152, 0.0722));
     inscatter = mix(inscatter, inL * skyTint, msK);
 
+    // Earth rain/snow/storm overcast sky deck when camera is inside the weather layer
+    float belowCloud = 1.0 - smoothstep(6.0, 14.0, max(0.0, camAltKm));
+    float weatherOv = clamp(uWeatherOvercast * belowCloud, 0.0, 1.0);
+    if (!hitsGround && camAltKm < uTop && weatherOv > 0.001) {
+      float dayLit = smoothstep(-0.14, 0.28, sunUpHere);
+      float viewUp = clamp(dot(rd, upHere), 0.0, 1.0);
+      float zenithShade = mix(0.88, 0.46, viewUp);
+      vec3 ovDay = vec3(0.24, 0.28, 0.34) * zenithShade;
+      vec3 ovTwilight = vec3(0.09, 0.10, 0.14) * zenithShade;
+      vec3 ovNight = vec3(0.012, 0.015, 0.022) * zenithShade;
+      vec3 ovCol = mix(ovNight, mix(ovTwilight, ovDay, smoothstep(0.0, 0.35, sunUpHere)), dayLit);
+      inscatter = mix(inscatter, ovCol, weatherOv * 0.90);
+    }
+
     vec3 trans = exp(-(uBetaR * odView.x + uBetaM * 1.1 * odView.y + uAbsorb * odView.x));
     float T = dot(trans, vec3(0.2126, 0.7152, 0.0722));
-    // Seen from under a daylit sky, the stars drown: the sky is far brighter than they are
-    if (!hitsGround) T *= exp(-dot(inscatter, vec3(0.2126, 0.7152, 0.0722)) * 14.0);
-    gl_FragColor = vec4(inscatter, T);
+    // Seen from inside a sunlit atmosphere, stars are completely drowned out in the troposphere
+    // and lower stratosphere, smoothly re-emerging across the upper stratosphere / mesosphere.
+    if (!hitsGround) {
+      float starVis = 1.0;
+      if (camAltKm < uTop) {
+        float dayFac = smoothstep(-0.18, 0.04, sunUpHere);
+        float scaleHeights = max(0.0, camAltKm) / max(uHR, 0.1);
+        float altEmerg = max(
+          smoothstep(2.4, 6.8, scaleHeights),
+          smoothstep(0.60, 0.92, max(0.0, camAltKm) / max(uTop, 1.0))
+        );
+        starVis = (1.0 - dayFac * (1.0 - altEmerg)) * (1.0 - weatherOv * 0.94);
+      }
+      T *= starVis * exp(-dot(inscatter, vec3(0.2126, 0.7152, 0.0722)) * 24.0);
+    }
+    gl_FragColor = vec4(inscatter, clamp(T, 0.0, 1.0));
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
+    // Triangular-PDF Interleaved Gradient Noise dithering to eliminate 8-bit sky banding
+    float outPeak = max(gl_FragColor.r, max(gl_FragColor.g, gl_FragColor.b));
+    if (outPeak > 0.002) {
+      vec2 px = gl_FragCoord.xy;
+      vec3 n1 = vec3(ign(px), ign(px + vec2(17.0, 31.0)), ign(px + vec2(47.0, 11.0)));
+      vec3 n2 = vec3(ign(px + vec2(5.5, 13.5)), ign(px + vec2(29.5, 7.5)), ign(px + vec2(61.5, 23.5)));
+      vec3 tri = (n1 + n2) - 1.0;
+      float dMask = smoothstep(0.002, 0.012, outPeak);
+      gl_FragColor.rgb = max(vec3(0.0), gl_FragColor.rgb + tri * (1.25 / 255.0) * dMask);
+    }
   }
 `;
 
@@ -172,6 +222,7 @@ export class AtmosphereShader {
         uMieG: { value: air.mieG },
         uAbsorb: { value: new THREE.Vector3(...air.absorption) },
         uSunPower: { value: ATMOSPHERE_SUN_POWER },
+        uWeatherOvercast: planetName === 'Earth' ? SKY_OVERCAST : { value: 0 },
       },
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -187,6 +238,8 @@ export class AtmosphereShader {
     });
   }
 
+  private static nextAttachId = 0;
+
   /**
    * Keep a shell's centre and scale current every draw, and switch it to the inside view (back
    * faces, drawn over the ground) when the camera is within the air.
@@ -197,12 +250,18 @@ export class AtmosphereShader {
     const centre = new THREE.Vector3();
     const camPos = new THREE.Vector3();
     const local = new THREE.Vector3();
+    const upDir = new THREE.Vector3();
+    const sunDir = new THREE.Vector3();
     const q = new THREE.Quaternion();
-    mat.uniforms.uKmPerUnit.value = radiusKm / visualRadius;
+    const visKey = `atmo:${mesh.name || AtmosphereShader.nextAttachId++}`;
+    let isInsideShell = false;
+    const kmPerUnit = radiusKm / visualRadius;
+    mat.uniforms.uKmPerUnit.value = kmPerUnit;
     mesh.onBeforeRender = (_r, _s, camera) => {
       centre.setFromMatrixPosition(mesh.matrixWorld);
       mat.uniforms.uCenter.value.copy(centre);
       camPos.setFromMatrixPosition(camera.matrixWorld);
+      let effectiveRadiusKm = radiusKm;
       // The world is drawn oblate (its spin axis is this mesh's local Y): the scattering's ground
       // follows the surface under the camera, or close to the ground the eye would sit "below" a
       // spherical ground and every ray would run through solid air (a black screen)
@@ -210,12 +269,32 @@ export class AtmosphereShader {
         mesh.getWorldQuaternion(q);
         local.subVectors(camPos, centre).applyQuaternion(q.invert()).normalize();
         const r = 1 / Math.sqrt(local.x * local.x + local.z * local.z + (local.y * local.y) / (polarScale * polarScale));
-        mat.uniforms.uRadius.value = radiusKm * r;
+        effectiveRadiusKm = radiusKm * r;
+        mat.uniforms.uRadius.value = effectiveRadiusKm;
       }
-      const inside = camPos.distanceTo(centre) < visualRadius * shellScale * 1.0005;
+      const camDist = camPos.distanceTo(centre);
+      const inside = camDist < visualRadius * shellScale * 1.0005;
+      isInsideShell = inside;
       const side = inside ? THREE.BackSide : THREE.FrontSide;
       if (mat.side !== side) mat.side = side;
       mat.depthTest = !inside || mesh.renderOrder < 1;
+
+      if (inside && mesh.visible) {
+        const altKm = Math.max(0, camDist * kmPerUnit - effectiveRadiusKm);
+        upDir.subVectors(camPos, centre).normalize();
+        sunDir.subVectors(SUN_WORLD.value, centre).normalize();
+        const sunUp = upDir.dot(sunDir);
+        const vis = computeAtmosphericStarVisibility({
+          altKm,
+          scaleHeightKm: mat.uniforms.uHR.value as number,
+          topKm: mat.uniforms.uTop.value as number,
+          sunUp,
+          overcast: (mat.uniforms.uWeatherOvercast?.value as number) ?? 0,
+        });
+        setSkyStarVisibility(visKey, vis, () => mesh.visible && isInsideShell);
+      } else {
+        clearSkyStarVisibility(visKey);
+      }
     };
   }
 }

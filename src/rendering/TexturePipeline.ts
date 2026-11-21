@@ -22,9 +22,22 @@ export class TexturePipeline {
   private customLoader: THREE.TextureLoader | null = null;
   private cache: Map<string, THREE.Texture> = new Map();
   private inFlightRequests: Map<string, Promise<THREE.Texture>> = new Map();
-  private maxAnisotropy: number = perf.tier === 'low' ? 2 : perf.tier === 'medium' ? 4 : 8;
+  private maxAnisotropy: number = 8;
   private maxCacheSize: number = TexturePipeline.defaultCacheLimit();
   private readonly pinnedKeys: Set<string> = new Set();
+  /** When true (e.g. `/fly/` cold start), non-Earth/non-Sun textures stay queued until orbital hydration. */
+  private deferNonEssential = false;
+  private deferredLoads: Array<{
+    canonicalKey: string;
+    url: string;
+    texture: THREE.Texture;
+    isSRGB: boolean;
+    fallbackKey?: string;
+  }> = [];
+  /** When true (live renderer attached), hi-res 4K/8K swaps upload incrementally through the per-frame GPU budget. */
+  private budgetedUploads = false;
+  private pendingUploads: Array<() => { texture: THREE.Texture; pixels: number } | null> = [];
+  private uploadCooldownFrames = 0;
   private baseUrl: string = (
     (typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL) || '/'
   ).replace(/\/?$/, '/');
@@ -36,6 +49,19 @@ export class TexturePipeline {
   private isProtectedKey(canonicalKey: string): boolean {
     if (this.pinnedKeys.has(canonicalKey)) return true;
     return /(?:earth_|2k_sun|milky_way_disk)/i.test(canonicalKey);
+  }
+
+  private isFlightEssentialKey(canonicalKey: string): boolean {
+    if (this.pinnedKeys.has(canonicalKey)) return true;
+    return /(?:2k_earth_|earth_normal_|2k_sun)/i.test(canonicalKey);
+  }
+
+  private configureSampling(texture: THREE.Texture, isSRGB: boolean): void {
+    texture.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+    texture.generateMipmaps = true;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.anisotropy = this.maxAnisotropy;
   }
 
   private touchCache(canonicalKey: string, texture: THREE.Texture): void {
@@ -126,12 +152,147 @@ export class TexturePipeline {
   }
 
   public setMaxAnisotropy(anisotropy: number): void {
-    const tierCap = perf.tier === 'low' ? 2 : perf.tier === 'medium' ? 4 : 8;
-    this.maxAnisotropy = Math.min(tierCap, Math.max(1, anisotropy));
+    const clamped = Math.min(8, Math.max(1, Math.floor(anisotropy || 1)));
+    this.maxAnisotropy = clamped;
     for (const texture of this.cache.values()) {
-      texture.anisotropy = this.maxAnisotropy;
+      texture.anisotropy = clamped;
       texture.needsUpdate = true;
     }
+  }
+
+  public getMaxAnisotropy(): number {
+    return this.maxAnisotropy;
+  }
+
+  /**
+   * Defer non-Earth/non-Sun planetary textures during `/fly/` cold start so Earth + jet assets
+   * load with zero network/decode contention, then stream deferred planets in place after take-off.
+   */
+  public setDeferredNonEssential(deferred: boolean): void {
+    this.deferNonEssential = deferred;
+    if (deferred || this.deferredLoads.length === 0) return;
+    const queued = this.deferredLoads.splice(0, this.deferredLoads.length);
+    for (const item of queued) {
+      if (this.cache.get(item.canonicalKey) !== item.texture) continue;
+      this.hydrateDeferredTexture(item);
+    }
+  }
+
+  public isDeferredNonEssential(): boolean {
+    return this.deferNonEssential;
+  }
+
+  /** Enable per-frame budgeted GPU uploads for hi-res & deferred texture swaps. */
+  public setBudgetedUploads(enabled: boolean): void {
+    this.budgetedUploads = enabled;
+    if (!enabled && this.pendingUploads.length > 0) {
+      const rest = this.pendingUploads.splice(0, this.pendingUploads.length);
+      for (const task of rest) task();
+    }
+  }
+
+  /**
+   * Commit at most one pending hi-res / deferred texture swap per frame within the GPU upload budget
+   * so 4K/8K texture uploads and mipmap generation never trigger 260ms frame spikes.
+   */
+  public flushPendingUploads(
+    renderer: THREE.WebGLRenderer,
+    tryUpload?: (texture: THREE.Texture) => boolean,
+  ): number {
+    if (this.uploadCooldownFrames > 0) {
+      this.uploadCooldownFrames--;
+      return 0;
+    }
+    if (this.pendingUploads.length === 0) return 0;
+    const next = this.pendingUploads.shift();
+    if (!next) return 0;
+    const result = next();
+    if (!result) return 0;
+    const { texture, pixels } = result;
+    if (tryUpload) {
+      if (!tryUpload(texture)) {
+        // Still uploaded lazily by Three.js when drawn; space out further heavy swaps
+        this.uploadCooldownFrames = pixels >= 8_000_000 ? 2 : 1;
+        return 1;
+      }
+    } else {
+      renderer.initTexture(texture);
+    }
+    // Give ANGLE/D3D11 a quiet frame after a large 4K/8K upload + mipmap build
+    if (pixels >= 8_000_000) this.uploadCooldownFrames = 2;
+    else if (pixels >= 2_000_000) this.uploadCooldownFrames = 1;
+    return 1;
+  }
+
+  public getPendingUploadCount(): number {
+    return this.pendingUploads.length;
+  }
+
+  private hydrateDeferredTexture(item: {
+    canonicalKey: string;
+    url: string;
+    texture: THREE.Texture;
+    isSRGB: boolean;
+    fallbackKey?: string;
+  }): void {
+    const { canonicalKey, url, texture, isSRGB, fallbackKey } = item;
+    if (typeof document === 'undefined' && !this.customLoader) return;
+    const applyLoaded = (image: HTMLImageElement | ImageBitmap, flipY: boolean): void => {
+      const commit = (): { texture: THREE.Texture; pixels: number } | null => {
+        if (this.cache.get(canonicalKey) !== texture) {
+          if ('close' in image) image.close();
+          return null;
+        }
+        if (image instanceof HTMLImageElement) {
+          texture.image = image;
+          texture.flipY = flipY;
+        } else {
+          applyBitmap(texture, image);
+        }
+        this.configureSampling(texture, isSRGB);
+        texture.needsUpdate = true;
+        const w = (image as { width?: number }).width ?? 1024;
+        const h = (image as { height?: number }).height ?? 512;
+        return { texture, pixels: w * h };
+      };
+      if (this.budgetedUploads) this.pendingUploads.push(commit);
+      else commit();
+    };
+    const onFail = (err: unknown): void => {
+      console.warn(`[TexturePipeline] Deferred fallback activated for ${url} (${canonicalKey}):`, err);
+      if (fallbackKey && this.cache.get(canonicalKey) === texture) {
+        try {
+          const fallbackTex = TextureGenerator.getTexture(fallbackKey);
+          if (fallbackTex && fallbackTex.image) {
+            texture.image = fallbackTex.image;
+            texture.flipY = fallbackTex.flipY;
+            this.configureSampling(texture, isSRGB);
+            texture.needsUpdate = true;
+          }
+        } catch (e) {
+          console.warn('[TexturePipeline] Fallback generation error:', e);
+        }
+      }
+    };
+    if (!this.customLoader && canUseBitmaps) {
+      decodeBitmap(canonicalKey, false)
+        .then((bmp) => applyLoaded(bmp, false))
+        .catch(onFail);
+      return;
+    }
+    const activeLoader = this.customLoader || this.loader;
+    activeLoader.load(
+      canonicalKey,
+      (loaded) => {
+        if (this.cache.get(canonicalKey) !== texture) return;
+        texture.image = loaded.image;
+        texture.flipY = loaded.flipY;
+        this.configureSampling(texture, isSRGB);
+        texture.needsUpdate = true;
+      },
+      undefined,
+      onFail,
+    );
   }
 
   /**
@@ -183,6 +344,9 @@ export class TexturePipeline {
     this.upgraded.clear();
     this.upgrading.clear();
     this.upgradeRetryAt.clear();
+    this.deferredLoads.length = 0;
+    this.pendingUploads.length = 0;
+    this.uploadCooldownFrames = 0;
   }
 
   /**
@@ -191,8 +355,10 @@ export class TexturePipeline {
   public resetForTesting(): void {
     this.clearCache(false);
     this.customLoader = null;
+    this.deferNonEssential = false;
+    this.budgetedUploads = false;
     this.maxCacheSize = TexturePipeline.defaultCacheLimit();
-    this.maxAnisotropy = perf.tier === 'low' ? 2 : perf.tier === 'medium' ? 4 : 8;
+    this.maxAnisotropy = 8;
     this.baseUrl = (
       (typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL) || '/'
     ).replace(/\/?$/, '/');
@@ -222,9 +388,18 @@ export class TexturePipeline {
     // 2. Headless test environment guard when no mock loader is provided
     if (typeof document === 'undefined' && !this.customLoader) {
       const dummyTex = new THREE.Texture();
-      dummyTex.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+      this.configureSampling(dummyTex, isSRGB);
       this.storeCache(canonicalKey, dummyTex);
       return dummyTex;
+    }
+
+    // 2b. During `/fly/` cold start, defer non-Earth/non-Sun textures so Earth + jet assets stream first
+    if (this.deferNonEssential && !this.isFlightEssentialKey(canonicalKey)) {
+      const deferredTex = new THREE.Texture();
+      this.configureSampling(deferredTex, isSRGB);
+      this.storeCache(canonicalKey, deferredTex);
+      this.deferredLoads.push({ canonicalKey, url, texture: deferredTex, isSRGB, fallbackKey });
+      return deferredTex;
     }
 
     // 3. Initiate texture loading using active loader
@@ -235,11 +410,7 @@ export class TexturePipeline {
     const texture = activeLoader.load(
       canonicalKey,
       (tex) => {
-        tex.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-        tex.generateMipmaps = true;
-        tex.minFilter = THREE.LinearMipmapLinearFilter;
-        tex.magFilter = THREE.LinearFilter;
-        tex.anisotropy = this.maxAnisotropy;
+        this.configureSampling(tex, isSRGB);
         tex.needsUpdate = true;
       },
       undefined,
@@ -258,6 +429,7 @@ export class TexturePipeline {
             if (fallbackTex && fallbackTex.image) {
               targetTex.image = fallbackTex.image;
               targetTex.flipY = fallbackTex.flipY;
+              this.configureSampling(targetTex, isSRGB);
               targetTex.needsUpdate = true;
             }
           } catch (e) {
@@ -276,6 +448,7 @@ export class TexturePipeline {
         if (fallbackTex && fallbackTex.image) {
           targetTex.image = fallbackTex.image;
           targetTex.flipY = fallbackTex.flipY;
+          this.configureSampling(targetTex, isSRGB);
           targetTex.needsUpdate = true;
         }
       } catch (e) {
@@ -283,11 +456,7 @@ export class TexturePipeline {
       }
     }
 
-    texture.colorSpace = isSRGB ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-    texture.generateMipmaps = true;
-    texture.minFilter = THREE.LinearMipmapLinearFilter;
-    texture.magFilter = THREE.LinearFilter;
-    texture.anisotropy = this.maxAnisotropy;
+    this.configureSampling(texture, isSRGB);
 
     // 4. Store in LRU cache under canonical key if not already failed
     if (!hasFailed) {
@@ -514,22 +683,33 @@ export class TexturePipeline {
       // first, so the next draw allocates fresh storage at the new size. Writing the bigger
       // image into the old storage fails and leaves the map garbled.
       const swap = (image: HTMLImageElement | ImageBitmap, flipY: boolean): void => {
-        if (this.cache.get(lowKey) !== tex) {
-          if ('close' in image) image.close();
+        const commit = (): { texture: THREE.Texture; pixels: number } | null => {
+          if (this.cache.get(lowKey) !== tex) {
+            if ('close' in image) image.close();
+            this.upgrading.delete(high);
+            return null;
+          }
+          tex.dispose();
+          if (image instanceof HTMLImageElement) {
+            tex.image = image;
+            tex.flipY = flipY;
+            tex.needsUpdate = true;
+          } else {
+            applyBitmap(tex, image);
+          }
+          tex.generateMipmaps = true;
+          tex.minFilter = THREE.LinearMipmapLinearFilter;
+          tex.magFilter = THREE.LinearFilter;
+          tex.anisotropy = this.maxAnisotropy;
           this.upgrading.delete(high);
-          return;
-        }
-        tex.dispose();
-        if (image instanceof HTMLImageElement) {
-          tex.image = image;
-          tex.flipY = flipY;
-          tex.needsUpdate = true;
-        } else {
-          applyBitmap(tex, image);
-        }
-        this.upgrading.delete(high);
-        this.upgraded.add(high);
-        this.upgradeRetryAt.delete(high);
+          this.upgraded.add(high);
+          this.upgradeRetryAt.delete(high);
+          const w = (image as { width?: number }).width ?? 4096;
+          const h = (image as { height?: number }).height ?? 2048;
+          return { texture: tex, pixels: w * h };
+        };
+        if (this.budgetedUploads) this.pendingUploads.push(commit);
+        else commit();
       };
       const fail = (err: unknown): void => {
         this.upgrading.delete(high);

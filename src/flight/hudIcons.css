@@ -7,13 +7,15 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 50%;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.72);
+  background: rgba(5, 10, 14, 0.44);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  color: rgba(255, 255, 255, 0.86);
   cursor: pointer;
   touch-action: manipulation;
-  transition: color 0.25s ease, background-color 0.25s ease, transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: color 0.25s ease, background-color 0.25s ease, border-color 0.25s ease, transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 @media (pointer: coarse) {
   .ib {

@@ -11,10 +11,23 @@
  * prime meridian).
  */
 
+import type { TileKey } from './TileMath';
+
 export type ImageryKind = 'visible' | 'monochrome' | 'radar' | 'atmosphere';
 
-/** Equirectangular tile pyramid: level 0 has `level0Cols × level0Rows` tiles of `level0TileDeg`. */
-export interface EquirectGrid {
+export type TileProjection = 'equirect' | 'mercator';
+
+/** Maximum latitude representable in Web Mercator (EPSG:3857): atan(sinh(pi)) in degrees. */
+export const MAX_MERCATOR_LAT = (Math.atan(Math.sinh(Math.PI)) * 180) / Math.PI;
+
+/**
+ * Tile pyramid specification.
+ * - `'equirect'` (default): plate carrée pyramid; level 0 has tiles of `level0TileDeg` (180° Trek/EOX, 288° GIBS 4326).
+ * - `'mercator'`: Web Mercator (EPSG:3857) 2^z × 2^z pyramid spanning ±85.05112878° latitude (`level0TileDeg: 360`).
+ */
+export interface TileGrid {
+  /** Pyramid projection. Defaults to `'equirect'` when omitted for backward compatibility. */
+  projection?: TileProjection;
   tileSize: number;
   level0TileDeg: number;
   minLevel: number;
@@ -24,7 +37,10 @@ export interface EquirectGrid {
   maxLat?: number;
 }
 
-export interface WmtsProvider extends EquirectGrid {
+/** Backward-compatible alias for `TileGrid`. */
+export type EquirectGrid = TileGrid;
+
+export interface WmtsProvider extends TileGrid {
   kind: 'wmts';
   /** URL template with {z} {y} {x}. */
   template: string;
@@ -37,7 +53,7 @@ export interface WmtsProvider extends EquirectGrid {
   fallback?: TileProvider;
 }
 
-export interface WmsProvider extends EquirectGrid {
+export interface WmsProvider extends TileGrid {
   kind: 'wms';
   /** GetMap URL with {bbox} (minLon,minLat,maxLon,maxLat) and {size}. */
   template: string;
@@ -65,17 +81,132 @@ export interface BodyImagery {
 }
 
 const KM = 1000;
+const DEG = Math.PI / 180;
 
-/** Metres per pixel at the equator for a level of an equirectangular grid. */
-export function metresPerPixel(grid: EquirectGrid, level: number, radiusKm: number): number {
+/**
+ * Metres per pixel at `latDeg` (default equator) for a tile grid level.
+ * Web Mercator scales by cos(lat); equirectangular is evaluated along the equator.
+ */
+export function metresPerPixel(grid: TileGrid, level: number, radiusKm: number, latDeg = 0): number {
+  if (grid.projection === 'mercator') {
+    const degPerPx = 360 / Math.pow(2, level) / grid.tileSize;
+    const clampedLat = Math.max(-MAX_MERCATOR_LAT, Math.min(MAX_MERCATOR_LAT, latDeg));
+    return degPerPx * DEG * radiusKm * KM * Math.max(0.05, Math.cos(clampedLat * DEG));
+  }
   const degPerPx = grid.level0TileDeg / Math.pow(2, level) / grid.tileSize;
-  return ((degPerPx * Math.PI) / 180) * radiusKm * KM;
+  return degPerPx * DEG * radiusKm * KM;
+}
+
+/** True when two tile grids share the exact same projection and tile matrix subdivision. */
+export function gridsCompatible(a: TileGrid, b: TileGrid): boolean {
+  const pa = a.projection ?? 'equirect';
+  const pb = b.projection ?? 'equirect';
+  if (pa !== pb) return false;
+  if (pa === 'mercator') return true;
+  return Math.abs(a.level0TileDeg - b.level0TileDeg) < 1e-6;
+}
+
+/** Matrix dimensions (cols × rows) at zoom `z` for a grid. */
+function gridMatrixSize(grid: TileGrid, z: number): { cols: number; rows: number } {
+  if (grid.projection === 'mercator') {
+    const n = Math.pow(2, z);
+    return { cols: n, rows: n };
+  }
+  const d = grid.level0TileDeg / Math.pow(2, z);
+  return { cols: Math.ceil(360 / d - 1e-9), rows: Math.ceil(180 / d - 1e-9) };
+}
+
+/** Strict matrix & zoom bounds check preventing out-of-range HTTP 400 requests (e.g. GIBS bounds). */
+export function isTileKeyInBounds(grid: TileGrid, k: TileKey): boolean {
+  if (!Number.isInteger(k.z) || !Number.isInteger(k.x) || !Number.isInteger(k.y)) return false;
+  if (k.z < grid.minLevel || k.z > grid.maxLevel) return false;
+  const { cols, rows } = gridMatrixSize(grid, k.z);
+  return k.x >= 0 && k.y >= 0 && k.x < cols && k.y < rows;
+}
+
+/** Lowest zoom level covered by `provider` or any grid-compatible fallback in its chain. */
+export function effectiveMinLevel(provider: TileProvider): number {
+  let minZ = provider.minLevel;
+  let cur: TileProvider | undefined = provider.fallback;
+  while (cur) {
+    if (gridsCompatible(provider, cur)) minZ = Math.min(minZ, cur.minLevel);
+    cur = cur.fallback;
+  }
+  return minZ;
+}
+
+/**
+ * Resolve the concrete provider for tile `k` along `provider`'s grid-compatible fallback chain.
+ * - `preferFallback = false | 0`: returns the primary compatible provider covering `k` (or first
+ *   compatible fallback if `k.z < provider.minLevel`).
+ * - `preferFallback = true | N`: advances `N` steps into compatible fallback providers covering `k`.
+ * Never returns a provider whose tile matrix cannot address `k` (eliminates GIBS HTTP 400s).
+ */
+export function resolveProviderForTile(
+  provider: TileProvider,
+  k: TileKey,
+  preferFallback: boolean | number = false
+): TileProvider | null {
+  const step = typeof preferFallback === 'number' ? Math.max(0, Math.floor(preferFallback)) : preferFallback ? 1 : 0;
+  const candidates: TileProvider[] = [];
+  if (isTileKeyInBounds(provider, k)) candidates.push(provider);
+  let cur: TileProvider | undefined = provider.fallback;
+  while (cur) {
+    if (gridsCompatible(provider, cur) && isTileKeyInBounds(cur, k)) {
+      candidates.push(cur);
+    }
+    cur = cur.fallback;
+  }
+  return candidates[step] ?? null;
+}
+
+/**
+ * Format a tile URL for `k` after validating matrix bounds. Returns `null` if no compatible
+ * provider in the chain covers `k` at the requested fallback step.
+ */
+export function buildTileUrl(
+  provider: TileProvider,
+  k: TileKey,
+  preferFallback: boolean | number = false
+): string | null {
+  const p = resolveProviderForTile(provider, k, preferFallback);
+  if (!p) return null;
+  if (p.kind === 'wms') {
+    let west: number;
+    let east: number;
+    let north: number;
+    let south: number;
+    if (p.projection === 'mercator') {
+      const n = Math.pow(2, k.z);
+      west = -180 + (k.x / n) * 360;
+      east = -180 + ((k.x + 1) / n) * 360;
+      north = (Math.atan(Math.sinh(Math.PI * (1 - (2 * k.y) / n))) * 180) / Math.PI;
+      south = (Math.atan(Math.sinh(Math.PI * (1 - (2 * (k.y + 1)) / n))) * 180) / Math.PI;
+    } else {
+      const d = p.level0TileDeg / Math.pow(2, k.z);
+      west = -180 + k.x * d;
+      north = 90 - k.y * d;
+      east = west + d;
+      south = north - d;
+    }
+    return p.template.replace('{bbox}', `${west},${south},${east},${north}`).split('{size}').join(String(p.tileSize));
+  }
+  return p.template.replace('{z}', String(k.z)).replace('{y}', String(k.y)).replace('{x}', String(k.x));
 }
 
 const TREK = (body: string, layer: string, ext: string) =>
   `https://trek.nasa.gov/tiles/${body}/EQ/${layer}/1.0.0/default/default028mm/{z}/{y}/{x}.${ext}`;
 
-const TREK_GRID = { tileSize: 256, level0TileDeg: 180, minLevel: 0 };
+const TREK_GRID = { projection: 'equirect' as const, tileSize: 256, level0TileDeg: 180, minLevel: 0 };
+
+const MERCATOR_GRID = {
+  projection: 'mercator' as const,
+  tileSize: 256,
+  level0TileDeg: 360,
+  minLevel: 0,
+  minLat: -MAX_MERCATOR_LAT,
+  maxLat: MAX_MERCATOR_LAT,
+};
 
 /** USGS Astrogeology planetary WMS (MapServer, CORS open), one GetMap per 256 px tile. */
 const USGS_WMS = (map: string, layer: string) =>
@@ -255,28 +386,39 @@ export const BODY_IMAGERY: Record<string, BodyImagery> = {
     body: 'Earth',
     provider: {
       kind: 'wmts',
-      // EOX "WGS84" matrix set: 2×1 tiles of 256 px at level 0 (same grid as Trek), levels 0–17;
-      // the Sentinel-2 data are 10 m, reached at level 13 (≈9.5 m/px). Level 18 returns 404.
-      template: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless/default/WGS84/{z}/{y}/{x}.jpg',
-      ...TREK_GRID,
-      maxLevel: 13,
+      // ArcGIS World Imagery (EPSG:3857 Web Mercator, 2^z × 2^z, 256 px JPEG, ACAO: *):
+      // high-res regional/city/surface close-up imagery down to z=18 (~0.60 m/px eq, ~0.45 m/px mid-lat).
+      template: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      ...MERCATOR_GRID,
+      minLevel: 6,
+      maxLevel: 18,
       fallback: {
         kind: 'wmts',
-        template: 'https://gibs.earthdata.nasa.gov/wmts/epsg4326/best/BlueMarble_NextGeneration/default/500m/{z}/{y}/{x}.jpeg',
-        tileSize: 512,
-        level0TileDeg: 288,
+        // EOX Sentinel-2 cloudless 2021 (EPSG:3857 Web Mercator, identical 2^z × 2^z matrix):
+        // handles global/orbital zooms (z=0..5) and serves as automatic fallback up to z=13.
+        template: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg',
+        ...MERCATOR_GRID,
         minLevel: 0,
-        maxLevel: 7,
+        maxLevel: 13,
+        fallback: {
+          kind: 'wmts',
+          // NASA GIBS BlueMarble NextGeneration (EPSG:3857 GoogleMapsCompatible_Level8, exact 2^z × 2^z):
+          // strictly aligned with the Web Mercator matrix and clamped to z<=8 so ZERO HTTP 400s occur.
+          template: 'https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_NextGeneration/default/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg',
+          ...MERCATOR_GRID,
+          minLevel: 0,
+          maxLevel: 8,
+        },
       },
     },
     kind: 'visible',
-    title: 'Sentinel-2 cloudless (2016, 10 m)',
-    source: 'EOX Sentinel-2 cloudless · Copernicus Sentinel-2',
-    sourceUrl: 'https://s2maps.eu',
+    title: 'ArcGIS World Imagery (sub-metre) · Sentinel-2 cloudless',
+    source: 'Esri World Imagery · EOX Sentinel-2 cloudless · NASA GIBS Blue Marble',
+    sourceUrl: 'https://www.arcgis.com/home/item.html?id=10df2279f9684e4a9f6a7f08febac2a9',
     attribution:
-      'Sentinel-2 cloudless – https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016), CC BY 4.0',
+      'Esri, Maxar, Earthstar Geographics, USDA FSA, USGS, Aerogrid, IGN, IGP, and the GIS User Community · Sentinel-2 cloudless by EOX (CC BY 4.0) · NASA GIBS',
     bestMetresPerPixel: 0,
-    coverage: 'Global cloud-free true-colour mosaic of the land; oceans are filled in by EOX',
+    coverage: 'Global satellite & aerial imagery: Sentinel-2/Blue Marble from orbit, sub-metre ArcGIS World Imagery up close',
   },
   Moon: {
     body: 'Moon',

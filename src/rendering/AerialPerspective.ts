@@ -28,6 +28,100 @@ export const NIGHT_AIR = { value: new THREE.Vector3(0.02, 0.026, 0.045) };
 export const MOON_LIGHT = { value: new THREE.Vector3(0, 0, 0) };
 export const MOON_DIR = { value: new THREE.Vector3(0, 1, 0) };
 
+/**
+ * Shared star & Milky Way visibility multiplier (0 = fully drowned out by sunlit daytime sky,
+ * 1 = full deep-space / night visibility). Bound by CatalogueStars, MilkyWayVolume, and
+ * MilkyWayGalaxy; driven by JetController, SkyAtmosphere, and AtmosphereShader.
+ */
+export const SKY_STAR_VISIBILITY = { value: 1 };
+
+/**
+ * Shared Earth overcast / storm cloud cover (0 = clear blue sky, 1 = heavy storm deck).
+ * Driven by Weather when precipitation is active so rain/snow never falls out of a bright sunny sky.
+ */
+export const SKY_OVERCAST = { value: 0 };
+
+interface StarVisSource {
+  value: number;
+  isActive: () => boolean;
+}
+
+const starVisSources = new Map<string, StarVisSource>();
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Physical atmospheric star & Milky Way visibility from observer altitude, atmospheric scale height,
+ * local solar elevation (sin of altitude above horizon), and optional cloud overcast (0..1).
+ */
+export function computeAtmosphericStarVisibility(params: {
+  altKm: number;
+  scaleHeightKm: number;
+  topKm: number;
+  sunUp: number;
+  overcast?: number;
+}): number {
+  const { altKm, scaleHeightKm, topKm, sunUp, overcast = 0 } = params;
+  if (scaleHeightKm <= 0 || topKm <= 0) return 1;
+  if (altKm >= topKm) return 1;
+  const clampedAlt = Math.max(0, altKm);
+  // Smooth fade across nautical/civil twilight (-10° to +2.5° solar elevation).
+  const daylight = smoothstep(-0.18, 0.04, sunUp);
+  // Stars stay drowned out through troposphere & lower stratosphere (~0-20 km on Earth),
+  // smoothly emerging through upper stratosphere & mesosphere (~22-60 km on Earth) to space.
+  const scaleHeights = clampedAlt / scaleHeightKm;
+  const altEmergence = Math.max(
+    smoothstep(2.4, 6.8, scaleHeights),
+    smoothstep(0.60, 0.92, clampedAlt / topKm),
+  );
+  let vis = 1 - daylight * (1 - altEmergence);
+  if (overcast > 0.001) {
+    const belowClouds = 1 - smoothstep(6, 14, clampedAlt);
+    vis *= 1 - Math.min(1, overcast) * belowClouds * 0.92;
+  }
+  return Math.max(0, Math.min(1, vis));
+}
+
+/** Recompute SKY_STAR_VISIBILITY from all currently active atmosphere sources. */
+export function refreshSkyStarVisibility(): number {
+  let vis = 1;
+  for (const src of starVisSources.values()) {
+    if (src.isActive()) {
+      vis = Math.min(vis, src.value);
+    }
+  }
+  SKY_STAR_VISIBILITY.value = vis;
+  return vis;
+}
+
+/**
+ * Register or update a sky-extinction source ('jet', 'surface', 'atmosphere').
+ * `isActive` guards against stale values when that renderer or flight mode is disabled.
+ */
+export function setSkyStarVisibility(
+  source: string,
+  visibility: number,
+  isActive: () => boolean = () => true,
+): number {
+  const clamped = Math.max(0, Math.min(1, visibility));
+  starVisSources.set(source, { value: clamped, isActive });
+  return refreshSkyStarVisibility();
+}
+
+/** Clear a sky-extinction source (e.g. on dispose or mode exit). */
+export function clearSkyStarVisibility(source: string): number {
+  starVisSources.delete(source);
+  return refreshSkyStarVisibility();
+}
+
+/** Set shared Earth sky overcast factor (0 = clear sky, 1 = heavy storm cloud deck). */
+export function setSkyOvercast(amount: number): void {
+  SKY_OVERCAST.value = Math.max(0, Math.min(1, amount));
+}
+
 export const AERIAL_PERSPECTIVE_GLSL = /* glsl */ `
 uniform vec3 uNightAir;
 uniform vec3 uMoonLight;

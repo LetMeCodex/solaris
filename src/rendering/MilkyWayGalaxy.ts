@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { TexturePipeline } from './TexturePipeline';
 import { SagittariusAStar } from './SagittariusAStar';
 import { CoordinateFrames } from '../astronomy/CoordinateFrames';
+import { refreshSkyStarVisibility } from './AerialPerspective';
 
 export interface GalaxyConfig {
   radius: number;          // Outer radius of galactic disk in scene units (e.g. 28,000)
@@ -66,6 +67,8 @@ export class MilkyWayGalaxy {
 
   // Uniform controllers
   private opacityUniform: { value: number } = { value: 0.0 };
+  private baseOpacity: number = 0.0;
+  private daylightVisibility: number = 1.0;
   private timeUniform: { value: number } = { value: 0.0 };
   private bulgeFadeUniform: { value: number } = { value: 1.0 };
   // The ~1 MB disk artwork only becomes a GPU texture the first time the galaxy becomes visible
@@ -734,10 +737,15 @@ export class MilkyWayGalaxy {
     return this.diskTextureUniform.value as THREE.Texture;
   }
 
-  public setOpacity(opacity: number): void {
-    const clamped = Math.max(0.0, Math.min(1.0, opacity));
-    this.opacityUniform.value = clamped;
-    this.group.visible = clamped > 0.005;
+  public setDaylightVisibility(vis: number): void {
+    this.daylightVisibility = Math.max(0, Math.min(1, vis));
+    this.applyEffectiveOpacity();
+  }
+
+  private applyEffectiveOpacity(): void {
+    const eff = Math.max(0, Math.min(1, this.baseOpacity * this.daylightVisibility * refreshSkyStarVisibility()));
+    this.opacityUniform.value = eff;
+    this.group.visible = eff > 0.005;
 
     if (this.group.visible && !this.diskTextureRequested) {
       this.diskTextureRequested = true;
@@ -749,23 +757,29 @@ export class MilkyWayGalaxy {
 
     // Synchronize relativistic black hole opacity
     if (this.sagittariusAStar) {
-      this.sagittariusAStar.setOpacity(clamped);
+      this.sagittariusAStar.setOpacity(eff);
     }
 
     // Scale beacon visibility
     if (this.sunReticleMesh) {
-      (this.sunReticleMesh.material as THREE.LineBasicMaterial).opacity = clamped * 0.9;
+      (this.sunReticleMesh.material as THREE.LineBasicMaterial).opacity = eff * 0.9;
     }
     if (this.sunRadarRing) {
-      (this.sunRadarRing.material as THREE.LineDashedMaterial).opacity = clamped * 0.65;
+      (this.sunRadarRing.material as THREE.LineDashedMaterial).opacity = eff * 0.65;
     }
     if (this.sunPulseMesh) {
-      (this.sunPulseMesh.material as THREE.MeshBasicMaterial).opacity = clamped * 0.95;
+      (this.sunPulseMesh.material as THREE.MeshBasicMaterial).opacity = eff * 0.95;
     }
+  }
+
+  public setOpacity(opacity: number): void {
+    this.baseOpacity = Math.max(0.0, Math.min(1.0, opacity));
+    this.applyEffectiveOpacity();
   }
 
   public update(timeSec: number, camera?: THREE.Camera): void {
     this.timeUniform.value = timeSec;
+    this.applyEffectiveOpacity();
 
     // Update Sagittarius A* ray-marching shader and S-stars cluster
     if (this.sagittariusAStar && camera) {

@@ -1,4 +1,10 @@
 import * as THREE from 'three';
+import {
+  SKY_OVERCAST,
+  clearSkyStarVisibility,
+  computeAtmosphericStarVisibility,
+  setSkyStarVisibility,
+} from '../rendering/AerialPerspective';
 
 /**
  * Sky seen from a planet's surface: single-scattering Rayleigh + Mie (Nishita-style), evaluated
@@ -120,9 +126,27 @@ const fragmentShader = /* glsl */ `
   uniform float uExposure;
   uniform float uStarDim;   // 0 at night … 1 in daylight: the sky drowns the stars
   uniform float uMulti;     // strength of the multiple-scattering term
+  uniform float uWeatherOvercast; // 0 clear … 1 storm deck (Earth weather coupling)
+  uniform float uIsEarth;
   varying vec3 vDir;
 
   const float PI = 3.14159265;
+
+  // Jorge Jimenez Interleaved Gradient Noise with triangular PDF to eliminate 8-bit sky banding
+  float ign(vec2 p) {
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+  }
+  vec3 ditherLinearSky(vec3 col) {
+    float peak = max(col.r, max(col.g, col.b));
+    if (peak < 0.0002) return col;
+    vec2 p = gl_FragCoord.xy;
+    vec3 n1 = vec3(ign(p), ign(p + vec2(17.0, 31.0)), ign(p + vec2(47.0, 11.0)));
+    vec3 n2 = vec3(ign(p + vec2(5.5, 13.5)), ign(p + vec2(29.5, 7.5)), ign(p + vec2(61.5, 23.5)));
+    vec3 tri = (n1 + n2) - 1.0;
+    vec3 lsb = max(vec3(0.00035), pow(max(col, vec3(0.0002)), vec3(0.55)) * (1.8 / 255.0));
+    float mask = smoothstep(0.0002, 0.0025, peak);
+    return max(vec3(0.0), col + tri * lsb * mask);
+  }
 
   vec2 raySphere(vec3 o, vec3 d, float r) {
     float b = dot(o, d);
@@ -148,8 +172,8 @@ const fragmentShader = /* glsl */ `
       // Venus: diffuse light through ~90 bar of cloud and CO₂; no direct sky
       float day = smoothstep(-0.12, 0.25, uSunElev);
       float grad = 0.75 + 0.25 * clamp(d.y, 0.0, 1.0);
-      vec3 col = uOvercast * (0.04 + 0.6 * day) * grad;
-      gl_FragColor = vec4(col * uExposure, 0.0);
+      vec3 col = ditherLinearSky(uOvercast * (0.04 + 0.6 * day) * grad * uExposure);
+      gl_FragColor = vec4(col, 0.0);
       return;
     }
 
@@ -214,10 +238,24 @@ const fragmentShader = /* glsl */ `
     col = mix(col, dot(col, vec3(0.2126, 0.7152, 0.0722)) * skyTint, msK);
     vec3 trans = exp(-(uBetaR * odR + uBetaMe * odM + uBetaA * odR));
     col *= uExposure;
+    // Couple Earth rain/snow/storm weather to an actual overcast cloud deck so precipitation
+    // never falls out of a bright clear blue sky.
+    float belowCloud = 1.0 - smoothstep(6000.0, 14000.0, uEye);
+    float weatherOv = clamp(uWeatherOvercast * uIsEarth * belowCloud, 0.0, 1.0);
+    if (weatherOv > 0.001) {
+      float dayLit = smoothstep(-0.14, 0.28, s.y);
+      float zenithShade = mix(0.88, 0.46, clamp(d.y, 0.0, 1.0));
+      vec3 ovDay = vec3(0.24, 0.28, 0.34) * zenithShade;
+      vec3 ovTwilight = vec3(0.09, 0.10, 0.14) * zenithShade;
+      vec3 ovNight = vec3(0.012, 0.015, 0.022) * zenithShade;
+      vec3 ovCol = mix(ovNight, mix(ovTwilight, ovDay, smoothstep(0.0, 0.35, s.y)), dayLit) * uExposure;
+      col = mix(col, ovCol, weatherOv * 0.90);
+    }
     float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-    // Background (stars) is dimmed by extinction and drowned by a bright sky
-    float through = dot(trans, vec3(0.333)) * (1.0 - smoothstep(0.015, 0.35, lum)) * (1.0 - uStarDim);
-    gl_FragColor = vec4(col, through);
+    // Background (stars) is dimmed by extinction and drowned by a bright sky or overcast deck
+    float through = dot(trans, vec3(0.333)) * (1.0 - smoothstep(0.012, 0.30, lum)) * (1.0 - uStarDim) * (1.0 - weatherOv * 0.94);
+    col = ditherLinearSky(col);
+    gl_FragColor = vec4(col, max(0.0, through));
   }
 `;
 
@@ -252,6 +290,8 @@ export class SkyAtmosphere {
         uExposure: { value: 1.15 },
         uStarDim: { value: 0 },
         uMulti: { value: 0.1 },
+        uWeatherOvercast: SKY_OVERCAST,
+        uIsEarth: { value: 0 },
       },
       vertexShader,
       fragmentShader,
@@ -285,6 +325,7 @@ export class SkyAtmosphere {
     u.uG.value.fromArray(model.g);
     u.uSunI.value = model.sunIntensity;
     u.uMode.value = model.kind === 'overcast' ? 2 : 1;
+    u.uIsEarth.value = model === ATMOSPHERES.Earth ? 1 : 0;
     if (model.overcast) u.uOvercast.value.fromArray(model.overcast);
   }
 
@@ -301,7 +342,10 @@ export class SkyAtmosphere {
     enabled: boolean
   ): void {
     this.mesh.visible = enabled && this.model.kind !== 'none';
-    if (!this.mesh.visible) return;
+    if (!this.mesh.visible) {
+      clearSkyStarVisibility('surface');
+      return;
+    }
     this.mesh.position.copy(centre);
     this.mesh.scale.setScalar(radius);
     const u = this.material.uniforms;
@@ -312,12 +356,22 @@ export class SkyAtmosphere {
     // Keep camera altitude strictly below atmosphere top so outer sky rays stay valid even at high relief/vantage
     u.uEye.value = Math.min(Math.max(2, eyeHeightM), Math.max(100, this.model.top * 0.95));
     u.uSunElev.value = sunDir.dot(frame.up);
-    // Stars fade from civil twilight (−6°) to sunrise, as they do to the eye
+    // Stars fade from nautical/civil twilight through sunrise, and re-emerge in upper stratosphere/space
     const sunAlt = (Math.asin(THREE.MathUtils.clamp(u.uSunElev.value, -1, 1)) * 180) / Math.PI;
-    // and with height: above ~20 km the air is too thin to glow, and by the edge of space (where
-    // the dome hands over to the open sky) the stars are fully there, with no sudden switch
+    const isEarth = u.uIsEarth.value > 0.5;
+    const starVis = this.model.kind === 'overcast'
+      ? 0
+      : computeAtmosphericStarVisibility({
+          altKm: eyeHeightM / 1000,
+          scaleHeightKm: this.model.hr / 1000,
+          topKm: this.model.top / 1000,
+          sunUp: u.uSunElev.value,
+          overcast: isEarth ? SKY_OVERCAST.value : 0,
+        });
+    setSkyStarVisibility('surface', starVis, () => this.mesh.visible);
     const thin = 1 - THREE.MathUtils.smoothstep(eyeHeightM, 20000, 55000);
-    u.uStarDim.value = this.model.kind === 'scatter' ? THREE.MathUtils.smoothstep(sunAlt, -10, -1) * this.starDimScale * thin : 0;
+    const legacyDim = this.model.kind === 'scatter' ? THREE.MathUtils.smoothstep(sunAlt, -10, -1) * this.starDimScale * thin : 1;
+    u.uStarDim.value = Math.max(legacyDim, 1 - starVis);
     // The eye adapts after sunset: twilight reads as a lit sky, not the black of a daytime exposure
     const dusk = THREE.MathUtils.smoothstep(-sunAlt, -1, 5);
     u.uExposure.value = SkyAtmosphere.EXPOSURE * (1 + 7 * dusk);
@@ -331,6 +385,7 @@ export class SkyAtmosphere {
   }
 
   public dispose(): void {
+    clearSkyStarVisibility('surface');
     this.mesh.geometry.dispose();
     this.material.dispose();
   }

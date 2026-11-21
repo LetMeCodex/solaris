@@ -105,7 +105,7 @@ describe('Imagery registry', () => {
   it('derives the finest ground sample from verified maximum levels', () => {
     expect(metresPerPixel(trek, 10, 1737.4)).toBeCloseTo(20.8, 1); // Kaguya TC served to level 10
     expect(BODY_IMAGERY.Moon.bestMetresPerPixel).toBeCloseTo(20.8, 1);
-    expect(BODY_IMAGERY.Earth.bestMetresPerPixel).toBeCloseTo(9.5, 1); // Sentinel-2 10 m at level 13
+    expect(BODY_IMAGERY.Earth.bestMetresPerPixel).toBeCloseTo(0.6, 1); // ArcGIS World Imagery sub-metre at Mercator level 18
     expect(BODY_IMAGERY.Mars.bestMetresPerPixel).toBeCloseTo(10.1, 0); // CTX level 12
     expect(BODY_IMAGERY.Jupiter.provider).toBeNull();
   });
@@ -116,7 +116,8 @@ describe('Imagery registry', () => {
     const earth = minimumAltitudeKm(BODY_IMAGERY.Earth, 55);
     expect(moon).toBeLessThan(mercury);
     expect(earth).toBeLessThan(moon);
-    expect(earth).toBeGreaterThan(2);
+    expect(earth).toBeGreaterThan(0.1);
+    expect(earth).toBeLessThan(1);
   });
 
   it('labels Venus as radar and the giants as cloud tops', () => {
