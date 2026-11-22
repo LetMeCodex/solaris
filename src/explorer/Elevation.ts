@@ -128,7 +128,7 @@ export class EarthElevation {
     south = Math.max(-MAX_LAT, Math.min(MAX_LAT, south));
     north = Math.max(south, Math.min(MAX_LAT, north));
     const jobs: Promise<void>[] = [];
-    const queueZoom = (zz: number, priority: number): void => {
+    const queueZoom = (zz: number, priority: number, maxPerAxis: number): void => {
       const n = 2 ** zz;
       const a = mercator(north, west, zz);
       const b = mercator(south, east, zz);
@@ -136,27 +136,47 @@ export class EarthElevation {
       const xEnd = Math.floor(((east + 180) / 360) * n);
       const yStart = Math.max(0, Math.floor(a.y));
       const yEnd = Math.min(n - 1, Math.floor(b.y));
-      // Cap extreme box queries (e.g. wide orbital bounds at high z) to avoid flooding the queue
-      const maxSpan = 16;
-      const clampedXEnd = Math.min(xEnd, xStart + maxSpan);
-      const clampedYEnd = Math.min(yEnd, yStart + maxSpan);
-      for (let ty = yStart; ty <= clampedYEnd; ty++) {
-        for (let tx = xStart; tx <= clampedXEnd; tx++) {
-          jobs.push(this.load(zz, ((tx % n) + n) % n, ty, priority));
+      const spanX = Math.max(1, xEnd - xStart + 1);
+      const spanY = Math.max(1, yEnd - yStart + 1);
+      // Center-clamped window so wide boxes never flood the network with 200+ Terrarium PNGs
+      const cX = Math.floor((xStart + xEnd) / 2);
+      const cY = Math.floor((yStart + yEnd) / 2);
+      const half = Math.floor((maxPerAxis - 1) / 2);
+      const x0 = spanX > maxPerAxis ? cX - half : xStart;
+      const x1 = spanX > maxPerAxis ? x0 + maxPerAxis - 1 : xEnd;
+      const y0 = Math.max(0, spanY > maxPerAxis ? cY - half : yStart);
+      const y1 = Math.min(n - 1, spanY > maxPerAxis ? y0 + maxPerAxis - 1 : yEnd);
+      for (let ty = y0; ty <= y1; ty++) {
+        for (let tx = x0; tx <= x1; tx++) {
+          const wx = ((tx % n) + n) % n;
+          const k = `${zz}/${wx}/${ty}`;
+          if (this.tiles.has(k)) continue;
+          jobs.push(this.load(zz, wx, ty, priority));
         }
       }
     };
+    // Step down effective zoom if the requested box spans too many tiles at high z
+    let targetZ = z;
+    while (targetZ > 9) {
+      const n = 2 ** targetZ;
+      const a = mercator(north, west, targetZ);
+      const b = mercator(south, east, targetZ);
+      const sx = Math.max(1, Math.floor(((east + 180) / 360) * n) - Math.floor(((west + 180) / 360) * n) + 1);
+      const sy = Math.max(1, Math.min(n - 1, Math.floor(b.y)) - Math.max(0, Math.floor(a.y)) + 1);
+      if (sx * sy <= 9) break;
+      targetZ--;
+    }
     // Warm coarse global baseline first (highest priority) so peaks never drop to 0 km
-    queueZoom(ANCHOR_Z, -1000 + priorityBias);
+    queueZoom(ANCHOR_Z, -1000 + priorityBias, 4);
     // Landmarks carry a bundled regional DEM; load it immediately at high priority
-    if (z > 8) {
+    if (targetZ > 8) {
       const p = mercator((south + north) / 2, (west + east) / 2, 8);
       if (BUNDLED.has(`8/${Math.floor(p.x)}/${Math.floor(p.y)}`)) {
-        queueZoom(8, -500 + priorityBias);
+        queueZoom(8, -500 + priorityBias, 3);
       }
     }
-    if (z > COARSE_FALLBACK_Z) queueZoom(COARSE_FALLBACK_Z, -200 + priorityBias);
-    queueZoom(z, z * 10 + priorityBias);
+    if (targetZ > COARSE_FALLBACK_Z) queueZoom(COARSE_FALLBACK_Z, -200 + priorityBias, 3);
+    queueZoom(targetZ, targetZ * 10 + priorityBias, targetZ >= 11 ? 3 : 4);
     return Promise.all(jobs).then(() => undefined);
   }
 
@@ -175,15 +195,20 @@ export class EarthElevation {
     if (![latDeg, lonDeg, dLatPerSec, dLonPerSec, lookaheadSec, z].every(Number.isFinite)) {
       return Promise.resolve();
     }
-    const dt = Math.max(0.5, Math.min(12, lookaheadSec));
-    const lat2 = Math.max(-MAX_LAT, Math.min(MAX_LAT, latDeg + dLatPerSec * dt));
-    const lon2 = lonDeg + dLonPerSec * dt;
-    const pad = 0.04;
+    const dt = Math.max(0.5, Math.min(8, lookaheadSec));
+    const dLat = Math.max(-0.14, Math.min(0.14, dLatPerSec * dt));
+    const dLon = Math.max(-0.14, Math.min(0.14, dLonPerSec * dt));
+    const speedDeg = Math.hypot(dLatPerSec * dt, dLonPerSec * dt);
+    const lat2 = Math.max(-MAX_LAT, Math.min(MAX_LAT, latDeg + dLat));
+    const lon2 = lonDeg + dLon;
+    const pad = 0.02;
     const south = Math.min(latDeg, lat2) - pad;
     const north = Math.max(latDeg, lat2) + pad;
     const west = Math.min(lonDeg, lon2) - pad;
     const east = Math.max(lonDeg, lon2) + pad;
-    return this.ensure(south, west, north, east, Math.min(MAX_Z, Math.max(6, Math.floor(z))), 50);
+    // Supersonic transit (> 0.15 deg in lookahead window) only warms regional z<=9 DEM
+    const cappedZ = speedDeg > 0.15 ? Math.min(9, z) : Math.min(12, z);
+    return this.ensure(south, west, north, east, Math.max(6, Math.floor(cappedZ)), 50);
   }
 
   /** Fast O(1) check whether a loaded DEM tile at or above `minZoom` covers `(latDeg, lonDeg)`. */

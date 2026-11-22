@@ -162,9 +162,18 @@ function srgb(hex: string): THREE.Color {
   return new THREE.Color(hex).convertSRGBToLinear();
 }
 
+const GLOBAL_REGION: PilotRegion = {
+  name: 'Global',
+  south: -85, west: -180, north: 85, east: 180,
+  palette: ['#d4d7dc', '#c6ccd2', '#dfd8cc', '#b8c0c8', '#e2dfd8', '#a6b0bc'],
+  style: 'modern',
+  photorealFallbackOnly: true,
+};
+
 const TANK = new THREE.Color(0.035, 0.035, 0.04);
 const Z = 14;
 const TILEJSON = 'https://tiles.openfreemap.org/planet';
+const MAX_CONCURRENT_CELLS = 4;
 
 interface Cell {
   key: string;
@@ -1370,8 +1379,10 @@ export class ProceduralCity {
   /** The air's haze factor, as the tiles have it (set by the scene). */
   public haze = { value: 1 };
   private lastFetch = 0;
-  private backoffMs = 400;
+  private backoffMs = 0;
+  private inFlightCount = 0;
   private tileUrl: string | null = null;
+  private tileUrlPromise: Promise<string | null> | null = null;
   /** Drawn ground minus elevation data under the region, km (measured once per region when PhotorealEarth is showing). */
   private groundOffsetKm: number | null = null;
   /** Fallback offset (km); defaults to 0 when SurfaceTileLayer is the primary ground. */
@@ -1469,8 +1480,8 @@ export class ProceduralCity {
       }
     }
     this.lastHeroCheckMs = now;
-    // Proactively ensure DEM around the city so hills (SF Nob Hill, Paris Montmartre, etc.) snap accurately
-    void this.prepareGround?.(region.south, region.west, region.north, region.east);
+    // Proactively ensure DEM tightly around the hero anchor (+/-0.03 deg = <=9 tiles, never 256!)
+    void this.prepareGround?.(spec.lat - 0.03, spec.lon - 0.03, spec.lat + 0.03, spec.lon + 0.03);
     const builder = new CityMeshBuilder(
       spec.lat,
       spec.lon,
@@ -1494,14 +1505,34 @@ export class ProceduralCity {
     });
   }
 
+  /** Pre-warm OpenFreeMap TileJSON and center building cell for an upcoming landmark arrival. */
+  public prefetch(lat: number, lon: number): void {
+    if (this.disposed || typeof window === 'undefined' || typeof fetch !== 'function') return;
+    if (PhotorealEarth.current?.showing) return;
+    const region = ProceduralCity.regionAt(lat, lon) ?? GLOBAL_REGION;
+    const ci = tileY(lat);
+    const cj = tileX(lon);
+    const key = `${ci}:${cj}`;
+    let cell = this.cells.get(key);
+    if (!cell) {
+      cell = { key, mesh: null, loading: false, lastUsed: performance.now(), offsetKm: 0 };
+      this.cells.set(key, cell);
+    }
+    if (!cell.mesh && !cell.loading && this.inFlightCount < MAX_CONCURRENT_CELLS) {
+      cell.loading = true;
+      void this.loadCell(cell, cj, ci, region);
+    }
+  }
+
   /**
    * Per frame. Renders instant 3D iconic landmarks + streams OSM building cells around the camera
-   * when low over a configured city region.
+   * globally anywhere on Earth when PhotorealEarth is absent (or in non-photoreal pilot regions).
    */
   public update(surface: THREE.Object3D, cameraWorld: THREE.Vector3, lat: number, lon: number, altKm: number, kmPerUnit: number): void {
     if (this.group.parent !== surface) surface.add(this.group);
-    const region = ProceduralCity.regionAt(lat, lon);
+    const pilotRegion = ProceduralCity.regionAt(lat, lon);
     const photorealActive = Boolean(PhotorealEarth.current?.showing);
+    const region = pilotRegion ?? (!photorealActive ? GLOBAL_REGION : null);
     const suppressedByPhotoreal = Boolean(photorealActive && region?.photorealFallbackOnly);
     const on = Boolean(region) && !suppressedByPhotoreal && altKm < 16;
     this.group.visible = on;
@@ -1516,38 +1547,49 @@ export class ProceduralCity {
 
     // Hide hero meshes from distant regions, show & snap current region's hero skyline/landmarks instantly
     for (const [rName, hero] of this.heroCities) {
-      hero.mesh.visible = rName === region.name;
+      hero.mesh.visible = Boolean(pilotRegion) && rName === pilotRegion!.name;
     }
-    this.ensureHeroCity(region, offsetKm, radiusKm);
+    if (pilotRegion) this.ensureHeroCity(pilotRegion, offsetKm, radiusKm);
 
-    // Stream detailed OSM vector building cells when below 7 km altitude
-    if (altKm >= 7) return;
+    // Stream detailed OSM vector building cells globally below 8 km altitude (center-first, up to 4 concurrent)
+    if (altKm >= 8) return;
     const now = performance.now();
     const ci = tileY(lat);
     const cj = tileX(lon);
-    for (let di = -1; di <= 1; di++) {
-      for (let dj = -1; dj <= 1; dj++) {
-        const key = `${ci + di}:${cj + dj}`;
-        let cell = this.cells.get(key);
-        if (!cell) {
-          cell = { key, mesh: null, loading: false, lastUsed: now, offsetKm: 0 };
-          this.cells.set(key, cell);
-        }
-        cell.lastUsed = now;
-        if (cell.mesh && Math.abs(cell.offsetKm - offsetKm) > 0.004) {
-          cell.mesh.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
-          cell.mesh.removeFromParent();
-          cell.mesh = null;
-        }
-        if (!cell.mesh && !cell.loading && now - this.lastFetch > this.backoffMs) {
-          this.lastFetch = now;
-          cell.loading = true;
-          void this.loadCell(cell, cj + dj, ci + di, region);
-        }
+    const ring: Array<{ di: number; dj: number; d2: number }> = [];
+    const span = altKm < 2.5 ? 2 : 1;
+    for (let di = -span; di <= span; di++) {
+      for (let dj = -span; dj <= span; dj++) {
+        ring.push({ di, dj, d2: di * di + dj * dj });
+      }
+    }
+    ring.sort((a, b) => a.d2 - b.d2);
+    for (const { di, dj } of ring) {
+      const key = `${ci + di}:${cj + dj}`;
+      let cell = this.cells.get(key);
+      if (!cell) {
+        cell = { key, mesh: null, loading: false, lastUsed: now, offsetKm: 0 };
+        this.cells.set(key, cell);
+      }
+      cell.lastUsed = now;
+      if (cell.mesh && Math.abs(cell.offsetKm - offsetKm) > 0.004) {
+        cell.mesh.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
+        cell.mesh.removeFromParent();
+        cell.mesh = null;
+      }
+      if (
+        !cell.mesh &&
+        !cell.loading &&
+        this.inFlightCount < MAX_CONCURRENT_CELLS &&
+        (this.backoffMs === 0 || now - this.lastFetch > this.backoffMs)
+      ) {
+        this.lastFetch = now;
+        cell.loading = true;
+        void this.loadCell(cell, cj + dj, ci + di, region);
       }
     }
     for (const [key, cell] of this.cells) {
-      if (now - cell.lastUsed > 60000) {
+      if (now - cell.lastUsed > 120000) {
         cell.mesh?.traverse((o) => (o as THREE.Mesh).geometry?.dispose());
         cell.mesh?.removeFromParent();
         this.cells.delete(key);
@@ -1555,36 +1597,53 @@ export class ProceduralCity {
     }
   }
 
+  private resolveTileUrl(): Promise<string | null> {
+    if (this.tileUrl) return Promise.resolve(this.tileUrl);
+    if (this.tileUrlPromise) return this.tileUrlPromise;
+    this.tileUrlPromise = (async () => {
+      try {
+        const res = await fetch(TILEJSON);
+        if (!res.ok) return null;
+        const tj = await res.json();
+        const url = (tj.tiles?.[0] as string) ?? null;
+        if (url) this.tileUrl = url;
+        return url;
+      } catch {
+        return null;
+      } finally {
+        if (!this.tileUrl) this.tileUrlPromise = null;
+      }
+    })();
+    return this.tileUrlPromise;
+  }
+
   private async loadCell(cell: Cell, tx: number, ty: number, region: PilotRegion): Promise<void> {
     if (this.disposed || typeof window === 'undefined' || typeof fetch !== 'function') {
       cell.loading = false;
       return;
     }
+    this.inFlightCount++;
     const south = tileLat(ty + 1);
     const north = tileLat(ty);
     const west = tileLon(tx);
     const east = tileLon(tx + 1);
     const abort = new AbortController();
     this.aborts.add(abort);
-    const timer = setTimeout(() => abort.abort(), 10000);
+    const timer = setTimeout(() => abort.abort(), 14000);
     try {
-      if (!this.tileUrl) {
-        const tjRes = await fetch(TILEJSON, { signal: abort.signal });
-        if (!tjRes.ok) throw new Error(String(tjRes.status));
-        const tj = await tjRes.json();
-        this.tileUrl = (tj.tiles?.[0] as string) ?? null;
-        if (!this.tileUrl) throw new Error('no tiles');
-      }
-      if (this.disposed) return;
+      const tileTemplate = await this.resolveTileUrl();
+      if (!tileTemplate || this.disposed) return;
       const res = await fetch(
-        this.tileUrl.replace('{z}', String(Z)).replace('{x}', String(tx)).replace('{y}', String(ty)),
+        tileTemplate.replace('{z}', String(Z)).replace('{x}', String(tx)).replace('{y}', String(ty)),
         { signal: abort.signal },
       );
       if (!res.ok) {
-        this.backoffMs = Math.min(20000, this.backoffMs * 2);
+        if (res.status === 429 || res.status >= 500) {
+          this.backoffMs = Math.min(20000, Math.max(800, this.backoffMs * 2));
+        }
         throw new Error(String(res.status));
       }
-      this.backoffMs = 400;
+      this.backoffMs = 0;
       const buf = await res.arrayBuffer();
       if (this.disposed) return;
       const vt = new VectorTile(new Pbf(new Uint8Array(buf)));
@@ -1687,6 +1746,7 @@ export class ProceduralCity {
     } finally {
       clearTimeout(timer);
       this.aborts.delete(abort);
+      this.inFlightCount = Math.max(0, this.inFlightCount - 1);
       cell.loading = false;
     }
   }

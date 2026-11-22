@@ -608,9 +608,20 @@ export class SurfaceTileLayer {
       selectMinLevel !== this.activeProvider.minLevel
         ? { ...this.activeProvider, minLevel: selectMinLevel }
         : this.activeProvider;
+    // During supersonic landmark transit (> 450 m/s on Earth), cap leaf zoom to regional tiles so
+    // the connection pool isn't flooded with fleeting z15..18 tiles that immediately abort.
+    const velMag = velocity ? Math.hypot(velocity[0], velocity[1], velocity[2]) : 0;
+    const transitCap =
+      this.bodyName === 'Earth' && velMag > 2.5e-4
+        ? 9
+        : this.bodyName === 'Earth' && velMag > 7.5e-5
+          ? 12
+          : baseSelection.maxLevel;
     const selectionProvider = underlay
       ? { ...baseSelection, maxLevel: Math.max(baseSelection.minLevel, Math.min(7, baseSelection.maxLevel)) }
-      : baseSelection;
+      : transitCap < baseSelection.maxLevel
+        ? { ...baseSelection, maxLevel: Math.max(baseSelection.minLevel, transitCap) }
+        : baseSelection;
 
     const selected = selectTilesWithPriority(
       selectionProvider,
@@ -691,17 +702,32 @@ export class SurfaceTileLayer {
       }
     }
 
+    // Queue only 2 strategic ancestor anchor levels per leaf (coarse regional anchor + intermediate
+    // parent step) instead of all 18 levels — slashes boot/teleport burst from ~248 down to ~35 tiles
+    // while keeping zero-ms parent-cropped UV coverage intact!
     const ancestorLevels = Math.max(0, this.activeProvider.maxLevel - selectMinLevel + 1);
     const ancestorQueues: TileEntry[][] = Array.from({ length: ancestorLevels }, () => []);
     for (const sel of selected) {
+      const targetZ = sel.key.z;
+      const wantedAnchorLevels = new Set<number>();
+      if (targetZ > selectMinLevel) {
+        wantedAnchorLevels.add(selectMinLevel);
+        if (targetZ >= 6) wantedAnchorLevels.add(Math.max(selectMinLevel, Math.min(8, targetZ - 2)));
+        if (targetZ >= 12) wantedAnchorLevels.add(Math.max(selectMinLevel, targetZ - 3));
+        if (targetZ >= 15) wantedAnchorLevels.add(Math.max(selectMinLevel, targetZ - 1));
+      }
       let ak: TileKey | null = sel.key;
       for (let up = 0; up < ancestorLevels; up++) {
         ak = ak ? parentTile(ak) : null;
         if (!ak || ak.z < selectMinLevel) break;
         const aid = tileId(ak);
+        const existingEntry = this.tiles.get(aid);
+        // Always retain already-loaded/loading ancestors in wantedIds so live fallbacks stay pinned,
+        // but only queue NEW ancestor downloads at strategic anchor levels.
+        if (!existingEntry && !wantedAnchorLevels.has(ak.z)) continue;
         if (wantedIds.has(aid)) continue;
         wantedIds.add(aid);
-        let entry = this.tiles.get(aid);
+        let entry = existingEntry;
         if (!entry) {
           entry = {
             key: ak,
@@ -744,9 +770,10 @@ export class SurfaceTileLayer {
     }
     this.queue.push(...lookaheadQueue);
 
-    // Hysteresis-safe cancellation for TileCache mode; direct cancel for custom test loaders
+    // Hysteresis-safe cancellation for TileCache mode (1.8s grace prevents banking abort churn);
+    // direct cancel for custom test loaders
     if (this.useTileCache) {
-      tileCache.keepWanted(wantedCacheKeys, this.cachePrefix, 550);
+      tileCache.keepWanted(wantedCacheKeys, this.cachePrefix, 1800);
     } else {
       for (const entry of this.tiles.values()) {
         if (entry.state === 'loading' && !wantedIds.has(entry.id) && entry.key.z > 2 && entry.image) {

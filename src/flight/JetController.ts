@@ -1422,6 +1422,11 @@ export class JetController {
     return near && near !== 'Sun' ? landmarksFor(near) : [];
   }
 
+  /** Currently targeted landing landmark while an autopilot landing hop is active. */
+  public get landingTarget(): Landmark | null {
+    return this.landing;
+  }
+
   /** Engage the landing autopilot to a landmark on a world in the catalogue. */
   public startLanding(lm: Landmark): void {
     if (!this.bodyIndex.has(lm.body)) return;
@@ -1436,7 +1441,8 @@ export class JetController {
     const lat = lm.vantageLat ?? lm.lat;
     const lon = lm.vantageLon ?? lm.lon;
     if (lm.body === 'Earth') {
-      void earthElevation.ensure(lat - 0.12, lon - 0.12, lat + 0.12, lon + 0.12, 13, -100);
+      void earthElevation.ensure(lat - 0.03, lon - 0.03, lat + 0.03, lon + 0.03, 13, -100);
+      void earthElevation.ensure(lat - 0.10, lon - 0.10, lat + 0.10, lon + 0.10, 10, -50);
     } else {
       void elevationFor(lm.body)?.ensure(lat - 0.15, lon - 0.15, lat + 0.15, lon + 0.15, 8);
     }

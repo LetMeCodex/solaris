@@ -2027,10 +2027,11 @@ export class SolarSystemScene {
     }
     this.enterJet(best);
     this.jet.hold = true;
-    // Kick off spawn-region DEM + high-res Earth tiles immediately on tick 0 so the spawn ground
-    // warms in parallel with aircraft glTF decoding (eliminating blank-ground spawns).
+    // Kick off spawn-region DEM (tight z13 footprint + regional z10) & high-res Earth tiles
+    // immediately on tick 0 without flooding Terrarium with 100+ tiles.
     if (best) {
-      void earthElevation.ensure(best.lat - 0.15, best.lon - 0.15, best.lat + 0.15, best.lon + 0.15, 13);
+      void earthElevation.ensure(best.lat - 0.03, best.lon - 0.03, best.lat + 0.03, best.lon + 0.03, 13, -50);
+      void earthElevation.ensure(best.lat - 0.12, best.lon - 0.12, best.lat + 0.12, best.lon + 0.12, 10, 0);
     }
     this.jet.update(0.001, performance.now() * 0.001, this.cameraRig.camera, this.container.clientWidth, this.container.clientHeight, this.jetToScreen);
     this.explorer.update('Earth', this.cameraRig.camera, this.renderer.domElement.height);
@@ -2860,8 +2861,9 @@ export class SolarSystemScene {
       if (this.city) this.city.group.visible = false;
       return;
     }
-    if (!this.city && !ProceduralCity.regionAt(lat, lon)) return;
-    // On wherever a region is listed (see ProceduralCity); localStorage solaris.proceduralCity = 0
+    const photoShowing = Boolean(this.photoreal?.showing && this.photoreal.tiles.group.visible);
+    if (!this.city && !ProceduralCity.regionAt(lat, lon) && (photoShowing || roughAltKm >= 16)) return;
+    // On globally when PhotorealEarth is absent, or in curated pilot regions; localStorage solaris.proceduralCity = 0
     // turns it off
     let enabled = true;
     try {
@@ -2876,7 +2878,7 @@ export class SolarSystemScene {
     if (!this.city) {
       const city = new ProceduralCity();
       city.dataGroundKm = (la, lo) => earthElevation.heightKm(la, lo, 13);
-      city.prepareGround = (s, w, n, e) => earthElevation.ensure(s, w, n, e, 13);
+      city.prepareGround = (s, w, n, e) => earthElevation.ensure(s, w, n, e, 12);
       const ray = new THREE.Raycaster();
       const rayFrom = new THREE.Vector3();
       const rayCentre = new THREE.Vector3();
@@ -2904,7 +2906,6 @@ export class SolarSystemScene {
     }
     const kmPerUnit = 6378.137 / earth.visualRadius;
     const altKm = this.jet.active ? jt.altKm : st?.body === 'Earth' ? 0.002 : Math.max(0.05, roughAltKm);
-    const photoShowing = Boolean(this.photoreal?.showing && this.photoreal.tiles.group.visible);
     this.city.haze.value = this.photoreal?.air.haze ?? 1;
     // SurfaceTileLayer sits at exact DEM elevation (0 offset); only apply Google tile offset when PhotorealEarth is showing.
     this.city.offsetHintKm = photoShowing
@@ -2914,6 +2915,12 @@ export class SolarSystemScene {
       ? (this.terrain && Number.isFinite(this.terrain.surfaceOffsetKm) ? this.terrain.surfaceOffsetKm : null)
       : 0;
     this.city.update(earth.surfaceMesh, this.cameraRig.camera.position, lat, lon, altKm, kmPerUnit);
+    // Pre-warm destination city's OpenFreeMap 3D buildings during Earth landmark hops so buildings
+    // are already built in RAM by the time the jet arrives!
+    const dest = this.jet.active ? this.jet.landingTarget : null;
+    if (!photoShowing && dest && dest.body === 'Earth') {
+      this.city.prefetch(dest.vantageLat ?? dest.lat, dest.vantageLon ?? dest.lon);
+    }
   }
 
   /** The physical sky dome around the jet in Earth's air (see jetSky). */
