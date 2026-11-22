@@ -2088,14 +2088,15 @@ export class SolarSystemScene {
         | { queued?: number; downloading?: number; parsing?: number; visible?: number }
         | undefined;
       const tilesPending = st ? (st.queued ?? 0) + (st.downloading ?? 0) + (st.parsing ?? 0) : 0;
-      const tilesVisible = st?.visible ?? 0;
+      const tilesVisible = Math.max(st?.visible ?? 0, this.photoreal!.tiles.visibleTiles.size);
       const detailedTiles = this.photoreal!.detailedTilesVisible;
       const localCoverage = this.photoreal!.localCoverageCount;
-      // Wait for a full solid city/country blanket + crisp foreground buildings before unlocking ENGAGE
+      // Wait for a full solid 3D city/mountain blanket + sharp foreground tiles before unlocking ENGAGE.
+      // Works cleanly for both dense 4K skyscraper cities and vast natural peaks (Everest, Grand Canyon).
       const spawnTilesReady =
-        (localCoverage >= 18 && detailedTiles >= 10 && tilesPending <= 24) ||
-        (localCoverage >= 28 && detailedTiles >= 14) ||
-        (localCoverage >= 12 && tilesPending === 0);
+        (tilesVisible >= 16 && localCoverage >= 12 && (detailedTiles >= 8 || tilesPending <= 10)) ||
+        (tilesVisible >= 28 && localCoverage >= 16) ||
+        (tilesVisible >= 8 && tilesPending === 0);
       return {
         jet: this.jet.active,
         aircraft: this.jet.aircraftReady,
@@ -2582,7 +2583,9 @@ export class SolarSystemScene {
       // Flying or standing on the ground, Earth is lit by the real Sun (the explorer's even daylight
       // is for inspecting the night side from orbit; it left night lit like noon in the jet)
       if (this.jet.active || this.surface.isActive()) p.setDaylight(0);
-      p.setPrefetchPaused(this.jet.active && this.jet.hold);
+      const preloading = this.jet.active && this.jet.hold;
+      p.setPrefetchPaused(preloading);
+      p.setPreloading(preloading);
     }
 
     this.updateCity(earth, altKm);

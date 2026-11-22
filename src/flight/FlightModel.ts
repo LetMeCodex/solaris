@@ -879,10 +879,13 @@ export class FlightModel {
       let cmdYawRate = this.fbwState.rateCmdB3[1];
       let cmdRollRate = this.fbwState.rateCmdB3[2];
 
+      // Keep 1G auto-trim + flight-path hold active across NORM, HIGH-G, and normal-AoA PSM cruise;
+      // seamlessly disengage only during active Cobra / post-stall high-AoA maneuvers (>= 22 deg AoA).
+      const inPostStallManeuver = fbwOut.effectiveMode === 'psm' && Math.abs(flow.alphaDeg) >= 22;
       if (
         input.assist &&
         !fbwOut.cobra.active &&
-        fbwOut.effectiveMode !== 'psm' &&
+        !inPostStallManeuver &&
         !onGround &&
         atm.densityRel > 0.02 &&
         gEffMps2 > 0.1
@@ -937,28 +940,34 @@ export class FlightModel {
             this.autoGammaLatched = false;
           } else {
             if (!this.autoGammaLatched && Math.abs(this.rates.x) < 0.16) {
-              this.autoGammaRad = gammaRad;
+              // Snap tiny residual flight-path angles (< 3 deg) to crisp level flight (0 deg) so
+              // the jet never slowly bleeds altitude after releasing pitch near the horizon.
+              this.autoGammaRad = Math.abs(gammaRad) < 3.0 * DEG_TO_RAD ? 0 : gammaRad;
               this.autoGammaLatched = true;
             }
             targetGammaRad = this.autoGammaLatched ? this.autoGammaRad : gammaRad;
           }
 
+          // Inverse-density gain scheduling keeps high-altitude (7-16 km MSL) thin-air trim
+          // just as crisp and zero-droop as sea-level cruise.
+          const altGain = clamp(1 / Math.sqrt(clamp(atm.densityRel, 0.12, 1.0)), 1.0, 2.2);
+
           // Outer flight-path angle stabilization prevents slow phugoid/thrust-change drift
           const gammaErrRad = clamp(targetGammaRad - gammaRad, -0.35, 0.35);
-          const deltaNzHold = clamp(gammaErrRad * 2.6, -0.75, 0.75);
-          const trimTargetAccel = gEffMps2 * clamp(nzBase + deltaNzHold, -0.5, 2.5);
+          const deltaNzHold = clamp(gammaErrRad * 3.0, -0.85, 0.85);
+          const trimTargetAccel = gEffMps2 * clamp(nzBase + deltaNzHold, -0.5, 2.6);
 
           // Gain-scheduled PI normal-acceleration loop with anti-windup
           const errRate = (trimTargetAccel - this.lastNormalAeroAccel) / safeV;
-          const pTerm = clamp(errRate * 1.15, -0.45, 0.45);
-          const uUnsat = pTerm + this.pitchTrimInt + clamp(gammaErrRad * 1.15, -0.35, 0.35);
-          const uSat = clamp(uUnsat, -0.55, 0.55);
+          const pTerm = clamp(errRate * 1.25 * altGain, -0.55, 0.55);
+          const uUnsat = pTerm + this.pitchTrimInt + clamp(gammaErrRad * 1.35 * altGain, -0.45, 0.45);
+          const uSat = clamp(uUnsat, -0.72, 0.72);
           const awTerm = 3.0 * (uSat - uUnsat);
           const alphaClipping = flow.alphaDeg > fbwOut.alphaLimitDeg - 2.5 && errRate > 0;
           if (!alphaClipping) {
-            this.pitchTrimInt = clamp(this.pitchTrimInt + (errRate * 0.85 + awTerm) * subDt, -0.35, 0.35);
+            this.pitchTrimInt = clamp(this.pitchTrimInt + (errRate * 1.05 * altGain + awTerm) * subDt, -0.55, 0.55);
           } else {
-            this.pitchTrimInt = clamp(this.pitchTrimInt + awTerm * subDt, -0.35, 0.35);
+            this.pitchTrimInt = clamp(this.pitchTrimInt + awTerm * subDt, -0.55, 0.55);
           }
           cmdPitchRate += uSat;
         } else {
@@ -1400,6 +1409,24 @@ export class FlightModel {
         fbwOut.targetRatesB3[1],
         fbwOut.targetRatesB3[2]
       );
+      // When flying level hands-off in hypersonic/scramjet atmosphere, gently follow Earth's curvature
+      // and damp tiny residual vertical drift (< 2 deg) without ever triggering pitch-release bounce.
+      if (
+        isHypersonicTier &&
+        inAir &&
+        !onGround &&
+        Math.abs(input.pitch) < 0.04 &&
+        Math.abs(input.roll) < 0.04 &&
+        Math.abs(this.rates.x) < 0.004 &&
+        Math.abs(rollAngleRad) < 45 * DEG_TO_RAD &&
+        Math.abs(gammaDeg) < 2.2
+      ) {
+        const horizSpeedMps = Math.max(0, flow.speedMps * Math.cos(gammaDeg * DEG_TO_RAD));
+        // Curvature rate over Earth (~6371 km radius) keeps flight parallel to the globe surface
+        const curvRate = -horizSpeedMps / 6_371_000;
+        const levelHold = clamp(-gammaDeg * DEG_TO_RAD * 0.45, -0.008, 0.008);
+        this.rates.x = clamp(this.rates.x + curvRate + levelHold, -0.009, 0.009);
+      }
     } else {
       const k = 1 - Math.exp(-RATE_RESPONSE * dt);
       const tp = clamp(input.pitch, -1, 1) * MAX_PITCH_RATE;

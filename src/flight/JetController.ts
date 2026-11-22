@@ -2173,11 +2173,11 @@ export class JetController {
     const ray = this.photoRay;
     (ray as THREE.Raycaster & { firstHitOnly?: boolean }).firstHitOnly = true;
 
-    // Down: from 9 km above the jet, so the first surface met is always the true top of the ground
-    // (a rooftop, a mountain), even when the jet has ended up under it.
+    // Down: from 9 km above the jet to 14 km below, so high-altitude mountain passes (7-12 km MSL
+    // over the Himalayas / Everest) never drop out of raycast range and cause AGL jumps.
     const fromKm = 9;
     ray.set(this.pv2.copy(f.position).addScaledVector(up, fromKm / kmNear), this.pv3.copy(up).negate());
-    ray.far = (fromKm + 6) / kmNear;
+    ray.far = (fromKm + 14) / kmNear;
     const down = ray.intersectObject(target, true)[0];
     if (down) {
       const at = this.photoGround?.at ?? new THREE.Vector3();

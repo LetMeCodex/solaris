@@ -183,4 +183,63 @@ describe('High-Altitude ISA Cloud Clearance & Anti-Pixelation Floor', () => {
     expect(pass.layer.baseKm).toBeGreaterThanOrEqual(2.3);
     clouds.dispose();
   });
+
+  it('caps lower-tropospheric cloud deck <= 4.2 km MSL so Mount Everest (8,849 m) towers ABOVE clouds', async () => {
+    earthElevation.disabled = true;
+    const pass = new VolumetricCloudPass(0.6);
+    passes.push(pass);
+    const clouds = new EarthClouds(pass);
+    const start = Date.now();
+    while (!pass.isNoiseReady() && Date.now() - start < 4000) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    const surface = new THREE.Mesh(new THREE.SphereGeometry(1, 8, 8));
+    surface.updateWorldMatrix(true, false);
+    const centre = new THREE.Vector3(0, 0, 0);
+    const cam = new THREE.PerspectiveCamera(60, 16 / 9, 0.001, 10000);
+    const kmPerUnit = 6378.137;
+    // Camera at 9.2 km MSL, 0.35 km AGL over Mount Everest (8.85 km MSL summit!)
+    cam.position.set(1 + 9.2 / kmPerUnit, 0, 0);
+    const sunDir = new THREE.Vector3(1, 0.4, 0.2).normalize();
+
+    clouds.update(true, surface, centre, cam, 27.988, 86.925, 0.35, kmPerUnit, sunDir, 'auto', 0);
+    expect(pass.enabled).toBe(true);
+    // Cloud base must cap at realistic tropospheric LCL (<= 4.2 km MSL) and cloud tops must sit
+    // well BELOW Mount Everest's 8.85 km summit so the mountain rises visibly above the cloud sea!
+    expect(pass.layer.baseKm).toBeLessThanOrEqual(4.2);
+    expect(pass.layer.topKm).toBeLessThan(7.0);
+    // Fair-weather deck opacity must stay sculpted (<= 0.55), never a solid white carpet
+    expect(pass.layer.deck).toBeLessThanOrEqual(0.55);
+    clouds.dispose();
+  });
+});
+
+describe('High-Altitude Level-Hold in NORM, PSM, and Hypersonic Modes', () => {
+  it('holds altitude hands-off at 8 km MSL in both NORM and PSM modes on Su-30MKK (zero nose dive)', () => {
+    for (const fbwMode of ['norm', 'psm'] as const) {
+      const m = new FlightModel();
+      m.setAirframe('su30mkk', true);
+      m.setFbwMode(fbwMode);
+      const kmPerUnit = 1;
+      const vUnits = 260 * unitsPerMps(kmPerUnit); // ~260 m/s TAS at 8 km MSL (~Mach 0.84)
+      m.position.set(0, 8.0, 0);
+      m.velocity.set(0, 0, -vUnits);
+      m.speed = vUnits;
+      const env: FlightEnv = {
+        altitudeUnits: 8.0,
+        kmPerUnit,
+        airDensity: 0.43,
+        upWorld: new THREE.Vector3(0, 1, 0),
+        bodyName: 'Earth',
+        altKm: 8.0,
+        groundClearanceM: 4000,
+      };
+      const startY = m.position.y;
+      stepSeconds(m, 6.0, mkInput({ throttle: 0.82, psm: fbwMode === 'psm' }), env);
+      const altDeltaM = (m.position.y - startY) * 1000;
+      expect(Math.abs(altDeltaM), `8km MSL ${fbwMode} drift=${altDeltaM.toFixed(1)}m`).toBeLessThan(35);
+      expect(Math.abs(m.verticalSpeedMps)).toBeLessThan(3.0);
+    }
+  });
 });

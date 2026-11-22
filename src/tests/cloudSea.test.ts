@@ -71,7 +71,9 @@ describe('CloudSea volumetric clouds port', () => {
 
     clouds.update(true, surface, centre, cam, 0, 0, 2, kmPerUnit, sunDir, 'auto', 0);
     expect(pass.enabled).toBe(true);
-    expect(pass.layer.deck).toBeGreaterThan(0.6);
+    // Sculpted cumulus deck in fair/auto weather keeps landmarks visible below (0.2..0.55)
+    expect(pass.layer.deck).toBeGreaterThan(0.2);
+    expect(pass.layer.deck).toBeLessThan(0.6);
     expect(pass.layer.topKm).toBeGreaterThan(pass.layer.baseKm + 1.5);
     expect(Math.abs(pass.u.uPatchEast.value.dot(pass.u.uPatchNorth.value))).toBeLessThan(1e-5);
 

@@ -217,31 +217,36 @@ export class EarthClouds {
     const storm = weatherMode === 'storm' || (weatherMode === 'auto' && w?.kind === 'storm');
     const rainy = weatherMode === 'rain' || weatherMode === 'snow' || (weatherMode === 'auto' && (w?.kind === 'rain' || w?.kind === 'snow'));
 
-    const liveCover = w ? Math.max(w.coverLow, w.cover * 0.82) : 0.58;
+    const liveCover = w ? Math.max(w.coverLow, w.cover * 0.82) : 0.45;
     const coverT = manualClear
-      ? 0.40
+      ? 0.34
       : storm
-        ? 0.88
+        ? 0.86
         : rainy
-          ? 0.78
-          : THREE.MathUtils.lerp(0.48, 0.64, liveCover);
+          ? 0.74
+          : THREE.MathUtils.lerp(0.38, 0.56, liveCover);
 
     const overcastT = rainy;
+    // Calibrated volumetric cumulus deck: fair/auto weather forms sculpted 3D clouds with clear
+    // windows to mountains and cities below instead of an impenetrable white blanket.
     const deckT = manualClear
-      ? 0.56
+      ? 0.22
       : storm
-        ? 0.90
+        ? 0.78
         : rainy
-          ? 0.87
-          : THREE.MathUtils.lerp(0.76, 0.845, liveCover);
+          ? 0.68
+          : THREE.MathUtils.lerp(0.28, 0.48, liveCover);
 
     // Authentic ISA Lifting Condensation Level (LCL) clearance: fair-weather cumulus bases float
-    // ~1.85-2.2 km above local terrain/rooftops, while storm/rain bases hold at least 1.25-1.35 km AGL.
+    // ~1.85-2.15 km above low-to-mid terrain/rooftops (e.g. Sao Paulo 0.76 km -> ~2.6 km MSL),
+    // and cap at real lower-tropospheric LCL (~3.8-4.2 km MSL) over towering mountain ranges so
+    // Himalayan giants like Mount Everest (8,849 m) pierce dramatically ABOVE the cloud sea!
     const liftT = manualClear ? 2.15 : storm ? 1.25 : rainy ? 1.35 : 1.85;
     const minMslKm = manualClear ? 2.2 : storm ? 1.35 : rainy ? 1.45 : 1.9;
-    const thickT = manualClear ? 2.1 : storm ? 5.2 : rainy ? 3.2 : 2.45 + 0.55 * coverT;
+    const maxBaseMslKm = manualClear ? 3.85 : storm ? 4.8 : rainy ? 4.45 : 4.15;
+    const thickT = manualClear ? 1.65 : storm ? 4.5 : rainy ? 2.8 : 1.95 + 0.45 * coverT;
     const stratusT = overcastT && !storm ? THREE.MathUtils.smoothstep(coverT, 0.76, 0.96) : 0;
-    const densityT = manualClear ? 1.35 : storm ? 1.85 : rainy ? 1.65 : 1.48;
+    const densityT = manualClear ? 1.22 : storm ? 1.78 : rainy ? 1.56 : 1.38;
 
     const e = (this.eased ??= {
       cover: coverT,
@@ -273,7 +278,7 @@ export class EarthClouds {
       return;
     }
 
-    const baseKm = Math.max(minMslKm, ground + e.lift);
+    const baseKm = THREE.MathUtils.clamp(ground + e.lift, minMslKm, maxBaseMslKm);
     const thickKm = e.thick;
     const unitKm = Math.max(0.16, thickKm / 15.0);
 

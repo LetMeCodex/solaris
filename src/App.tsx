@@ -132,8 +132,27 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
         aircraftSaid = true;
         say(`airframe  ${airframeName} glTF decoded · cockpit lit · displays live`);
       }
-      // Behind the film, briefly touch each camera view so cockpit/GoPro shaders warm up rapidly (~200ms/view)
-      if (sc && r.aircraft && r.jet && tourStep < TOUR.length && now - tourAt > 200) {
+      const streaming = startedAt > 0 && r.jet;
+      peakPending = Math.max(peakPending, r.tilesPending);
+      const isCompactFly = typeof window !== 'undefined' && (window.innerWidth < 820 || window.innerHeight < 480);
+      const targetDetailed = isCompactFly ? 6 : 12;
+      const settleDetailed = isCompactFly ? 4 : 8;
+      const tilesFrac = !streaming
+        ? 0
+        : r.spawnTilesReady
+          ? 1
+          : r.tilesVisible === 0
+            ? 0.08
+            : Math.min(1, Math.max(1 - r.tilesPending / Math.max(peakPending, 36), Math.min(0.96, Math.max(r.detailedTiles / targetDetailed, r.tilesVisible / (targetDetailed * 2.2)))));
+      if (streaming && r.tilesVisible >= settleDetailed * 2 && (r.detailedTiles >= settleDetailed || r.tilesPending <= 10)) quietSince ||= now;
+      else quietSince = 0;
+      const settled = quietSince > 0 && now - quietSince > 900;
+      const enoughTiles = Boolean(r.spawnTilesReady) || (r.tilesVisible >= targetDetailed * 2 && r.detailedTiles >= targetDetailed);
+      // Generous 18s safety cap (normal connections now complete in ~3-5s with full 3D landmark loaded)
+      const timedOut = startedAt > 0 && now - startedAt > 18000;
+      // Hold the camera steady on the launch landmark while tiles stream in so the frustum NEVER thrashes!
+      // Only touch cockpit/GoPro views briefly AFTER the spawn city/mountain is already cached in LRU.
+      if (sc && r.aircraft && r.jet && (enoughTiles || settled || (startedAt > 0 && now - startedAt > 15500)) && tourStep < TOUR.length && now - tourAt > 140) {
         if (tourStep === -1) tourHome = sc.jet.view;
         tourStep++;
         tourAt = now;
@@ -146,24 +165,6 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
         const srcTag = r.source === 'surface' ? 'earth surface tiles' : 'google 3d tiles';
         say(`${srcTag}  ${d >= 0 ? '+' : ''}${d} drawn · ${r.tilesVisible} visible · ${r.tilesPending} streaming`);
       }
-      const streaming = startedAt > 0 && r.jet;
-      peakPending = Math.max(peakPending, r.tilesPending);
-      const isCompactFly = typeof window !== 'undefined' && (window.innerWidth < 820 || window.innerHeight < 480);
-      const targetDetailed = isCompactFly ? 6 : 14;
-      const settleDetailed = isCompactFly ? 4 : 10;
-      const tilesFrac = !streaming
-        ? 0
-        : r.spawnTilesReady
-          ? 1
-          : r.tilesVisible === 0
-            ? 0.08
-            : Math.min(1, Math.max(1 - r.tilesPending / Math.max(peakPending, 36), Math.min(0.96, Math.max(r.detailedTiles / targetDetailed, r.tilesVisible / (targetDetailed * 2.2)))));
-      if (streaming && r.detailedTiles >= settleDetailed && r.tilesVisible >= settleDetailed * 2) quietSince ||= now;
-      else quietSince = 0;
-      const settled = quietSince > 0 && now - quietSince > 1100;
-      const enoughTiles = Boolean(r.spawnTilesReady) || (r.detailedTiles >= targetDetailed && r.tilesVisible >= targetDetailed * 2);
-      // Generous 11.5s pre-warm window so the full city/country blanket is 100% loaded before ENGAGE
-      const timedOut = startedAt > 0 && now - startedAt > 11500;
       const toured = tourStep >= TOUR.length;
       ready = ready || (load.done && r.jet && r.aircraft && ((toured && (enoughTiles || settled)) || timedOut));
       if (ready && sc && tourStep >= 0 && tourStep < TOUR.length) {

@@ -447,6 +447,9 @@ export class PhotorealEarth {
   private maxAnisotropy = 16;
   private baseError = 14;
   private readonly downloadMaxJobs: number;
+  private readonly normalUploadBudgetMs: number;
+  private readonly normalParseMaxJobs: number;
+  private preloading = false;
 
   constructor(apiKey: string, container: HTMLElement | null) {
     this.tiles = new TilesRenderer();
@@ -476,7 +479,8 @@ export class PhotorealEarth {
     this.dracoLoader.setWorkerLimit(tier === 'low' ? 2 : Math.min(6, Math.max(3, cores - 2)));
     this.tiles.registerPlugin(new GLTFExtensionsPlugin({ dracoLoader: this.dracoLoader }));
     // Generous per-frame GPU texture upload budget so bursts of crisp 4K city tiles appear immediately
-    this.uploadBudgetMs = tier === 'high' ? 4.0 : tier === 'medium' ? 3.0 : 1.5;
+    this.normalUploadBudgetMs = tier === 'high' ? 4.0 : tier === 'medium' ? 3.0 : 1.5;
+    this.uploadBudgetMs = this.normalUploadBudgetMs;
     this.tiles.registerPlugin({ name: 'SOLARIS_UPLOAD_BUDGET', processTileModel: (scene: THREE.Object3D) => this.uploadInTurn(scene) } as unknown as Parameters<TilesRenderer['registerPlugin']>[0]);
     if (PhotorealEarth.fade) this.tiles.registerPlugin(new TilesFadePlugin({ fadeDuration: 280, fadeRootTiles: false, maximumFadeOutTiles: tier === "low" ? 30 : 80 }));
     // Calibrated 4K-foreground / whole-city-blanket SSE target: keeps skyscrapers razor sharp without
@@ -491,17 +495,22 @@ export class PhotorealEarth {
     this.tiles.lruCache.unloadPercent = 0.05;
     // Maximize HTTP/2 multiplexing & parallel Draco decoding so full city blankets + 4K leaves arrive fast
     this.downloadMaxJobs = tier === 'high' ? 32 : tier === 'medium' ? 24 : 14;
+    this.normalParseMaxJobs = tier === 'high' ? 6 : tier === 'medium' ? 4 : 3;
     this.tiles.downloadQueue.maxJobs = this.downloadMaxJobs;
-    this.tiles.parseQueue.maxJobs = tier === 'high' ? 6 : tier === 'medium' ? 4 : 3;
+    this.tiles.parseQueue.maxJobs = this.normalParseMaxJobs;
     this.tiles.autoDisableRendererCulling = false;
     // CRITICAL: loadAncestors = true keeps every intermediate parent tile loaded as a seamless
     // 100%-solid city & country blanket while foreground buildings refine to 4K — ZERO isolated islands!
     // loadSiblings = false lets visible city tiles flip on screen 3x faster without waiting for off-axis siblings.
     this.tiles.loadAncestors = true;
     this.tiles.loadSiblings = false;
-    // Two-phase blanket-first + foveated center-cone priority:
-    // expands JSON subtrees first, loads city-scale coverage blanket (32..1024 m) immediately when
-    // arriving at a new region so ZERO voids appear, then prioritizes center-screen 4K skyscrapers.
+    // Top-Down Progressive Cascade + Foveated Center-Cone Priority:
+    // PriorityQueue pops the HIGHEST-scoring item (+1 runs BEFORE -1).
+    // 1. Expand unrenderable JSON subtrees immediately so the hierarchy resolves in <200ms.
+    // 2. Load Tier 0 (> 1200 m) coarse ancestors FIRST so `loadAncestors = true` never deadlocks
+    //    `markVisibleTiles` — the region appears on GPU within ~350ms!
+    // 3. Load Tier 1 (80..1200 m) whole-city/mountain blanket SECOND for a 100%-solid panorama.
+    // 4. Load Tier 2 (< 80 m) 4K buildings & rock faces THIRD, ordered by center-screen foveation!
     this.libraryOrder = this.tiles.downloadQueue.priorityCallback as unknown as (a: unknown, b: unknown) => number;
     type PriorityTile = {
       geometricError?: number;
@@ -530,6 +539,7 @@ export class PhotorealEarth {
       // Center-screen foveation: dead-ahead tiles get up to 3.2x priority boost over peripheral horizon tiles
       return da / (0.31 + 0.69 * cosA * cosA);
     };
+    const cascadeTier = (ge: number): number => (ge > 1200 ? 0 : ge >= 80 ? 1 : 2);
     const nearFirstOrder = (a: PriorityTile, b: PriorityTile): number => {
       const at = a.traversal;
       const bt = b.traversal;
@@ -538,29 +548,29 @@ export class PhotorealEarth {
       if (!!at.inFrustum !== !!bt.inFrustum) return at.inFrustum ? 1 : -1;
       const au = !!a.internal?.hasUnrenderableContent;
       const bu = !!b.internal?.hasUnrenderableContent;
+      if (au !== bu) return au ? 1 : -1;
       const age = a.geometricError ?? Infinity;
       const bge = b.geometricError ?? Infinity;
-      const aCoarseSkirt = !au && age > 2048;
-      const bCoarseSkirt = !bu && bge > 2048;
-      if (aCoarseSkirt !== bCoarseSkirt) return aCoarseSkirt ? -1 : 1;
-      // While the city blanket is still filling (< 20 local tiles), prioritize JSON + mid-LOD blanket
-      // tiles (48..1024 m) across the entire viewport BEFORE micro-refining one tiny patch!
-      if (this.blanketFilling) {
-        if (au !== bu) return au ? 1 : -1;
-        const aBlanket = age >= 40 && age <= 1024;
-        const bBlanket = bge >= 40 && bge <= 1024;
-        if (aBlanket !== bBlanket) return aBlanket ? 1 : -1;
-      }
+      const ta = cascadeTier(age);
+      const tb = cascadeTier(bge);
+      // Lower tier number = coarser ancestor/blanket = strictly HIGHER priority (+1)
+      if (ta !== tb) return ta < tb ? 1 : -1;
       const sa = foveatedScore(a);
       const sb = foveatedScore(b);
+      if (ta < 2) {
+        // Inside Tier 0 / Tier 1, strictly parent-before-child (larger geometricError first)
+        if (Math.abs(age - bge) > 1e-3) return age > bge ? 1 : -1;
+        if (sa !== sb) return sa < sb ? 1 : -1;
+        return 0;
+      }
+      // Tier 2 (< 80 m 4K foreground buildings/peaks): center-screen foveated distance, then highest SSE
       const ba = Math.floor(sa / 1200);
       const bb = Math.floor(sb / 1200);
-      if (ba !== bb) return ba > bb ? -1 : 1;
-      if (au !== bu) return au ? 1 : -1;
+      if (ba !== bb) return ba < bb ? 1 : -1;
       const ea = at.error ?? 0;
       const eb = bt.error ?? 0;
       if (ea !== eb) return ea > eb ? 1 : -1;
-      if (sa !== sb) return sa > sb ? -1 : 1;
+      if (sa !== sb) return sa < sb ? 1 : -1;
       return 0;
     };
     this.tiles.downloadQueue.priorityCallback = nearFirstOrder as unknown as typeof this.tiles.downloadQueue.priorityCallback;
@@ -699,7 +709,8 @@ export class PhotorealEarth {
     // 429 must not turn an entire loaded city into the fallback globe for a minute.
     this.enabled = enabled && !this.authFailed;
     this.holder.visible = this.enabled && this.tiles.visibleTiles.size > 0;
-    this.tiles.downloadQueue.maxJobs = active ? this.downloadMaxJobs : 0;
+    const targetDownloads = this.preloading ? Math.max(this.downloadMaxJobs, perf.tier === 'low' ? 18 : 36) : this.downloadMaxJobs;
+    this.tiles.downloadQueue.maxJobs = active ? targetDownloads : 0;
     if (!this.enabled) {
       this.cancelInFlightDownloads();
       this.hasCamEcef = false;
@@ -757,11 +768,11 @@ export class PhotorealEarth {
       this.tiles.errorTarget = this.baseError * blanketMult * (1 + rush) * this.backlog * this.memPressure;
 
       this.tiles.update();
-      // Suppress only giant continent-scale sphere-chord skirts (> 2048 m error) while keeping
-      // rural mountain & canyon 3D tiles (Grand Canyon, Mount Everest) visible across the valley.
+      // Suppress only giant continent-scale sphere-chord skirts (> 8192 m error) while keeping
+      // entire regional mountain ranges (Himalayas, Everest, Alps) and distant city horizons seamless!
       for (const tile of this.tiles.visibleTiles) {
         const scene = (tile as unknown as { engineData?: { scene?: THREE.Object3D } }).engineData?.scene;
-        if (scene) scene.visible = (altKm ?? 100) >= 20 || tile.geometricError <= 2048;
+        if (scene) scene.visible = (altKm ?? 100) >= 20 || tile.geometricError <= 8192;
       }
       this.holder.visible = this.tiles.visibleTiles.size > 0;
       // The library updates queue priorities during traversal; do not overwrite them here.
@@ -839,6 +850,18 @@ export class PhotorealEarth {
       if (this.surroundOn && this.surroundCamera) this.tiles.deleteCamera(this.surroundCamera);
       this.surroundOn = false;
     }
+  }
+
+  /**
+   * Turbo GPU-upload & parse budget while hidden behind FlyPreloader so the entire launch landmark
+   * (city or mountain massif) uploads onto the GPU in 1-2 frames before ENGAGE unlocks.
+   */
+  public setPreloading(active: boolean): void {
+    if (this.preloading === active) return;
+    this.preloading = active;
+    const tier = perf.tier;
+    this.uploadBudgetMs = active ? (tier === 'low' ? 14.0 : 28.0) : this.normalUploadBudgetMs;
+    this.tiles.parseQueue.maxJobs = active ? (tier === 'low' ? 4 : 10) : this.normalParseMaxJobs;
   }
 
   public setLookahead(

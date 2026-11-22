@@ -503,13 +503,13 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
   const space = !t.airWorld;
   const altInfo = resolveAltitudeTelemetry(t);
 
-  // Climb rate (m/min): prefer authoritative verticalSpeedMps when supplied, else barometric MSL derivative
+  // Climb rate (m/s): prefer authoritative verticalSpeedMps when supplied, else barometric MSL derivative
   if (typeof t.verticalSpeedMps === 'number' && Number.isFinite(t.verticalSpeedMps)) {
-    const targetRate = t.verticalSpeedMps * 60;
+    const targetRate = t.verticalSpeedMps;
     climb.rate += (targetRate - climb.rate) * Math.min(1, now > climb.lastT ? (now - climb.lastT) * 6 : 1);
   } else if (Number.isFinite(climb.lastAlt) && now > climb.lastT) {
-    const r = ((altInfo.mslM / 1000 - climb.lastAlt) * 1000 * 60) / (now - climb.lastT);
-    if (Math.abs(r) < 1e7) climb.rate += (r - climb.rate) * Math.min(1, (now - climb.lastT) * 2);
+    const r = ((altInfo.mslM / 1000 - climb.lastAlt) * 1000) / (now - climb.lastT);
+    if (Math.abs(r) < 1e5) climb.rate += (r - climb.rate) * Math.min(1, (now - climb.lastT) * 2);
   }
   climb.lastAlt = altInfo.mslM / 1000;
   climb.lastT = now;
@@ -564,11 +564,12 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
     }
   }
 
-  // Altitude tape on the right edge: ticks scroll with AGL height in atmosphere (range in space)
+  // Altitude tape on the right edge: barometric MSL above transition (1,500 m AGL), radar AGL low-level
+  const highAltMode = !space && altInfo.aglM >= 1500 && altInfo.gpwsMode === 'none';
   const tapeX = right - 34;
   const tapeTop = y + 16;
   const tapeH = h - 44;
-  const altM = space ? t.altKm * 1000 : altInfo.aglM;
+  const altM = space ? t.altKm * 1000 : highAltMode ? altInfo.mslM : altInfo.aglM;
   const step = altM < 20000 ? 100 : altM < 2e6 ? 10000 : 1e6;
   const pxPer = 9 / step;
   ctx.save();
@@ -594,11 +595,11 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
   ctx.lineTo(tapeX - 8, midY + 4);
   ctx.closePath();
   ctx.fill();
-  // Climb arrow by the tape
-  const rising = climb.rate > 30;
-  const falling = climb.rate < -30;
+  // Climb arrow by the tape (m/s)
+  const rising = climb.rate > 0.6;
+  const falling = climb.rate < -0.6;
   if (rising || falling) {
-    const len = Math.min(tapeH / 2 - 6, 6 + Math.log10(Math.abs(climb.rate)) * 9);
+    const len = Math.min(tapeH / 2 - 6, 6 + Math.log10(1 + Math.abs(climb.rate)) * 14);
     ctx.fillStyle = rising ? MINT(0.8) : AMBER(0.85);
     ctx.fillRect(tapeX + 18, rising ? midY - len : midY, 2, len);
   }
@@ -611,7 +612,8 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
     else text(ctx, value, vx - uw, yy, `700 ${size}px ${HEAD}`, colour, 'right', 1);
   };
 
-  // Primary altitude: explicit AGL above displaced terrain in air, RANGE in space
+  // Primary altitude: barometric MSL above transition (1,500 m AGL, e.g. mountain peaks & cruise),
+  // radar AGL below transition (urban / low-level terrain clearance), RANGE in space.
   const aglColour =
     !space && altInfo.gpwsMode === 'pull-up'
       ? RED(0.98)
@@ -625,22 +627,31 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
       row('RANGE', alt[0], alt[1] ?? '', y + 40, 24, WHITE(0.97));
     }
   } else {
-    const aglKm = altInfo.aglM / 1000;
-    if (aglKm < 100) row('AGL', altInfo.aglM, 'M', y + 40, 24, aglColour, altInfo.terrainWarning ? RED(0.95) : MINT(0.86));
+    const primaryLabel = highAltMode ? 'MSL' : 'AGL';
+    const primaryM = highAltMode ? altInfo.mslM : altInfo.aglM;
+    const primaryKm = primaryM / 1000;
+    const primaryLabelCol = altInfo.terrainWarning ? RED(0.95) : highAltMode ? CYAN(0.9) : MINT(0.86);
+    if (primaryKm < 100) row(primaryLabel, primaryM, 'M', y + 40, 24, aglColour, primaryLabelCol);
     else {
-      const alt = formatDistance(aglKm).toUpperCase().split(' ');
-      row('AGL', alt[0], alt[1] ?? '', y + 40, 24, aglColour, MINT(0.86));
+      const alt = formatDistance(primaryKm).toUpperCase().split(' ');
+      row(primaryLabel, alt[0], alt[1] ?? '', y + 40, 24, aglColour, primaryLabelCol);
     }
-    // Secondary row: authoritative MSL above sea level (left) + climb rate / Ps (right)
-    const mslTxt = `MSL ${formatAltitudeMeters(altInfo.mslM)}`;
-    text(ctx, mslTxt, x + 16, y + 56, `600 10px ${MONO}`, CYAN(0.9), 'left', 0.4);
-    const vs = Math.abs(climb.rate) < 1e5 ? `VS ${climb.rate >= 0 ? '+' : '−'}${Math.round(Math.abs(climb.rate)).toLocaleString('en-US')}` : '';
+    // Secondary row: paired AGL/MSL (left) + explicit vertical speed in M/S & Ps (right)
+    const secTxt = highAltMode
+      ? `AGL ${formatAltitudeMeters(altInfo.aglM)}`
+      : `MSL ${formatAltitudeMeters(altInfo.mslM)}`;
+    text(ctx, secTxt, x + 16, y + 56, `600 10px ${MONO}`, highAltMode ? MINT(0.88) : CYAN(0.9), 'left', 0.4);
+    const absVs = Math.abs(climb.rate);
+    const roundedVs = Math.round(absVs);
+    const vsNum = roundedVs === 0 ? '0' : `${climb.rate >= 0 ? '+' : '−'}${roundedVs.toLocaleString('en-US')}`;
+    const vs = absVs < 1e4 ? `VS ${vsNum} M/S` : '';
     const psStr =
       t.specificExcessPowerMps !== undefined
         ? `${vs ? ' · ' : ''}Ps ${t.specificExcessPowerMps >= 0 ? '+' : ''}${Math.round(t.specificExcessPowerMps)}${t.specificExcessPowerMps >= 2 ? '▲' : t.specificExcessPowerMps <= -2 ? '▼' : ''}`
         : '';
     if (vs || psStr) {
-      text(ctx, `${vs}${psStr}`, vx, y + 56, `500 9.5px ${MONO}`, climb.rate >= 0 ? MINT(0.78) : AMBER(0.84), 'right', 0.3);
+      const vsCol = absVs < 0.45 ? WHITE(0.68) : climb.rate >= 0 ? MINT(0.82) : AMBER(0.86);
+      text(ctx, `${vs}${psStr}`, vx, y + 56, `500 9.5px ${MONO}`, vsCol, 'right', 0.3);
     }
   }
 
