@@ -630,7 +630,8 @@ export class SolarSystemScene {
     place?: string,
     altKm?: number,
     headingDeg?: number,
-    pitchDeg?: number
+    pitchDeg?: number,
+    preserveRealTime = false
   ): boolean {
     const st = this.explorer.getStatus();
     const sel = this.selectedBody?.name;
@@ -641,7 +642,7 @@ export class SolarSystemScene {
     const la = lat ?? lm?.vantageLat ?? lm?.lat ?? st.subCamera?.lat;
     const lo = lon ?? lm?.vantageLon ?? lm?.lon ?? st.subCamera?.lon;
     if (la === undefined || lo === undefined) return false;
-    if (body === 'Earth' && !this.pendingPostcard && !this.pendingDeepTime) {
+    if (body === 'Earth' && !this.pendingPostcard && !this.pendingDeepTime && !preserveRealTime && !this.flyMode) {
       const d0 = this.clock.getJulianDateTDB() - SimulationClock.J2000_JD;
       const sunAlt = sunElevationAt('Earth', la, lo, d0);
       if (sunAlt !== null && sunAlt < 22) {
@@ -1978,7 +1979,8 @@ export class SolarSystemScene {
       lm.name,
       lm.vantageAltKm,
       lm.viewHeadingDeg,
-      lm.viewPitchDeg
+      lm.viewPitchDeg,
+      true
     );
     if (!ok) {
       this.flyToLandmark(lm.id);

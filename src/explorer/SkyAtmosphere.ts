@@ -1,6 +1,11 @@
 import * as THREE from 'three';
 import {
+  SKY_AURORA,
+  SKY_CIRRUS,
   SKY_OVERCAST,
+  SKY_RAINBOW,
+  SKY_STORM_TINT,
+  SKY_TIME,
   clearSkyStarVisibility,
   computeAtmosphericStarVisibility,
   setSkyStarVisibility,
@@ -128,9 +133,45 @@ const fragmentShader = /* glsl */ `
   uniform float uMulti;     // strength of the multiple-scattering term
   uniform float uWeatherOvercast; // 0 clear … 1 storm deck (Earth weather coupling)
   uniform float uIsEarth;
+  uniform float uCirrus;
+  uniform float uAurora;
+  uniform float uRainbow;
+  uniform float uStormTint;
+  uniform float uTime;
   varying vec3 vDir;
 
   const float PI = 3.14159265;
+
+  float skyHash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+  }
+  float skyNoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(
+      mix(skyHash(i), skyHash(i + vec2(1.0, 0.0)), f.x),
+      mix(skyHash(i + vec2(0.0, 1.0)), skyHash(i + vec2(1.0, 1.0)), f.x),
+      f.y
+    );
+  }
+  float skyFbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    mat2 rot = mat2(0.8, 0.6, -0.6, 0.8);
+    for (int i = 0; i < 4; i++) {
+      v += a * skyNoise(p);
+      p = rot * p * 2.04 + vec2(13.1, 7.7);
+      a *= 0.5;
+    }
+    return v;
+  }
+
+  // Physically-inspired rainbow spectral dispersion for wavelength parameter t in [0..1] (violet -> red)
+  vec3 rainbowSpectrum(float t) {
+    vec3 c = clamp(abs(mod(t * 5.2 + vec3(4.6, 2.8, 0.9), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+    return c * c * (3.0 - 2.0 * c);
+  }
 
   // Jorge Jimenez Interleaved Gradient Noise with triangular PDF to eliminate 8-bit sky banding
   float ign(vec2 p) {
@@ -246,11 +287,94 @@ const fragmentShader = /* glsl */ `
       float dayLit = smoothstep(-0.14, 0.28, s.y);
       float zenithShade = mix(0.88, 0.46, clamp(d.y, 0.0, 1.0));
       vec3 ovDay = vec3(0.24, 0.28, 0.34) * zenithShade;
+      // Severe supercell thunderstorm hail-core teal-green horizon tint (@RiadEtm Beauce supercell)
+      vec3 supercellTint = vec3(0.14, 0.27, 0.26) * zenithShade * (1.0 - smoothstep(0.05, 0.45, d.y));
+      ovDay = mix(ovDay, ovDay * 0.72 + supercellTint * 0.85, clamp(uStormTint, 0.0, 1.0));
       vec3 ovTwilight = vec3(0.09, 0.10, 0.14) * zenithShade;
       vec3 ovNight = vec3(0.012, 0.015, 0.022) * zenithShade;
       vec3 ovCol = mix(ovNight, mix(ovTwilight, ovDay, smoothstep(0.0, 0.35, s.y)), dayLit) * uExposure;
       col = mix(col, ovCol, weatherOv * 0.90);
     }
+
+    // --- High-Altitude Backlit Cirrus & Banner Wisps (9-12 km MSL: Uluru, Mt. Fuji, Khumbu) ---
+    if (uIsEarth > 0.5 && uCirrus > 0.01 && d.y > 0.025 && uEye < 18000.0) {
+      float cirrusAltFade = 1.0 - smoothstep(10500.0, 17500.0, uEye);
+      float projR = 1.0 / (d.y + 0.14);
+      vec2 cuv = d.xz * projR * 1.35 + vec2(uTime * 0.0038, uTime * 0.0014);
+      // Wind-sheared domain-warped filaments
+      float warp = skyFbm(cuv * 1.4 + vec2(3.2, -1.7));
+      vec2 sheared = vec2(cuv.x * 0.55 + warp * 0.85, cuv.y * 2.15 + warp * 0.55);
+      float wisp = skyFbm(sheared * 1.75) * 0.65 + skyFbm(sheared * 3.8 - vec2(uTime * 0.006, 0.0)) * 0.35;
+      float thresh = mix(0.68, 0.36, clamp(uCirrus, 0.0, 1.0));
+      float cAlpha = smoothstep(thresh, thresh + 0.28, wisp) * smoothstep(0.025, 0.18, d.y) * cirrusAltFade * (1.0 - weatherOv * 0.78);
+      // Vibrant backlit peach-coral-amber at sunrise/sunset/alpenglow; crisp white by day
+      float golden = (1.0 - smoothstep(0.02, 0.32, s.y)) * smoothstep(-0.12, 0.02, s.y);
+      float dayC = smoothstep(-0.08, 0.16, s.y);
+      float fwdSun = pow(max(mu, 0.0), 4.0);
+      vec3 cDay = vec3(0.95, 0.97, 1.0) * (0.78 + 0.35 * fwdSun);
+      vec3 cGold = mix(vec3(1.0, 0.44, 0.28), vec3(1.0, 0.72, 0.46), fwdSun) * 1.35;
+      vec3 cNight = vec3(0.025, 0.035, 0.06);
+      vec3 cCol = mix(cNight, mix(cDay, cGold, golden), dayC) * uExposure;
+      col = mix(col, cCol, clamp(cAlpha * 0.62, 0.0, 0.78));
+    }
+
+    // --- Physically-Based 42° Primary & 51° Secondary Double Rainbow + Alexander's Band ---
+    if (uIsEarth > 0.5 && uRainbow > 0.01 && d.y > 0.0 && s.y > 0.01 && uEye < 8000.0) {
+      float antiAngleDeg = degrees(acos(clamp(dot(d, -s), -1.0, 1.0)));
+      // Primary bow: 40.2° (violet) -> 42.4° (red); Secondary bow: 50.3° (red) -> 53.1° (violet)
+      float p1 = (antiAngleDeg - 40.2) / 2.2;
+      float w1 = smoothstep(0.0, 0.18, p1) * (1.0 - smoothstep(0.82, 1.0, p1));
+      float p2 = (53.1 - antiAngleDeg) / 2.8;
+      float w2 = smoothstep(0.0, 0.22, p2) * (1.0 - smoothstep(0.78, 1.0, p2));
+      // Alexander's dark band (43°..50°) + brighter supernumerary interior (< 40°)
+      float alexDark = smoothstep(42.5, 44.5, antiAngleDeg) * (1.0 - smoothstep(48.5, 50.5, antiAngleDeg));
+      float innerBright = 1.0 - smoothstep(38.0, 41.0, antiAngleDeg);
+      float rbFade = uRainbow * smoothstep(0.0, 0.09, d.y) * (1.0 - smoothstep(4500.0, 7500.0, uEye));
+      col *= 1.0 - 0.10 * alexDark * rbFade + 0.06 * innerBright * rbFade;
+      vec3 bowCol = rainbowSpectrum(clamp(p1, 0.0, 1.0)) * w1 * 0.24
+                  + rainbowSpectrum(clamp(p2, 0.0, 1.0)) * w2 * 0.095;
+      col += bowCol * rbFade * uExposure * smoothstep(0.01, 0.14, s.y);
+    }
+
+    // --- Volumetric Shimmering Aurora Borealis & Australis Curtains (NOAA SWPC Kp Oval) ---
+    // Sweeping vertical magnetic curtains visible right above the polar horizon (d.y 0.04..0.72)
+    // matching @RiadEtm Lofoten: emerald 557.7 nm core + crimson/magenta 630 nm lower fringe.
+    if (uIsEarth > 0.5 && uAurora > 0.01 && d.y > 0.025) {
+      float aurFade = uAurora * smoothstep(0.025, 0.14, d.y) * (1.0 - smoothstep(0.65, 0.96, d.y)) * (1.0 - weatherOv * 0.80);
+      if (aurFade > 0.005) {
+        float az = atan(d.x, d.z);
+        vec3 aurSum = vec3(0.0);
+        // 3 sweeping concentric auroral arcs across the horizon-to-mid sky with 5 vertical ray slices
+        for (int arc = 0; arc < 3; arc++) {
+          float fa = float(arc);
+          float baseElev = 0.13 + fa * 0.11;
+          float azFreq = 2.1 + fa * 0.75;
+          float phase = uTime * (0.14 + fa * 0.05) + fa * 2.1;
+          float sway = sin(az * azFreq + phase) * 0.07 + cos(az * (azFreq * 1.7) - phase * 0.8) * 0.04;
+          float arcElev = baseElev + sway;
+          // Vertical curtain height above the lower magnetic edge
+          float relH = (d.y - arcElev) / (0.16 + fa * 0.05);
+          if (relH > -0.15 && relH < 1.35) {
+            // Sharp luminous lower border tapering softly upward along geomagnetic field lines
+            float vertEnv = smoothstep(-0.12, 0.12, relH) * exp(-max(relH, 0.0) * 2.1);
+            // Fine shimmering vertical rays along the magnetic curtain
+            float rayCoord = az * (14.0 + fa * 5.0) + sin(uTime * 0.25 + fa) * 1.5;
+            float rays = 0.35 + 0.65 * skyFbm(vec2(rayCoord, relH * 1.15 - uTime * 0.12 + fa * 3.7));
+            float fineRays = 0.55 + 0.45 * skyNoise(vec2(az * 42.0 + sway * 12.0, uTime * 0.35 + fa * 5.0));
+            // Physical O(1S) 557.7 nm emerald green core, N2+ crimson/magenta lower fringe, O(1D) violet top
+            vec3 crimsonCol = vec3(0.92, 0.14, 0.54);
+            vec3 emeraldCol = vec3(0.08, 1.00, 0.50);
+            vec3 violetTop  = vec3(0.42, 0.16, 0.82);
+            vec3 curCol = relH < 0.18
+              ? mix(crimsonCol, emeraldCol, smoothstep(-0.05, 0.18, relH))
+              : mix(emeraldCol, violetTop, smoothstep(0.32, 1.15, relH));
+            aurSum += curCol * vertEnv * rays * fineRays * (0.68 - fa * 0.14);
+          }
+        }
+        col += aurSum * aurFade * (1.55 + 0.18 * uExposure);
+      }
+    }
+
     float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
     // Background (stars) is dimmed by extinction and drowned by a bright sky or overcast deck
     float through = dot(trans, vec3(0.333)) * (1.0 - smoothstep(0.012, 0.30, lum)) * (1.0 - uStarDim) * (1.0 - weatherOv * 0.94);
@@ -292,6 +416,11 @@ export class SkyAtmosphere {
         uMulti: { value: 0.1 },
         uWeatherOvercast: SKY_OVERCAST,
         uIsEarth: { value: 0 },
+        uCirrus: SKY_CIRRUS,
+        uAurora: SKY_AURORA,
+        uRainbow: SKY_RAINBOW,
+        uStormTint: SKY_STORM_TINT,
+        uTime: SKY_TIME,
       },
       vertexShader,
       fragmentShader,

@@ -2,7 +2,18 @@ import * as THREE from 'three';
 import { bodyLatLonToLocal } from '../explorer/TileMath';
 import type { WeatherKind, WeatherMode } from './Weather';
 import type { VolumetricCloudPass } from '../rendering/VolumetricClouds';
-import { MOON_LIGHT } from '../rendering/AerialPerspective';
+import {
+  GROUND_SNOW,
+  GROUND_WETNESS,
+  MOON_LIGHT,
+  SKY_AURORA,
+  SKY_CIRRUS,
+  SKY_RAINBOW,
+  SKY_STORM_TINT,
+  SKY_TIME,
+  VALLEY_FOG,
+} from '../rendering/AerialPerspective';
+import { LiveSpaceWeatherService } from './SpaceWeather';
 import { earthElevation } from '../explorer/Elevation';
 import { perf } from '../rendering/Performance';
 
@@ -19,11 +30,19 @@ export interface LiveWeather {
   /** 0..1 */
   cover: number;
   coverLow: number;
+  coverMid: number;
+  coverHigh: number;
   kind: WeatherKind;
   strength: number;
   windMps: number;
   windDirDeg: number;
   visibilityKm: number;
+  tempC: number;
+  humidityPct: number;
+  rainMm: number;
+  snowfallCm: number;
+  snowDepthM: number;
+  isFog: boolean;
   label: string;
 }
 
@@ -38,9 +57,9 @@ const GOLD_SKY = new THREE.Color('#b49ee0').multiplyScalar(1.12);
 const GOLD_BOUNCE = new THREE.Color('#c88aa6').multiplyScalar(0.85);
 const GOLD_HORIZON = new THREE.Color('#eb966c').multiplyScalar(1.25);
 
-const NIGHT_SKY_BASE = new THREE.Color(0.015, 0.022, 0.045);
-const NIGHT_BOUNCE_BASE = new THREE.Color(0.01, 0.013, 0.026);
-const NIGHT_HORIZON_BASE = new THREE.Color(0.012, 0.018, 0.04);
+const NIGHT_SKY_BASE = new THREE.Color(0.0035, 0.0055, 0.013);
+const NIGHT_BOUNCE_BASE = new THREE.Color(0.002, 0.003, 0.007);
+const NIGHT_HORIZON_BASE = new THREE.Color(0.004, 0.0065, 0.016);
 
 /** What WMO weather code means for the air the jet flies through. */
 export function weatherFromCode(code: number, precipMm: number): { kind: WeatherKind; strength: number; label: string } {
@@ -70,21 +89,30 @@ export class LiveWeatherService {
     this.last = { lat, lon, t: now };
     const url =
       `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(3)}&longitude=${lon.toFixed(3)}` +
-      '&current=cloud_cover,cloud_cover_low,weather_code,precipitation,wind_speed_10m,wind_direction_10m,visibility&wind_speed_unit=ms';
+      '&current=temperature_2m,relative_humidity_2m,rain,snowfall,snow_depth,cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high,weather_code,precipitation,wind_speed_10m,wind_direction_10m,visibility&wind_speed_unit=ms';
     fetch(url)
       .then((r) => (r.ok ? r.json() : null))
       .then((j: { current?: Record<string, number> } | null) => {
         const c = j?.current;
         if (!c) return;
-        const w = weatherFromCode(c.weather_code ?? 0, c.precipitation ?? 0);
+        const code = c.weather_code ?? 0;
+        const w = weatherFromCode(code, c.precipitation ?? 0);
         this.current = {
           cover: (c.cloud_cover ?? 0) / 100,
           coverLow: (c.cloud_cover_low ?? 0) / 100,
+          coverMid: (c.cloud_cover_mid ?? 0) / 100,
+          coverHigh: (c.cloud_cover_high ?? 0) / 100,
           kind: w.kind,
           strength: w.strength,
           windMps: c.wind_speed_10m ?? 0,
           windDirDeg: c.wind_direction_10m ?? 0,
           visibilityKm: (c.visibility ?? 24000) / 1000,
+          tempC: c.temperature_2m ?? 15,
+          humidityPct: c.relative_humidity_2m ?? 50,
+          rainMm: c.rain ?? 0,
+          snowfallCm: c.snowfall ?? 0,
+          snowDepthM: c.snow_depth ?? 0,
+          isFog: code === 45 || code === 48,
           label: w.label,
         };
       })
@@ -97,6 +125,7 @@ export class LiveWeatherService {
 
 export class EarthClouds {
   public readonly weather = new LiveWeatherService();
+  public readonly spaceWeather = new LiveSpaceWeatherService();
   /** 0..1 how deep inside a cloud the camera is (radio call, a light white-out). */
   public inside = 0;
   private groundKm: number | null = null;
@@ -107,6 +136,7 @@ export class EarthClouds {
   private drift = new THREE.Vector2();
   private evolveS = 0;
   private lastT = 0;
+  private wxInitialized = false;
 
   // Earth-anchored horizontal tangent basis so CloudSea slabs curve cleanly over any lat/lon
   private patchUp: THREE.Vector3 | null = null;
@@ -184,6 +214,13 @@ export class EarthClouds {
   public hide(): void {
     this.pass.enabled = false;
     this.inside = 0;
+    this.wxInitialized = false;
+    SKY_AURORA.value = 0;
+    SKY_RAINBOW.value = 0;
+    SKY_STORM_TINT.value = 0;
+    GROUND_SNOW.value = 0;
+    GROUND_WETNESS.value = 0;
+    VALLEY_FOG.value = 0;
   }
 
   /**
@@ -219,23 +256,23 @@ export class EarthClouds {
 
     const liveCover = w ? Math.max(w.coverLow, w.cover * 0.82) : 0.45;
     const coverT = manualClear
-      ? 0.34
+      ? 0.20
       : storm
         ? 0.86
         : rainy
           ? 0.74
-          : THREE.MathUtils.lerp(0.38, 0.56, liveCover);
+          : THREE.MathUtils.lerp(0.36, 0.56, liveCover);
 
     const overcastT = rainy;
-    // Calibrated volumetric cumulus deck: fair/auto weather forms sculpted 3D clouds with clear
-    // windows to mountains and cities below instead of an impenetrable white blanket.
+    // Calibrated volumetric cumulus deck: Clear mode leaves wide open starry skies for auroras & stars,
+    // while auto weather forms sculpted 3D cumulus puffs with clear views down to mountains & cities.
     const deckT = manualClear
-      ? 0.22
+      ? 0.06
       : storm
         ? 0.78
         : rainy
           ? 0.68
-          : THREE.MathUtils.lerp(0.28, 0.48, liveCover);
+          : THREE.MathUtils.lerp(0.24, 0.46, liveCover);
 
     // Authentic ISA Lifting Condensation Level (LCL) clearance: fair-weather cumulus bases float
     // ~1.85-2.15 km above low-to-mid terrain/rooftops (e.g. Sao Paulo 0.76 km -> ~2.6 km MSL),
@@ -334,32 +371,33 @@ export class EarthClouds {
     const nightMix = 1 - goldBlend;
     const stormScale = storm ? 0.65 : 1.0;
 
-    // Interpolate sun light (moonlight at night -> golden amber dawn/dusk -> CloudSea #fff1dc day)
-    this.cSun.setRGB(MOON_LIGHT.value.x * 1.25, MOON_LIGHT.value.y * 1.25, MOON_LIGHT.value.z * 1.25);
+    // Interpolate sun light (soft velvet moonlight at night -> golden amber dawn/dusk -> CloudSea day)
+    this.cSun.setRGB(MOON_LIGHT.value.x * 0.38, MOON_LIGHT.value.y * 0.40, MOON_LIGHT.value.z * 0.48);
     this.cSun.lerp(GOLD_SUN, goldBlend).lerp(DAY_SUN, dayBlend).multiplyScalar(stormScale);
     u.uSunCol.value.copy(this.cSun);
 
-    // Sky top ambient light
+    // Sky top ambient light (subtly tinted emerald when under active polar aurora curtains)
+    const aurGlow = SKY_AURORA.value * nightMix;
     this.cSky.copy(NIGHT_SKY_BASE);
-    this.cSky.r += MOON_LIGHT.value.x * 0.7;
-    this.cSky.g += MOON_LIGHT.value.y * 0.7;
-    this.cSky.b += MOON_LIGHT.value.z * 0.7;
+    this.cSky.r += MOON_LIGHT.value.x * 0.24 + aurGlow * 0.004;
+    this.cSky.g += MOON_LIGHT.value.y * 0.26 + aurGlow * 0.026;
+    this.cSky.b += MOON_LIGHT.value.z * 0.30 + aurGlow * 0.014;
     this.cSky.lerp(GOLD_SKY, goldBlend).lerp(DAY_SKY, dayBlend).multiplyScalar(storm ? 0.72 : 1.0);
     u.uSkyAmb.value.copy(this.cSky);
 
     // Under-cloud ground bounce light + warm night city glow underneath
     this.cBounce.copy(NIGHT_BOUNCE_BASE);
-    this.cBounce.r += 0.05 * nightMix * this.cityGlow;
-    this.cBounce.g += 0.028 * nightMix * this.cityGlow;
-    this.cBounce.b += 0.01 * nightMix * this.cityGlow;
+    this.cBounce.r += 0.018 * nightMix * this.cityGlow + aurGlow * 0.002;
+    this.cBounce.g += 0.010 * nightMix * this.cityGlow + aurGlow * 0.012;
+    this.cBounce.b += 0.004 * nightMix * this.cityGlow + aurGlow * 0.006;
     this.cBounce.lerp(GOLD_BOUNCE, goldBlend).lerp(DAY_BOUNCE, dayBlend).multiplyScalar(storm ? 0.55 : 1.0);
     u.uGroundAmb.value.copy(this.cBounce);
 
     // Horizon extinction color matching SkyAtmosphere + CloudSea
     this.cHaze.copy(NIGHT_HORIZON_BASE);
-    this.cHaze.r += MOON_LIGHT.value.x * 0.35;
-    this.cHaze.g += MOON_LIGHT.value.y * 0.35;
-    this.cHaze.b += MOON_LIGHT.value.z * 0.35;
+    this.cHaze.r += MOON_LIGHT.value.x * 0.14;
+    this.cHaze.g += MOON_LIGHT.value.y * 0.15;
+    this.cHaze.b += MOON_LIGHT.value.z * 0.18;
     this.cHaze.lerp(GOLD_HORIZON, goldBlend).lerp(DAY_HORIZON, dayBlend);
     if (storm) this.cHaze.multiplyScalar(0.68);
     u.uHazeCol.value.copy(this.cHaze);
@@ -370,6 +408,93 @@ export class EarthClouds {
     const deckTopKm = baseKm + thickKm * (storm || rainy ? 0.85 : 0.28);
     const inDeck = camKm > baseKm + thickKm * 0.04 && camKm < deckTopKm ? 1 : 0;
     this.inside = inDeck * THREE.MathUtils.smoothstep(Math.max(L.cover, L.deck), 0.55, 0.92);
+
+    // Sync real-time global atmosphere & surface weather uniforms (Zero extra draw calls!):
+    //  - Live high-altitude cirrus wisps (Open-Meteo `cloud_cover_high` + scenic baseline)
+    //  - Live NOAA SWPC geomagnetic Aurora Borealis & Australis oval
+    //  - Physically-based 42°/51° double rainbow when sun meets rain/showers/moisture
+    //  - Live temperature/snow_depth slope-masked snow accumulation, PBR rain wetness & valley fog
+    SKY_TIME.value = this.evolveS;
+    const cirrusTarget = manualClear
+      ? 0.22
+      : storm
+        ? 0.65
+        : w
+          ? THREE.MathUtils.clamp(0.18 + w.coverHigh * 0.82, 0.16, 1.0)
+          : 0.34;
+    const auroraTarget = this.spaceWeather.auroraAt(lat, lon, sunUp);
+    const sunForRainbow = THREE.MathUtils.smoothstep(sunUp, 0.02, 0.12) * (1 - THREE.MathUtils.smoothstep(sunUp, 0.56, 0.72));
+    const moistureForRainbow =
+      weatherMode === 'rain'
+        ? 0.92
+        : weatherMode === 'storm'
+          ? 0.45
+          : w && (w.kind === 'rain' || w.rainMm > 0.1 || (w.humidityPct > 78 && w.cover > 0.2 && w.cover < 0.85))
+            ? 0.85
+            : 0;
+    const rainbowTarget = sunForRainbow * moistureForRainbow;
+    const stormTintTarget = storm ? 0.85 : 0;
+
+    const snowTarget =
+      weatherMode === 'snow'
+        ? 0.92
+        : weatherMode === 'clear'
+          ? 0
+          : w
+            ? THREE.MathUtils.clamp(
+                Math.max(
+                  w.snowDepthM > 0.01 ? Math.min(1, 0.35 + w.snowDepthM * 2.5) : 0,
+                  w.snowfallCm > 0.05 ? Math.min(1, 0.45 + w.snowfallCm * 0.4) : 0,
+                  w.tempC <= 0.5 && w.kind === 'snow' ? 0.75 : 0,
+                ),
+                0,
+                1,
+              )
+            : 0;
+    const wetnessTarget =
+      weatherMode === 'storm'
+        ? 0.95
+        : weatherMode === 'rain'
+          ? 0.85
+          : weatherMode === 'clear'
+            ? 0
+            : w
+              ? THREE.MathUtils.clamp(
+                  Math.max(
+                    w.rainMm > 0.05 ? Math.min(1, 0.45 + w.rainMm * 0.35) : 0,
+                    w.kind === 'rain' || w.kind === 'storm' ? 0.78 : 0,
+                    w.humidityPct > 88 ? (w.humidityPct - 88) / 24 : 0,
+                  ),
+                  0,
+                  1,
+                )
+              : 0;
+    const valleyFogTarget =
+      manualClear
+        ? 0.05
+        : w
+          ? THREE.MathUtils.clamp(
+              Math.max(
+                w.isFog ? 0.88 : 0,
+                w.visibilityKm < 8 ? (8 - w.visibilityKm) / 8 : 0,
+                w.humidityPct > 80 && w.windMps < 5 ? ((w.humidityPct - 80) / 20) * 0.45 : 0,
+              ),
+              0,
+              0.92,
+            )
+          : rainy
+            ? 0.32
+            : 0.08;
+
+    const wxEase = this.wxInitialized ? 1 - Math.exp(-dt * 2.2) : 1;
+    this.wxInitialized = true;
+    SKY_CIRRUS.value += (cirrusTarget - SKY_CIRRUS.value) * wxEase;
+    SKY_AURORA.value += (auroraTarget - SKY_AURORA.value) * wxEase;
+    SKY_RAINBOW.value += (rainbowTarget - SKY_RAINBOW.value) * wxEase;
+    SKY_STORM_TINT.value += (stormTintTarget - SKY_STORM_TINT.value) * wxEase;
+    GROUND_SNOW.value += (snowTarget - GROUND_SNOW.value) * wxEase;
+    GROUND_WETNESS.value += (wetnessTarget - GROUND_WETNESS.value) * wxEase;
+    VALLEY_FOG.value += (valleyFogTarget - VALLEY_FOG.value) * wxEase;
   }
 
   public dispose(): void {

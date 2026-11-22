@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { EarthElevation, earthElevation, type EarthHeightSampler } from '../explorer/Elevation';
 import { bodyLatLonToLocal, EARTH_FLATTENING } from '../explorer/TileMath';
 import { SUN_WORLD } from './RenderOrigin';
-import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR } from './AerialPerspective';
+import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR, VALLEY_FOG } from './AerialPerspective';
 
 /**
  * The whole Earth as real-height procedural terrain, there at once, under Google's 3D tiles.
@@ -427,6 +427,7 @@ export class ProceduralTerrain {
         uNightAir: NIGHT_AIR,
         uMoonLight: MOON_LIGHT,
         uMoonDir: MOON_DIR,
+        uValleyFog: VALLEY_FOG,
       },
       vertexShader,
       fragmentShader,

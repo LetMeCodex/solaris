@@ -3,7 +3,7 @@ import Pbf from 'pbf';
 import { VectorTile } from '@mapbox/vector-tile';
 import { bodyLatLonToLocal } from './TileMath';
 import { SUN_WORLD } from '../rendering/RenderOrigin';
-import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR } from '../rendering/AerialPerspective';
+import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR, VALLEY_FOG } from '../rendering/AerialPerspective';
 import { PhotorealEarth } from '../rendering/PhotorealEarth';
 
 /**
@@ -1408,6 +1408,7 @@ export class ProceduralCity {
         uNightAir: NIGHT_AIR,
         uMoonLight: MOON_LIGHT,
         uMoonDir: MOON_DIR,
+        uValleyFog: VALLEY_FOG,
       },
       vertexShader,
       fragmentShader,
@@ -1422,6 +1423,7 @@ export class ProceduralCity {
         uNightAir: NIGHT_AIR,
         uMoonLight: MOON_LIGHT,
         uMoonDir: MOON_DIR,
+        uValleyFog: VALLEY_FOG,
       },
       vertexShader: groundVertex,
       fragmentShader: groundFragment,

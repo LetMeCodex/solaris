@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { SUN_WORLD } from './RenderOrigin';
-import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR } from './AerialPerspective';
+import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR, VALLEY_FOG } from './AerialPerspective';
 
 /**
  * Photorealistic Earth Surface Shader Material
@@ -34,6 +34,7 @@ export class EarthMaterial {
         uNightAir: NIGHT_AIR,
         uMoonLight: MOON_LIGHT,
         uMoonDir: MOON_DIR,
+        uValleyFog: VALLEY_FOG,
         dayMap: { value: dayMap },
         normalMap: { value: normalMap || null },
         nightMap: { value: nightMap || null },

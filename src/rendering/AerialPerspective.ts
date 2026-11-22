@@ -41,6 +41,23 @@ export const SKY_STAR_VISIBILITY = { value: 1 };
  */
 export const SKY_OVERCAST = { value: 0 };
 
+/** High-altitude 9-12 km cirrus & mountain banner cloud coverage (0..1), driven by live Open-Meteo. */
+export const SKY_CIRRUS = { value: 0.28 };
+/** Live geomagnetic Aurora Borealis / Australis intensity (0..1), driven by NOAA SWPC Kp oval. */
+export const SKY_AURORA = { value: 0 };
+/** Physically-based 42°/51° double rainbow strength (0..1) when sunlight meets active rain/showers. */
+export const SKY_RAINBOW = { value: 0 };
+/** Supercell hail-core teal-green storm horizon scatter tint (0..1) during severe thunderstorms. */
+export const SKY_STORM_TINT = { value: 0 };
+/** Monotonic sky/weather animation clock (seconds) for cirrus drift & aurora curtain shimmer. */
+export const SKY_TIME = { value: 0 };
+/** Live Open-Meteo + seasonal snow cover boost (0..1) for slope-masked snow accumulation on terrain. */
+export const GROUND_SNOW = { value: 0 };
+/** Live rain / storm / humidity PBR surface wetness (0..1) for reflective wet roofs & roads. */
+export const GROUND_WETNESS = { value: 0 };
+/** Exponential height-pooled valley fog density (0..1) for Yosemite-style mist & crepuscular glow. */
+export const VALLEY_FOG = { value: 0 };
+
 interface StarVisSource {
   value: number;
   isActive: () => boolean;
@@ -126,6 +143,7 @@ export const AERIAL_PERSPECTIVE_GLSL = /* glsl */ `
 uniform vec3 uNightAir;
 uniform vec3 uMoonLight;
 uniform vec3 uMoonDir;
+uniform float uValleyFog;
 vec3 apSky(float sunUp) {
   vec3 skyDay = vec3(0.42, 0.58, 0.86);
   vec3 skyLow = vec3(0.95, 0.58, 0.36);
@@ -144,20 +162,20 @@ vec3 aerialPerspective(vec3 col, float distKm, float hMeanKm, float haze, vec3 t
   float hM = mix(1.85, 1.0, low);
   vec3 odR = distKm * betaR * exp(-hMeanKm / 8.0);
   float odM = distKm * betaM * exp(-hMeanKm / hM);
-  vec3 od = odR + vec3(odM);
+  // Exponential height-pooled valley fog (Yosemite clearing-storm mist + warm crepuscular Mie glow)
+  float fogPool = uValleyFog * exp(-max(hMeanKm, 0.0) / 0.85);
+  float odFog = distKm * fogPool * 0.22;
+  vec3 od = odR + vec3(odM + odFog);
   vec3 trans = exp(-od);
   float mu = dot(-toEye, sunDir);
   float g = 0.76;
   float hg = (1.0 - g * g) / (12.566 * pow(max(1.0 + g * g - 2.0 * g * mu, 1e-4), 1.5));
   vec3 sunC = mix(vec3(1.0, 0.6, 0.34), vec3(1.0, 0.95, 0.88), smoothstep(0.04, 0.4, sunUp));
-  // The molecules scatter the sky's blue; dust and water scatter a near-white (warm with a low
-  // Sun), brightest towards the Sun: each in proportion to its share of the haze
-  // After dark the haze glows only with the night's light (mostly the Moon's, cool and blue):
-  // it used to keep a quarter of its warm daytime glow, and at night the whole land dissolved
-  // into a flat brown fog
   vec3 shareR = odR / max(od, vec3(1e-6));
-  vec3 aerosol = mix(vec3(0.66, 0.69, 0.74), vec3(0.92, 0.74, 0.6), low) * lit + uNightAir;
-  vec3 inscat = mix(aerosol + sunC * hg * 2.4 * lit, apSky(sunUp) * (0.7 + 0.3 * lit) + uNightAir * 0.8, shareR);
+  vec3 aerosol = mix(vec3(0.66, 0.69, 0.74), vec3(0.96, 0.76, 0.58), low) * lit + uNightAir;
+  // Crepuscular Mie forward-scattering shaft glow through valley mist toward a low sun
+  float crepuscular = pow(max(mu, 0.0), 8.0) * (0.65 + 1.4 * fogPool) * lit;
+  vec3 inscat = mix(aerosol + sunC * (hg * 2.4 + crepuscular * 0.45) * lit, apSky(sunUp) * (0.7 + 0.3 * lit) + uNightAir * 0.8, shareR);
   return col * trans + inscat * (1.0 - trans);
 }
 `;

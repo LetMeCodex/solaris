@@ -5,7 +5,16 @@ import { GoogleCloudAuthPlugin, GLTFExtensionsPlugin, TilesFadePlugin } from '3d
 import { SUN_WORLD } from './RenderOrigin';
 import { perf } from './Performance';
 import { bodyLatLonToLocal, bodyLocalToLatLon } from '../explorer/TileMath';
-import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR } from './AerialPerspective';
+import {
+  AERIAL_PERSPECTIVE_GLSL,
+  GROUND_SNOW,
+  GROUND_WETNESS,
+  MOON_DIR,
+  MOON_LIGHT,
+  NIGHT_AIR,
+  SKY_AURORA,
+  VALLEY_FOG,
+} from './AerialPerspective';
 
 /**
  * Google Photorealistic 3D Tiles on Solaris's Earth: real cities, mountains and coasts in 3D,
@@ -57,6 +66,9 @@ uniform mat3 uCloudRot;
 uniform float uTreeShadowOn;
 uniform sampler2D uTreeShadow;
 uniform mat4 uTreeShadowM;
+uniform float uGroundSnow;
+uniform float uGroundWetness;
+uniform float uAurora;
 float phHashG(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 uniform vec3 uDetailP0;
 uniform vec3 uDetailE;
@@ -187,11 +199,18 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
   }
   float snowNoise = phNoise(nlPlane * 9000.0) * 0.6 + phNoise(nlPlane * 41000.0) * 0.4;
   float hN = hKm + (snowNoise - 0.5) * 0.5;
-  float snow = smoothstep(snowLine - 0.2, snowLine + 0.4, hN) * (1.0 - smoothstep(summerLine - 0.4, summerLine + 0.2, hN));
-  snow *= smoothstep(0.55, 0.85, flatness) * (1.0 - water) * smoothstep(0.85, 0.6, lum);
-  // Keep the photograph's shading and texture under the snow (a tint, not a white paint)
-  vec3 snowCol = vec3(0.90, 0.94, 1.0) * (0.45 + 0.9 * lum);
-  photo = mix(photo, snowCol, snow * 0.7);
+  float seasonalSnow = smoothstep(snowLine - 0.2, snowLine + 0.4, hN) * (1.0 - smoothstep(summerLine - 0.4, summerLine + 0.2, hN));
+  // Live Open-Meteo snow_depth / snowfall accumulation (Lauterbrunnen-style slope-masked snow):
+  // leaves steep vertical cliffs bare granite while blanketing valleys, terraces & rooftops!
+  float liveSnow = uGroundSnow * smoothstep(0.22, 0.72, snowNoise + uGroundSnow * 0.45);
+  float snow = clamp(max(seasonalSnow, liveSnow), 0.0, 1.0);
+  snow *= smoothstep(0.55, 0.86, flatness) * (1.0 - water) * smoothstep(0.90, 0.58, lum);
+  // Keep the photograph's shading and texture under the snow (a tint, not flat white paint)
+  vec3 snowCol = vec3(0.92, 0.96, 1.0) * (0.48 + 0.88 * lum);
+  photo = mix(photo, snowCol, snow * 0.78);
+  // PBR Rain Wetness: damp roofs, asphalt & rock darken realistically when wet
+  float wetSurface = uGroundWetness * (1.0 - water) * (1.0 - snow * 0.85) * smoothstep(0.45, 0.88, flatness);
+  photo *= mix(1.0, 0.72, wetSurface * 0.85);
 
   // --- Close-up ground. Standing on it (or flying a few metres over it) the photographs are
   // magnified past their own ~10 cm a pixel and smear into streaks and blotches. There, on open
@@ -289,13 +308,20 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
     float lowSun = 1.0 - smoothstep(0.05, 0.4, sunUp);
     float relief = 0.2 * day * (1.0 - uDaylight);
     col *= mix(1.0, 0.36 + 0.95 * clamp(facing + 0.15, 0.0, 1.0), relief * (1.0 - lowSun));
-    // With a low Sun the light is two lights: the Sun's, warm, only on what faces it, and the
-    // sky's, blue and dim, on everything. A face turned from a setting Sun is in the blue shade (it
-    // glowed orange like the sunlit ones before, under one warm light)
+    // With a low Sun the light is two lights: the Sun's, warm coral-amber (alpenglow on snow &
+    // rock faces like Mt. Fuji & Uluru), and the sky's cool cobalt blue in shaded valleys.
     float lit = smoothstep(-0.12, 0.35, facing);
-    vec3 skyShade = mix(vec3(0.30, 0.36, 0.52), vec3(0.42, 0.48, 0.62), smoothstep(0.0, 0.4, sunUp)) * 0.85;
-    vec3 golden = mix(skyShade, sunCol * 1.25 + skyShade * 0.3, lit) / max(sunCol, vec3(0.05));
-    col *= mix(vec3(1.0), golden, lowSun * day * (1.0 - uDaylight) * 0.85);
+    vec3 skyShade = mix(vec3(0.26, 0.34, 0.56), vec3(0.42, 0.48, 0.62), smoothstep(0.0, 0.4, sunUp)) * 0.85;
+    vec3 alpenglowTint = mix(sunCol * 1.28, vec3(1.18, 0.56, 0.42), smoothstep(0.08, 0.0, sunUp) * (0.45 + 0.55 * snow));
+    vec3 golden = mix(skyShade, alpenglowTint + skyShade * 0.28, lit) / max(sunCol, vec3(0.05));
+    col *= mix(vec3(1.0), golden, lowSun * day * (1.0 - uDaylight) * 0.88);
+    // Crisp snow crystal micro-glint under direct sunlight
+    if (snow > 0.05 && day > 0.05) {
+      vec3 toEyeS = normalize(cameraPosition - vPhotoWorld);
+      vec3 halfS = normalize(toEyeS + sunDir);
+      float snowSparkle = pow(max(dot(nF, halfS), 0.0), 48.0) * snow * lit * day * (1.0 - uDaylight);
+      col += sunCol * snowSparkle * 0.28;
+    }
   }
 
   // --- Cloud shadows: the coverage where the line to the Sun crosses the middle of the layer
@@ -333,10 +359,11 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
   vec3 toEye = cameraPosition - vPhotoWorld;
   float distKm = length(toEye) * uKmPerUnit;
   vec3 V = toEye / max(length(toEye), 1e-12);
-  // Sky colour at this place and hour (blue by day, orange low, deep blue at night)
+  // Sky colour at this place and hour (blue by day, coral-orange alpenglow low, deep blue + aurora at night)
   vec3 skyDay = vec3(0.50, 0.66, 0.92);
-  vec3 skyLow = vec3(0.98, 0.56, 0.32);
+  vec3 skyLow = vec3(1.00, 0.52, 0.36);
   vec3 skyCol = mix(vec3(0.012, 0.018, 0.04), mix(skyLow, skyDay, smoothstep(0.02, 0.30, sunUp)), smoothstep(-0.14, 0.04, sunUp));
+  vec3 auroraReflect = vec3(0.08, 0.55, 0.28) * uAurora * (1.0 - day);
 
   if (water > 0.001) {
     vec2 pm = nlPlane * 6.378137e6;
@@ -345,7 +372,7 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
     sl += vec2(0.8, 0.3) * cos(dot(pm, vec2(0.011, 0.004)) + t * 1.3);
     sl += vec2(-0.3, 0.9) * cos(dot(pm, vec2(-0.006, 0.017)) + t * 1.7);
     sl += vec2(0.5, -0.6) * cos(dot(pm, vec2(0.031, -0.022)) + t * 2.6) * 0.5;
-    vec3 nwRaw = upW + 0.045 * vec3(sl.x, 0.0, sl.y);
+    vec3 nwRaw = upW + 0.042 * vec3(sl.x, 0.0, sl.y);
     float nwLen = length(nwRaw);
     vec3 N = nwLen > 1e-9 ? nwRaw / nwLen : upW;
     float NdV = clamp(dot(N, V), 0.0, 1.0);
@@ -353,8 +380,9 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
     vec3 hSunRaw = V + sunDir;
     float hSunLen = length(hSunRaw);
     vec3 H = hSunLen > 1e-9 ? hSunRaw / hSunLen : N;
-    float glint = pow(max(dot(N, H), 0.0), 260.0) * 9.0 + pow(max(dot(N, H), 0.0), 40.0) * 0.25;
-    vec3 wcol = mix(col * 0.85, skyCol * (0.25 + 0.75 * day), fres);
+    float glint = pow(max(dot(N, H), 0.0), 260.0) * 9.0 + pow(max(dot(N, H), 0.0), 40.0) * 0.28;
+    vec3 reflSky = skyCol * (0.28 + 0.72 * day) + auroraReflect * 0.95;
+    vec3 wcol = mix(col * 0.82, reflSky, fres);
     wcol += sunCol * glint * day * (1.0 - snow);
     // The Moon's path of light on the water
     vec3 hMoonRaw = V + uMoonDir;
@@ -362,13 +390,21 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
     vec3 Hm = hMoonLen > 1e-9 ? hMoonRaw / hMoonLen : N;
     float mGlint = pow(max(dot(N, Hm), 0.0), 220.0) * 6.0 + pow(max(dot(N, Hm), 0.0), 30.0) * 0.12;
     wcol += uMoonLight * mGlint * (1.0 - day);
-    wcol = mix(wcol, wcol + uNightAir * 0.6, fres * (1.0 - day));
+    wcol = mix(wcol, wcol + uNightAir * 0.6 + auroraReflect * 0.35, fres * (1.0 - day));
     col = mix(col, wcol, water);
+  } else if (wetSurface > 0.02) {
+    // PBR wet-pavement & wet-roof Fresnel reflections (glossy sky + sun specular sheen in rain/storms)
+    float NdVw = clamp(dot(upW, V), 0.0, 1.0);
+    float fresW = (0.04 + 0.85 * pow(1.0 - NdVw, 4.2)) * wetSurface;
+    vec3 Hw = normalize(V + sunDir);
+    float wetSpec = pow(max(dot(upW, Hw), 0.0), 96.0) * wetSurface * day * 0.75;
+    col = mix(col, skyCol * (0.28 + 0.55 * day) + auroraReflect * 0.4, fresW * 0.48);
+    col += sunCol * wetSpec;
   }
 
-  // --- City lights after dark
+  // --- City lights after dark (dense golden-amber street arteries + crisp LED tower windows)
   if (uHasMaps > 0.5) {
-    float night = (1.0 - smoothstep(-0.12, 0.02, sunUp)) * (1.0 - uDaylight);
+    float night = (1.0 - smoothstep(-0.10, 0.05, sunUp)) * (1.0 - uDaylight);
     vec3 nm = texture2D(uNightMap, uvG).rgb;
     float glow = dot(nm, vec3(0.333));
     vec2 pmM = nlPlane * 6.378137e6;
@@ -379,12 +415,17 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
     float cellA = 10.0 * pow(4.0, l0);
     float lampsA = phLamps(pmM / cellA, glow, cellA);
     float lampsB = phLamps(pmM / (cellA * 4.0), glow, cellA * 4.0);
-    float lamps = mix(lampsA, lampsB, lf) * smoothstep(0.5, 0.85, flatness);
-    float streets = smoothstep(0.30, 0.70, lum);
-    vec3 warm = mix(vec3(1.0, 0.62, 0.30), vec3(1.0, 0.86, 0.66), phHash(floor(pmM / cellA) + 3.3));
-    // A faint glow of the lit city on the ground itself, only where it is dense (the centre)
-    float wash = glow * glow * (0.012 + 0.02 * streets) + glow * 0.02 * (1.0 - flatness);
-    col += warm * (lamps * (2.2 + 2.0 * streets) + wash) * night * (1.0 - water);
+    float lamps = mix(lampsA, lampsB, lf) * smoothstep(0.45, 0.85, flatness);
+    // Vertical building facade windows glow gently on non-flat city walls
+    float wallWin = phLamps(vec2(pmM.x + pmM.y, hKm * 1000.0) / 14.0, glow, 14.0) * (1.0 - smoothstep(0.25, 0.65, flatness));
+    float streets = smoothstep(0.26, 0.68, lum);
+    float hueSeed = phHash(floor(pmM / cellA) + 3.3);
+    vec3 warm = hueSeed > 0.82
+      ? vec3(0.76, 0.88, 1.0)
+      : mix(vec3(1.0, 0.64, 0.24), vec3(1.0, 0.84, 0.56), hueSeed);
+    float wetBoost = 1.0 + wetSurface * 0.65;
+    float wash = glow * glow * (0.022 + 0.032 * streets) + glow * 0.03 * (1.0 - flatness);
+    col += warm * ((lamps * (2.6 + 2.4 * streets) + wallWin * 1.45) * wetBoost + wash) * night * (1.0 - water);
   }
 
   // --- Aerial perspective: blue-grey with distance, golden towards a low Sun (AerialPerspective.ts);
@@ -1111,7 +1152,8 @@ export class PhotorealEarth {
         uEarthC: centre, uSunW: SUN_WORLD, uSunTint: tint, uDaylight: daylight, uEarthInv: this.earthInv,
         uKmPerUnit: this.kmPerUnit, uCamAltKm: this.camAltKm, uTime: this.timeS, uDoy: this.dayOfYear,
         uDayMap: this.dayMap, uNightMap: this.nightMap, uHasMaps: this.hasMaps, uHaze: this.hazeScale,
-        uNightAir: NIGHT_AIR, uMoonLight: MOON_LIGHT, uMoonDir: MOON_DIR,
+        uNightAir: NIGHT_AIR, uMoonLight: MOON_LIGHT, uMoonDir: MOON_DIR, uValleyFog: VALLEY_FOG,
+        uGroundSnow: GROUND_SNOW, uGroundWetness: GROUND_WETNESS, uAurora: SKY_AURORA,
         uDetailP0: this.detailP0, uDetailE: this.detailE, uDetailN: this.detailN,
         ...this.cloudU,
         ...this.treeShadowU,

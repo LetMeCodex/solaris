@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Pass, FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
-import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR, SKY_OVERCAST } from './AerialPerspective';
+import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR, SKY_OVERCAST, VALLEY_FOG } from './AerialPerspective';
 import { createCloudNoiseFallback, loadCloudNoiseTexture } from './cloudNoiseLoader';
 
 /**
@@ -441,6 +441,7 @@ export class VolumetricCloudPass extends Pass {
     uNightAir: NIGHT_AIR,
     uMoonLight: MOON_LIGHT,
     uMoonDir: MOON_DIR,
+    uValleyFog: VALLEY_FOG,
     uSunDir: { value: new THREE.Vector3(0, 1, 0) },
     uSunCol: { value: new THREE.Color('#fffaf2').multiplyScalar(3.35) },
     uSkyAmb: { value: new THREE.Color('#86b5f2').multiplyScalar(1.45) },

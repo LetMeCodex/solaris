@@ -822,7 +822,9 @@ function centreReveal(ctx: CanvasRenderingContext2D, t: JetTelemetry, place: Pla
   let title = '';
   let line = '';
   if (t.nearest === 'Earth' && earth) {
-    const parts = earth.subtitle.split(',').map((s) => s.trim()).filter(Boolean);
+    const sub = earth.subtitle.trim();
+    const isPlaceSub = sub.length > 0 && sub.length <= 40 && sub.includes(',') && !sub.endsWith('.');
+    const parts = (isPlaceSub ? sub : earth.title).split(',').map((s) => s.trim()).filter(Boolean);
     const country = (parts[parts.length - 1] || earth.title).toUpperCase();
     key = `earth:${country}`;
     tag = t.altKm > 100 ? 'ORBITAL PASS' : 'ENTERING AIRSPACE';

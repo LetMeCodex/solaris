@@ -69,6 +69,12 @@ export class Weather {
   private dropPos = new Float32Array(240 * 3);
   private dropAge = new Float32Array(240);
   private dropMat: THREE.PointsMaterial;
+  // Procedural 3D branching forked lightning bolts (@RiadEtm Beauce squall line)
+  private static readonly BOLT_SEGS = 96;
+  private boltPos = new Float32Array(Weather.BOLT_SEGS * 6);
+  private boltAlpha = new Float32Array(Weather.BOLT_SEGS * 2);
+  private boltMesh: THREE.LineSegments;
+  private boltMat: THREE.ShaderMaterial;
   private flashT = 0;
   private dropTex: THREE.Texture;
   private flakeTex: THREE.Texture;
@@ -162,7 +168,97 @@ export class Weather {
     this.drops.renderOrder = 30;
     this.dropAge.fill(99);
 
-    this.group.add(this.veil, this.streaks, this.flakes, this.drops);
+    // 3D branching forked lightning bolt geometry (primary trunk + secondary forks)
+    const bg = new THREE.BufferGeometry();
+    bg.setAttribute('position', new THREE.BufferAttribute(this.boltPos, 3).setUsage(THREE.DynamicDrawUsage));
+    bg.setAttribute('aAlpha', new THREE.BufferAttribute(this.boltAlpha, 1).setUsage(THREE.DynamicDrawUsage));
+    this.boltMat = new THREE.ShaderMaterial({
+      uniforms: { uIntensity: { value: 0 } },
+      vertexShader: /* glsl */ `
+        attribute float aAlpha;
+        varying float vAlpha;
+        void main() {
+          vAlpha = aAlpha;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: /* glsl */ `
+        uniform float uIntensity;
+        varying float vAlpha;
+        void main() {
+          float a = vAlpha * uIntensity;
+          if (a < 0.01) discard;
+          // Electric violet-white hot core matching real atmospheric nitrogen discharge
+          vec3 col = mix(vec3(0.58, 0.72, 1.0), vec3(1.0, 0.98, 1.0), vAlpha) * (1.8 + 1.4 * uIntensity);
+          gl_FragColor = vec4(col, clamp(a, 0.0, 1.0));
+        }`,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    this.boltMesh = new THREE.LineSegments(bg, this.boltMat);
+    this.boltMesh.frustumCulled = false;
+    this.boltMesh.renderOrder = 10;
+    this.boltMesh.visible = false;
+
+    this.group.add(this.veil, this.streaks, this.flakes, this.drops, this.boltMesh);
+  }
+
+  /** Generate a fresh jagged 3D branching cloud-to-ground lightning bolt ahead of the camera. */
+  private spawnLightningBolt(camera: THREE.Camera, up: THREE.Vector3): void {
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+    const dist = 160 + this.rand() * 240;
+    const lateral = (this.rand() - 0.5) * dist * 1.1;
+    const topPos = fwd.clone().multiplyScalar(dist).addScaledVector(right, lateral).addScaledVector(up, 110 + this.rand() * 80);
+    const botPos = topPos.clone().addScaledVector(up, -(260 + this.rand() * 140)).addScaledVector(right, (this.rand() - 0.5) * 90);
+
+    let seg = 0;
+    const pushSeg = (a: THREE.Vector3, b: THREE.Vector3, alpha: number): void => {
+      if (seg >= Weather.BOLT_SEGS) return;
+      const o = seg * 6;
+      this.boltPos[o] = a.x; this.boltPos[o + 1] = a.y; this.boltPos[o + 2] = a.z;
+      this.boltPos[o + 3] = b.x; this.boltPos[o + 4] = b.y; this.boltPos[o + 5] = b.z;
+      this.boltAlpha[seg * 2] = alpha;
+      this.boltAlpha[seg * 2 + 1] = alpha;
+      seg++;
+    };
+
+    // Main jagged trunk (24 segments) + 3 branching forks
+    const mainPts: THREE.Vector3[] = [];
+    const steps = 24;
+    const jitterAxis = fwd.clone().cross(up).normalize();
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const p = topPos.clone().lerp(botPos, t);
+      if (i > 0 && i < steps) {
+        const j = Math.sin(t * Math.PI) * 18;
+        p.addScaledVector(jitterAxis, (this.rand() - 0.5) * j);
+        p.addScaledVector(fwd, (this.rand() - 0.5) * j * 0.6);
+      }
+      mainPts.push(p);
+      if (i > 0) pushSeg(mainPts[i - 1], p, 1.0);
+    }
+
+    // 3 secondary forks branching off the upper/mid trunk
+    for (let f = 0; f < 3; f++) {
+      const startIdx = 4 + Math.floor(this.rand() * 12);
+      let cur = mainPts[startIdx].clone();
+      const forkDir = up.clone().multiplyScalar(-1).addScaledVector(jitterAxis, (this.rand() > 0.5 ? 1 : -1) * (0.45 + this.rand() * 0.65)).normalize();
+      const forkSteps = 8 + Math.floor(this.rand() * 5);
+      for (let k = 0; k < forkSteps; k++) {
+        const next = cur.clone().addScaledVector(forkDir, 10 + this.rand() * 10);
+        next.addScaledVector(jitterAxis, (this.rand() - 0.5) * 9);
+        pushSeg(cur, next, 0.72 * (1 - k / (forkSteps + 2)));
+        cur = next;
+      }
+    }
+
+    for (let i = seg; i < Weather.BOLT_SEGS; i++) {
+      this.boltAlpha[i * 2] = 0;
+      this.boltAlpha[i * 2 + 1] = 0;
+    }
+    this.boltMesh.geometry.attributes.position.needsUpdate = true;
+    this.boltMesh.geometry.attributes.aAlpha.needsUpdate = true;
   }
 
   private rand(): number {
@@ -311,11 +407,14 @@ export class Weather {
       if (this.nextFlash <= 0) {
         this.flashT = 1;
         this.nextFlash = 2.5 + this.rand() * 7;
+        this.spawnLightningBolt(ctx.camera, ctx.up);
         this.onLightning?.(0.5 + this.rand() * 8);
       }
     }
     this.flashT = Math.max(0, this.flashT - dt * 5);
     st.flash = this.flashT > 0 ? this.flashT * (0.6 + 0.4 * Math.sin(this.flashT * 40)) : 0;
+    this.boltMat.uniforms.uIntensity.value = st.flash;
+    this.boltMesh.visible = st.flash > 0.02;
     st.shake = kind === 'storm' ? 0.35 : kind === 'turbulence' ? 0.4 : kind === 'dust' ? 0.15 * strength : kind === 'rain' ? 0.08 : 0;
     this.veilMat.uniforms.uAmount.value = cloud;
     this.veilMat.uniforms.uTime.value = timeSec;
@@ -421,6 +520,8 @@ export class Weather {
     this.veilMat.dispose();
     this.drops.geometry.dispose();
     this.dropMat.dispose();
+    this.boltMesh.geometry.dispose();
+    this.boltMat.dispose();
     this.dropTex.dispose();
     this.flakeTex.dispose();
   }
