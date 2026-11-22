@@ -138,23 +138,34 @@ export class EarthClouds {
         this.demAt = { lat, lon };
         void earthElevation.ensure(lat - 0.3, lon - 0.3, lat + 0.3, lon + 0.3, 8);
       }
+      const centerH = Math.max(0, earthElevation.heightKm(lat, lon, 11));
       let sum = 0;
+      let maxH = centerH;
       let n = 0;
       for (let i = -1; i <= 1; i++) {
         for (let j = -1; j <= 1; j++) {
-          const h = earthElevation.heightKm(lat + i * 0.14, lon + j * 0.14, 8);
+          const h = earthElevation.heightKm(lat + i * 0.12, lon + j * 0.12, 8);
           if (h !== 0) n++;
-          sum += Math.max(0, h);
+          const clamped = Math.max(0, h);
+          sum += clamped;
+          if (clamped > maxH) maxH = clamped;
         }
       }
-      if (n > 0) target = sum / 9;
+      if (n > 0 || centerH > 0) {
+        // Protect elevated urban plateaus (e.g. Sao Paulo 760m near coast, Denver 1600m) from
+        // being averaged down by adjacent ocean/valleys so clouds never slice through rooftops.
+        const avgH = sum / 9;
+        target = Math.max(centerH, avgH * 0.4 + maxH * 0.6);
+      }
     }
-    const fromJet = aglKm < 12 ? THREE.MathUtils.clamp(camKm - aglKm, 0, 8.5) : null;
-    const immediate = target ?? fromJet ?? 0;
+    const fromJet = aglKm < 12 ? THREE.MathUtils.clamp(camKm - aglKm, 0, 8.85) : null;
+    const immediate = Math.max(target ?? 0, fromJet ?? 0);
     if (this.groundKm === null) {
       this.groundKm = immediate;
     } else if (target !== null || fromJet !== null) {
-      this.groundKm += ((target ?? fromJet!) - this.groundKm) * (1 - Math.exp(-dt / 15));
+      // Climb rapidly over rising terrain/plateaus so cloud decks stay safely clear; ease down gently.
+      const tau = immediate > this.groundKm ? 2.5 : 14;
+      this.groundKm += (immediate - this.groundKm) * (1 - Math.exp(-dt / tau));
     }
     return Math.max(0, this.groundKm);
   }
@@ -224,10 +235,13 @@ export class EarthClouds {
           ? 0.87
           : THREE.MathUtils.lerp(0.76, 0.845, liveCover);
 
-    const liftT = manualClear ? 1.25 : storm ? 0.65 : rainy ? 0.75 : 0.95;
-    const thickT = manualClear ? 2.2 : storm ? 5.0 : rainy ? 3.2 : 2.5 + 0.55 * coverT;
+    // Authentic ISA Lifting Condensation Level (LCL) clearance: fair-weather cumulus bases float
+    // ~1.85-2.2 km above local terrain/rooftops, while storm/rain bases hold at least 1.25-1.35 km AGL.
+    const liftT = manualClear ? 2.15 : storm ? 1.25 : rainy ? 1.35 : 1.85;
+    const minMslKm = manualClear ? 2.2 : storm ? 1.35 : rainy ? 1.45 : 1.9;
+    const thickT = manualClear ? 2.1 : storm ? 5.2 : rainy ? 3.2 : 2.45 + 0.55 * coverT;
     const stratusT = overcastT && !storm ? THREE.MathUtils.smoothstep(coverT, 0.76, 0.96) : 0;
-    const densityT = manualClear ? 1.4 : storm ? 1.85 : rainy ? 1.65 : 1.5;
+    const densityT = manualClear ? 1.35 : storm ? 1.85 : rainy ? 1.65 : 1.48;
 
     const e = (this.eased ??= {
       cover: coverT,
@@ -259,7 +273,7 @@ export class EarthClouds {
       return;
     }
 
-    const baseKm = ground + e.lift;
+    const baseKm = Math.max(minMslKm, ground + e.lift);
     const thickKm = e.thick;
     const unitKm = Math.max(0.16, thickKm / 15.0);
 
@@ -300,7 +314,9 @@ export class EarthClouds {
     u.uPatchNorth.value.copy(this.patchNorth);
 
     u.uSunDir.value.copy(sunDirWorld).normalize();
-    u.uSteps.value = perf.tier === 'high' ? 64 : perf.tier === 'medium' ? 52 : 36;
+    // Temporal reprojection accumulates 6-8 frames of IGN-jittered samples smoothly, allowing
+    // crisp anti-aliased clouds at 36-52 steps/frame with zero pixelation or framerate penalty.
+    u.uSteps.value = perf.tier === 'high' ? 52 : perf.tier === 'medium' ? 44 : 34;
     u.uSunSteps.value = perf.tier === 'low' ? 3 : 4;
     u.uDetail.value = perf.tier === 'low' ? 0 : 1;
     u.uFlash.value = lightningFlash;

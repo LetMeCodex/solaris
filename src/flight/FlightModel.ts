@@ -404,8 +404,13 @@ export class FlightModel {
   public surfaces: JetSurfaceState = createJetSurfaceState();
   public readonly fbwState: FbwControllerState = createFbwState();
 
-  private spool = 0.05;
-  private lastNormalAeroAccel = 0;
+  private spool = 0.55;
+  private lastNormalAeroAccel = G0;
+  private pitchTrimInt = 0;
+  private autoGammaLatched = false;
+  private autoGammaRad = 0;
+  private autoBankLatched = false;
+  private autoBankRad = 0;
   private cobraEntryFwd = new THREE.Vector3(0, 0, -1);
 
   private tmpForward = new THREE.Vector3();
@@ -469,6 +474,10 @@ export class FlightModel {
     this.maxDryThrustN = spec.dryThrustN;
     this.maxWetThrustN = spec.wetThrustN;
     this.tvcActive = spec.hasTvc;
+    this.pitchTrimInt = 0;
+    this.autoGammaLatched = false;
+    this.autoBankLatched = false;
+    this.lastNormalAeroAccel = G0;
   }
 
   public refuel(fraction = 1): void {
@@ -480,6 +489,10 @@ export class FlightModel {
   public resetEnvelopePeaks(): void {
     this.gPeak = this.gLoad;
     this.gMin = this.gLoad;
+    this.pitchTrimInt = 0;
+    this.autoGammaLatched = false;
+    this.autoBankLatched = false;
+    this.lastNormalAeroAccel = G0;
   }
 
   public setFbwMode(mode: FbwMode): void {
@@ -701,6 +714,9 @@ export class FlightModel {
 
     let finalFbwOut: ReturnType<typeof stepFbwAndControls> | null = null;
     let finalAeroRes: ReturnType<typeof computeAeroForcesAndMoments> | null = null;
+    let finalElevCmd = 0;
+    let finalAilCmd = 0;
+    let finalRudCmd = 0;
     let finalPropThrustN = 0;
     let finalMaxDryN = spec.dryThrustN;
     let finalMaxWetN = spec.wetThrustN;
@@ -857,10 +873,11 @@ export class FlightModel {
       const altAglM = env.groundClearanceM ?? Math.max(0, env.altitudeUnits * env.kmPerUnit * 1000);
       const gearExt = gearDown ? 1 : 0;
 
-      // Compute commanded rates including closed-loop 1G trim / FPV hold
+      // Compute commanded rates including MIL-STD-1797A / F-16 / Gripen bank-compensated
+      // 1G C* auto-trim, coordinated-turn yaw rate, and hands-off flight-path + bank-angle hold.
       let cmdPitchRate = this.fbwState.rateCmdB3[0];
       let cmdYawRate = this.fbwState.rateCmdB3[1];
-      const cmdRollRate = this.fbwState.rateCmdB3[2];
+      let cmdRollRate = this.fbwState.rateCmdB3[2];
 
       if (
         input.assist &&
@@ -871,15 +888,97 @@ export class FlightModel {
         gEffMps2 > 0.1
       ) {
         const safeV = Math.max(flow.speedMps, 45);
-        if (this.fbwState.fpvHoldActive && Math.abs(input.pitch) < 0.18) {
-          const trimTarget = gEffMps2 * clamp(gravityBodyUp, -0.4, 1.0);
-          const gErrRate = clamp(((trimTarget - this.lastNormalAeroAccel) / safeV) * 0.45, -0.2, 0.2);
-          const gammaErrRate = clamp((this.fbwState.fpvTargetGammaDeg - gammaDeg) * DEG_TO_RAD * 1.4, -0.35, 0.35);
-          cmdPitchRate += gErrRate + gammaErrRate;
-        } else if (Math.abs(input.pitch) < 0.04 && Math.abs(rollAngleRad) < 0.45) {
-          const trimTarget = gEffMps2 * clamp(gravityBodyUp, 0, 1.0);
-          cmdPitchRate += clamp(((trimTarget - this.lastNormalAeroAccel) / safeV) * 0.55, -0.18, 0.18);
+        const absPhi = Math.abs(rollAngleRad);
+        const cosTheta = Math.cos(rawPitchRad);
+        const cosPhi = Math.cos(rollAngleRad);
+
+        // Smooth level-turn 1G baseline: Nz = cos(theta)/cos(phi) holds altitude in coordinated turns
+        // up to 60 deg bank, then smoothly blends to cos(theta)*cos(phi) past 55-80 deg for crisp
+        // knife-edge & inverted aerobatics with zero unintended groundward nose drop.
+        const nzLevelTurn = cosTheta / Math.max(cosPhi, 0.5);
+        const bankFade = smoothstep(55 * DEG_TO_RAD, 80 * DEG_TO_RAD, absPhi);
+        const nzBase = nzLevelTurn * (1 - bankFade) + cosTheta * cosPhi * bankFade;
+
+        const stickNeutral = Math.abs(input.pitch) < 0.04;
+        const rollNeutral = Math.abs(input.roll) < 0.04;
+        const yawNeutral = Math.abs(input.yaw) < 0.04;
+        const fpvActive = this.fbwState.fpvHoldActive && Math.abs(input.pitch) < 0.18;
+        const canHoldGamma = absPhi < 68 * DEG_TO_RAD && Math.abs(rawPitchRad) < 72 * DEG_TO_RAD;
+
+        // Exact coordinated-turn body yaw rate r = (g * sin(phi) * cos(theta)) / V (singularity-free!).
+        // Sign check: rollAngleRad = atan2(bodyRight·up, bodyUp·up) is NEGATIVE for right bank,
+        // and B3 +Y is yaw-left, so adding sin(rollAngleRad) turns nose RIGHT in right bank (beta -> 0).
+        if (yawNeutral && absPhi > 0.03 && absPhi < 75 * DEG_TO_RAD) {
+          const coordFade = 1 - smoothstep(60 * DEG_TO_RAD, 75 * DEG_TO_RAD, absPhi);
+          const rCoordLeft = (gEffMps2 * Math.sin(rollAngleRad) * cosTheta) / safeV;
+          cmdYawRate += rCoordLeft * coordFade;
         }
+
+        // Hands-off bank-angle hold latch (Gripen / Rafale FBW): prevents spiral divergence when
+        // banking and releasing the stick, and gently auto-levels near wings-level (< 4 deg).
+        // Sign check: +Z rate rolls left (raises bodyRight -> increases rollAngleRad), so +bankErr => +cmdRollRate.
+        if (rollNeutral && absPhi < 66 * DEG_TO_RAD && Math.abs(rawPitchRad) < 68 * DEG_TO_RAD) {
+          if (!this.autoBankLatched && Math.abs(this.rates.z) < 0.35) {
+            this.autoBankRad = absPhi < 4 * DEG_TO_RAD ? 0 : rollAngleRad;
+            this.autoBankLatched = true;
+          }
+          if (this.autoBankLatched) {
+            const bankErr = clamp(this.autoBankRad - rollAngleRad, -0.5, 0.5);
+            cmdRollRate += clamp(bankErr * 2.8, -0.9, 0.9);
+          }
+        } else {
+          this.autoBankLatched = false;
+        }
+
+        if (fpvActive || (stickNeutral && canHoldGamma)) {
+          let targetGammaRad: number;
+          if (fpvActive) {
+            targetGammaRad = this.fbwState.fpvTargetGammaDeg * DEG_TO_RAD;
+            this.autoGammaLatched = false;
+          } else {
+            if (!this.autoGammaLatched && Math.abs(this.rates.x) < 0.16) {
+              this.autoGammaRad = gammaRad;
+              this.autoGammaLatched = true;
+            }
+            targetGammaRad = this.autoGammaLatched ? this.autoGammaRad : gammaRad;
+          }
+
+          // Outer flight-path angle stabilization prevents slow phugoid/thrust-change drift
+          const gammaErrRad = clamp(targetGammaRad - gammaRad, -0.35, 0.35);
+          const deltaNzHold = clamp(gammaErrRad * 2.6, -0.75, 0.75);
+          const trimTargetAccel = gEffMps2 * clamp(nzBase + deltaNzHold, -0.5, 2.5);
+
+          // Gain-scheduled PI normal-acceleration loop with anti-windup
+          const errRate = (trimTargetAccel - this.lastNormalAeroAccel) / safeV;
+          const pTerm = clamp(errRate * 1.15, -0.45, 0.45);
+          const uUnsat = pTerm + this.pitchTrimInt + clamp(gammaErrRad * 1.15, -0.35, 0.35);
+          const uSat = clamp(uUnsat, -0.55, 0.55);
+          const awTerm = 3.0 * (uSat - uUnsat);
+          const alphaClipping = flow.alphaDeg > fbwOut.alphaLimitDeg - 2.5 && errRate > 0;
+          if (!alphaClipping) {
+            this.pitchTrimInt = clamp(this.pitchTrimInt + (errRate * 0.85 + awTerm) * subDt, -0.35, 0.35);
+          } else {
+            this.pitchTrimInt = clamp(this.pitchTrimInt + awTerm * subDt, -0.35, 0.35);
+          }
+          cmdPitchRate += uSat;
+        } else {
+          // Pilot actively maneuvering or steep/inverted roll: unlatch gamma hold and preserve bumpless trim
+          this.autoGammaLatched = false;
+          if (stickNeutral) {
+            // Knife-edge / inverted neutral stick: gentle 1G baseline keeps trajectory crisp without diving
+            const errRate = (gEffMps2 * nzBase - this.lastNormalAeroAccel) / safeV;
+            cmdPitchRate += clamp(errRate * 0.65 + this.pitchTrimInt * 0.4, -0.35, 0.35);
+          } else {
+            // Active stick pull/push: keep subtle gravity-compensation feedforward so turn entry feels weightless
+            const ff = clamp(((gEffMps2 * nzBase - this.lastNormalAeroAccel) / safeV) * 0.35, -0.18, 0.25);
+            cmdPitchRate += ff;
+            this.pitchTrimInt *= Math.exp(-2.2 * subDt);
+          }
+        }
+      } else {
+        this.autoGammaLatched = false;
+        this.autoBankLatched = false;
+        this.pitchTrimInt *= Math.exp(-4.0 * subDt);
       }
       if (onGround && gearDown && groundOut.yawRateB3Rad !== 0) {
         cmdYawRate = groundOut.yawRateB3Rad;
@@ -1012,6 +1111,9 @@ export class FlightModel {
         this.tmpAeroMoment
       );
       finalAeroRes = aeroRes;
+      finalElevCmd = elevCmd;
+      finalAilCmd = ailCmd;
+      finalRudCmd = rudCmd;
 
       // Stevens & Lewis I_xz-coupled rigid-body Euler integration
       this.tmpTotalMoment.copy(aeroRes.momentB3);
@@ -1038,11 +1140,14 @@ export class FlightModel {
         this.quaternion.multiply(this.tmpQ).normalize();
       }
 
-      // Total body-frame thrust + TVC reaction vector (B3: forward is -Z)
+      // Total body-frame thrust + exact 32-deg canted AL-31FP TVC reaction vector (B3: forward is -Z)
       const tvcPitchRad = fbwOut.allocation.tvcPitch * spec.tvcMaxDeg * DEG_TO_RAD;
       const tvcYawRad = fbwOut.allocation.tvcYaw * spec.tvcMaxDeg * DEG_TO_RAD;
-      const fxThrust = propOut.thrustN * Math.sin(tvcYawRad) * 0.5;
-      const fyThrust = -propOut.thrustN * Math.sin(tvcPitchRad) * 0.5;
+      const cantRad = spec.tvcCantDeg * DEG_TO_RAD;
+      const tvcCosCant = spec.tvcCantDeg > 0 ? Math.cos(cantRad) : 1;
+      const tvcSinCant = spec.tvcCantDeg > 0 ? Math.sin(cantRad) : 1;
+      const fxThrust = propOut.thrustN * Math.sin(tvcYawRad) * tvcSinCant;
+      const fyThrust = -propOut.thrustN * Math.sin(tvcPitchRad) * tvcCosCant;
       const fzThrust = -propOut.thrustN * fbwOut.allocation.axialThrustScale;
 
       // Felt body-Y normal acceleration for 1G trim and pilot G-meter
@@ -1101,8 +1206,30 @@ export class FlightModel {
     this.gPeak = Math.max(this.gPeak, this.gLoad);
     this.gMin = Math.min(this.gMin, this.gLoad);
 
-    // Refresh final telemetry snapshot
+    // Refresh final telemetry snapshot (syncing solved CAS trim + active FBW demand to 3D rig!)
     if (finalFbwOut && finalAeroRes) {
+      const pitchStick = clamp(input.pitch, -1, 1);
+      const rollStick = clamp(input.roll, -1, 1);
+      const yawStick = clamp(input.yaw, -1, 1);
+      const visPitch = clamp(finalElevCmd * 0.40 + finalFbwOut.surfaces.pitch * 0.35 + pitchStick * 0.25, -1, 1);
+      const visRoll = clamp(finalAilCmd * 0.40 + finalFbwOut.surfaces.roll * 0.35 + rollStick * 0.25, -1, 1);
+      const visYaw = clamp(finalRudCmd * 0.40 + finalFbwOut.surfaces.yaw * 0.35 + yawStick * 0.25, -1, 1);
+      finalFbwOut.surfaces.pitch = visPitch;
+      finalFbwOut.surfaces.roll = visRoll;
+      finalFbwOut.surfaces.yaw = visYaw;
+      if (spec.hasCanards) {
+        const snowplow = onGround && this.tasMps > 8 && (airbrakeHeld || wheelBrakeHeld || pitchStick < -0.2);
+        finalFbwOut.surfaces.canard = snowplow
+          ? -0.92
+          : clamp(
+              pitchStick * 0.52 +
+                visPitch * 0.48 +
+                clamp(this.tmpFlow.alphaDeg, -10, 20) * 0.012 -
+                Math.max(0, this.tmpFlow.alphaDeg - 20) * 0.032,
+              -1,
+              1,
+            );
+      }
       this.syncTelemetrySnapshot(
         spec,
         atm,

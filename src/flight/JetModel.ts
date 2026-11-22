@@ -3048,15 +3048,16 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
     u.uBoost.value = abBoost;
     u.uVacuum.value = vacuum;
     u.uTime.value = timeSec;
-    // Visible flame: a few metres dry, ~8–10 m on zone-3 afterburner (wider & fainter in vacuum)
-    const len = 1.2 + throttle * 2.2 + abBoost * 3.8 + vacuum * 2.5;
-    // uLength stays the geometry length (9); the mesh scale sets how long the flame is
+    // Visible flame: subtle dry heat plume at cruise, ~8-10 m Mach-diamond jet on zone-3 afterburner
+    const dryVis = THREE.MathUtils.smoothstep(throttle, 0.25, 1.0);
+    const len = 0.65 + dryVis * 1.45 + abBoost * 4.4 + vacuum * 2.5;
     // Under-expanded in vacuum: a little wider, never a balloon
     const widen = 1 + vacuum * 0.45 * (0.3 + throttle);
-    const r = widen * (1 + abBoost * 0.28) * this.plumeScale;
+    const r = widen * (0.76 + 0.16 * dryVis + abBoost * 0.34) * this.plumeScale;
     for (const p of this.plumes) p.scale.set(r, r, (len / 9) * Math.sqrt(this.plumeScale));
-    this.nozzleGlowMat.opacity = 0.25 + 0.6 * throttle + 0.65 * abBoost;
-    this.nozzleGlowMat.color.setRGB(1, 0.42 + 0.28 * abBoost, 0.16 + 0.14 * abBoost);
+    // Natural warm turbine glow deep inside nozzle (no magenta/purple plug at dry cruise)
+    this.nozzleGlowMat.opacity = 0.08 + 0.28 * dryVis + 0.58 * abBoost;
+    this.nozzleGlowMat.color.setRGB(1.0, 0.52 + 0.32 * abBoost, 0.16 + 0.28 * abBoost);
 
     const dt = THREE.MathUtils.clamp(visual?.dt ?? 1 / 60, 0, 0.1);
     this.applyRigAnimation(dt, timeSec, visual);

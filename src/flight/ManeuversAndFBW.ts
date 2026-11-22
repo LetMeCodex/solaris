@@ -772,12 +772,21 @@ export function stepFbwAndControls(
       targetYawRate = -inp.yaw * (af.hasTvc ? 0.65 : 0.35);
       state.gCmdCurrent = (targetPitchRate * safeSpeed) / G0_MPS2;
     } else if (effectiveMode === 'psm') {
-      const pBoost = af.hasTvc ? 1.32 : 1.05;
-      const yBoost = af.hasTvc ? 1.45 : 1.0;
-      const rBoost = af.hasTvc && Math.abs(inp.alphaDeg) > 30 ? 0.72 : 1.0;
+      const pBoost = af.hasTvc ? 1.35 : 1.08;
+      const yBoost = af.hasTvc ? 1.48 : 1.05;
       targetPitchRate = inp.pitch * af.maxPitchRateRad * pBoost;
-      targetYawRate = -inp.yaw * af.maxYawRateRad * yBoost;
-      targetRollRate = -inp.roll * af.maxRollRateRad * rBoost;
+      // NASA X-31 Stability-Axis (Velocity-Vector) Roll at high AoA (> 18 deg):
+      // lateral stick rolls cleanly around the velocity vector (p = wv*cos(a), r = wv*sin(a))
+      // so Herbst J-Turns and High-G Drifts pivot crisply without adverse sideslip departure.
+      const stabBlend = smoothstep(18, 42, Math.abs(inp.alphaDeg));
+      const aRad = clamp(inp.alphaDeg * DEG_TO_RAD, -1.35, 1.35);
+      const wvMax = af.maxRollRateRad * (af.hasTvc ? 0.72 : 0.58);
+      const wvCmd = inp.roll * wvMax;
+      const bodyRollRight = inp.roll * af.maxRollRateRad * (1 - stabBlend) + wvCmd * Math.cos(aRad) * stabBlend;
+      const stabYawRight = wvCmd * Math.sin(aRad) * stabBlend;
+      const pilotYawRight = inp.yaw * af.maxYawRateRad * yBoost;
+      targetRollRate = -bodyRollRight;
+      targetYawRate = -(pilotYawRight + stabYawRight);
     } else {
       const gCapPos = gLimitActivePos;
       const gCapNeg = gLimitActiveNeg;
@@ -847,10 +856,13 @@ export function stepFbwAndControls(
       targetYawRate = -rawYawCmdRight * af.maxYawRateRad;
     }
 
-    const slewAlpha = 1 - Math.exp(-10 * dt);
-    state.rateCmdB3[0] += (targetPitchRate - state.rateCmdB3[0]) * slewAlpha;
-    state.rateCmdB3[1] += (targetYawRate - state.rateCmdB3[1]) * slewAlpha;
-    state.rateCmdB3[2] += (targetRollRate - state.rateCmdB3[2]) * slewAlpha;
+    const slewPitch = 1 - Math.exp(-10 * dt);
+    // Crisp roll-stop damping (22/s when stick centered) kills post-release roll coasting/overshoot
+    const slewRoll = 1 - Math.exp(-(Math.abs(inp.roll) < 0.04 ? 22 : 14) * dt);
+    const slewYaw = 1 - Math.exp(-12 * dt);
+    state.rateCmdB3[0] += (targetPitchRate - state.rateCmdB3[0]) * slewPitch;
+    state.rateCmdB3[1] += (targetYawRate - state.rateCmdB3[1]) * slewYaw;
+    state.rateCmdB3[2] += (targetRollRate - state.rateCmdB3[2]) * slewRoll;
     [targetPitchRate, targetYawRate, targetRollRate] = state.rateCmdB3;
   }
 

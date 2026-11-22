@@ -428,8 +428,8 @@ export function computeAeroCoefficients(
   const kv = (aero?.kvVortex ?? cfg.kvVortex ?? (cfg.hasCanards ? 3.25 : 3.15)) * (1 - 0.45 * smoothstep(mach, 0.85, 1.5));
   const cd0Clean = aero?.cd0Clean ?? cfg.cd0Clean ?? 0.019;
   const e0 = aero?.oswaldE ?? cfg.oswaldE0 ?? cfg.oswaldE ?? 0.76;
-  const cd90 = cfg.cd90 ?? 1.48;
-  const cd180 = cfg.cd180 ?? 0.36;
+  const cd90 = cfg.cd90 ?? 1.85;
+  const cd180 = cfg.cd180 ?? 0.38;
 
   // Compressible lift slope & ground effect
   const cla = liftCurveSlope(mach, cfg.effAspectRatio, cfg.sweepDeg);
@@ -474,7 +474,10 @@ export function computeAeroCoefficients(
   const etaAil = 1 - 0.65 * smoothstep(absA, 28 * DEG, 65 * DEG);
 
   const clNoSurf = cosB * cosB * (wAtt * clAtt + (1 - wAtt) * clFp);
-  const cl = clNoSurf - 0.32 * etaElev * surfaces.elev * cosB * cosB;
+  // Close-coupled canards (Gripen) pitch nose-up by generating POSITIVE foreplane lift (+0.14);
+  // aft stabilators (Su-30/Kestrel) pitch nose-up via modest tail download (-0.11, never -0.32 sink).
+  const clPitchSurfGain = cfg.hasCanards ? 0.14 : -0.11;
+  const cl = clNoSurf + clPitchSurfGain * etaElev * surfaces.elev * cosB * cosB;
 
   // Effective max CL (interpolated smoothly between clean and high-lift AirframeSpec bounds)
   const clMaxClean = aero?.clMaxClean ?? cfg.clMaxClean ?? 1.44;
@@ -506,8 +509,8 @@ export function computeAeroCoefficients(
 
   // Static pitch stiffness: relaxed at subsonic cruise, shifts aft (stable) past Mach 1
   const cmAlphaSlope = (cfg.cmAlphaSub ?? 0.04) - 0.39 * smoothstep(mach, 0.85, 1.35);
-  // Deep post-stall pitch-down pendulum stability restores nose toward velocity past ~55 deg
-  const cmRestoring = -0.35 * (1 - wAtt) * sinA * Math.max(0.2, Math.abs(cosA) + 0.3);
+  // Deep post-stall pitch-down pendulum stability restores nose toward velocity past ~50 deg (Cobra recovery)
+  const cmRestoring = -0.42 * (1 - wAtt) * sinA * Math.max(0.25, Math.abs(cosA) + 0.3);
   const cmPitchStatic =
     (cfg.cm0 ?? 0.01) + cmAlphaSlope * sinA * cosA + cmRestoring + ge.deltaCmGe + dCmConfig;
 

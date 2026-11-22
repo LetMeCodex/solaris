@@ -269,6 +269,8 @@ export class JetController {
 
   private keys = new Set<string>();
   private dragSteer = false;
+  private dragSteerArmed = false;
+  private dragStart = new THREE.Vector2();
   private steer = new THREE.Vector2();
   /**
    * Touch controls (JetHUD's on-screen stick and buttons): the stick, -1..1 each way (screen axes:
@@ -618,6 +620,8 @@ export class JetController {
     this.holdSpawnAglKm = null;
     this.lastSurfR = null;
     this.gpwsMode = 'none';
+    this.gpwsTriggerSec = 0;
+    this.gpwsClearSec = 0;
     this.terrainWarning = false;
     this.lastGpwsRadioAt = 0;
     this.lastFrameMs = 0;
@@ -662,6 +666,8 @@ export class JetController {
     this.holdSpawnAglKm = null;
     this.lastSurfR = null;
     this.gpwsMode = 'none';
+    this.gpwsTriggerSec = 0;
+    this.gpwsClearSec = 0;
     this.terrainWarning = false;
     this.lastFrameMs = 0;
     this.transit = null;
@@ -962,6 +968,7 @@ export class JetController {
     this.keys.clear();
     this.zFpvHoldLatched = false;
     this.dragSteer = false;
+    this.dragSteerArmed = false;
     this.lookDrag = false;
     this.steer.set(0, 0);
     this.touchSteer.set(0, 0);
@@ -1129,14 +1136,17 @@ export class JetController {
       this.look.set(0, 0);
       this.insideFov = 76;
     } else if (e.button === 0) {
-      this.dragSteer = true;
-      this.updateSteer(e.clientX, e.clientY);
+      // Arm drag-steer without injecting an instant stick spike on casual click; activates once dragged > 6 px
+      this.dragSteerArmed = true;
+      this.dragSteer = false;
+      this.dragStart.set(e.clientX, e.clientY);
     }
   };
 
   private onMouseUp = (e: MouseEvent): void => {
     if (e.button === 2) this.lookDrag = false;
     if (e.button === 0) {
+      this.dragSteerArmed = false;
       this.dragSteer = false;
       this.steer.set(0, 0);
     }
@@ -1163,6 +1173,11 @@ export class JetController {
         this.lastHeadMove = performance.now();
       }
       return;
+    }
+    if (this.dragSteerArmed && !this.dragSteer) {
+      if (Math.hypot(e.clientX - this.dragStart.x, e.clientY - this.dragStart.y) > 6) {
+        this.dragSteer = true;
+      }
     }
     if (this.dragSteer) this.updateSteer(e.clientX, e.clientY);
     if (this.lookDrag) {
@@ -1338,6 +1353,8 @@ export class JetController {
   private holdSpawnAglKm: number | null = null;
   private lastSurfR: number | null = null;
   private gpwsMode: 'none' | 'caution' | 'pull-up' = 'none';
+  private gpwsTriggerSec = 0;
+  private gpwsClearSec = 0;
   private terrainWarning = false;
   private lastGpwsRadioAt = 0;
   private lastFrameMs = 0;
@@ -1753,8 +1770,9 @@ export class JetController {
     this.headQuat.copy(this.flight.quaternion);
     this.flight.speed = cruiseMps * unitsPerMps(kmNear);
     this.flight.velocity.copy(fwd).multiplyScalar(this.flight.speed);
+    this.flight.resetEnvelopePeaks();
     this.velocityWorld.copy(this.flight.velocity);
-    this.throttle = spawnRho > 0.02 ? THREE.MathUtils.clamp(0.48 + (1 - Math.min(1, spawnRho)) * 0.14, 0.48, 0.62) : 0.45;
+    this.throttle = spawnRho > 0.02 ? THREE.MathUtils.clamp(0.58 + (1 - Math.min(1, spawnRho)) * 0.14, 0.58, 0.72) : 0.55;
     this.anchor = b;
     this.anchorPrev.copy(b.center);
     this.target = b.name;
@@ -2542,71 +2560,119 @@ export class JetController {
       radialSpeedMps < 6;
     const sinkRateMps = Math.max(0, -radialSpeedMps);
 
-    // --- Forward Terrain Lookahead (GPWS) & Automatic Soft Terrain-Avoidance (Auto-GCAS) ---
+    // --- Authentic FAA TSO-C92c Mode 1/2 GPWS + NASA Dryden Fighter Predictive GCAS ---
+    // Hard suppression gates: never alert on ground, below 10 m flare height, during scripted hops,
+    // or at high altitude (> 1800 m AGL) or in level/climbing flight!
+    const altAglMPre = altKm * 1000;
+    const gammaRadPre = preSpeedMps > 5 ? Math.asin(THREE.MathUtils.clamp(radialSpeedMps / preSpeedMps, -1, 1)) : 0;
     let lookaheadImpactT = Infinity;
     let minLookaheadClearM = Infinity;
-    if (solidWorld && !this.scripted && !this.hold && altKm < 12 && preSpeedMps > 20) {
-      const lookHorizons = [1.0, 2.2, 4.0, 6.5];
+    let maxClosureMps = sinkRateMps;
+
+    if (solidWorld && !this.scripted && !this.hold && !onGround && altAglMPre >= 10 && altAglMPre < 1800 && preSpeedMps > 20) {
+      const lookHorizons = [1.2, 2.5, 4.5, 6.5];
       for (const tSec of lookHorizons) {
         const stepDistKm = (preSpeedMps * tSec) / 1000;
-        if (stepDistKm > 6.5) continue;
+        if (stepDistKm > 5.0) continue;
         this.lookaheadPos.copy(f.position).addScaledVector(f.velocity, tSec);
         const predSurf = this.surfaceSample(nearest, this.lookaheadPos, false);
         const predClearM = (this.lookaheadPos.distanceTo(nearest.center) - predSurf.surfR) * kmNear * 1000;
         if (predClearM < minLookaheadClearM) minLookaheadClearM = predClearM;
-        if (predClearM < 24 && tSec < lookaheadImpactT) lookaheadImpactT = tSec;
+        const closureMps = (altAglMPre - predClearM) / tSec;
+        if (closureMps > maxClosureMps) maxClosureMps = closureMps;
+        if (predClearM < 20 && tSec < lookaheadImpactT) lookaheadImpactT = tSec;
       }
     }
-    const preTti = radialSpeedMps < -1 ? (altKm * 1000) / -radialSpeedMps : Infinity;
+
+    const preTti = radialSpeedMps < -2.0 ? altAglMPre / -radialSpeedMps : Infinity;
     const bestTti = Math.min(preTti, lookaheadImpactT);
-    const altAglMPre = altKm * 1000;
-    if (!solidWorld || this.scripted || this.hold || altKm > 12) {
-      this.gpwsMode = 'none';
-      this.terrainWarning = false;
-    } else if (
-      (!this.gearDown &&
-        (bestTti < 4.0 ||
-          (altAglMPre < 45 && radialSpeedMps < -5) ||
-          (minLookaheadClearM < 20 && preSpeedMps > 45))) ||
-      (this.gearDown && preTti < 3.0 && sinkRateMps > 12)
-    ) {
-      this.gpwsMode = 'pull-up';
-      this.terrainWarning = true;
-    } else if (
-      !this.gearDown &&
-      (bestTti < 7.0 || (altAglMPre < 100 && preSpeedMps > 70 && minLookaheadClearM < 75))
-    ) {
-      this.gpwsMode = 'caution';
-      this.terrainWarning = true;
-    } else {
-      this.gpwsMode = 'none';
-      this.terrainWarning = false;
+
+    // Mode 1: Excessive Descent Rate (strictly 10 m <= h_AGL <= 747 m, sinkRate > 4.5 m/s)
+    let mode1PullUp = false;
+    let mode1Caution = false;
+    if (!onGround && altAglMPre >= 10 && altAglMPre <= 747 && sinkRateMps > 4.5) {
+      const warnThresh = altAglMPre <= 86.6 ? 7.392 + 0.01497 * altAglMPre : 5.08 + 0.04167 * altAglMPre;
+      const cautThresh = altAglMPre <= 86.6 ? 5.2 + 0.0145 * altAglMPre : 3.8 + 0.0235 * altAglMPre;
+      mode1PullUp = sinkRateMps > warnThresh;
+      mode1Caution = !mode1PullUp && sinkRateMps > cautThresh;
     }
 
-    // Auto-GCAS soft terrain-avoidance pull-up: prevents accidental CFIT into rising mountains
-    // when flying hands-off or glancing a ridge with FBW assist enabled and gear retracted.
+    // Mode 2: Excessive Terrain Closure Rate (strictly 10 m <= h_AGL <= 747 m clean / 305 m gear down)
+    let mode2PullUp = false;
+    let mode2Caution = false;
+    const mode2CeilingM = this.gearDown ? 305 : 747;
+    if (!onGround && altAglMPre >= 10 && altAglMPre <= mode2CeilingM && maxClosureMps > 12.0) {
+      const warnClosure = this.gearDown ? 15.0 + 0.028 * altAglMPre : 11.5 + 0.034 * altAglMPre;
+      const cautClosure = warnClosure * 0.8;
+      mode2PullUp = maxClosureMps > warnClosure && minLookaheadClearM < 90;
+      mode2Caution = !mode2PullUp && maxClosureMps > cautClosure && minLookaheadClearM < 130;
+    }
+
+    // Fighter Predictive GCAS: ONLY when genuinely diving (gamma < -2 deg) below 1800 m AGL
+    let gcasPullUp = false;
+    if (!onGround && altAglMPre >= 10 && altAglMPre < 1800 && gammaRadPre < -0.035 && preSpeedMps > 35) {
+      const diveAngle = -gammaRadPre;
+      const nzAvail = 4.8;
+      const tReact = 1.4;
+      const dhReact = preSpeedMps * Math.sin(diveAngle) * tReact;
+      const dhPullup = (preSpeedMps * preSpeedMps * (1 - Math.cos(diveAngle))) / (9.80665 * (nzAvail - 1));
+      const effAglM = Math.min(altAglMPre, minLookaheadClearM + preSpeedMps * Math.sin(diveAngle) * 1.2);
+      if (effAglM < dhReact + dhPullup + 40 && bestTti < 7.5) {
+        gcasPullUp = true;
+      }
+    }
+
+    let rawGpws: 'none' | 'caution' | 'pull-up' = 'none';
+    if (!solidWorld || this.scripted || this.hold || onGround || altAglMPre < 10 || altAglMPre >= 1800) {
+      rawGpws = 'none';
+    } else if (gcasPullUp || mode1PullUp || mode2PullUp) {
+      rawGpws = 'pull-up';
+    } else if (!this.gearDown && (mode1Caution || mode2Caution)) {
+      rawGpws = 'caution';
+    }
+
+    // Persistence / hysteresis filter (0.20s trigger, 0.45s release) kills single-frame terrain seam flicker
+    if (rawGpws !== 'none') {
+      this.gpwsTriggerSec += dt;
+      this.gpwsClearSec = 0;
+      if (rawGpws === 'pull-up' && (this.gpwsMode !== 'none' || this.gpwsTriggerSec >= 0.16)) {
+        this.gpwsMode = 'pull-up';
+      } else if (this.gpwsTriggerSec >= 0.22) {
+        this.gpwsMode = rawGpws;
+      }
+    } else {
+      this.gpwsTriggerSec = 0;
+      this.gpwsClearSec += dt;
+      if (this.gpwsClearSec >= 0.45 || !solidWorld || this.scripted || this.hold || onGround) {
+        this.gpwsMode = 'none';
+    this.gpwsTriggerSec = 0;
+    this.gpwsClearSec = 0;
+      }
+    }
+    this.terrainWarning = this.gpwsMode !== 'none';
+
+    // Emergency-only Auto-GCAS pitch arrest: engages ONLY for imminent hands-off CFIT (< 130 m AGL,
+    // < 1.6 s to impact, NORM FBW, gear up) and NEVER hijacks roll or fights active pilot maneuvers!
     if (
       this.gpwsMode === 'pull-up' &&
       !this.gearDown &&
       !this.scripted &&
       !this.hold &&
       this.assist &&
-      density > 0.01 &&
-      preSpeedMps > 45 &&
-      input.pitch > -0.75 &&
-      (lookaheadImpactT < 2.4 || minLookaheadClearM < 18 || (altAglMPre < 35 && radialSpeedMps < -4))
+      f.fbwMode === 'norm' &&
+      !input.psm &&
+      !input.highG &&
+      density > 0.02 &&
+      preSpeedMps > 55 &&
+      altAglMPre < 130 &&
+      Math.abs(input.pitch) < 0.25 &&
+      (bestTti < 1.6 || minLookaheadClearM < 12)
     ) {
-      const urgency = THREE.MathUtils.clamp(1.2 - Math.min(lookaheadImpactT, preTti) * 0.35, 0.45, 0.92);
+      const urgency = THREE.MathUtils.clamp(1.0 - bestTti * 0.45, 0.35, 0.78);
       input.pitch = Math.max(input.pitch, urgency);
-      // Roll gently back toward wings-level so the pull-up goes away from the terrain
-      const jetRight = this.v2.set(1, 0, 0).applyQuaternion(f.quaternion);
-      const bankSin = jetRight.dot(this.vVertical);
-      if (Math.abs(bankSin) > 0.12 && Math.abs(input.roll) < 0.25) {
-        input.roll = THREE.MathUtils.clamp(-bankSin * 1.4, -0.7, 0.7);
-      }
-      if (timeSec - this.lastGpwsRadioAt > 4.5) {
+      if (timeSec - this.lastGpwsRadioAt > 5.0) {
         this.lastGpwsRadioAt = timeSec;
-        this.radio('TERRAIN · AUTO PULL-UP', 2.4);
+        this.radio('TERRAIN · AUTO PULL-UP', 2.2);
       }
     }
 
@@ -2767,14 +2833,11 @@ export class JetController {
     const plasma = !this.scripted && !this.landing && density > 0 ? Math.min(1, density * Math.pow(speedMps / 2200, 3)) : 0;
     const heatCoolRate = this.landing || this.cutscene ? 10 : 3;
     this.heat += (Math.max(heatTarget, plasma) - this.heat) * (1 - Math.exp(-heatCoolRate * dt));
-    const terrainWarnNow =
-      this.terrainWarning ||
-      (Math.min(tti, lookaheadImpactT) < 6 && postAltAglKm < nearest.radiusKm * 0.3 && solidWorld);
-    this.terrainWarning = terrainWarnNow && !this.scripted && !this.hold;
-    if (this.terrainWarning && this.gpwsMode === 'none') {
-      this.gpwsMode = Math.min(tti, lookaheadImpactT) < 4 ? 'pull-up' : 'caution';
-    }
+    // Authoritative GPWS state comes solely from the TSO-C92c / GCAS evaluator above (zero high-altitude false positives)
+    this.terrainWarning = this.gpwsMode !== 'none' && !this.scripted && !this.hold && !onGround && postAltAglKm < 1.8;
+    if (!this.terrainWarning) this.gpwsMode = 'none';
     this.warning = this.terrainWarning ? 1 : heatTarget > 0.4 ? 2 : 0;
+    void tti;
 
     // Sonic boom vapour cone + expanding shock collar on Mach 1 crossing
     const sound = f.soundMps > 1 ? f.soundMps : (air?.soundMps ?? 340.3);

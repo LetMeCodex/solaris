@@ -212,8 +212,10 @@ void main() {
   float L = clamp(pow(t1 / max(t0, 0.9 * uUnitKm), 1.0 / steps) - 1.0, 0.0, vGrow);
   float E = t0 > uUnitKm ? 0.04 * uUnitKm : 0.28 * uUnitKm;
 
-  // High-frequency spatial hash + golden-ratio temporal frame rotation (eliminates periodic diagonal banding)
-  float jit = fract(fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) + uFrame * 0.61803399);
+  // Analytical Interleaved Gradient Noise (Jorge Jimenez) + golden-ratio temporal rotation:
+  // blue-noise-like spatial spectrum that integrates cleanly under temporal reprojection without grain.
+  float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  float jit = fract(ign + uFrame * 0.61803399);
   float f = t0 + (t0 * L + E) * jit;
 
   float T = 1.0;
@@ -256,6 +258,129 @@ void main() {
   }
 
   gl_FragColor = vec4(V, T);
+}
+`;
+
+const reprojectFragment = /* glsl */ `
+precision highp float;
+uniform sampler2D tCurrent;
+uniform sampler2D tHistory;
+uniform sampler2D tDepth;
+uniform mat4 uCurrInvViewProj;
+uniform mat4 uPrevViewProj;
+uniform vec2 uTexelSize;
+uniform float uBlend;
+uniform float uNear;
+uniform float uFar;
+varying vec2 vUv;
+
+float linearDepth(float d) {
+  return uNear / max((1.0 - d) + d * (uNear / uFar), 1e-20);
+}
+
+void main() {
+  vec4 curr = texture2D(tCurrent, vUv);
+  if (uBlend <= 0.001) {
+    gl_FragColor = curr;
+    return;
+  }
+
+  // Reproject view ray via rotation-only inverse current -> previous VP (exact at floating origin)
+  vec2 ndc = vUv * 2.0 - 1.0;
+  vec4 viewWorld = uCurrInvViewProj * vec4(ndc, 1.0, 1.0);
+  viewWorld /= max(abs(viewWorld.w), 1e-6);
+  vec4 prevClip = uPrevViewProj * vec4(viewWorld.xyz, 1.0);
+  vec2 prevUv = prevClip.w > 0.0 ? (prevClip.xy / prevClip.w) * 0.5 + 0.5 : vec2(-1.0);
+
+  if (prevUv.x < 0.0 || prevUv.x > 1.0 || prevUv.y < 0.0 || prevUv.y > 1.0) {
+    gl_FragColor = curr;
+    return;
+  }
+
+  // 3x3 neighborhood mean & variance clipping (eliminates cloud ghosting during fast rolls & dives)
+  vec4 m1 = vec4(0.0);
+  vec4 m2 = vec4(0.0);
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      vec4 s = texture2D(tCurrent, vUv + vec2(float(x), float(y)) * uTexelSize);
+      m1 += s;
+      m2 += s * s;
+    }
+  }
+  vec4 mean = m1 / 9.0;
+  vec4 sigma = sqrt(max(m2 / 9.0 - mean * mean, vec4(0.0)));
+  vec4 cMin = mean - sigma * 1.25;
+  vec4 cMax = mean + sigma * 1.25;
+
+  vec4 hist = clamp(texture2D(tHistory, prevUv), cMin, cMax);
+
+  // Reduce history weight across sharp foreground depth edges (buildings/ridges) and fast motion
+  float dCur = linearDepth(textureLod(tDepth, vUv, 0.0).x);
+  float dPrev = linearDepth(textureLod(tDepth, prevUv, 0.0).x);
+  float depthRatio = abs(dCur - dPrev) / max(min(dCur, dPrev), 1e-4);
+  float depthValid = 1.0 - smoothstep(0.08, 0.35, depthRatio);
+
+  float motion = length(vUv - prevUv);
+  float w = uBlend * depthValid * (1.0 - smoothstep(0.015, 0.09, motion) * 0.55);
+  vec4 outCol = mix(curr, hist, clamp(w, 0.0, 0.90));
+  gl_FragColor = vec4(max(outCol.rgb, 0.0), clamp(outCol.a, 0.0, 1.0));
+}
+`;
+
+const bilateralUpsampleFragment = /* glsl */ `
+precision highp float;
+uniform sampler2D tClouds;
+uniform sampler2D tDepth;
+uniform vec2 uCloudTexel;
+uniform float uNear;
+uniform float uFar;
+uniform float uHasDepth;
+varying vec2 vUv;
+
+float linearDepth(float d) {
+  return uNear / max((1.0 - d) + d * (uNear / uFar), 1e-20);
+}
+
+void main() {
+  vec4 c;
+  if (uHasDepth > 0.5) {
+    // 4-tap depth-aware bilateral upsample into a depthless offscreen buffer (avoids WebGL2
+    // depth-attachment feedback loops while eliminating half-res pixelation & skyscraper halos).
+    float dHi = linearDepth(textureLod(tDepth, vUv, 0.0).x);
+    vec2 f = fract(vUv / uCloudTexel - 0.5);
+    vec2 baseUv = (floor(vUv / uCloudTexel - 0.5) + 0.5) * uCloudTexel;
+
+    vec2 uv00 = clamp(baseUv, uCloudTexel * 0.5, 1.0 - uCloudTexel * 0.5);
+    vec2 uv10 = clamp(baseUv + vec2(uCloudTexel.x, 0.0), uCloudTexel * 0.5, 1.0 - uCloudTexel * 0.5);
+    vec2 uv01 = clamp(baseUv + vec2(0.0, uCloudTexel.y), uCloudTexel * 0.5, 1.0 - uCloudTexel * 0.5);
+    vec2 uv11 = clamp(baseUv + uCloudTexel, uCloudTexel * 0.5, 1.0 - uCloudTexel * 0.5);
+
+    float d00 = linearDepth(textureLod(tDepth, uv00, 0.0).x);
+    float d10 = linearDepth(textureLod(tDepth, uv10, 0.0).x);
+    float d01 = linearDepth(textureLod(tDepth, uv01, 0.0).x);
+    float d11 = linearDepth(textureLod(tDepth, uv11, 0.0).x);
+
+    float invScale = 1.0 / max(dHi * 0.14, 1e-4);
+    float w00 = (1.0 - f.x) * (1.0 - f.y) * exp(-abs(dHi - d00) * invScale);
+    float w10 = f.x * (1.0 - f.y) * exp(-abs(dHi - d10) * invScale);
+    float w01 = (1.0 - f.x) * f.y * exp(-abs(dHi - d01) * invScale);
+    float w11 = f.x * f.y * exp(-abs(dHi - d11) * invScale);
+
+    float wSum = w00 + w10 + w01 + w11;
+    if (wSum > 1e-4) {
+      c = (
+        texture2D(tClouds, uv00) * w00 +
+        texture2D(tClouds, uv10) * w10 +
+        texture2D(tClouds, uv01) * w01 +
+        texture2D(tClouds, uv11) * w11
+      ) / wSum;
+    } else {
+      c = texture2D(tClouds, vUv);
+    }
+  } else {
+    c = texture2D(tClouds, vUv);
+  }
+  gl_FragColor = vec4(max(c.rgb, 0.0), clamp(c.a, 0.0, 1.0));
 }
 `;
 
@@ -326,9 +451,21 @@ export class VolumetricCloudPass extends Pass {
   };
 
   private readonly march: FullScreenQuad;
+  private readonly reproject: FullScreenQuad;
+  private readonly reprojectMat: THREE.ShaderMaterial;
+  private readonly upsample: FullScreenQuad;
+  private readonly upsampleMat: THREE.ShaderMaterial;
   private readonly composite: FullScreenQuad;
   private readonly compositeMat: THREE.ShaderMaterial;
   private target: THREE.WebGLRenderTarget;
+  private history: [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget];
+  private upsampleTarget: THREE.WebGLRenderTarget;
+  private histIdx = 0;
+  private hasHistory = false;
+  private readonly currViewProj = new THREE.Matrix4();
+  private readonly prevViewProj = new THREE.Matrix4();
+  private readonly tmpRotView = new THREE.Matrix4();
+  private readonly lastEarthC = new THREE.Vector3();
   private scale: number;
   private lastWidth = 1;
   private lastHeight = 1;
@@ -337,7 +474,7 @@ export class VolumetricCloudPass extends Pass {
   private cancelNoise: (() => void) | null = null;
   private noiseLoaded = false;
 
-  constructor(scale = 0.6) {
+  constructor(scale = 0.65) {
     super();
     this.scale = scale;
     this.enabled = false;
@@ -351,8 +488,44 @@ export class VolumetricCloudPass extends Pass {
         depthWrite: false,
       }),
     );
+    this.reprojectMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tCurrent: { value: null },
+        tHistory: { value: null },
+        tDepth: { value: null },
+        uCurrInvViewProj: { value: new THREE.Matrix4() },
+        uPrevViewProj: { value: new THREE.Matrix4() },
+        uTexelSize: { value: new THREE.Vector2(1, 1) },
+        uBlend: { value: 0.84 },
+        uNear: { value: 1e-3 },
+        uFar: { value: 1e8 },
+      },
+      vertexShader: marchVertex,
+      fragmentShader: reprojectFragment,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.reproject = new FullScreenQuad(this.reprojectMat);
+    this.upsampleMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tClouds: { value: null },
+        tDepth: { value: null },
+        uCloudTexel: { value: new THREE.Vector2(1, 1) },
+        uNear: { value: 1e-3 },
+        uFar: { value: 1e8 },
+        uHasDepth: { value: 0 },
+      },
+      vertexShader: marchVertex,
+      fragmentShader: bilateralUpsampleFragment,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.upsample = new FullScreenQuad(this.upsampleMat);
     this.compositeMat = new THREE.ShaderMaterial({
-      uniforms: { tDiffuse: { value: null }, tClouds: { value: null } },
+      uniforms: {
+        tDiffuse: { value: null },
+        tClouds: { value: null },
+      },
       vertexShader: marchVertex,
       fragmentShader: compositeFragment,
       depthTest: false,
@@ -360,12 +533,29 @@ export class VolumetricCloudPass extends Pass {
     });
     this.composite = new FullScreenQuad(this.compositeMat);
     this.target = this.createTarget(1, 1, THREE.HalfFloatType);
+    this.history = [
+      this.createTarget(1, 1, THREE.HalfFloatType),
+      this.createTarget(1, 1, THREE.HalfFloatType),
+    ];
+    this.upsampleTarget = this.createTarget(1, 1, THREE.HalfFloatType);
   }
 
   private createTarget(w: number, h: number, type: THREE.TextureDataType): THREE.WebGLRenderTarget {
     const rt = new THREE.WebGLRenderTarget(w, h, { type, depthBuffer: false });
     rt.texture.minFilter = rt.texture.magFilter = THREE.LinearFilter;
     return rt;
+  }
+
+  private resizeTargets(w: number, h: number): void {
+    if (w !== this.target.width || h !== this.target.height) {
+      this.target.setSize(w, h);
+      this.history[0].setSize(w, h);
+      this.history[1].setSize(w, h);
+      this.hasHistory = false;
+    }
+    if (this.lastWidth !== this.upsampleTarget.width || this.lastHeight !== this.upsampleTarget.height) {
+      this.upsampleTarget.setSize(this.lastWidth, this.lastHeight);
+    }
   }
 
   private ensureTargetCompatibility(renderer: THREE.WebGLRenderer): void {
@@ -379,27 +569,33 @@ export class VolumetricCloudPass extends Pass {
       const w = Math.max(1, Math.round(this.lastWidth * this.scale));
       const h = Math.max(1, Math.round(this.lastHeight * this.scale));
       this.target.dispose();
+      this.history[0].dispose();
+      this.history[1].dispose();
+      this.upsampleTarget.dispose();
       this.target = this.createTarget(w, h, THREE.UnsignedByteType);
+      this.history = [
+        this.createTarget(w, h, THREE.UnsignedByteType),
+        this.createTarget(w, h, THREE.UnsignedByteType),
+      ];
+      this.upsampleTarget = this.createTarget(this.lastWidth, this.lastHeight, THREE.UnsignedByteType);
+      this.hasHistory = false;
     }
   }
 
-  /** Adaptively update CloudSea target resolution (half-res -> quarter-res) and raymarch step scale. */
+  /** Adaptively update CloudSea target resolution and raymarch step scale. */
   public setAdaptiveQuality(scale: number, stepScale = 1): void {
-    const nextScale = Math.max(0.22, Math.min(0.8, scale));
-    this.u.uStepScale.value = Math.max(0.4, Math.min(1, stepScale));
-    const prevW = this.target.width;
-    const prevH = this.target.height;
+    const nextScale = Math.max(0.36, Math.min(0.85, scale));
+    this.u.uStepScale.value = Math.max(0.45, Math.min(1, stepScale));
     this.scale = nextScale;
     const nextW = Math.max(1, Math.round(this.lastWidth * this.scale));
     const nextH = Math.max(1, Math.round(this.lastHeight * this.scale));
-    if (nextW !== prevW || nextH !== prevH) {
-      this.target.setSize(nextW, nextH);
-    }
+    this.resizeTargets(nextW, nextH);
   }
 
   /** Mark noise volume and target ready for re-upload after a WebGL context restore. */
   public onContextRestored(): void {
     this.targetChecked = false;
+    this.hasHistory = false;
     this.u.tNoise.value.needsUpdate = true;
   }
 
@@ -408,9 +604,7 @@ export class VolumetricCloudPass extends Pass {
     this.lastHeight = Math.max(1, height);
     const w = Math.max(1, Math.round(this.lastWidth * this.scale));
     const h = Math.max(1, Math.round(this.lastHeight * this.scale));
-    if (w !== this.target.width || h !== this.target.height) {
-      this.target.setSize(w, h);
-    }
+    this.resizeTargets(w, h);
   }
 
   /** Per frame, before the draw (camera at the floating origin's place). */
@@ -419,6 +613,10 @@ export class VolumetricCloudPass extends Pass {
     this.u.uNear.value = camera.near;
     this.u.uFar.value = camera.far;
     this.u.uCamRot.value.setFromMatrix4(camera.matrixWorld);
+
+    camera.updateMatrixWorld();
+    this.tmpRotView.copy(camera.matrixWorldInverse).setPosition(0, 0, 0);
+    this.currViewProj.multiplyMatrices(camera.projectionMatrix, this.tmpRotView);
   }
 
   /** Whether the 64^3 worker cloud volume has replaced the initial placeholder texture. */
@@ -457,6 +655,7 @@ export class VolumetricCloudPass extends Pass {
       renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
       this.composite.render(renderer);
       renderer.setRenderTarget(prev);
+      this.hasHistory = false;
       return;
     }
 
@@ -476,11 +675,54 @@ export class VolumetricCloudPass extends Pass {
     this.u.uAge.value = L.evolveKm % 1024;
     this.u.uFrame.value = (this.u.uFrame.value + 1) % 1024;
 
+    // Reset temporal history cleanly if camera teleported (e.g. landmark hop > 2 km in one frame)
+    if (this.hasHistory && this.u.uEarthC.value.distanceToSquared(this.lastEarthC) > 4.0) {
+      this.hasHistory = false;
+    }
+    this.lastEarthC.copy(this.u.uEarthC.value);
+
     const prev = renderer.getRenderTarget();
+    // Pass 1: half-res volumetric raymarch with IGN + golden-ratio temporal dithering
     renderer.setRenderTarget(this.target);
     this.march.render(renderer);
-    this.compositeMat.uniforms.tDiffuse.value = readBuffer.texture;
-    this.compositeMat.uniforms.tClouds.value = this.target.texture;
+
+    // Pass 2: temporal reprojection + 3x3 variance clipping into ping-pong history buffer
+    const readHist = this.history[this.histIdx];
+    const writeHist = this.history[1 - this.histIdx];
+    const ru = this.reprojectMat.uniforms;
+    ru.tCurrent.value = this.target.texture;
+    ru.tHistory.value = readHist.texture;
+    ru.tDepth.value = readBuffer.depthTexture;
+    ru.uCurrInvViewProj.value.copy(this.currViewProj).invert();
+    ru.uPrevViewProj.value.copy(this.hasHistory ? this.prevViewProj : this.currViewProj);
+    ru.uTexelSize.value.set(1 / Math.max(1, this.target.width), 1 / Math.max(1, this.target.height));
+    ru.uBlend.value = this.hasHistory ? 0.85 : 0.0;
+    ru.uNear.value = this.u.uNear.value;
+    ru.uFar.value = this.u.uFar.value;
+
+    renderer.setRenderTarget(writeHist);
+    this.reproject.render(renderer);
+    this.histIdx = 1 - this.histIdx;
+    this.prevViewProj.copy(this.currViewProj);
+    this.hasHistory = true;
+
+    // Pass 3: full-res depth-aware 4-tap bilateral upsample into a depthless target (ZERO WebGL2 feedback loop!)
+    const uu = this.upsampleMat.uniforms;
+    uu.tClouds.value = writeHist.texture;
+    uu.tDepth.value = readBuffer.depthTexture;
+    uu.uCloudTexel.value.set(1 / Math.max(1, writeHist.width), 1 / Math.max(1, writeHist.height));
+    uu.uNear.value = this.u.uNear.value;
+    uu.uFar.value = this.u.uFar.value;
+    uu.uHasDepth.value = readBuffer.depthTexture ? 1 : 0;
+
+    renderer.setRenderTarget(this.upsampleTarget);
+    this.upsample.render(renderer);
+
+    // Pass 4: pure color composite onto writeBuffer (never binds tDepth while writing writeBuffer!)
+    const cu = this.compositeMat.uniforms;
+    cu.tDiffuse.value = readBuffer.texture;
+    cu.tClouds.value = this.upsampleTarget.texture;
+
     renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
     this.composite.render(renderer);
     renderer.setRenderTarget(prev);
@@ -490,10 +732,17 @@ export class VolumetricCloudPass extends Pass {
     this.cancelNoise?.();
     this.cancelNoise = null;
     this.march.dispose();
+    this.reproject.dispose();
+    this.reprojectMat.dispose();
+    this.upsample.dispose();
+    this.upsampleMat.dispose();
     this.composite.dispose();
     this.compositeMat.dispose();
     (this.march.material as THREE.Material).dispose();
     this.target.dispose();
+    this.history[0].dispose();
+    this.history[1].dispose();
+    this.upsampleTarget.dispose();
     this.u.tNoise.value.dispose();
   }
 }

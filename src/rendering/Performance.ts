@@ -195,10 +195,10 @@ export class PerformanceGovernor {
     return this.settings.smaa && this.scale >= 0.76;
   }
 
-  /** Adaptive CloudSea render target scale (half-res down to quarter-res as quality scales). */
+  /** Adaptive CloudSea render target scale (paired with temporal reprojection + bilateral upsample). */
   public get cloudScale(): number {
-    const hi = this.tier === 'high' ? 0.62 : this.tier === 'medium' ? 0.5 : 0.36;
-    const lo = this.tier === 'high' ? 0.34 : 0.25;
+    const hi = this.tier === 'high' ? 0.72 : this.tier === 'medium' ? 0.6 : 0.48;
+    const lo = this.tier === 'high' ? 0.54 : this.tier === 'medium' ? 0.46 : 0.38;
     const span = Math.max(1e-3, 1 - this.settings.minScale);
     const t = Math.max(0, Math.min(1, (this.scale - this.settings.minScale) / span));
     return lo + (hi - lo) * t;

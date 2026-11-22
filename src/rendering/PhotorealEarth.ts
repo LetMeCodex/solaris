@@ -473,39 +473,59 @@ export class PhotorealEarth {
     const tier = perf.tier;
     const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency || 4 : 4;
     this.dracoLoader = new DRACOLoader().setDecoderPath(`${import.meta.env.BASE_URL}draco/`);
-    this.dracoLoader.setWorkerLimit(tier === 'low' ? 2 : Math.min(3, Math.max(2, cores - 2)));
+    this.dracoLoader.setWorkerLimit(tier === 'low' ? 2 : Math.min(6, Math.max(3, cores - 2)));
     this.tiles.registerPlugin(new GLTFExtensionsPlugin({ dracoLoader: this.dracoLoader }));
-    // Budget GPU texture uploads strictly so bursts of city tiles (Manhattan / Grand Canyon) stay smooth
-    this.uploadBudgetMs = tier === 'high' ? 2.0 : tier === 'medium' ? 1.5 : 1.0;
+    // Generous per-frame GPU texture upload budget so bursts of crisp 4K city tiles appear immediately
+    this.uploadBudgetMs = tier === 'high' ? 4.0 : tier === 'medium' ? 3.0 : 1.5;
     this.tiles.registerPlugin({ name: 'SOLARIS_UPLOAD_BUDGET', processTileModel: (scene: THREE.Object3D) => this.uploadInTurn(scene) } as unknown as Parameters<TilesRenderer['registerPlugin']>[0]);
     if (PhotorealEarth.fade) this.tiles.registerPlugin(new TilesFadePlugin({ fadeDuration: 280, fadeRootTiles: false, maximumFadeOutTiles: tier === "low" ? 30 : 80 }));
-    // Detail target (pixels): calibrated around Google Cloud Auth's recommended 20-px threshold so
-    // nested JSON subtrees resolve cleanly without flooding peripheral leaf queues.
-    this.baseError = tier === 'high' ? 20 : tier === 'medium' ? 22 : 26;
+    // Crisp 4K-grade Screen-Space Error target (pixels): forces leaf photogrammetry buildings immediately
+    // instead of lingering on blurry 20-px overview blobs.
+    this.baseError = tier === 'high' ? 3.5 : tier === 'medium' ? 5.0 : 8.5;
     this.tiles.errorTarget = this.baseError;
     const mb = 1024 * 1024;
-    this.tiles.lruCache.minSize = tier === 'low' ? 700 : tier === 'medium' ? 1800 : 3200;
-    this.tiles.lruCache.maxSize = tier === 'low' ? 1200 : tier === 'medium' ? 2800 : 4800;
-    this.tiles.lruCache.minBytesSize = (tier === 'high' ? 550 : tier === 'medium' ? 360 : 160) * mb;
-    this.tiles.lruCache.maxBytesSize = (tier === 'high' ? 900 : tier === 'medium' ? 540 : 240) * mb;
-    // Maximize HTTP/2 multiplexing so deep JSON trees + intermediate/leaf GLBs stream concurrently,
-    // while keeping Draco/GLTF parsing and GPU upload budgets scaled by device tier.
-    this.downloadMaxJobs = tier === 'high' ? 28 : tier === 'medium' ? 20 : 12;
+    this.tiles.lruCache.minSize = tier === 'low' ? 900 : tier === 'medium' ? 2000 : 3600;
+    this.tiles.lruCache.maxSize = tier === 'low' ? 1500 : tier === 'medium' ? 3200 : 5400;
+    this.tiles.lruCache.minBytesSize = (tier === 'high' ? 600 : tier === 'medium' ? 400 : 180) * mb;
+    this.tiles.lruCache.maxBytesSize = (tier === 'high' ? 1024 : tier === 'medium' ? 640 : 280) * mb;
+    this.tiles.lruCache.unloadPercent = 0.05;
+    // Maximize HTTP/2 multiplexing & parallel Draco decoding so crisp city leaves arrive fast
+    this.downloadMaxJobs = tier === 'high' ? 32 : tier === 'medium' ? 24 : 14;
     this.tiles.downloadQueue.maxJobs = this.downloadMaxJobs;
-    this.tiles.parseQueue.maxJobs = tier === 'high' ? 4 : tier === 'medium' ? 3 : 2;
+    this.tiles.parseQueue.maxJobs = tier === 'high' ? 6 : tier === 'medium' ? 4 : 3;
     this.tiles.autoDisableRendererCulling = false;
-    // Direct leaf-targeted traversal avoids ancestor/sibling queue explosions while a brief
-    // coarse-LOD bootstrap (in update()) fills the viewport solidly before refining to <=16 m leaves.
     this.tiles.loadAncestors = false;
     this.tiles.loadSiblings = false;
-    // TilesRenderer distanceFromCamera is in ECEF metres (~0..1e7 m). Sort visible frustum tiles in
-    // 1.5 km radial shells nearest-first, expanding JSON indexes first and city-scale ancestors (<= 2048 m)
-    // coarse-to-fine ahead of giant continent skirts (> 2048 m) and horizon tiles.
+    // Depth-agnostic foveated view-cone + nearest-foreground priority:
+    // expands JSON subtrees first, pushes giant continent skirts (> 2048 m) to the back, and weights
+    // renderable city tiles by center-screen alignment so skyscrapers straight ahead hit 4K first.
     this.libraryOrder = this.tiles.downloadQueue.priorityCallback as unknown as (a: unknown, b: unknown) => number;
     type PriorityTile = {
       geometricError?: number;
+      boundingVolume?: { sphere?: number[]; box?: number[] };
       traversal?: { used?: boolean; inFrustum?: boolean; distanceFromCamera?: number; error?: number };
       internal?: { hasUnrenderableContent?: boolean };
+    };
+    const foveatedScore = (t: PriorityTile): number => {
+      const da = Math.max(10, t.traversal?.distanceFromCamera ?? 1e8);
+      if (!this.hasCamEcef) return da;
+      const bv = t.boundingVolume;
+      let cx: number, cy: number, cz: number;
+      if (bv?.sphere && bv.sphere.length >= 3) {
+        cx = bv.sphere[0]; cy = bv.sphere[1]; cz = bv.sphere[2];
+      } else if (bv?.box && bv.box.length >= 3) {
+        cx = bv.box[0]; cy = bv.box[1]; cz = bv.box[2];
+      } else {
+        return da;
+      }
+      const dx = cx - this.camPosEcef.x;
+      const dy = cy - this.camPosEcef.y;
+      const dz = cz - this.camPosEcef.z;
+      const len = Math.hypot(dx, dy, dz);
+      if (len < 1e-3) return da * 0.25;
+      const cosA = Math.max(0, (dx * this.camFwdEcef.x + dy * this.camFwdEcef.y + dz * this.camFwdEcef.z) / len);
+      // Center-screen foveation: dead-ahead tiles get up to 3.5x priority boost over peripheral horizon tiles
+      return da / (0.28 + 0.72 * cosA * cosA);
     };
     const nearFirstOrder = (a: PriorityTile, b: PriorityTile): number => {
       const at = a.traversal;
@@ -518,18 +538,17 @@ export class PhotorealEarth {
       const aCoarseSkirt = !au && (a.geometricError ?? Infinity) > 2048;
       const bCoarseSkirt = !bu && (b.geometricError ?? Infinity) > 2048;
       if (aCoarseSkirt !== bCoarseSkirt) return aCoarseSkirt ? -1 : 1;
-      const da = at.distanceFromCamera ?? Infinity;
-      const db = bt.distanceFromCamera ?? Infinity;
-      if (da !== db) {
-        const ba = Math.floor(da / 1500);
-        const bb = Math.floor(db / 1500);
-        if (ba !== bb) return ba > bb ? -1 : 1;
-      }
+      // Expand JSON index trees before leaf geometry inside the same foreground band
+      const sa = foveatedScore(a);
+      const sb = foveatedScore(b);
+      const ba = Math.floor(sa / 900);
+      const bb = Math.floor(sb / 900);
+      if (ba !== bb) return ba > bb ? -1 : 1;
       if (au !== bu) return au ? 1 : -1;
       const ea = at.error ?? 0;
       const eb = bt.error ?? 0;
       if (ea !== eb) return ea > eb ? 1 : -1;
-      if (da !== db) return da > db ? -1 : 1;
+      if (sa !== sb) return sa > sb ? -1 : 1;
       return 0;
     };
     this.tiles.downloadQueue.priorityCallback = nearFirstOrder as unknown as typeof this.tiles.downloadQueue.priorityCallback;
@@ -661,10 +680,7 @@ export class PhotorealEarth {
     this.tiles.downloadQueue.maxJobs = active ? this.downloadMaxJobs : 0;
     if (!this.enabled) {
       this.cancelInFlightDownloads();
-      this.bootstrapArriveMs = 0;
-      this.bootstrapLocalMs = 0;
-      this.bootstrapDone = false;
-      this.hasBootLocal = false;
+      this.hasCamEcef = false;
     }
     if (active) {
       if (!this.tiles.hasCamera(camera)) this.tiles.setCamera(camera);
@@ -672,23 +688,21 @@ export class PhotorealEarth {
       this.renderer = renderer;
       const css = renderer.getSize(this.cssSize);
       const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-      const lodRatio = Math.min(dpr, perf.tier === 'high' ? 1.0 : perf.tier === 'medium' ? 0.95 : 0.9);
+      const lodRatio = Math.min(dpr, perf.tier === 'high' ? 1.5 : perf.tier === 'medium' ? 1.25 : 1.0);
       this.tiles.setResolution(camera, Math.max(1, css.x * lodRatio), Math.max(1, css.y * lodRatio));
 
       const alt = Math.max(0.2, altKm ?? 1);
-      const rush = THREE.MathUtils.clamp((speedKmS / alt) * 0.35, 0, 1.5);
-      const still = 1;
+      // Gentle motion scaling during fast low-altitude passes; never degrade stationary or cruise detail
+      const rush = THREE.MathUtils.clamp((speedKmS / alt) * 0.16, 0, 0.85);
       const stats = (this.tiles as unknown as { stats: { queued: number; downloading: number; parsing: number } }).stats;
       const waiting = stats.queued;
-      // Modest backlog ceiling only under heavy moving queue (>220), never inflating stationary
-      // or low-altitude city views into blurry regional blobs.
-      const want = speedKmS < 0.03 ? 1 : THREE.MathUtils.clamp(1 + (waiting - 220) / 360, 1, 1.35);
+      const want = speedKmS < 0.04 ? 1 : THREE.MathUtils.clamp(1 + (waiting - 260) / 420, 1, 1.25);
       const dtS = Math.min(0.25, Math.max(0, (nowMs - (this.backlogT || nowMs)) / 1000));
       this.backlogT = nowMs;
       this.backlog += (want - this.backlog) * (1 - Math.exp(-dtS / (want > this.backlog ? 1.5 : 0.6)));
       const lru = this.tiles.lruCache as unknown as { isFull(): boolean; cachedBytes: number; minBytesSize: number; maxBytesSize: number };
-      if (lru.isFull()) this.memPressure = Math.min(2, this.memPressure + dtS * 0.5);
-      else if (lru.cachedBytes < (lru.minBytesSize + lru.maxBytesSize) / 2) this.memPressure = Math.max(1, this.memPressure - dtS * 0.25);
+      if (lru.isFull()) this.memPressure = Math.min(1.8, this.memPressure + dtS * 0.45);
+      else if (lru.cachedBytes < (lru.minBytesSize + lru.maxBytesSize) / 2) this.memPressure = Math.max(1, this.memPressure - dtS * 0.35);
       this.surface?.updateWorldMatrix(true, true);
       if (this.surface) {
         this.earthInv.value.setFromMatrix4(this.invTmp.copy(this.surface.matrixWorld).invert());
@@ -699,71 +713,23 @@ export class PhotorealEarth {
       if (this.surface) this.earthCentre.value.setFromMatrixPosition(this.surface.matrixWorld).sub(camera.position);
       if (this.surface) this.updateDetailFrame(camera);
 
-      // Two-stage city bootstrap when arriving low (< 40 km) at a new location: wait through root
-      // JSON discovery until local (<= 512 m) meshes appear, settle for up to 6 s (or until >= 10
-      // local tiles cover the view or the queue drains after >= 4 local tiles) on a solid ~64 m
-      // city/terrain pass so parent-fallback replacement fills the screen cleanly instead of
-      // isolated skyscraper islands, then snap to full leaf resolution.
-      if (alt >= 40) {
-        this.bootstrapArriveMs = 0;
-        this.bootstrapLocalMs = 0;
-        this.bootstrapDone = false;
-        this.hasBootLocal = false;
-      } else {
-        let jumped = false;
-        if (this.surface) {
-          const local = this.surface.worldToLocal(this.bootTmp.copy(camera.position));
-          const kmPerLocal = WGS84_A / 1000;
-          if (!this.hasBootLocal) {
-            this.lastBootLocal.copy(local);
-            this.hasBootLocal = true;
-            jumped = true;
-          } else if (local.distanceTo(this.lastBootLocal) * kmPerLocal > 15) {
-            this.lastBootLocal.copy(local);
-            jumped = true;
-          }
-        }
-        if (jumped || this.bootstrapArriveMs === 0) {
-          this.bootstrapDone = false;
-          this.bootstrapArriveMs = nowMs;
-          this.bootstrapLocalMs = 0;
-        } else if (
-          nowMs - this.bootstrapArriveMs >= 4_000 ||
-          (this.bootstrapLocalMs > 0 && nowMs - this.bootstrapLocalMs >= 1_500)
-        ) {
-          this.bootstrapDone = true;
-        }
-      }
-      const inBootstrap =
-        alt < 40 &&
-        speedKmS < 0.05 &&
-        !this.bootstrapDone &&
-        this.bootstrapArriveMs > 0;
-      const bootstrapMult = inBootstrap ? 1.4 : 1;
-      this.tiles.errorTarget = this.baseError * bootstrapMult * (1 + rush) * still * this.backlog * this.memPressure;
-
+      // Update camera pose in tileset ECEF space for center-cone foveated tile prioritization
       camera.updateMatrixWorld();
+      this.tiles.group.updateWorldMatrix(true, false);
+      this.camInvEcef.copy(this.tiles.group.matrixWorld).invert();
+      this.camPosEcef.copy(camera.position).applyMatrix4(this.camInvEcef);
+      this.camFwdEcef.set(0, 0, -1).applyQuaternion(camera.quaternion).transformDirection(this.camInvEcef).normalize();
+      this.hasCamEcef = true;
+
+      // Stream directly at full crisp leaf target immediately on spawn/hold — no 1.4x blurry bootstrap delay
+      this.tiles.errorTarget = this.baseError * (1 + rush) * this.backlog * this.memPressure;
+
       this.tiles.update();
       // Suppress only giant continent-scale sphere-chord skirts (> 2048 m error) while keeping
       // rural mountain & canyon 3D tiles (Grand Canyon, Mount Everest) visible across the valley.
       for (const tile of this.tiles.visibleTiles) {
         const scene = (tile as unknown as { engineData?: { scene?: THREE.Object3D } }).engineData?.scene;
         if (scene) scene.visible = (altKm ?? 100) >= 20 || tile.geometricError <= 2048;
-      }
-      if (alt < 40 && !this.bootstrapDone) {
-        let nearLocal = 0;
-        for (const tile of this.tiles.visibleTiles as Set<{ geometricError?: number; traversal?: { distanceFromCamera?: number } }>) {
-          if ((tile.geometricError ?? Infinity) <= 256 && (tile.traversal?.distanceFromCamera ?? Infinity) < 100_000) {
-            nearLocal++;
-            if (nearLocal >= 4) break;
-          }
-        }
-        if (nearLocal >= 1 && this.bootstrapLocalMs === 0) {
-          this.bootstrapLocalMs = nowMs;
-        }
-        if (nearLocal >= 4 || (nearLocal >= 2 && stats.queued === 0 && stats.downloading === 0 && stats.parsing === 0)) {
-          this.bootstrapDone = true;
-        }
       }
       this.holder.visible = this.tiles.visibleTiles.size > 0;
       // The library updates queue priorities during traversal; do not overwrite them here.
@@ -780,12 +746,10 @@ export class PhotorealEarth {
   private backlogT = 0;
   /** Less detail asked for while the tile cache is full (see the update). */
   private memPressure = 1;
-  private bootstrapArriveMs = 0;
-  private bootstrapLocalMs = 0;
-  private bootstrapDone = false;
-  private hasBootLocal = false;
-  private readonly lastBootLocal = new THREE.Vector3();
-  private readonly bootTmp = new THREE.Vector3();
+  private readonly camPosEcef = new THREE.Vector3();
+  private readonly camFwdEcef = new THREE.Vector3(0, 0, -1);
+  private readonly camInvEcef = new THREE.Matrix4();
+  private hasCamEcef = false;
 
   /** The library's own download order (kept for comparison in development). */
   public libraryOrder: ((a: unknown, b: unknown) => number) | null = null;
@@ -860,7 +824,7 @@ export class PhotorealEarth {
     cam.updateProjectionMatrix();
     if (!this.aheadOn) {
       this.tiles.setCamera(cam);
-      this.tiles.setResolution(cam, 512, 320);
+      this.tiles.setResolution(cam, 768, 480);
       this.aheadOn = true;
     }
   }
@@ -1026,7 +990,12 @@ export class PhotorealEarth {
         // Sharper at grazing angles (the ground towards the horizon). Set before the texture's
         // first upload, so nothing is uploaded twice
         const map = (mat as THREE.MeshBasicMaterial).map;
-        if (map) map.anisotropy = this.maxAnisotropy;
+        if (map) {
+          map.anisotropy = this.maxAnisotropy;
+          map.generateMipmaps = true;
+          map.minFilter = THREE.LinearMipmapLinearFilter;
+          map.magFilter = THREE.LinearFilter;
+        }
         this.lightMaterial(mat);
       }
     });
@@ -1115,8 +1084,11 @@ export class PhotorealEarth {
       for (const mat of !m ? [] : Array.isArray(m) ? m : [m]) {
         const map = (mat as THREE.MeshBasicMaterial).map;
         if (PhotorealEarth.isTextureImageReady(map)) {
-          // Before the upload: the filtering is fixed with it
+          // Before the upload: enforce crisp 16x anisotropic trilinear filtering
           map.anisotropy = this.maxAnisotropy;
+          map.generateMipmaps = true;
+          map.minFilter = THREE.LinearMipmapLinearFilter;
+          map.magFilter = THREE.LinearFilter;
           maps.add(map);
         }
       }

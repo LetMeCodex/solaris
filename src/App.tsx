@@ -105,7 +105,8 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
         say(`observatory  ${Math.round(load.progress * 100)}%  ${load.stage}`);
       }
       if (sc && sc.drawEvery === 1 && !ready) {
-        sc.drawEvery = 4;
+        // Pump tile traversal & GPU texture uploads at 30 Hz behind FlyPreloader so 4K buildings arrive immediately
+        sc.drawEvery = 2;
         // Shaders compile in parallel behind the film instead of freezing it (see CompileGate)
         sc.compileGate = 'hold';
       }
@@ -148,8 +149,8 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
       const streaming = startedAt > 0 && r.jet;
       peakPending = Math.max(peakPending, r.tilesPending);
       const isCompactFly = typeof window !== 'undefined' && (window.innerWidth < 820 || window.innerHeight < 480);
-      const targetDetailed = isCompactFly ? 4 : 8;
-      const settleDetailed = isCompactFly ? 2 : 4;
+      const targetDetailed = isCompactFly ? 4 : 10;
+      const settleDetailed = isCompactFly ? 2 : 5;
       const tilesFrac = !streaming
         ? 0
         : r.spawnTilesReady
@@ -160,9 +161,9 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
       if (streaming && r.detailedTiles >= settleDetailed) quietSince ||= now;
       else quietSince = 0;
       const settled = quietSince > 0 && now - quietSince > 900;
-      const enoughTiles = Boolean(r.spawnTilesReady) || r.detailedTiles >= targetDetailed || (r.detailedTiles >= 3 && r.tilesPending <= 8);
-      // Bounded <= 3s spawn-tile cap once observatory + jet + airframe are ready so /fly/ cold start completes in <5s
-      const timedOut = startedAt > 0 && now - startedAt > 3000;
+      const enoughTiles = Boolean(r.spawnTilesReady) || r.detailedTiles >= targetDetailed || (r.detailedTiles >= 4 && r.tilesPending <= 6);
+      // Bounded <= 5.5s spawn-tile pre-warm cap so crisp 4K city tiles are on screen before ENGAGE
+      const timedOut = startedAt > 0 && now - startedAt > 5500;
       const toured = tourStep >= TOUR.length;
       ready = ready || (load.done && r.jet && r.aircraft && ((toured && (enoughTiles || settled)) || timedOut));
       if (ready && sc && tourStep >= 0 && tourStep < TOUR.length) {
