@@ -229,20 +229,20 @@
   background: radial-gradient(ellipse at 50% 50%, #ffffff 0%, #e8f2ff 40%, #9cc4ff 100%);
   z-index: 4;
 }
-.flyfilm--dive .flyfilm__flash { animation: ff-flash 2.9s ease-in forwards; }
+.flyfilm--dive .flyfilm__flash { animation: ff-flash 0.52s ease-out forwards; }
 @keyframes ff-flash {
-  0%, 55% { opacity: 0; }
-  78% { opacity: 1; }
+  0% { opacity: 0; }
+  45% { opacity: 0.72; }
   100% { opacity: 0; }
 }
-.flyfilm--dive { animation: ff-out 2.9s ease forwards; pointer-events: none; }
+.flyfilm--dive { animation: ff-out 0.52s ease-out forwards; pointer-events: none; }
 @keyframes ff-out {
-  0%, 74% { background-color: #010103; opacity: 1; }
-  78% { background-color: transparent; }
+  0%, 35% { background-color: #010103; opacity: 1; }
+  55% { background-color: transparent; }
   100% { opacity: 0; }
 }
-.flyfilm--dive .flyfilm__canvas { animation: ff-canvas 2.9s ease forwards; }
-@keyframes ff-canvas { 0%, 74% { opacity: 1; } 78%, 100% { opacity: 0; } }
+.flyfilm--dive .flyfilm__canvas { animation: ff-canvas 0.52s ease-out forwards; }
+@keyframes ff-canvas { 0%, 30% { opacity: 1; } 70%, 100% { opacity: 0; } }
 
 @keyframes ff-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes ff-rise { from { opacity: 0; transform: translate(-50%, 82px); } to { opacity: 1; transform: translate(-50%, 66px); } }

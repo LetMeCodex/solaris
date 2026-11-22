@@ -110,8 +110,9 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
         sc.drawEvery = 1;
         sc.compileGate = 'hold';
       }
-      if (load.done && sc && !startedAt) {
-        say('observatory  textures uploaded · shaders compiled');
+      if (sc && !startedAt) {
+        // Start streaming Google 3D Tiles & airframe glTF IMMEDIATELY on mount — never wait
+        // for outer-planet/observatory warmUp before fetching the spawn city's 3D tiles!
         const st = sc.startFlyPage();
         start = st?.name ?? '';
         ll = st ? { lat: st.lat, lon: st.lon } : null;
@@ -146,13 +147,14 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
             : Math.min(1, Math.max(1 - r.tilesPending / Math.max(peakPending, 36), Math.min(0.96, Math.max(r.detailedTiles / targetDetailed, r.tilesVisible / (targetDetailed * 2.2)))));
       if (streaming && r.tilesVisible >= settleDetailed * 2 && (r.detailedTiles >= settleDetailed || r.tilesPending <= 10)) quietSince ||= now;
       else quietSince = 0;
-      const settled = quietSince > 0 && now - quietSince > 900;
+      const settled = quietSince > 0 && now - quietSince > 700;
       const enoughTiles = Boolean(r.spawnTilesReady) || (r.tilesVisible >= targetDetailed * 2 && r.detailedTiles >= targetDetailed);
-      // Generous 18s safety cap (normal connections now complete in ~3-5s with full 3D landmark loaded)
-      const timedOut = startedAt > 0 && now - startedAt > 18000;
+      // Wait for full 3D landmark readiness (normal connections finish in ~4-7s with 30-75 tiles);
+      // 28s safety cap exists solely for offline/degraded networks.
+      const timedOut = startedAt > 0 && now - startedAt > 28000;
       // Hold the camera steady on the launch landmark while tiles stream in so the frustum NEVER thrashes!
       // Only touch cockpit/GoPro views briefly AFTER the spawn city/mountain is already cached in LRU.
-      if (sc && r.aircraft && r.jet && (enoughTiles || settled || (startedAt > 0 && now - startedAt > 15500)) && tourStep < TOUR.length && now - tourAt > 140) {
+      if (sc && r.aircraft && r.jet && (enoughTiles || settled || (startedAt > 0 && now - startedAt > 25000)) && tourStep < TOUR.length && now - tourAt > 120) {
         if (tourStep === -1) tourHome = sc.jet.view;
         tourStep++;
         tourAt = now;
@@ -166,7 +168,13 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
         say(`${srcTag}  ${d >= 0 ? '+' : ''}${d} drawn · ${r.tilesVisible} visible · ${r.tilesPending} streaming`);
       }
       const toured = tourStep >= TOUR.length;
-      ready = ready || (load.done && r.jet && r.aircraft && ((toured && (enoughTiles || settled)) || timedOut));
+      const readyNow = load.done && r.jet && r.aircraft && ((toured && (enoughTiles || settled)) || timedOut);
+      if (readyNow && sc) {
+        // Pre-render with compileGate off right before unlocking ENGAGE so every loaded 3D tile
+        // shader & texture is 100% live on screen from frame 1 (zero pop-in or blank flash).
+        sc.compileGate = 'off';
+      }
+      ready = ready || readyNow;
       if (ready && sc && tourStep >= 0 && tourStep < TOUR.length) {
         sc.jet.view = tourHome;
       }

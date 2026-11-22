@@ -2091,12 +2091,12 @@ export class SolarSystemScene {
       const tilesVisible = Math.max(st?.visible ?? 0, this.photoreal!.tiles.visibleTiles.size);
       const detailedTiles = this.photoreal!.detailedTilesVisible;
       const localCoverage = this.photoreal!.localCoverageCount;
-      // Wait for a full solid 3D city/mountain blanket + sharp foreground tiles before unlocking ENGAGE.
-      // Works cleanly for both dense 4K skyscraper cities and vast natural peaks (Everest, Grand Canyon).
+      // Wait for a full solid 3D city/mountain blanket + crisp foreground buildings BEFORE unlocking ENGAGE
+      // so the landmark is ALREADY completely rendered on frame 1 (never unlocking with 5 coarse tiles!).
       const spawnTilesReady =
-        (tilesVisible >= 16 && localCoverage >= 12 && (detailedTiles >= 8 || tilesPending <= 10)) ||
-        (tilesVisible >= 28 && localCoverage >= 16) ||
-        (tilesVisible >= 8 && tilesPending === 0);
+        (tilesVisible >= 24 && localCoverage >= 18 && (detailedTiles >= 10 || tilesPending <= 10)) ||
+        (tilesVisible >= 36 && localCoverage >= 22) ||
+        (tilesVisible >= 12 && tilesPending === 0);
       return {
         jet: this.jet.active,
         aircraft: this.jet.aircraftReady,
@@ -2220,34 +2220,22 @@ export class SolarSystemScene {
       const earthDay = (earthUniforms?.dayMap?.value ?? null) as THREE.Texture | null;
       const earthReady = () => Boolean(earthDay?.image);
 
-      // 1. Wait ONLY for Earth's day map (capped at 900 ms) so startFlyPage() begins
-      // streaming spawn-region DEM/imagery tiles in parallel while the airframe glTF decodes.
+      // 1. Wait briefly for Earth's day map (capped at 300 ms) so startFlyPage() begins streaming
+      // Google 3D Tiles and the airframe glTF IMMEDIATELY instead of stalling 15-20s on shaders!
       await new Promise<void>((resolve) => {
         const started = performance.now();
         const tick = () => {
-          const t = Math.min(1, (performance.now() - started) / 900);
+          const t = Math.min(1, (performance.now() - started) / 300);
           if (earthReady() || t >= 1 || this.disposed) return resolve();
-          onProgress(0.15 + 0.45 * Math.max(t, this.textureFraction), 'Loading Earth surface maps');
-          setTimeout(tick, 40);
+          onProgress(0.15 + 0.55 * Math.max(t, this.textureFraction), 'Loading Earth surface maps');
+          setTimeout(tick, 30);
         };
         tick();
       });
       if (this.disposed) return;
 
-      // 2. Compile only the active Earth / flight scene shaders for the composer target (skip Sgr A* & Milky Way galaxy)
-      onProgress(0.68, 'Compiling Earth & flight shaders');
-      const camera = this.cameraRig.camera;
-      const previous = this.renderer.getRenderTarget();
-      this.renderer.setRenderTarget(this.lens.sceneTarget());
-      try {
-        await this.renderer.compileAsync(this.scene, camera);
-      } catch {
-        this.renderer.compile(this.scene, camera);
-      }
-      this.renderer.setRenderTarget(previous);
-      if (this.disposed) return;
-
-      // 3. Upload ready Earth + Sun textures in budgeted slices (6 ms/frame -> 1–2 frames total)
+      // 2. Skip blocking full-Solar-System `compileAsync` in `/fly/`: CompileGate compiles only
+      // the active Earth + Jet + 3D Tile shaders smoothly behind FlyPreloader while tiles stream!
       onProgress(0.88, 'Uploading Earth textures');
       const toUpload = new Set<THREE.Texture>();
       for (const name of ['Earth', 'Sun']) {

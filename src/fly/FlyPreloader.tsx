@@ -474,8 +474,9 @@ export const FlyPreloader: React.FC<{
         slerp(startDir, target, ease(Math.min(1, q * 1.08)), dir);
         let dist = 1.0 + 17.0 * Math.pow(1 - e, 2.2) + 0.85;
         if (L.phase === 'dive') {
-          diveK = Math.min(1, (time2 - L.diveT0) / 1200);
-          dist = THREE.MathUtils.lerp(dist, 1.004, Math.pow(diveK, 2.4));
+          diveK = Math.min(1, (time2 - L.diveT0) / 500);
+          // Stay cleanly above 1.52 Earth radii so the 2K preloader sphere NEVER zooms into blurry pixels
+          dist = THREE.MathUtils.lerp(dist, 1.52, Math.pow(diveK, 1.6));
         }
         const drift = tmp.crossVectors(dir, up).normalize().multiplyScalar(0.06 * Math.sin(time * 0.21) * (1 - diveK));
         camera.position.copy(dir).add(drift).normalize().multiplyScalar(dist);
@@ -563,7 +564,7 @@ export const FlyPreloader: React.FC<{
     window.setTimeout(() => {
       setPhase('gone');
       onFinished();
-    }, reduced ? 400 : 1500);
+    }, reduced ? 200 : 520);
   };
 
   useEffect(() => {

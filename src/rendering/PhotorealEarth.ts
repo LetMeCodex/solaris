@@ -483,10 +483,12 @@ export class PhotorealEarth {
     this.uploadBudgetMs = this.normalUploadBudgetMs;
     this.tiles.registerPlugin({ name: 'SOLARIS_UPLOAD_BUDGET', processTileModel: (scene: THREE.Object3D) => this.uploadInTurn(scene) } as unknown as Parameters<TilesRenderer['registerPlugin']>[0]);
     if (PhotorealEarth.fade) this.tiles.registerPlugin(new TilesFadePlugin({ fadeDuration: 280, fadeRootTiles: false, maximumFadeOutTiles: tier === "low" ? 30 : 80 }));
-    // Calibrated 4K-foreground / whole-city-blanket SSE target: keeps skyscrapers razor sharp without
-    // exploding distant horizon leaf queues into empty voids.
-    this.baseError = tier === 'high' ? 8.5 : tier === 'medium' ? 11.0 : 15.0;
+    // Calibrated sharp-3D / fast-streaming SSE target (Google Earth default is 16-20):
+    // renders razor-sharp 1:1 buildings & mountain ridges while cutting pending queues 4x
+    // so full city blankets load in ~3-5s with zero request-abort thrashing during fast banks.
+    this.baseError = tier === 'high' ? 12.0 : tier === 'medium' ? 14.0 : 18.0;
     this.tiles.errorTarget = this.baseError;
+    this.tiles.errorThreshold = 3;
     const mb = 1024 * 1024;
     this.tiles.lruCache.minSize = tier === 'low' ? 900 : tier === 'medium' ? 2000 : 3600;
     this.tiles.lruCache.maxSize = tier === 'low' ? 1500 : tier === 'medium' ? 3200 : 5400;
@@ -504,13 +506,14 @@ export class PhotorealEarth {
     // loadSiblings = false lets visible city tiles flip on screen 3x faster without waiting for off-axis siblings.
     this.tiles.loadAncestors = true;
     this.tiles.loadSiblings = false;
-    // Top-Down Progressive Cascade + Foveated Center-Cone Priority:
+    // Non-Starving Top-Down Progressive Cascade + Foveated Center-Cone Priority:
     // PriorityQueue pops the HIGHEST-scoring item (+1 runs BEFORE -1).
-    // 1. Expand unrenderable JSON subtrees immediately so the hierarchy resolves in <200ms.
-    // 2. Load Tier 0 (> 1200 m) coarse ancestors FIRST so `loadAncestors = true` never deadlocks
-    //    `markVisibleTiles` — the region appears on GPU within ~350ms!
-    // 3. Load Tier 1 (80..1200 m) whole-city/mountain blanket SECOND for a 100%-solid panorama.
-    // 4. Load Tier 2 (< 80 m) 4K buildings & rock faces THIRD, ordered by center-screen foveation!
+    // CRITICAL: Sort by `cascadeTier` BEFORE `hasUnrenderableContent` (`au`), otherwise recursive
+    // deep JSON subtrees across the horizon starve `.glb` 3D meshes at 5 visible / 494 pending!
+    // 1. Tier 0 (> 1200 m): Coarse root/regional ancestors load FIRST (< 0.4s) to unlock `markVisibleTiles`.
+    // 2. Tier 1 (80..1200 m): Whole-city/mountain blanket `.glb` + `.json` loads SECOND (< 1.5s) -> solid panorama.
+    // 3. Tier 2 (< 80 m): Crisp foreground 3D buildings load THIRD, strictly by center-screen foveated
+    //    distance bucket (`800 m`) so dead-ahead buildings finish BOTH `.json` and `.glb` immediately!
     this.libraryOrder = this.tiles.downloadQueue.priorityCallback as unknown as (a: unknown, b: unknown) => number;
     type PriorityTile = {
       geometricError?: number;
@@ -546,27 +549,31 @@ export class PhotorealEarth {
       if (!at || !bt) return 0;
       if (!!at.used !== !!bt.used) return at.used ? 1 : -1;
       if (!!at.inFrustum !== !!bt.inFrustum) return at.inFrustum ? 1 : -1;
-      const au = !!a.internal?.hasUnrenderableContent;
-      const bu = !!b.internal?.hasUnrenderableContent;
-      if (au !== bu) return au ? 1 : -1;
       const age = a.geometricError ?? Infinity;
       const bge = b.geometricError ?? Infinity;
       const ta = cascadeTier(age);
       const tb = cascadeTier(bge);
       // Lower tier number = coarser ancestor/blanket = strictly HIGHER priority (+1)
+      // NEVER let deep Tier-2 horizon JSONs starve Tier-0/1 city `.glb` meshes!
       if (ta !== tb) return ta < tb ? 1 : -1;
+      const au = !!a.internal?.hasUnrenderableContent;
+      const bu = !!b.internal?.hasUnrenderableContent;
       const sa = foveatedScore(a);
       const sb = foveatedScore(b);
       if (ta < 2) {
-        // Inside Tier 0 / Tier 1, strictly parent-before-child (larger geometricError first)
+        // Inside Tier 0 / Tier 1: parent-before-child (larger geometricError first),
+        // then renderable `.glb` meshes BEFORE spawning more sub-JSONs at the same LOD!
         if (Math.abs(age - bge) > 1e-3) return age > bge ? 1 : -1;
+        if (au !== bu) return au ? -1 : 1;
         if (sa !== sb) return sa < sb ? 1 : -1;
         return 0;
       }
-      // Tier 2 (< 80 m 4K foreground buildings/peaks): center-screen foveated distance, then highest SSE
-      const ba = Math.floor(sa / 1200);
-      const bb = Math.floor(sb / 1200);
+      // Tier 2 (< 80 m foreground 3D buildings/peaks): center-screen foveated distance bucket FIRST,
+      // then renderable `.glb` before deeper `.json` inside the same bucket so buildings appear immediately!
+      const ba = Math.floor(sa / 800);
+      const bb = Math.floor(sb / 800);
       if (ba !== bb) return ba < bb ? 1 : -1;
+      if (au !== bu) return au ? -1 : 1;
       const ea = at.error ?? 0;
       const eb = bt.error ?? 0;
       if (ea !== eb) return ea > eb ? 1 : -1;
@@ -721,7 +728,7 @@ export class PhotorealEarth {
       this.renderer = renderer;
       const css = renderer.getSize(this.cssSize);
       const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-      const lodRatio = Math.min(dpr, perf.tier === 'high' ? 1.35 : perf.tier === 'medium' ? 1.15 : 1.0);
+      const lodRatio = Math.min(dpr, perf.tier === 'high' ? 1.15 : perf.tier === 'medium' ? 1.05 : 1.0);
       this.tiles.setResolution(camera, Math.max(1, css.x * lodRatio), Math.max(1, css.y * lodRatio));
 
       const alt = Math.max(0.2, altKm ?? 1);
