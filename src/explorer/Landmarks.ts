@@ -155,7 +155,7 @@ const ENTRIES: Entry[] = [
     description: 'Arctic fishing village beneath sheer granite peaks in Norway’s Lofoten archipelago, inside the auroral oval.',
     scene: 'Jagged dark peaks frame the fjord while emerald-and-magenta aurora curtains ripple overhead on clear polar nights.' },
   { id: 'earth-lauterbrunnen', name: 'Lauterbrunnen Valley', body: 'Earth', lat: 46.5935, lon: 7.9091, viewAltitudeKm: 2.6, source: WIKI('Lauterbrunnen'),
-    vantageLat: 46.6075, vantageLon: 7.9110, vantageAltKm: 0.12, viewHeadingDeg: 185, viewPitchDeg: 6,
+    vantageLat: 46.6120, vantageLon: 7.9085, vantageAltKm: 0.65, viewHeadingDeg: 180, viewPitchDeg: -4,
     description: 'Glacial U-shaped valley framed by 300-metre limestone cliffs and 72 waterfalls in the Swiss Alps.',
     scene: 'Fresh alpine snow blankets the ridges and valley terraces while sheer rock walls tower beneath crisp blue skies.' },
   { id: 'earth-new-delhi', name: 'New Delhi, India', body: 'Earth', lat: 28.6129, lon: 77.2295, viewAltitudeKm: 1.8, source: WIKI('India Gate'),

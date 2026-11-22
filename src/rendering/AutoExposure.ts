@@ -151,15 +151,15 @@ export const ColorGradeShader = {
   uniforms: {
     tDiffuse: { value: null as THREE.Texture | null },
     uAmount: { value: 1 },
-    uShadows: { value: new THREE.Vector3(-0.012, 0.004, 0.022) },
-    uHighlights: { value: new THREE.Vector3(0.034, 0.012, -0.03) },
-    uContrast: { value: 0.2 },
-    uSaturation: { value: 1.1 },
+    uShadows: { value: new THREE.Vector3(-0.016, 0.002, 0.030) },
+    uHighlights: { value: new THREE.Vector3(0.040, 0.016, -0.026) },
+    uContrast: { value: 0.32 },
+    uSaturation: { value: 1.22 },
     uWarm: { value: 0 },
-    uVignette: { value: 0.3 },
-    uGrain: { value: 0.022 },
+    uVignette: { value: 0.28 },
+    uGrain: { value: 0.007 },
     uTime: { value: 0 },
-    uSharpen: { value: 0.45 },
+    uSharpen: { value: 0.55 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -198,12 +198,13 @@ export const ColorGradeShader = {
       vec3 hi = uHighlights + vec3(0.05, 0.018, -0.04) * uWarm;
       // (the shadow tint grows with the brightness: added flat, it turned dark forest cyan)
       col += uShadows * smoothstep(0.0, 0.18, l) * (1.0 - smoothstep(0.18, 0.55, l)) + hi * smoothstep(0.4, 1.0, l);
-      // S-curve round mid-grey, the blacks held just off zero (film never goes fully black)
+      // Cinematic filmic S-curve with deep true blacks (zero milky lift!) & highlight roll-off
+      col = pow(max(col, vec3(0.0)), vec3(1.05));
       col = mix(col, col * col * (3.0 - 2.0 * col), uContrast);
-      col = col * 0.985 + 0.012;
-      // A touch more colour
+      // Rich natural vibrance: boosts muted blues/greens/golds without clipping bright highlights
       float l2 = dot(col, vec3(0.2126, 0.7152, 0.0722));
-      col = mix(vec3(l2), col, uSaturation);
+      float satBoost = mix(uSaturation, 1.0 + (uSaturation - 1.0) * 0.45, smoothstep(0.62, 0.96, l2));
+      col = mix(vec3(l2), col, satBoost);
       // Vignette: the corners a little darker
       vec2 d = vUv - 0.5;
       col *= 1.0 - uVignette * smoothstep(0.25, 0.85, dot(d, d) * 2.0);

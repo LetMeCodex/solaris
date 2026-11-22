@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { SUN_WORLD } from './RenderOrigin';
-import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR, VALLEY_FOG } from './AerialPerspective';
+import { AERIAL_PERSPECTIVE_GLSL, MOON_DIR, MOON_LIGHT, NIGHT_AIR, SKY_AURORA, VALLEY_FOG } from './AerialPerspective';
 
 /**
  * Photorealistic Earth Surface Shader Material
@@ -35,6 +35,7 @@ export class EarthMaterial {
         uMoonLight: MOON_LIGHT,
         uMoonDir: MOON_DIR,
         uValleyFog: VALLEY_FOG,
+        uAurora: SKY_AURORA,
         dayMap: { value: dayMap },
         normalMap: { value: normalMap || null },
         nightMap: { value: nightMap || null },
@@ -70,6 +71,7 @@ export class EarthMaterial {
         uniform float uAirKmPerUnit;
         uniform float uAirCamAltKm;
         uniform float uAirHaze;
+        uniform float uAurora;
         ${AERIAL_PERSPECTIVE_GLSL}
 
         varying vec2 vUv;
@@ -165,10 +167,11 @@ export class EarthMaterial {
             float sunUp = dot(geomNormal, sunDir);
             float dayK = smoothstep(-0.10, 0.16, sunUp);
             vec3 skyCol = apSky(sunUp);
-            // The sea reflects the sky (Fresnel), as the tiles' water does
+            // The sea reflects the sky + polar aurora (Fresnel), matching PhotorealEarth's water
             float nv = max(dot(geomNormal, viewDir), 0.0);
             float fres = 0.02 + 0.98 * pow(1.0 - nv, 5.0);
-            vec3 sea = mix(surfaceColor * 0.85, skyCol * (0.25 + 0.75 * dayK), fres);
+            vec3 auroraSea = vec3(0.03, 0.20, 0.11) * uAurora * (1.0 - dayK);
+            vec3 sea = mix(surfaceColor * 0.85, skyCol * (0.25 + 0.75 * dayK) + auroraSea, fres);
             vec3 col = mix(surfaceColor, sea, waterMask);
             col = aerialPerspective(col, distKm, max(0.0, uAirCamAltKm * 0.5), uAirHaze, viewDir, sunDir, sunUp);
             surfaceColor = mix(surfaceColor, col, uNearAir);

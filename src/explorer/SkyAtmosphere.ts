@@ -291,8 +291,8 @@ const fragmentShader = /* glsl */ `
       vec3 supercellTint = vec3(0.14, 0.27, 0.26) * zenithShade * (1.0 - smoothstep(0.05, 0.45, d.y));
       ovDay = mix(ovDay, ovDay * 0.72 + supercellTint * 0.85, clamp(uStormTint, 0.0, 1.0));
       vec3 ovTwilight = vec3(0.09, 0.10, 0.14) * zenithShade;
-      vec3 ovNight = vec3(0.012, 0.015, 0.022) * zenithShade;
-      vec3 ovCol = mix(ovNight, mix(ovTwilight, ovDay, smoothstep(0.0, 0.35, s.y)), dayLit) * uExposure;
+      vec3 ovNight = vec3(0.007, 0.010, 0.018) * zenithShade;
+      vec3 ovCol = mix(ovNight, mix(ovTwilight, ovDay, smoothstep(0.0, 0.35, s.y)) * uExposure, dayLit);
       col = mix(col, ovCol, weatherOv * 0.90);
     }
 
@@ -306,15 +306,15 @@ const fragmentShader = /* glsl */ `
       vec2 sheared = vec2(cuv.x * 0.55 + warp * 0.85, cuv.y * 2.15 + warp * 0.55);
       float wisp = skyFbm(sheared * 1.75) * 0.65 + skyFbm(sheared * 3.8 - vec2(uTime * 0.006, 0.0)) * 0.35;
       float thresh = mix(0.68, 0.36, clamp(uCirrus, 0.0, 1.0));
-      float cAlpha = smoothstep(thresh, thresh + 0.28, wisp) * smoothstep(0.025, 0.18, d.y) * cirrusAltFade * (1.0 - weatherOv * 0.78);
-      // Vibrant backlit peach-coral-amber at sunrise/sunset/alpenglow; crisp white by day
       float golden = (1.0 - smoothstep(0.02, 0.32, s.y)) * smoothstep(-0.12, 0.02, s.y);
       float dayC = smoothstep(-0.08, 0.16, s.y);
+      float cAlpha = smoothstep(thresh, thresh + 0.28, wisp) * smoothstep(0.025, 0.18, d.y) * cirrusAltFade * (1.0 - weatherOv * 0.78) * mix(0.16, 1.0, dayC);
+      // Vibrant backlit peach-coral-amber at sunrise/sunset/alpenglow; crisp white by day
       float fwdSun = pow(max(mu, 0.0), 4.0);
       vec3 cDay = vec3(0.95, 0.97, 1.0) * (0.78 + 0.35 * fwdSun);
       vec3 cGold = mix(vec3(1.0, 0.44, 0.28), vec3(1.0, 0.72, 0.46), fwdSun) * 1.35;
-      vec3 cNight = vec3(0.025, 0.035, 0.06);
-      vec3 cCol = mix(cNight, mix(cDay, cGold, golden), dayC) * uExposure;
+      vec3 cNight = vec3(0.006, 0.010, 0.018);
+      vec3 cCol = mix(cNight, mix(cDay, cGold, golden) * uExposure, dayC);
       col = mix(col, cCol, clamp(cAlpha * 0.62, 0.0, 0.78));
     }
 
@@ -336,42 +336,52 @@ const fragmentShader = /* glsl */ `
       col += bowCol * rbFade * uExposure * smoothstep(0.01, 0.14, s.y);
     }
 
-    // --- Volumetric Shimmering Aurora Borealis & Australis Curtains (NOAA SWPC Kp Oval) ---
-    // Sweeping vertical magnetic curtains visible right above the polar horizon (d.y 0.04..0.72)
-    // matching @RiadEtm Lofoten: emerald 557.7 nm core + crimson/magenta 630 nm lower fringe.
-    if (uIsEarth > 0.5 && uAurora > 0.01 && d.y > 0.025) {
-      float aurFade = uAurora * smoothstep(0.025, 0.14, d.y) * (1.0 - smoothstep(0.65, 0.96, d.y)) * (1.0 - weatherOv * 0.80);
+    // --- Seamless Night Horizon Airglow (Eliminates Hard Black Horizon Stripe!) ---
+    if (uIsEarth > 0.5) {
+      float nightSky = 1.0 - smoothstep(-0.14, 0.03, s.y);
+      float hzBand = exp(-max(d.y, 0.0) * 9.5);
+      // Soft deep midnight indigo horizon airglow + subtle emerald aurora scatter near polar horizon
+      vec3 nightHz = vec3(0.011, 0.017, 0.034) + vec3(0.008, 0.042, 0.022) * uAurora;
+      col += nightHz * hzBand * nightSky * (1.0 - weatherOv * 0.6);
+    }
+
+    // --- Volumetric Shimmering Aurora Borealis & Australis Curtains (@RiadEtm Lofoten) ---
+    // Silky, translucent emerald-green folded curtains (557.7 nm O(1S)) with delicate warm
+    // crimson/magenta lower fringe (630 nm / N2+) — strictly calibrated in linear HDR (NEVER blown-out white!).
+    if (uIsEarth > 0.5 && uAurora > 0.01 && d.y > 0.02) {
+      float aurFade = uAurora * smoothstep(0.02, 0.14, d.y) * (1.0 - smoothstep(0.68, 0.96, d.y)) * (1.0 - weatherOv * 0.82);
       if (aurFade > 0.005) {
         float az = atan(d.x, d.z);
         vec3 aurSum = vec3(0.0);
-        // 3 sweeping concentric auroral arcs across the horizon-to-mid sky with 5 vertical ray slices
+        // 3 silky undulating curtains across the polar sky
         for (int arc = 0; arc < 3; arc++) {
           float fa = float(arc);
-          float baseElev = 0.13 + fa * 0.11;
-          float azFreq = 2.1 + fa * 0.75;
-          float phase = uTime * (0.14 + fa * 0.05) + fa * 2.1;
-          float sway = sin(az * azFreq + phase) * 0.07 + cos(az * (azFreq * 1.7) - phase * 0.8) * 0.04;
-          float arcElev = baseElev + sway;
-          // Vertical curtain height above the lower magnetic edge
-          float relH = (d.y - arcElev) / (0.16 + fa * 0.05);
-          if (relH > -0.15 && relH < 1.35) {
-            // Sharp luminous lower border tapering softly upward along geomagnetic field lines
-            float vertEnv = smoothstep(-0.12, 0.12, relH) * exp(-max(relH, 0.0) * 2.1);
-            // Fine shimmering vertical rays along the magnetic curtain
-            float rayCoord = az * (14.0 + fa * 5.0) + sin(uTime * 0.25 + fa) * 1.5;
-            float rays = 0.35 + 0.65 * skyFbm(vec2(rayCoord, relH * 1.15 - uTime * 0.12 + fa * 3.7));
-            float fineRays = 0.55 + 0.45 * skyNoise(vec2(az * 42.0 + sway * 12.0, uTime * 0.35 + fa * 5.0));
-            // Physical O(1S) 557.7 nm emerald green core, N2+ crimson/magenta lower fringe, O(1D) violet top
-            vec3 crimsonCol = vec3(0.92, 0.14, 0.54);
-            vec3 emeraldCol = vec3(0.08, 1.00, 0.50);
-            vec3 violetTop  = vec3(0.42, 0.16, 0.82);
-            vec3 curCol = relH < 0.18
-              ? mix(crimsonCol, emeraldCol, smoothstep(-0.05, 0.18, relH))
-              : mix(emeraldCol, violetTop, smoothstep(0.32, 1.15, relH));
-            aurSum += curCol * vertEnv * rays * fineRays * (0.68 - fa * 0.14);
+          float baseElev = 0.12 + fa * 0.12;
+          float azFreq = 1.85 + fa * 0.70;
+          float phase = uTime * (0.11 + fa * 0.04) + fa * 2.3;
+          // Smooth S-curve folds in azimuth + elevation
+          float fold = sin(az * azFreq + phase) * 0.075 + cos(az * (azFreq * 1.65) - phase * 0.75) * 0.042;
+          float arcElev = baseElev + fold;
+          float relH = (d.y - arcElev) / (0.19 + fa * 0.06);
+          if (relH > -0.12 && relH < 1.35) {
+            // Luminous lower curtain border tapering smoothly upward along magnetic field lines
+            float vertEnv = smoothstep(-0.10, 0.14, relH) * exp(-max(relH, 0.0) * 2.35);
+            // Soft silky vertical rays (domain-warped along magnetic lines, zero harsh noise)
+            float rayCoord = az * (11.0 + fa * 4.0) + fold * 6.0;
+            float rays = 0.42 + 0.58 * skyFbm(vec2(rayCoord, relH * 0.85 - uTime * 0.08 + fa * 3.1));
+            float fineRays = 0.62 + 0.38 * skyNoise(vec2(az * 28.0 + fold * 10.0, uTime * 0.22 + fa * 4.0));
+            // Authentic translucent emerald-green core + delicate crimson/salmon lower border
+            vec3 crimsonEdge = vec3(0.72, 0.20, 0.36);
+            vec3 emeraldCore = vec3(0.06, 0.86, 0.40);
+            vec3 tealUpper   = vec3(0.08, 0.52, 0.48);
+            vec3 curCol = relH < 0.16
+              ? mix(crimsonEdge, emeraldCore, smoothstep(-0.04, 0.16, relH))
+              : mix(emeraldCore, tealUpper, smoothstep(0.35, 1.15, relH));
+            aurSum += curCol * vertEnv * rays * fineRays * (0.48 - fa * 0.10);
           }
         }
-        col += aurSum * aurFade * (1.55 + 0.18 * uExposure);
+        // Keep strictly in translucent linear HDR range (0..0.82) so ACESFilmic preserves pure emerald hue!
+        col += min(aurSum * aurFade * 0.88, vec3(0.82));
       }
     }
 

@@ -137,8 +137,9 @@ float cloudAt(vec3 pKm, float detailW) {
   if (detailW > 0.02 && e > 0.0) {
     vec4 C = readNoise(i / CS_NS - F * 9.0);
     float d = C.g * 0.6 + C.b * 0.4;
-    float N = mix(d, 1.0 - d, clamp(o * 3.0, 0.0, 1.0)) * 0.4 * detailW;
-    e = clamp((e - N) / max(1.0 - N, 1e-4), 0.0, 1.0);
+    // Soft billowy erosion preserves smooth photographic cloud rims without harsh dark speckles
+    float N = mix(d, 1.0 - d, clamp(o * 2.5, 0.0, 1.0)) * 0.24 * detailW;
+    e = smoothstep(0.0, 0.14, e) * clamp((e - N) / max(1.0 - N, 1e-4), 0.0, 1.0);
   }
   return e;
 }
@@ -245,11 +246,13 @@ void main() {
     if (Z > 0.003) {
       float ts = towardsSun(N);
       float J = clamp((length(N - uEarthC) - rb) / thick, 0.0, 1.0);
-      float es = pow(ts, 1.25);
-      vec3 os = uSunCol * mix(min(D, 1.0) * 0.09, D, es) * 0.82;
-      vec3 as = mix(uGroundAmb, uSkyAmb, smoothstep(0.05, 0.6, J)) * mix(0.80, 1.0, J);
+      // Physically-inspired Beer-Powder multi-scattering: luminous sunlit silver-lining rims + rich shaded bases
+      float powder = 1.0 - 0.65 * exp(-Z * 5.0);
+      float es = pow(ts, 1.15);
+      vec3 os = uSunCol * mix(min(D, 1.0) * 0.10, D * (0.72 + 0.55 * powder), es) * 0.85;
+      vec3 as = mix(uGroundAmb, uSkyAmb, smoothstep(0.05, 0.65, J)) * mix(0.75, 1.0, J);
       vec3 flashLit = vec3(0.75, 0.85, 1.0) * uFlash * (0.4 + 0.6 * (1.0 - ts));
-      vec3 is = mix(R, os + as + flashLit, exp(-tMid / (reach * 0.58)));
+      vec3 is = mix(R, os + as + flashLit, exp(-tMid / (reach * 0.62)));
       float K = 1.0 - exp(-Z * uDensity * dStep / uUnitKm);
       V += is * K * T;
       T *= (1.0 - K);

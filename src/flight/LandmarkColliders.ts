@@ -67,6 +67,15 @@ export const SOLID_LANDMARKS: SolidCollider[] = [
     profilePow: 1.50,
   },
   {
+    name: 'Lauterbrunnen Valley',
+    lat: 46.5935,
+    lon: 7.9091,
+    baseKm: 1.450,   // Glacial valley terraces & rim
+    peakKm: 2.350,   // Flanking limestone walls (Wengen/Mürren shelves)
+    radiusKm: 5.5,
+    profilePow: 0.70,
+  },
+  {
     name: 'Mount Fuji',
     lat: 35.36083,
     lon: 138.7275,

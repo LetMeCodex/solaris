@@ -152,10 +152,9 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
   float sunUp = dot(upW, sunDir);
   float day = smoothstep(-0.10, 0.16, sunUp);
   vec3 sunCol = mix(vec3(1.0, 0.70, 0.50), uSunTint, smoothstep(0.02, 0.32, sunUp));
-  // Night: the Moon's light (where it is up, by its phase) over starlight, airglow and the glow of
-  // the sky over towns, cool; kept bright enough to read the land on a moonless night, as the
-  // dark-adapted eye (and a night film) sees it
-  vec3 light = mix(vec3(0.085, 0.1, 0.155) + uMoonLight * smoothstep(-0.04, 0.2, dot(upW, uMoonDir)), sunCol, day);
+  // Night: deep midnight-velvet silhouettes + moonlight (eliminates bright-grey-ground vs black-sky
+  // horizon stripe and lets glowing amber city arteries & fjord aurora reflections pop dramatically!)
+  vec3 light = mix(vec3(0.018, 0.025, 0.044) + uMoonLight * 0.75 * smoothstep(-0.04, 0.2, dot(upW, uMoonDir)), sunCol, day);
   float lum = dot(photo, vec3(0.2126, 0.7152, 0.0722));
 
   // --- Seasons
@@ -185,17 +184,20 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
   // Bare deciduous woods are brown, not grey, and many trees are evergreen: a light touch
   photo = mix(photo, vec3(lum * 1.12, lum * 0.94, lum * 0.74), green * bare * 0.28);
 
-  // --- Water: require flat surface near sea level AND genuine blue/teal ocean chroma in the
-  // photograph itself — never flood coastal trees, asphalt roads, or houses (SF Presidio/Marina).
+  // --- Water: geoid-aware sea-level mask (EGM96 reaches +35m in Norway & +65m in Iceland!)
+  // so Arctic fjords (Lofoten, Geirangerfjord) stay true liquid mirror water reflecting emerald
+  // aurora rather than getting painted white snow, while coastal land/trees/roads stay crisp.
   float water = 0.0;
   if (uHasMaps > 0.5) {
     vec3 g = texture2D(uDayMap, uvG).rgb;
-    float mapWater = smoothstep(0.28, 0.06, g.r) * smoothstep(0.10, 0.26, g.b);
-    float blueOverRed = smoothstep(0.015, 0.055, photo.b - photo.r);
+    float mapWater = smoothstep(0.30, 0.06, g.r) * smoothstep(0.09, 0.24, g.b);
+    float blueOverRed = smoothstep(0.012, 0.050, photo.b - photo.r);
+    // Deep Arctic fjords in satellite photos are often dark charcoal-navy; trust high mapWater on flat dark surfaces
+    float colorWater = mix(blueOverRed, 1.0, smoothstep(0.62, 0.90, mapWater) * smoothstep(0.24, 0.06, lum));
     float notGreenFoliage = 1.0 - smoothstep(0.02, 0.075, photo.g - photo.b);
-    float darkEnough = smoothstep(0.20, 0.06, photo.r) * smoothstep(0.34, 0.14, lum);
-    float photoWater = blueOverRed * notGreenFoliage * darkEnough * smoothstep(0.86, 0.96, flatness);
-    water = mapWater * photoWater * smoothstep(0.018, -0.015, hKm);
+    float darkEnough = smoothstep(0.22, 0.06, photo.r) * smoothstep(0.36, 0.12, lum);
+    float photoWater = colorWater * notGreenFoliage * darkEnough * smoothstep(0.86, 0.96, flatness);
+    water = mapWater * photoWater * smoothstep(0.095, 0.020, hKm);
   }
   float snowNoise = phNoise(nlPlane * 9000.0) * 0.6 + phNoise(nlPlane * 41000.0) * 0.4;
   float hN = hKm + (snowNoise - 0.5) * 0.5;
@@ -205,8 +207,9 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
   float liveSnow = uGroundSnow * smoothstep(0.22, 0.72, snowNoise + uGroundSnow * 0.45);
   float snow = clamp(max(seasonalSnow, liveSnow), 0.0, 1.0);
   snow *= smoothstep(0.55, 0.86, flatness) * (1.0 - water) * smoothstep(0.90, 0.58, lum);
-  // Keep the photograph's shading and texture under the snow (a tint, not flat white paint)
-  vec3 snowCol = vec3(0.92, 0.96, 1.0) * (0.48 + 0.88 * lum);
+  // Keep the photograph's shading and texture under the snow (crisp sunlit alpine white by day,
+  // restrained moonlit silver at night so Arctic ridges never glow neon blue).
+  vec3 snowCol = vec3(0.92, 0.96, 1.0) * (0.48 + 0.88 * lum) * mix(0.45, 1.0, day);
   photo = mix(photo, snowCol, snow * 0.78);
   // PBR Rain Wetness: damp roofs, asphalt & rock darken realistically when wet
   float wetSurface = uGroundWetness * (1.0 - water) * (1.0 - snow * 0.85) * smoothstep(0.45, 0.88, flatness);
@@ -304,17 +307,42 @@ const PHOTO_FRAGMENT_BODY = /* glsl */ `
     vec3 nFMix = mix(nF, upW, levelK);
     float nFLen = length(nFMix);
     nF = nFLen > 1e-9 ? nFMix / nFLen : upW;
+    // Procedural Earth-fixed triplanar granite/rock/alpine micro-relief on mountain slopes:
+    // transforms coarse remote DEM triangles (Lofoten, Everest, Lauterbrunnen, Yosemite) into
+    // crisp sunlit crags, rock fissures & wind-scoured snow ridges with zero flat-polygon look!
+    float slopeMask = (1.0 - smoothstep(0.45, 0.90, flatness)) * (1.0 - water);
+    if (slopeMask > 0.02 && uDaylight < 0.5) {
+      vec3 kmP = loc * 6378.137;
+      vec2 rockUv = kmP.xz * 18.0 + vec2(kmP.y * 26.0, -kmP.y * 14.0);
+      float r0 = phNoise(rockUv) * 0.55 + phNoise(rockUv * 2.8 + 4.3) * 0.30 + phNoise(rockUv * 7.5 - 2.1) * 0.15;
+      float rx = phNoise(rockUv + vec2(0.08, 0.0)) - phNoise(rockUv - vec2(0.08, 0.0));
+      float ry = phNoise(rockUv + vec2(0.0, 0.08)) - phNoise(rockUv - vec2(0.0, 0.08));
+      // Perturb surface normal with fine rock strata & ridge crevices
+      vec3 tRef = abs(nF.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+      vec3 tU = normalize(cross(tRef, nF));
+      vec3 tV = cross(nF, tU);
+      nF = normalize(nF + (tU * rx + tV * ry) * 1.45 * slopeMask);
+      // Crisp micro-crevice darkening & granite strata texture contrast
+      float strata = 0.82 + 0.36 * r0;
+      col *= mix(1.0, strata, slopeMask * 0.58);
+    }
+
     float facing = dot(nF, sunDir);
-    float lowSun = 1.0 - smoothstep(0.05, 0.4, sunUp);
-    float relief = 0.2 * day * (1.0 - uDaylight);
-    col *= mix(1.0, 0.36 + 0.95 * clamp(facing + 0.15, 0.0, 1.0), relief * (1.0 - lowSun));
+    float lowSun = 1.0 - smoothstep(0.05, 0.42, sunUp);
+    // Dramatic photographic sun-vs-shadow relief (@RiadEtm Lauterbrunnen / Yosemite / Khumbu):
+    // sunlit faces glow warm while shadow-facing cliffs & valleys fall into deep cobalt shade!
+    float relief = 0.54 * day * (1.0 - uDaylight);
+    vec3 shadowCool = vec3(0.32, 0.42, 0.62);
+    vec3 sunlitWarm = vec3(1.18, 1.13, 1.06);
+    vec3 dirGrade = mix(shadowCool, sunlitWarm, smoothstep(-0.18, 0.58, facing));
+    col *= mix(vec3(1.0), dirGrade, relief * (1.0 - lowSun * 0.55));
     // With a low Sun the light is two lights: the Sun's, warm coral-amber (alpenglow on snow &
     // rock faces like Mt. Fuji & Uluru), and the sky's cool cobalt blue in shaded valleys.
-    float lit = smoothstep(-0.12, 0.35, facing);
-    vec3 skyShade = mix(vec3(0.26, 0.34, 0.56), vec3(0.42, 0.48, 0.62), smoothstep(0.0, 0.4, sunUp)) * 0.85;
-    vec3 alpenglowTint = mix(sunCol * 1.28, vec3(1.18, 0.56, 0.42), smoothstep(0.08, 0.0, sunUp) * (0.45 + 0.55 * snow));
-    vec3 golden = mix(skyShade, alpenglowTint + skyShade * 0.28, lit) / max(sunCol, vec3(0.05));
-    col *= mix(vec3(1.0), golden, lowSun * day * (1.0 - uDaylight) * 0.88);
+    float lit = smoothstep(-0.12, 0.38, facing);
+    vec3 skyShade = mix(vec3(0.20, 0.28, 0.52), vec3(0.38, 0.46, 0.64), smoothstep(0.0, 0.4, sunUp)) * 0.82;
+    vec3 alpenglowTint = mix(sunCol * 1.32, vec3(1.24, 0.54, 0.38), smoothstep(0.10, -0.01, sunUp) * (0.45 + 0.55 * snow));
+    vec3 golden = mix(skyShade, alpenglowTint + skyShade * 0.24, lit) / max(sunCol, vec3(0.05));
+    col *= mix(vec3(1.0), golden, lowSun * day * (1.0 - uDaylight) * 0.90);
     // Crisp snow crystal micro-glint under direct sunlight
     if (snow > 0.05 && day > 0.05) {
       vec3 toEyeS = normalize(cameraPosition - vPhotoWorld);

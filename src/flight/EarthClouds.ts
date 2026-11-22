@@ -57,9 +57,9 @@ const GOLD_SKY = new THREE.Color('#b49ee0').multiplyScalar(1.12);
 const GOLD_BOUNCE = new THREE.Color('#c88aa6').multiplyScalar(0.85);
 const GOLD_HORIZON = new THREE.Color('#eb966c').multiplyScalar(1.25);
 
-const NIGHT_SKY_BASE = new THREE.Color(0.0035, 0.0055, 0.013);
-const NIGHT_BOUNCE_BASE = new THREE.Color(0.002, 0.003, 0.007);
-const NIGHT_HORIZON_BASE = new THREE.Color(0.004, 0.0065, 0.016);
+const NIGHT_SKY_BASE = new THREE.Color(0.0014, 0.0022, 0.0052);
+const NIGHT_BOUNCE_BASE = new THREE.Color(0.0008, 0.0013, 0.0032);
+const NIGHT_HORIZON_BASE = new THREE.Color(0.0022, 0.0036, 0.0085);
 
 /** What WMO weather code means for the air the jet flies through. */
 export function weatherFromCode(code: number, precipMm: number): { kind: WeatherKind; strength: number; label: string } {
@@ -163,8 +163,10 @@ export class EarthClouds {
 
   private regionalGround(lat: number, lon: number, camKm: number, aglKm: number, dt: number): number {
     let target: number | null = null;
+    let teleported = false;
     if (!earthElevation.disabled) {
       if (!this.demAt || Math.abs(lat - this.demAt.lat) > 0.1 || Math.abs(lon - this.demAt.lon) > 0.1) {
+        teleported = !this.demAt || Math.abs(lat - this.demAt.lat) > 0.4 || Math.abs(lon - this.demAt.lon) > 0.4;
         this.demAt = { lat, lon };
         void earthElevation.ensure(lat - 0.3, lon - 0.3, lat + 0.3, lon + 0.3, 8);
       }
@@ -190,11 +192,11 @@ export class EarthClouds {
     }
     const fromJet = aglKm < 12 ? THREE.MathUtils.clamp(camKm - aglKm, 0, 8.85) : null;
     const immediate = Math.max(target ?? 0, fromJet ?? 0);
-    if (this.groundKm === null) {
+    if (this.groundKm === null || teleported) {
       this.groundKm = immediate;
     } else if (target !== null || fromJet !== null) {
       // Climb rapidly over rising terrain/plateaus so cloud decks stay safely clear; ease down gently.
-      const tau = immediate > this.groundKm ? 2.5 : 14;
+      const tau = immediate > this.groundKm ? 1.2 : 14;
       this.groundKm += (immediate - this.groundKm) * (1 - Math.exp(-dt / tau));
     }
     return Math.max(0, this.groundKm);
@@ -254,36 +256,48 @@ export class EarthClouds {
     const storm = weatherMode === 'storm' || (weatherMode === 'auto' && w?.kind === 'storm');
     const rainy = weatherMode === 'rain' || weatherMode === 'snow' || (weatherMode === 'auto' && (w?.kind === 'rain' || w?.kind === 'snow'));
 
+    // Continuous solar elevation & live NOAA Kp aurora computed early so clear polar nights
+    // and clear starry skies open up completely (zero chunky clouds blocking the Aurora!).
+    const upPre = this.v1.subVectors(camera.position, centre).normalize();
+    const sunUpPre = sunDirWorld.dot(upPre) / Math.max(1e-9, sunDirWorld.length());
+    const nightPre = 1 - THREE.MathUtils.smoothstep(sunUpPre, -0.10, 0.02);
+    const auroraPre = this.spaceWeather.auroraAt(lat, lon, sunUpPre);
+    const clearStarryNight = (manualClear && nightPre > 0.35) || (auroraPre > 0.22 && !storm && !rainy);
+
     const liveCover = w ? Math.max(w.coverLow, w.cover * 0.82) : 0.45;
-    const coverT = manualClear
-      ? 0.20
-      : storm
-        ? 0.86
-        : rainy
-          ? 0.74
-          : THREE.MathUtils.lerp(0.36, 0.56, liveCover);
+    const coverT = clearStarryNight
+      ? 0.0
+      : manualClear
+        ? 0.16
+        : storm
+          ? 0.84
+          : rainy
+            ? 0.62
+            : THREE.MathUtils.lerp(0.32, 0.54, liveCover) * (1 - nightPre * 0.35);
 
     const overcastT = rainy;
-    // Calibrated volumetric cumulus deck: Clear mode leaves wide open starry skies for auroras & stars,
-    // while auto weather forms sculpted 3D cumulus puffs with clear views down to mountains & cities.
-    const deckT = manualClear
-      ? 0.06
-      : storm
-        ? 0.78
-        : rainy
-          ? 0.68
-          : THREE.MathUtils.lerp(0.24, 0.46, liveCover);
+    // Calibrated volumetric cumulus deck: Clear starry nights & Aurora skies open up completely (0.0);
+    // snow/rain show dramatic sculpted alpine clouds with crisp visibility; storm builds towering dark anvil decks.
+    const deckT = clearStarryNight
+      ? 0.0
+      : manualClear
+        ? 0.04
+        : storm
+          ? 0.58
+          : rainy
+            ? 0.36
+            : THREE.MathUtils.lerp(0.22, 0.44, liveCover) * (1 - nightPre * 0.45);
 
     // Authentic ISA Lifting Condensation Level (LCL) clearance: fair-weather cumulus bases float
     // ~1.85-2.15 km above low-to-mid terrain/rooftops (e.g. Sao Paulo 0.76 km -> ~2.6 km MSL),
     // and cap at real lower-tropospheric LCL (~3.8-4.2 km MSL) over towering mountain ranges so
     // Himalayan giants like Mount Everest (8,849 m) pierce dramatically ABOVE the cloud sea!
-    const liftT = manualClear ? 2.15 : storm ? 1.25 : rainy ? 1.35 : 1.85;
-    const minMslKm = manualClear ? 2.2 : storm ? 1.35 : rainy ? 1.45 : 1.9;
+    const liftT = manualClear ? 2.15 : storm ? 1.55 : rainy ? 1.75 : 1.85;
+    const minMslKm = manualClear ? 2.2 : storm ? 1.65 : rainy ? 1.85 : 1.9;
     const maxBaseMslKm = manualClear ? 3.85 : storm ? 4.8 : rainy ? 4.45 : 4.15;
-    const thickT = manualClear ? 1.65 : storm ? 4.5 : rainy ? 2.8 : 1.95 + 0.45 * coverT;
+    const thickT = manualClear ? 1.65 : storm ? 4.5 : rainy ? 2.6 : 1.95 + 0.45 * coverT;
     const stratusT = overcastT && !storm ? THREE.MathUtils.smoothstep(coverT, 0.76, 0.96) : 0;
-    const densityT = manualClear ? 1.22 : storm ? 1.78 : rainy ? 1.56 : 1.38;
+    const densityT = manualClear ? 1.22 : storm ? 1.72 : rainy ? 1.44 : 1.38;
 
     const e = (this.eased ??= {
       cover: coverT,
@@ -369,20 +383,21 @@ export class EarthClouds {
     const goldBlend = THREE.MathUtils.smoothstep(sunUp, -0.10, 0.02);
     const dayBlend = THREE.MathUtils.smoothstep(sunUp, 0.02, 0.30);
     const nightMix = 1 - goldBlend;
-    const stormScale = storm ? 0.65 : 1.0;
+    const stormScale = storm ? 0.30 : 1.0;
 
     // Interpolate sun light (soft velvet moonlight at night -> golden amber dawn/dusk -> CloudSea day)
     this.cSun.setRGB(MOON_LIGHT.value.x * 0.38, MOON_LIGHT.value.y * 0.40, MOON_LIGHT.value.z * 0.48);
     this.cSun.lerp(GOLD_SUN, goldBlend).lerp(DAY_SUN, dayBlend).multiplyScalar(stormScale);
     u.uSunCol.value.copy(this.cSun);
 
-    // Sky top ambient light (subtly tinted emerald when under active polar aurora curtains)
+    // Sky top ambient light (subtly tinted emerald when under active polar aurora curtains;
+    // brooding dark storm-slate during thunderstorms so lightning bolts pop dramatically!)
     const aurGlow = SKY_AURORA.value * nightMix;
     this.cSky.copy(NIGHT_SKY_BASE);
     this.cSky.r += MOON_LIGHT.value.x * 0.24 + aurGlow * 0.004;
     this.cSky.g += MOON_LIGHT.value.y * 0.26 + aurGlow * 0.026;
     this.cSky.b += MOON_LIGHT.value.z * 0.30 + aurGlow * 0.014;
-    this.cSky.lerp(GOLD_SKY, goldBlend).lerp(DAY_SKY, dayBlend).multiplyScalar(storm ? 0.72 : 1.0);
+    this.cSky.lerp(GOLD_SKY, goldBlend).lerp(DAY_SKY, dayBlend).multiplyScalar(storm ? 0.42 : 1.0);
     u.uSkyAmb.value.copy(this.cSky);
 
     // Under-cloud ground bounce light + warm night city glow underneath
@@ -390,16 +405,16 @@ export class EarthClouds {
     this.cBounce.r += 0.018 * nightMix * this.cityGlow + aurGlow * 0.002;
     this.cBounce.g += 0.010 * nightMix * this.cityGlow + aurGlow * 0.012;
     this.cBounce.b += 0.004 * nightMix * this.cityGlow + aurGlow * 0.006;
-    this.cBounce.lerp(GOLD_BOUNCE, goldBlend).lerp(DAY_BOUNCE, dayBlend).multiplyScalar(storm ? 0.55 : 1.0);
+    this.cBounce.lerp(GOLD_BOUNCE, goldBlend).lerp(DAY_BOUNCE, dayBlend).multiplyScalar(storm ? 0.34 : 1.0);
     u.uGroundAmb.value.copy(this.cBounce);
 
-    // Horizon extinction color matching SkyAtmosphere + CloudSea
+    // Horizon extinction color matching SkyAtmosphere + CloudSea (deep slate-blue in storms)
     this.cHaze.copy(NIGHT_HORIZON_BASE);
     this.cHaze.r += MOON_LIGHT.value.x * 0.14;
     this.cHaze.g += MOON_LIGHT.value.y * 0.15;
     this.cHaze.b += MOON_LIGHT.value.z * 0.18;
     this.cHaze.lerp(GOLD_HORIZON, goldBlend).lerp(DAY_HORIZON, dayBlend);
-    if (storm) this.cHaze.multiplyScalar(0.68);
+    if (storm) this.cHaze.multiplyScalar(0.36);
     u.uHazeCol.value.copy(this.cHaze);
 
     u.uHaze.value = THREE.MathUtils.clamp(30 / Math.max(w?.visibilityKm ?? 30, 0.5), 1, 4.5);

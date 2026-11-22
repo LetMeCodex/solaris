@@ -2759,14 +2759,17 @@ export class SolarSystemScene {
     const night = 1 - THREE.MathUtils.smoothstep(t.up.dot(t.sun), -0.12, 0.05);
     // A crescent gives far less than its share of light (the full Moon's surge): about phase^1.5
     const moon = Math.pow(illum, 1.5);
-    MOON_LIGHT.value.set(0.16, 0.2, 0.3).multiplyScalar(moon * night);
-    NIGHT_AIR.value.set(0.018, 0.024, 0.042).addScaledVector(new THREE.Vector3(0.07, 0.09, 0.14), moon * moonHigh).multiplyScalar(night);
+    // Calibrated linear-HDR midnight lighting: matches SkyAtmosphere's seamless night horizon airglow
+    // so full-moon Arctic snow & ocean never glow bright baby-blue against a dark starry sky.
+    MOON_LIGHT.value.set(0.036, 0.048, 0.076).multiplyScalar(moon * night);
+    NIGHT_AIR.value.set(0.010, 0.016, 0.032).addScaledVector(new THREE.Vector3(0.012, 0.018, 0.032), moon * moonHigh).multiplyScalar(night);
     // The eye adapts to the dark: low over Earth at night the meter may brighten up to ~2.8x
     // (the land stays readable on a moonless night; by day and in space it is held to 1.6x)
     const kmTrue = 6378.137 / earth.visualRadius;
     const altKm = cam.distanceTo(centre) * kmTrue - 6371;
     const low = 1 - THREE.MathUtils.smoothstep(altKm, 60, 150);
-    this.lens.exposure.maxGain = 1.6 + 1.2 * night * low;
+    // Keep night skies deep velvet black (never over-amplifying night clouds or clipping auroras)
+    this.lens.exposure.maxGain = 1.55 + 0.35 * night * low;
   }
 
   /** Draw one frame in this many (the fly page's opening sets 4; 1 is every frame). */

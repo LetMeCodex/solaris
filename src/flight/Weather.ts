@@ -138,11 +138,13 @@ export class Weather {
         float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
           return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y); }
         void main(){
-          // Billowing density so passing through cloud reads as cloud, not a flat fog
+          // Billowing density so passing through cloud reads as cloud, not a flat fog.
+          // Never paint a flat white lightning flash sheet across the whole camera — lightning
+          // illuminates the volumetric clouds and the 3D forked bolt directly!
           float n = noise(vUv * 3.0 + uTime * 0.35) * 0.6 + noise(vUv * 7.0 - uTime * 0.6) * 0.4;
-          float a = clamp(uAmount * (0.75 + 0.5 * n), 0.0, 0.97);
-          vec3 col = uColor * (0.85 + 0.25 * n) + vec3(uFlash * 1.5);
-          gl_FragColor = vec4(col, max(a, uFlash * 0.5));
+          float a = clamp(uAmount * (0.75 + 0.5 * n), 0.0, 0.92);
+          vec3 col = uColor * (0.85 + 0.25 * n) + vec3(0.45, 0.55, 0.75) * uFlash * a;
+          gl_FragColor = vec4(col, a);
         }`,
       // Opaque-listed with custom blending so it draws first (under the jet), not after it
       transparent: false,
@@ -364,18 +366,17 @@ export class Weather {
         : 0;
     st.overcast = ctx.world === 'Earth'
       ? Math.max(
-          earthPrecip ? (kind === 'storm' ? 0.92 : 0.72) * Math.max(0.65, strength) * belowDeck : 0,
+          earthPrecip ? (kind === 'storm' ? 0.88 : kind === 'snow' ? 0.36 : 0.62) * Math.max(0.65, strength) * belowDeck : 0,
           liveOvercast * belowDeck,
         )
       : 0;
     setSkyOvercast(st.overcast);
 
-    // Cloud: on Earth the deck where it is raining (1–9 km); dust and haze fill the air on Mars/Venus
-    // Over Earth with the live weather the volumetric clouds are drawn in the scene itself
-    const volumetric = ctx.world === 'Earth' && this.live !== null && this.mode === 'auto';
-    const inDeck = ctx.world === 'Earth' && kind !== 'clear' && !volumetric ? THREE.MathUtils.smoothstep(ctx.altKm, 0.8, 1.6) * (1 - THREE.MathUtils.smoothstep(ctx.altKm, 7.5, 9.5)) : 0;
+    // Cloud veil: Earth uses real 3D volumetric clouds across ALL weather modes (clear/rain/snow/storm/auto),
+    // so only show soft interior cloud mist when physically flying inside a volumetric cloud (`this.cloudInside`).
+    // Never smother high-elevation alpine valleys (Lauterbrunnen 1.8km, Everest) in a flat 2D grey veil!
     const puffs = 0.55 + 0.45 * Math.sin(timeSec * 0.9 + ctx.lonDeg * 40) * Math.sin(timeSec * 0.37 + ctx.latDeg * 31);
-    let cloud = Math.max(inDeck * puffs * (kind === 'storm' ? 0.95 : 0.8), ctx.world === 'Earth' ? this.cloudInside : 0);
+    let cloud = ctx.world === 'Earth' ? Math.min(0.68, this.cloudInside * 0.72) : 0;
     const veilColor = this.veilMat.uniforms.uColor.value as THREE.Color;
     const light = 0.25 + 0.75 * ctx.daylight;
     if (kind === 'dust') {
@@ -394,10 +395,8 @@ export class Weather {
       const grey = kind === 'storm' ? 0.26 : 0.58;
       veilColor.setRGB(grey * light, (grey + 0.01) * light, (grey + 0.04) * light);
     }
-    // Under the deck while it rains or snows: a moody overcast haze, not a clear sunny sky
-    if (ctx.world === 'Earth' && kind !== 'clear' && ctx.altKm < 2.2) {
-      cloud = Math.max(cloud, (kind === 'storm' ? 0.38 : 0.22) * Math.max(0.5, strength));
-    }
+    // Keep air below the storm/snow deck crisp and high-contrast (like real weather below cloud base)
+    // so cities, wet streets, snowflakes, rain streaks & lightning are never washed out by flat grey fog.
     st.cloud = cloud;
 
     // Lightning: thunderstorms, and the deep storms of Jupiter and Saturn
