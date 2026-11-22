@@ -104,10 +104,10 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
         lastStage = load.stage;
         say(`observatory  ${Math.round(load.progress * 100)}%  ${load.stage}`);
       }
-      if (sc && sc.drawEvery === 1 && !ready) {
-        // Pump tile traversal & GPU texture uploads at 30 Hz behind FlyPreloader so 4K buildings arrive immediately
-        sc.drawEvery = 2;
-        // Shaders compile in parallel behind the film instead of freezing it (see CompileGate)
+      if (sc && !ready) {
+        // Keep full 60 Hz tile streaming & GPU upload pumping behind FlyPreloader so the entire
+        // city/country blanket loads completely before ENGAGE unlocks!
+        sc.drawEvery = 1;
         sc.compileGate = 'hold';
       }
       if (load.done && sc && !startedAt) {
@@ -149,21 +149,21 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
       const streaming = startedAt > 0 && r.jet;
       peakPending = Math.max(peakPending, r.tilesPending);
       const isCompactFly = typeof window !== 'undefined' && (window.innerWidth < 820 || window.innerHeight < 480);
-      const targetDetailed = isCompactFly ? 4 : 10;
-      const settleDetailed = isCompactFly ? 2 : 5;
+      const targetDetailed = isCompactFly ? 6 : 14;
+      const settleDetailed = isCompactFly ? 4 : 10;
       const tilesFrac = !streaming
         ? 0
         : r.spawnTilesReady
           ? 1
           : r.tilesVisible === 0
             ? 0.08
-            : Math.min(1, Math.max(1 - r.tilesPending / Math.max(peakPending, 24), Math.min(0.96, Math.max(r.detailedTiles / targetDetailed, r.tilesVisible / (targetDetailed * 2)))));
-      if (streaming && r.detailedTiles >= settleDetailed) quietSince ||= now;
+            : Math.min(1, Math.max(1 - r.tilesPending / Math.max(peakPending, 36), Math.min(0.96, Math.max(r.detailedTiles / targetDetailed, r.tilesVisible / (targetDetailed * 2.2)))));
+      if (streaming && r.detailedTiles >= settleDetailed && r.tilesVisible >= settleDetailed * 2) quietSince ||= now;
       else quietSince = 0;
-      const settled = quietSince > 0 && now - quietSince > 900;
-      const enoughTiles = Boolean(r.spawnTilesReady) || r.detailedTiles >= targetDetailed || (r.detailedTiles >= 4 && r.tilesPending <= 6);
-      // Bounded <= 5.5s spawn-tile pre-warm cap so crisp 4K city tiles are on screen before ENGAGE
-      const timedOut = startedAt > 0 && now - startedAt > 5500;
+      const settled = quietSince > 0 && now - quietSince > 1100;
+      const enoughTiles = Boolean(r.spawnTilesReady) || (r.detailedTiles >= targetDetailed && r.tilesVisible >= targetDetailed * 2);
+      // Generous 11.5s pre-warm window so the full city/country blanket is 100% loaded before ENGAGE
+      const timedOut = startedAt > 0 && now - startedAt > 11500;
       const toured = tourStep >= TOUR.length;
       ready = ready || (load.done && r.jet && r.aircraft && ((toured && (enoughTiles || settled)) || timedOut));
       if (ready && sc && tourStep >= 0 && tourStep < TOUR.length) {

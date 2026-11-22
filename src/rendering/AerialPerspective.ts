@@ -135,12 +135,13 @@ vec3 apSky(float sunUp) {
 // up to ~4.5 in poor visibility; toEye: unit vector from the point to the eye; sunDir: unit, to the
 // Sun; sunUp: the Sun's height (sine) at the point
 vec3 aerialPerspective(vec3 col, float distKm, float hMeanKm, float haze, vec3 toEye, vec3 sunDir, float sunUp) {
-  float low = 1.0 - smoothstep(0.04, 0.38, sunUp);
+  float low = 1.0 - smoothstep(0.04, 0.36, sunUp);
   float lit = smoothstep(-0.12, 0.06, sunUp);
-  vec3 betaR = vec3(0.0058, 0.0135, 0.0331);
-  // The golden-hour mist: thick in the low light of morning and evening
-  float betaM = (0.010 + 0.022 * haze) * (1.0 + 4.5 * low * lit);
-  float hM = mix(1.5, 0.8, low);
+  // Crisp real-world clear-sky Rayleigh + thin Mie aerosol scattering: preserves 60-160 km
+  // mountain & skyline visibility so 8,849 m peaks (Everest, Matterhorn) & cities feel truly 1:1 vast!
+  vec3 betaR = vec3(0.0046, 0.0108, 0.0265);
+  float betaM = (0.0042 + 0.0095 * haze) * (1.0 + 1.55 * low * lit);
+  float hM = mix(1.85, 1.0, low);
   vec3 odR = distKm * betaR * exp(-hMeanKm / 8.0);
   float odM = distKm * betaM * exp(-hMeanKm / hM);
   vec3 od = odR + vec3(odM);

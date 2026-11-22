@@ -31,15 +31,18 @@ import { formatAltitudeMeters, resolveAltitudeTelemetry } from './TacticalHud';
 const RES = 2048;
 const S = 1024;
 const PFD_FOV = 58;
+const STANDBY_W = 1024;
+const STANDBY_H = 512;
 
-const MINT = '#6dfcc0';
-const MINT_DIM = 'rgba(109, 252, 192, 0.44)';
-const AMBER = '#f4cd72';
-const CYAN = '#7ae8ff';
-const RED = '#ff6c6c';
-const BG_PANEL = 'rgba(8, 13, 19, 0.98)';
-const BG_SCRIM = 'rgba(6, 11, 16, 0.68)';
-const GRID_LINE = 'rgba(109, 252, 192, 0.16)';
+const MINT = '#58ffaa';
+const MINT_DIM = 'rgba(88, 255, 170, 0.56)';
+const AMBER = '#ffbe4d';
+const CYAN = '#6be6ff';
+const RED = '#ff5252';
+const BG_PANEL = '#050a08';
+const BG_SCRIM = 'rgba(4, 9, 7, 0.84)';
+const BG_PILL = 'rgba(4, 10, 8, 0.88)';
+const GRID_LINE = 'rgba(88, 255, 170, 0.18)';
 const MONO = '"JetBrains Mono", ui-monospace, monospace';
 
 const PAGE_ORDER: readonly MfdPage[] = ['PFD', 'FCS', 'ENG', 'NAV'];
@@ -71,29 +74,70 @@ uniform sampler2D tNav;
 uniform float uViews;
 uniform vec3 uModes;
 varying vec2 vUv;
-vec3 srgbToLinear(vec3 c) { return pow(c, vec3(2.2)); }
+vec3 srgbToLinear(vec3 c) { return pow(max(c, vec3(0.0)), vec3(2.2)); }
+// Filmic HDR rolloff so sunlit sky/clouds/ocean NEVER bleach the OLED underlay white
+vec3 compressHdr(vec3 c, float exposure) {
+  vec3 x = max(c, vec3(0.0)) * exposure;
+  return x / (vec3(1.0) + x);
+}
 vec2 local(vec2 uv, vec4 r) {
   vec2 l = (uv - r.xy) / r.zw;
   return (l.x < 0.0 || l.y < 0.0 || l.x > 1.0 || l.y > 1.0) ? vec2(-1.0) : l;
 }
 vec3 sampleMode(float m, vec2 uv) {
-  vec3 res = vec3(0.0);
-  if (m > 1.5) res = texture2D(tNav, uv).rgb * 0.85;
-  else if (m > 0.5) res = texture2D(tPfd, uv).rgb * 0.90;
-  return res;
+  // Deep anti-glare fighter OLED black base (#050a08 in linear)
+  vec3 oledBlack = vec3(0.0035, 0.0075, 0.0055);
+  if (m > 1.5) {
+    // NAV moving-map underlay: compressed dark tactical satellite grade so mint/amber symbology pops
+    vec3 raw = texture2D(tNav, uv).rgb;
+    vec3 tm = compressHdr(raw, 0.62);
+    float luma = dot(tm, vec3(0.2126, 0.7152, 0.0722));
+    vec3 graded = mix(vec3(luma * 0.78, luma * 0.94, luma * 0.88), tm, 0.48);
+    return oledBlack + graded * 0.30;
+  }
+  if (m > 0.5) {
+    // PFD synthetic-vision underlay: crisp dark-graded horizon/terrain without sunlit white washout
+    vec3 raw = texture2D(tPfd, uv).rgb;
+    vec3 tm = compressHdr(raw, 0.72);
+    vec3 graded = mix(tm, tm * vec3(0.84, 0.96, 1.04), 0.35);
+    return oledBlack + graded * 0.42;
+  }
+  return oledBlack;
 }
 void main() {
   vec4 sym = texture2D(tCanvas, vec2(vUv.x, 1.0 - vUv.y));
-  vec3 col = vec3(0.0);
+  vec3 col = vec3(0.0035, 0.0075, 0.0055);
+  vec2 screenUv = vec2(0.5);
   if (uViews > 0.5) {
     vec2 lLeft = local(vUv, vec4(0.0078125, 0.564453125, 0.484375, 0.37109375));
     vec2 lCentre = local(vUv, vec4(0.064453125, 0.00390625, 0.375, 0.48828125));
     vec2 lRight = local(vUv, vec4(0.5078125, 0.064453125, 0.484375, 0.37109375));
-    if (lLeft.x >= 0.0) col = sampleMode(uModes.x, lLeft);
-    else if (lCentre.x >= 0.0) col = sampleMode(uModes.y, lCentre);
-    else if (lRight.x >= 0.0) col = sampleMode(uModes.z, lRight);
+    if (lLeft.x >= 0.0) { col = sampleMode(uModes.x, lLeft); screenUv = lLeft; }
+    else if (lCentre.x >= 0.0) { col = sampleMode(uModes.y, lCentre); screenUv = lCentre; }
+    else if (lRight.x >= 0.0) { col = sampleMode(uModes.z, lRight); screenUv = lRight; }
   }
-  col = mix(col, srgbToLinear(sym.rgb) * 1.55, sym.a);
+  // Subtle OLED bezel vignette & anti-reflective glass coating (never milky)
+  vec2 d = screenUv - 0.5;
+  float vig = 1.0 - dot(d, d) * 0.24;
+  col *= vig;
+  // Crisp high-contrast military OLED emissive symbology
+  vec3 symLin = srgbToLinear(sym.rgb) * 1.48;
+  col = mix(col, symLin, sym.a);
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+const standbyFrag = /* glsl */ `
+uniform sampler2D tStandby;
+varying vec2 vUv;
+vec3 srgbToLinear(vec3 c) { return pow(max(c, vec3(0.0)), vec3(2.2)); }
+void main() {
+  vec4 tex = texture2D(tStandby, vUv);
+  // High-contrast self-luminous anti-glare cockpit instrumentation (zero sunlight washout)
+  vec3 col = srgbToLinear(tex.rgb) * 1.32;
+  // Ultra-subtle optical glass bezel shading across each tile
+  vec2 tileUv = fract(vUv * vec2(4.0, 2.0)) - 0.5;
+  float glassSpec = smoothstep(0.62, 0.0, length(tileUv - vec2(-0.18, -0.22))) * 0.012;
+  col += vec3(0.004, 0.008, 0.007) + vec3(glassSpec);
   gl_FragColor = vec4(col, 1.0);
 }`;
 
@@ -110,6 +154,17 @@ export class MfdDisplays {
   private canvas = document.createElement('canvas');
   private ctx: CanvasRenderingContext2D;
   private last = -1;
+
+  // Dedicated 60 FPS standby instrument & glareshield annunciator atlas (4x2 tiles = 1024x512)
+  private standbyCanvas = document.createElement('canvas');
+  private standbyCtx: CanvasRenderingContext2D;
+  private standbyTex: THREE.CanvasTexture;
+  private standbyMat: THREE.ShaderMaterial;
+  private standbyAttached = false;
+  private lastStandby = -1;
+  private smoothEgtC = 420;
+  private smoothVsiMps = 0;
+  private smoothG = 1;
 
   private pfdTarget = new THREE.WebGLRenderTarget(384, 500, { type: THREE.HalfFloatType });
   private navTarget = new THREE.WebGLRenderTarget(496, 380, { type: THREE.HalfFloatType });
@@ -137,6 +192,25 @@ export class MfdDisplays {
     this.texture.anisotropy = 16;
     this.texture.generateMipmaps = true;
     this.texture.minFilter = THREE.LinearMipmapLinearFilter;
+
+    this.standbyCanvas.width = STANDBY_W;
+    this.standbyCanvas.height = STANDBY_H;
+    this.standbyCtx = this.standbyCanvas.getContext('2d') as CanvasRenderingContext2D;
+    this.standbyTex = new THREE.CanvasTexture(this.standbyCanvas);
+    this.standbyTex.colorSpace = THREE.SRGBColorSpace;
+    this.standbyTex.flipY = false;
+    this.standbyTex.anisotropy = 16;
+    this.standbyTex.generateMipmaps = true;
+    this.standbyTex.minFilter = THREE.LinearMipmapLinearFilter;
+
+    this.standbyMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tStandby: { value: this.standbyTex },
+      },
+      vertexShader: screenVert,
+      fragmentShader: standbyFrag,
+    });
+    this.standbyMat.name = 'dynamic_standby_live';
 
     this.screenMat = new THREE.ShaderMaterial({
       uniforms: {
@@ -286,34 +360,44 @@ export class MfdDisplays {
 
   public dispose(): void {
     this.meshes = [];
+    this.standbyAttached = false;
     this.pfdTarget.dispose();
     this.navTarget.dispose();
     this.screenMat.dispose();
     this.texture.dispose();
+    this.standbyMat.dispose();
+    this.standbyTex.dispose();
   }
 
-  /** Attach live MFD shader material to every `dynamic_mfd` mesh in the jet hierarchy. */
+  /** Attach live MFD and standby-gauge shader materials to `dynamic_mfd` and `dynamic_standby` meshes. */
   public attach(root: THREE.Object3D): number {
     this.meshes = [];
+    this.standbyAttached = false;
     let n = 0;
     root.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      let matched = false;
+      let matchedMfd = false;
       mats.forEach((m, i) => {
-        if (m.name !== 'dynamic_mfd') return;
-        if (Array.isArray(mesh.material)) mesh.material[i] = this.screenMat;
-        else mesh.material = this.screenMat;
-        matched = true;
-        n++;
+        if (m.name === 'dynamic_mfd') {
+          if (Array.isArray(mesh.material)) mesh.material[i] = this.screenMat;
+          else mesh.material = this.screenMat;
+          matchedMfd = true;
+          n++;
+        } else if (m.name === 'dynamic_standby') {
+          if (Array.isArray(mesh.material)) mesh.material[i] = this.standbyMat;
+          else mesh.material = this.standbyMat;
+          this.standbyAttached = true;
+        }
       });
-      if (matched && !this.meshes.includes(mesh)) {
+      if (matchedMfd && !this.meshes.includes(mesh)) {
         this.meshes.push(mesh);
       }
     });
     this.forceAllDirty = true;
     this.drawnOnce = false;
+    this.lastStandby = -1;
     return n;
   }
 
@@ -334,7 +418,14 @@ export class MfdDisplays {
       }
     }
 
-    if (!this.forceAllDirty && timeSec - this.last < 0.04) return;
+    // Update live 60 FPS standby instruments (speedometer, ADI, altimeter, VSI/G, RPM, EGT, AoA, Annunciators)
+    if (this.standbyAttached && (this.lastStandby < 0 || timeSec - this.lastStandby >= 0.016)) {
+      const dtS = this.lastStandby < 0 ? 0.016 : clamp(timeSec - this.lastStandby, 0.001, 0.1);
+      this.lastStandby = timeSec;
+      this.drawStandbyCluster(t, dtS);
+    }
+
+    if (!this.forceAllDirty && timeSec - this.last < 0.028) return;
     this.last = timeSec;
 
     const c = this.ctx;
@@ -567,49 +658,68 @@ export class MfdDisplays {
     c.fillStyle = (t.fbwMode ?? 'norm') === 'psm' ? CYAN : MINT;
     c.fillText(`FBW ${(t.fbwMode ?? 'norm').toUpperCase()}`, r.x + r.w - 8, r.y + 21);
 
-    // Left Tape: Speed, Mach, Alpha, G
+    // Left Tape: Speed (IAS + kt), Mach, Alpha, G
     const lx = r.x + 8;
     const ias = t.airDensity > 0 && t.iasMps !== undefined ? t.iasMps : t.speedMps;
+    const iasKt = Math.round(ias * 1.943844);
+    c.fillStyle = BG_PILL;
+    c.strokeStyle = MINT;
+    c.lineWidth = 1.2;
+    c.fillRect(r.x + 4, cy - 23, tapeW - 8, 24);
+    c.strokeRect(r.x + 4, cy - 23, tapeW - 8, 24);
     c.textAlign = 'left';
     c.fillStyle = MINT_DIM;
     c.font = `600 10px ${MONO}`;
-    c.fillText(t.airDensity > 0 ? 'IAS' : 'SPD', lx, cy - 26);
+    c.fillText(t.airDensity > 0 ? 'IAS' : 'SPD', lx, cy - 28);
     c.fillStyle = MINT;
-    c.font = `700 15px ${MONO}`;
+    c.font = `700 14px ${MONO}`;
     c.fillText(formatSpeed(ias), lx, cy - 6);
-    c.font = `600 12px ${MONO}`;
-    c.fillStyle = t.mach >= 1 ? CYAN : MINT_DIM;
-    c.fillText(t.airDensity > 0 ? `M ${t.mach.toFixed(2)}` : 'VAC', lx, cy + 16);
-    c.fillStyle = t.alphaWarning ? AMBER : MINT;
-    c.fillText(`α ${aoa.toFixed(1)}°`, lx, cy + 36);
+    c.font = `600 11px ${MONO}`;
+    if (t.airDensity > 0) {
+      c.fillStyle = MINT_DIM;
+      c.fillText(`${iasKt} KT`, lx, cy + 14);
+      c.fillStyle = t.mach >= 1 ? CYAN : MINT;
+      c.fillText(`M ${t.mach.toFixed(2)}`, lx, cy + 31);
+      c.fillStyle = t.alphaWarning ? AMBER : MINT;
+      c.fillText(`α ${aoa.toFixed(1)}°`, lx, cy + 48);
+    } else {
+      c.fillStyle = MINT_DIM;
+      c.fillText('VAC', lx, cy + 16);
+    }
     c.fillStyle = t.overGWarning ? RED : MINT;
-    c.fillText(`G ${t.gLoad.toFixed(1)}`, lx, cy + 56);
+    c.fillText(`G ${t.gLoad.toFixed(1)}`, lx, cy + 65);
 
     // Right Tape: AGL, MSL, VSI, Ps, T/W
     const altInfo = resolveAltitudeTelemetry(t);
     const rx = r.x + r.w - 8;
     const inAir = !!t.airWorld;
+    const altCol = inAir && altInfo.gpwsMode === 'pull-up' ? RED : inAir && altInfo.gpwsMode === 'caution' ? AMBER : MINT;
+    c.fillStyle = BG_PILL;
+    c.strokeStyle = altCol;
+    c.lineWidth = 1.2;
+    c.fillRect(r.x + r.w - tapeW + 4, cy - 23, tapeW - 8, 24);
+    c.strokeRect(r.x + r.w - tapeW + 4, cy - 23, tapeW - 8, 24);
     c.textAlign = 'right';
     c.fillStyle = inAir && altInfo.terrainWarning ? RED : MINT_DIM;
     c.font = `600 10px ${MONO}`;
-    c.fillText(inAir ? 'AGL' : 'ALT', rx, cy - 32);
-    c.fillStyle = inAir && altInfo.gpwsMode === 'pull-up' ? RED : inAir && altInfo.gpwsMode === 'caution' ? AMBER : MINT;
-    c.font = `700 15px ${MONO}`;
-    c.fillText(inAir ? formatDistance(altInfo.aglM / 1000) : formatDistance(t.altKm), rx, cy - 13);
+    c.fillText(inAir ? 'AGL' : 'ALT', rx, cy - 28);
+    c.fillStyle = altCol;
+    c.font = `700 14px ${MONO}`;
+    c.fillText(inAir ? formatDistance(altInfo.aglM / 1000) : formatDistance(t.altKm), rx, cy - 6);
     c.font = `600 10.5px ${MONO}`;
     if (inAir) {
       c.fillStyle = CYAN;
-      c.fillText(`MSL ${formatAltitudeMeters(altInfo.mslM)}`, rx, cy + 5);
+      c.fillText(`MSL ${formatAltitudeMeters(altInfo.mslM)}`, rx, cy + 14);
     }
-    c.font = `600 11.5px ${MONO}`;
+    c.font = `600 11px ${MONO}`;
     const vsi = Math.round(t.verticalSpeedMps ?? 0);
     c.fillStyle = vsi >= 0 ? MINT : AMBER;
-    c.fillText(`VS ${vsi >= 0 ? '+' : ''}${vsi}`, rx, cy + 23);
+    c.fillText(`VS ${vsi >= 0 ? '+' : ''}${vsi}`, rx, cy + 31);
     const ps = Math.round(t.specificExcessPowerMps ?? 0);
     c.fillStyle = ps >= 0 ? MINT : AMBER;
-    c.fillText(`Ps ${ps >= 0 ? '+' : ''}${ps}`, rx, cy + 41);
+    c.fillText(`Ps ${ps >= 0 ? '+' : ''}${ps}`, rx, cy + 48);
     c.fillStyle = MINT_DIM;
-    c.fillText(`T/W ${(t.twRatio ?? 0).toFixed(2)}`, rx, cy + 59);
+    c.fillText(`T/W ${(t.twRatio ?? 0).toFixed(2)}`, rx, cy + 65);
 
     // PFD central GPWS banner when terrain warning triggers
     if (inAir && altInfo.terrainWarning) {
@@ -1263,5 +1373,677 @@ export class MfdDisplays {
     c.font = `600 10px ${MONO}`;
     c.fillText(`CLS ${formatSpeed(t.closingMps)}`, r.x + r.w - 10, by);
     c.fillText(t.weather.toUpperCase(), r.x + r.w - 10, by + 16);
+  }
+
+  // ===========================================================================
+  // LIVE 60 FPS STANDBY INSTRUMENTS & GLARESHIELD ANNUNCIATOR CLUSTER (4x2 ATLAS)
+  // ===========================================================================
+  private drawStandbyCluster(t: JetTelemetry, dt: number): void {
+    const c = this.standbyCtx;
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.shadowBlur = 0;
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    c.fillStyle = '#050a08';
+    c.fillRect(0, 0, STANDBY_W, STANDBY_H);
+
+    // Smooth needle response for engine EGT, VSI and G-load (zero jitter, real-instrument inertia)
+    const kFast = 1 - Math.exp(-16 * dt);
+    const kEgt = 1 - Math.exp(-3.5 * dt);
+    const thr = clamp(t.throttle, 0, 1);
+    const abStage = t.abStage ?? (t.boost > 0.66 ? 3 : t.boost > 0.33 ? 2 : t.boost > 0 ? 1 : 0);
+    const targetEgt = 360 + thr * 410 + abStage * 78 + (t.supercruise ? 55 : 0);
+    this.smoothEgtC += (targetEgt - this.smoothEgtC) * kEgt;
+    this.smoothVsiMps += ((t.verticalSpeedMps ?? 0) - this.smoothVsiMps) * kFast;
+    this.smoothG += (t.gLoad - this.smoothG) * kFast;
+
+    // Row 0: Primary standby gauges (Speedometer, Artificial Horizon, Altimeter, VSI + G-Meter)
+    this.drawStandbySpeedometer(c, 128, 128, 118, t);
+    this.drawStandbyAdi(c, 384, 128, 118, t);
+    this.drawStandbyAltimeter(c, 640, 128, 118, t);
+    this.drawStandbyVsiG(c, 896, 128, 118, t);
+
+    // Row 1: Engine N1 RPM, Engine EGT/Fuel, AoA Indexer Pod, Master Caution/GPWS Annunciator Pod
+    this.drawStandbyRpm(c, 128, 384, 118, thr, abStage, Boolean(t.supercruise));
+    this.drawStandbyEgtFuel(c, 384, 384, 118, t);
+    this.drawStandbyAoaIndexer(c, 512, 256, 256, 256, t);
+    this.drawStandbyAnnunciators(c, 768, 256, 256, 256, t, abStage);
+
+    this.standbyTex.needsUpdate = true;
+  }
+
+  private drawDialBackdrop(c: CanvasRenderingContext2D, cx: number, cy: number, r: number): void {
+    c.fillStyle = '#070b0d';
+    c.beginPath();
+    c.arc(cx, cy, r, 0, Math.PI * 2);
+    c.fill();
+    c.strokeStyle = '#2a3338';
+    c.lineWidth = 4;
+    c.stroke();
+    c.strokeStyle = 'rgba(109, 252, 192, 0.22)';
+    c.lineWidth = 1.5;
+    c.beginPath();
+    c.arc(cx, cy, r - 4, 0, Math.PI * 2);
+    c.stroke();
+  }
+
+  private drawNeedle(
+    c: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    angRad: number,
+    len: number,
+    tail: number,
+    color: string,
+    width = 5,
+  ): void {
+    const cs = Math.cos(angRad);
+    const sn = Math.sin(angRad);
+    c.strokeStyle = color;
+    c.lineWidth = width;
+    c.beginPath();
+    c.moveTo(cx - cs * tail, cy - sn * tail);
+    c.lineTo(cx + cs * len, cy + sn * len);
+    c.stroke();
+
+    // Luminous tip accent
+    c.strokeStyle = '#ffffff';
+    c.lineWidth = Math.max(2, width - 2);
+    c.beginPath();
+    c.moveTo(cx + cs * (len * 0.68), cy + sn * (len * 0.68));
+    c.lineTo(cx + cs * len, cy + sn * len);
+    c.stroke();
+
+    // Center pivot cap
+    c.fillStyle = '#1b2024';
+    c.strokeStyle = '#6c7780';
+    c.lineWidth = 2;
+    c.beginPath();
+    c.arc(cx, cy, 9, 0, Math.PI * 2);
+    c.fill();
+    c.stroke();
+  }
+
+  /** Tile (0,0): Live Speedometer (IAS 0..1400 km/h + digital KT & Mach window). */
+  private drawStandbySpeedometer(c: CanvasRenderingContext2D, cx: number, cy: number, r: number, t: JetTelemetry): void {
+    this.drawDialBackdrop(c, cx, cy, r);
+    const iasMps = t.airDensity > 0 && t.iasMps !== undefined ? t.iasMps : t.speedMps;
+    const kmh = iasMps * 3.6;
+    const kt = Math.round(iasMps * 1.943844);
+
+    // Scale 0..1400 km/h mapped from 135 deg (bottom-left) clockwise 300 deg to 75 deg
+    const aStart = (135 * Math.PI) / 180;
+    const aSweep = (300 * Math.PI) / 180;
+
+    // Redline Vne arc (1200..1400 km/h)
+    c.strokeStyle = RED;
+    c.lineWidth = 6;
+    c.beginPath();
+    c.arc(cx, cy, r - 11, aStart + (1200 / 1400) * aSweep, aStart + aSweep);
+    c.stroke();
+
+    // Green normal flight arc (250..1200 km/h)
+    c.strokeStyle = 'rgba(88, 255, 170, 0.35)';
+    c.lineWidth = 3;
+    c.beginPath();
+    c.arc(cx, cy, r - 11, aStart + (250 / 1400) * aSweep, aStart + (1200 / 1400) * aSweep);
+    c.stroke();
+
+    // Major & minor ticks every 50 / 100 / 200 km/h
+    c.font = `700 17px ${MONO}`;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    for (let v = 0; v <= 1400; v += 50) {
+      const a = aStart + (v / 1400) * aSweep;
+      const cs = Math.cos(a);
+      const sn = Math.sin(a);
+      const major = v % 200 === 0;
+      const mid = v % 100 === 0;
+      const inner = r - (major ? 26 : mid ? 19 : 14);
+      c.strokeStyle = v >= 1200 ? RED : major ? '#eef4f0' : 'rgba(210, 226, 218, 0.6)';
+      c.lineWidth = major ? 2.6 : 1.4;
+      c.beginPath();
+      c.moveTo(cx + cs * (r - 8), cy + sn * (r - 8));
+      c.lineTo(cx + cs * inner, cy + sn * inner);
+      c.stroke();
+      if (major) {
+        c.fillStyle = v >= 1200 ? RED : '#e6f5ee';
+        c.fillText(String(v / 100), cx + cs * (r - 40), cy + sn * (r - 40));
+      }
+    }
+    c.textBaseline = 'alphabetic';
+
+    // Top label
+    c.fillStyle = MINT_DIM;
+    c.font = `700 12px ${MONO}`;
+    c.fillText('IAS KM/H ×100', cx, cy - 30);
+
+    // Digital KT + Mach drum box (lower center)
+    c.fillStyle = '#030706';
+    c.strokeStyle = 'rgba(88, 255, 170, 0.55)';
+    c.lineWidth = 1.6;
+    c.fillRect(cx - 52, cy + 28, 104, 46);
+    c.strokeRect(cx - 52, cy + 28, 104, 46);
+    c.fillStyle = MINT;
+    c.font = `700 19px ${MONO}`;
+    c.fillText(`${Math.min(9999, kt)} KT`, cx, cy + 48);
+    c.fillStyle = t.mach >= 1 ? CYAN : AMBER;
+    c.font = `700 15px ${MONO}`;
+    c.fillText(t.airDensity > 0 ? `M ${t.mach.toFixed(2)}` : 'VACUUM', cx, cy + 68);
+
+    // Live sweeping airspeed needle
+    const frac = clamp(kmh / 1400, 0, 1.03);
+    const needleAng = aStart + frac * aSweep;
+    this.drawNeedle(c, cx, cy, needleAng, r - 20, 24, kmh >= 1200 ? RED : MINT, 5);
+  }
+
+  /** Tile (1,0): Live Standby Artificial Horizon (ADI pitch/roll sphere + slip indicator). */
+  private drawStandbyAdi(c: CanvasRenderingContext2D, cx: number, cy: number, r: number, t: JetTelemetry): void {
+    this.drawDialBackdrop(c, cx, cy, r);
+    const innerR = r - 10;
+
+    c.save();
+    c.beginPath();
+    c.arc(cx, cy, innerR, 0, Math.PI * 2);
+    c.clip();
+
+    // Rotate & shift horizon sphere
+    c.save();
+    c.translate(cx, cy);
+    c.rotate((-t.rollDeg * Math.PI) / 180);
+    const pitchPx = clamp(t.pitchDeg, -65, 65) * 2.2;
+
+    // Sky & ground hemispheres
+    c.fillStyle = '#12497a';
+    c.fillRect(-innerR * 2, -innerR * 3, innerR * 4, innerR * 3 + pitchPx);
+    c.fillStyle = '#4a2e16';
+    c.fillRect(-innerR * 2, pitchPx, innerR * 4, innerR * 3);
+
+    // Crisp horizon line
+    c.strokeStyle = '#ffffff';
+    c.lineWidth = 3;
+    c.beginPath();
+    c.moveTo(-innerR * 1.4, pitchPx);
+    c.lineTo(innerR * 1.4, pitchPx);
+    c.stroke();
+
+    // Pitch ladder bars (-30..+30 deg)
+    c.strokeStyle = 'rgba(235, 250, 242, 0.9)';
+    c.fillStyle = '#eafaf2';
+    c.font = `700 12px ${MONO}`;
+    c.textAlign = 'center';
+    for (let deg = -30; deg <= 30; deg += 10) {
+      if (deg === 0) continue;
+      const y = pitchPx - deg * 2.2;
+      const hw = deg % 20 === 0 ? 34 : 20;
+      c.lineWidth = 2;
+      c.beginPath();
+      c.moveTo(-hw, y);
+      c.lineTo(hw, y);
+      c.stroke();
+      if (deg % 20 === 0) {
+        c.fillText(String(Math.abs(deg)), -hw - 14, y + 4);
+        c.fillText(String(Math.abs(deg)), hw + 14, y + 4);
+      }
+    }
+    c.restore();
+
+    // Bank angle scale along upper perimeter
+    c.strokeStyle = '#eef4f0';
+    c.lineWidth = 2;
+    const bankTicks = [-60, -45, -30, -15, 0, 15, 30, 45, 60];
+    for (const deg of bankTicks) {
+      const a = -Math.PI * 0.5 + (deg * Math.PI) / 180;
+      const len = deg % 30 === 0 ? 12 : 7;
+      c.beginPath();
+      c.moveTo(cx + Math.cos(a) * (innerR - 2), cy + Math.sin(a) * (innerR - 2));
+      c.lineTo(cx + Math.cos(a) * (innerR - 2 - len), cy + Math.sin(a) * (innerR - 2 - len));
+      c.stroke();
+    }
+
+    // Rotating roll sky-pointer triangle
+    c.save();
+    c.translate(cx, cy);
+    c.rotate((-clamp(t.rollDeg, -65, 65) * Math.PI) / 180);
+    c.fillStyle = AMBER;
+    c.beginPath();
+    c.moveTo(0, -(innerR - 14));
+    c.lineTo(-7, -(innerR - 26));
+    c.lineTo(7, -(innerR - 26));
+    c.closePath();
+    c.fill();
+    c.restore();
+
+    // Fixed amber miniature aircraft waterline `-v-`
+    c.strokeStyle = AMBER;
+    c.lineWidth = 4;
+    c.beginPath();
+    c.moveTo(cx - 52, cy);
+    c.lineTo(cx - 16, cy);
+    c.lineTo(cx - 8, cy + 9);
+    c.moveTo(cx + 52, cy);
+    c.lineTo(cx + 16, cy);
+    c.lineTo(cx + 8, cy + 9);
+    c.stroke();
+    c.fillStyle = AMBER;
+    c.beginPath();
+    c.arc(cx, cy, 4.5, 0, Math.PI * 2);
+    c.fill();
+
+    // Bottom slip / skid ball
+    const slipY = cy + innerR - 20;
+    c.fillStyle = 'rgba(4, 9, 10, 0.85)';
+    c.strokeStyle = 'rgba(220, 235, 228, 0.55)';
+    c.lineWidth = 1.5;
+    c.fillRect(cx - 34, slipY - 8, 68, 16);
+    c.strokeRect(cx - 34, slipY - 8, 68, 16);
+    const ballX = cx + clamp((t.aosDeg ?? 0) * 2.2, -24, 24);
+    c.fillStyle = '#ffffff';
+    c.beginPath();
+    c.arc(ballX, slipY, 5.5, 0, Math.PI * 2);
+    c.fill();
+    c.strokeStyle = AMBER;
+    c.beginPath();
+    c.moveTo(cx - 8, slipY - 8);
+    c.lineTo(cx - 8, slipY + 8);
+    c.moveTo(cx + 8, slipY - 8);
+    c.lineTo(cx + 8, slipY + 8);
+    c.stroke();
+    c.restore();
+  }
+
+  /** Tile (2,0): Live Barometric / Radar Altimeter (dual pointers + digital AGL/MSL + GPWS flag). */
+  private drawStandbyAltimeter(c: CanvasRenderingContext2D, cx: number, cy: number, r: number, t: JetTelemetry): void {
+    this.drawDialBackdrop(c, cx, cy, r);
+    const altInfo = resolveAltitudeTelemetry(t);
+    const altM = t.airWorld ? altInfo.aglM : t.altKm * 1000;
+    const mslM = t.airWorld ? altInfo.mslM : t.altKm * 1000;
+
+    // 0..9 circular scale (1 revolution = 1000 m)
+    c.font = `700 20px ${MONO}`;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    for (let i = 0; i < 50; i++) {
+      const a = -Math.PI * 0.5 + (i / 50) * Math.PI * 2;
+      const cs = Math.cos(a);
+      const sn = Math.sin(a);
+      const major = i % 5 === 0;
+      c.strokeStyle = major ? '#eef4f0' : 'rgba(205, 224, 215, 0.55)';
+      c.lineWidth = major ? 2.6 : 1.4;
+      c.beginPath();
+      c.moveTo(cx + cs * (r - 8), cy + sn * (r - 8));
+      c.lineTo(cx + cs * (r - (major ? 24 : 15)), cy + sn * (r - (major ? 24 : 15)));
+      c.stroke();
+      if (major) {
+        c.fillStyle = '#e8f7f0';
+        c.fillText(String(i / 5), cx + cs * (r - 39), cy + sn * (r - 39));
+      }
+    }
+    c.textBaseline = 'alphabetic';
+
+    c.fillStyle = MINT_DIM;
+    c.font = `700 12px ${MONO}`;
+    c.fillText('ALT · METERS', cx, cy - 32);
+
+    // Digital drum window (AGL & MSL)
+    const warn = Boolean(t.airWorld && altInfo.terrainWarning);
+    const pull = altInfo.gpwsMode === 'pull-up' || t.warning === 1;
+    const boxCol = pull ? RED : warn ? AMBER : MINT;
+    c.fillStyle = '#030706';
+    c.strokeStyle = boxCol;
+    c.lineWidth = 1.8;
+    c.fillRect(cx - 56, cy + 22, 112, 50);
+    c.strokeRect(cx - 56, cy + 22, 112, 50);
+    c.fillStyle = boxCol;
+    c.font = `700 19px ${MONO}`;
+    c.fillText(altM < 10000 ? `${Math.round(altM)}M` : `${(altM / 1000).toFixed(1)}K`, cx, cy + 44);
+    c.fillStyle = CYAN;
+    c.font = `600 13px ${MONO}`;
+    c.fillText(`MSL ${mslM < 10000 ? Math.round(mslM) + 'M' : (mslM / 1000).toFixed(1) + 'K'}`, cx, cy + 64);
+
+    if (warn && Math.floor(t.timeSec * 4) % 2 === 0) {
+      c.fillStyle = pull ? RED : AMBER;
+      c.fillRect(cx - 28, cy - 60, 56, 18);
+      c.fillStyle = '#050a08';
+      c.font = `700 12px ${MONO}`;
+      c.fillText(pull ? 'PULL!' : 'LOW', cx, cy - 47);
+    }
+
+    // 10,000m broad short pointer + 1,000m crisp long pointer
+    const ang10k = -Math.PI * 0.5 + (((altM / 10000) % 1 + 1) % 1) * Math.PI * 2;
+    const ang1k = -Math.PI * 0.5 + (((altM / 1000) % 1 + 1) % 1) * Math.PI * 2;
+    this.drawNeedle(c, cx, cy, ang10k, r - 48, 16, AMBER, 7);
+    this.drawNeedle(c, cx, cy, ang1k, r - 18, 22, '#eef8f2', 4);
+  }
+
+  /** Tile (3,0): Live VSI (±60 m/s) + G-Load Meter (-3..+10 G with peak bug). */
+  private drawStandbyVsiG(c: CanvasRenderingContext2D, cx: number, cy: number, r: number, t: JetTelemetry): void {
+    this.drawDialBackdrop(c, cx, cy, r);
+
+    // Outer VSI scale: 0 at 9 o'clock (PI), +60 m/s clockwise to 3 o'clock (2*PI - 0.35), -60 counter-clockwise
+    const vsiClamped = clamp(this.smoothVsiMps, -60, 60);
+    const maxAngle = (150 * Math.PI) / 180;
+    c.font = `700 14px ${MONO}`;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    const vsiMarks = [-60, -40, -20, -10, 0, 10, 20, 40, 60];
+    for (const v of vsiMarks) {
+      const a = Math.PI + (v / 60) * maxAngle;
+      const cs = Math.cos(a);
+      const sn = Math.sin(a);
+      c.strokeStyle = v === 0 ? AMBER : v > 0 ? MINT : '#e8b97c';
+      c.lineWidth = v % 20 === 0 ? 2.6 : 1.6;
+      c.beginPath();
+      c.moveTo(cx + cs * (r - 8), cy + sn * (r - 8));
+      c.lineTo(cx + cs * (r - 22), cy + sn * (r - 22));
+      c.stroke();
+      if (v % 20 === 0) {
+        c.fillStyle = v > 0 ? MINT : v < 0 ? AMBER : '#ffffff';
+        c.fillText(String(Math.abs(v)), cx + cs * (r - 36), cy + sn * (r - 36));
+      }
+    }
+    c.textBaseline = 'alphabetic';
+
+    c.fillStyle = MINT_DIM;
+    c.font = `700 12px ${MONO}`;
+    c.fillText('VSI m/s · G-LOAD', cx, cy - 30);
+
+    // Inner digital G-meter & peak G pill + live G arc bar
+    const gPeak = t.gPeak ?? t.gLoad;
+    const gCol = t.overGWarning ? RED : this.smoothG > 6.5 ? AMBER : CYAN;
+    c.fillStyle = '#030706';
+    c.strokeStyle = gCol;
+    c.lineWidth = 1.8;
+    c.fillRect(cx - 52, cy + 20, 104, 48);
+    c.strokeRect(cx - 52, cy + 20, 104, 48);
+    c.fillStyle = gCol;
+    c.font = `700 20px ${MONO}`;
+    c.fillText(`${this.smoothG.toFixed(1)} G`, cx, cy + 42);
+    c.fillStyle = AMBER;
+    c.font = `600 13px ${MONO}`;
+    c.fillText(`PK ${gPeak.toFixed(1)}G`, cx, cy + 61);
+
+    // VSI live needle
+    const vsiAng = Math.PI + (vsiClamped / 60) * maxAngle;
+    this.drawNeedle(c, cx, cy, vsiAng, r - 18, 22, vsiClamped >= 0 ? MINT : AMBER, 4.5);
+  }
+
+  /** Tile (0,1): Live Engine N1 RPM % + Afterburner Zone badge. */
+  private drawStandbyRpm(
+    c: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    r: number,
+    thr: number,
+    abStage: number,
+    supercruise: boolean,
+  ): void {
+    this.drawDialBackdrop(c, cx, cy, r);
+    const rpm = clamp(50 + thr * 48 + abStage * 3.5, 0, 110);
+    const aStart = (135 * Math.PI) / 180;
+    const aSweep = (270 * Math.PI) / 180;
+
+    // Green MIL arc (50..96%) & amber/red AB arc (96..110%)
+    c.strokeStyle = MINT;
+    c.lineWidth = 7;
+    c.beginPath();
+    c.arc(cx, cy, r - 14, aStart + (50 / 110) * aSweep, aStart + (96 / 110) * aSweep);
+    c.stroke();
+    c.strokeStyle = AMBER;
+    c.beginPath();
+    c.arc(cx, cy, r - 14, aStart + (96 / 110) * aSweep, aStart + aSweep);
+    c.stroke();
+
+    c.font = `700 16px ${MONO}`;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    for (let v = 0; v <= 110; v += 10) {
+      const a = aStart + (v / 110) * aSweep;
+      const cs = Math.cos(a);
+      const sn = Math.sin(a);
+      const major = v % 20 === 0;
+      c.strokeStyle = v >= 100 ? AMBER : '#e6f5ee';
+      c.lineWidth = major ? 2.5 : 1.4;
+      c.beginPath();
+      c.moveTo(cx + cs * (r - 9), cy + sn * (r - 9));
+      c.lineTo(cx + cs * (r - (major ? 25 : 18)), cy + sn * (r - (major ? 25 : 18)));
+      c.stroke();
+      if (major) {
+        c.fillStyle = v >= 100 ? AMBER : '#e6f5ee';
+        c.fillText(String(v), cx + cs * (r - 40), cy + sn * (r - 40));
+      }
+    }
+    c.textBaseline = 'alphabetic';
+
+    c.fillStyle = MINT_DIM;
+    c.font = `700 14px ${MONO}`;
+    c.fillText('N1 RPM %', cx, cy - 28);
+
+    c.fillStyle = '#030706';
+    c.strokeStyle = abStage > 0 ? AMBER : supercruise ? CYAN : MINT;
+    c.lineWidth = 1.8;
+    c.fillRect(cx - 46, cy + 32, 92, 46);
+    c.strokeRect(cx - 46, cy + 32, 92, 46);
+    c.fillStyle = abStage > 0 ? AMBER : MINT;
+    c.font = `700 20px ${MONO}`;
+    c.fillText(`${Math.round(rpm)}%`, cx, cy + 54);
+    c.fillStyle = supercruise ? CYAN : abStage > 0 ? AMBER : MINT_DIM;
+    c.font = `700 13px ${MONO}`;
+    c.fillText(supercruise ? 'SUPR' : abStage > 0 ? `AB Z${abStage}` : 'MIL', cx, cy + 72);
+
+    this.drawNeedle(c, cx, cy, aStart + (rpm / 110) * aSweep, r - 20, 20, abStage > 0 ? AMBER : MINT, 5);
+  }
+
+  /** Tile (1,1): Live Engine EGT °C + Fuel % bar. */
+  private drawStandbyEgtFuel(c: CanvasRenderingContext2D, cx: number, cy: number, r: number, t: JetTelemetry): void {
+    this.drawDialBackdrop(c, cx, cy, r);
+    const egt = clamp(this.smoothEgtC, 200, 1050);
+    const aStart = (145 * Math.PI) / 180;
+    const aSweep = (250 * Math.PI) / 180;
+
+    // EGT arc: normal mint, high amber, hot red
+    c.strokeStyle = MINT;
+    c.lineWidth = 7;
+    c.beginPath();
+    c.arc(cx, cy, r - 14, aStart, aStart + 0.65 * aSweep);
+    c.stroke();
+    c.strokeStyle = AMBER;
+    c.beginPath();
+    c.arc(cx, cy, r - 14, aStart + 0.65 * aSweep, aStart + 0.84 * aSweep);
+    c.stroke();
+    c.strokeStyle = RED;
+    c.beginPath();
+    c.arc(cx, cy, r - 14, aStart + 0.84 * aSweep, aStart + aSweep);
+    c.stroke();
+
+    c.font = `700 14px ${MONO}`;
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    for (let v = 200; v <= 1000; v += 100) {
+      const a = aStart + ((v - 200) / 850) * aSweep;
+      const cs = Math.cos(a);
+      const sn = Math.sin(a);
+      const major = v % 200 === 0;
+      c.strokeStyle = v >= 900 ? RED : '#e6f5ee';
+      c.lineWidth = major ? 2.4 : 1.4;
+      c.beginPath();
+      c.moveTo(cx + cs * (r - 9), cy + sn * (r - 9));
+      c.lineTo(cx + cs * (r - (major ? 24 : 17)), cy + sn * (r - (major ? 24 : 17)));
+      c.stroke();
+      if (major) {
+        c.fillStyle = v >= 900 ? RED : '#e6f5ee';
+        c.fillText(String(v / 100), cx + cs * (r - 38), cy + sn * (r - 38));
+      }
+    }
+    c.textBaseline = 'alphabetic';
+
+    c.fillStyle = MINT_DIM;
+    c.font = `700 13px ${MONO}`;
+    c.fillText('EGT °C ×100', cx, cy - 28);
+
+    // Digital EGT + Fuel bar box
+    const fuelFrac = clamp(t.fuelFrac ?? t.boostEnergy, 0, 1);
+    const fuelPct = Math.round(fuelFrac * 100);
+    const fuelCol = fuelPct <= 15 ? RED : fuelPct <= 30 ? AMBER : MINT;
+    c.fillStyle = '#030706';
+    c.strokeStyle = egt >= 900 ? RED : 'rgba(88, 255, 170, 0.55)';
+    c.lineWidth = 1.6;
+    c.fillRect(cx - 52, cy + 28, 104, 52);
+    c.strokeRect(cx - 52, cy + 28, 104, 52);
+    c.fillStyle = egt >= 900 ? RED : egt >= 760 ? AMBER : MINT;
+    c.font = `700 18px ${MONO}`;
+    c.fillText(`${Math.round(egt)}°C`, cx, cy + 48);
+
+    // Fuel gauge bar
+    c.fillStyle = '#0d1a14';
+    c.fillRect(cx - 44, cy + 56, 88, 8);
+    c.fillStyle = fuelCol;
+    c.fillRect(cx - 44, cy + 56, 88 * fuelFrac, 8);
+    c.fillStyle = fuelCol;
+    c.font = `700 12px ${MONO}`;
+    c.fillText(`FUEL ${fuelPct}%`, cx, cy + 76);
+
+    const egtAng = aStart + ((egt - 200) / 850) * aSweep;
+    this.drawNeedle(c, cx, cy, egtAng, r - 20, 20, egt >= 900 ? RED : egt >= 760 ? AMBER : MINT, 5);
+  }
+
+  /** Tile (2,1): Live Military AoA Indexer (▼ ○ ▲) + Mach / α / FBW digital strip. */
+  private drawStandbyAoaIndexer(
+    c: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    t: JetTelemetry,
+  ): void {
+    c.fillStyle = '#050908';
+    c.fillRect(x, y, w, h);
+    c.strokeStyle = 'rgba(88, 255, 170, 0.35)';
+    c.lineWidth = 3;
+    c.strokeRect(x + 6, y + 6, w - 12, h - 12);
+
+    const cx = x + w * 0.5;
+    const aoa = t.aoaDeg ?? 0;
+    const highAoa = Boolean(t.alphaWarning || aoa > (t.gearDown ? 13.5 : 18));
+    const onSpeed = t.gearDown ? aoa >= 10.5 && aoa <= 13.5 : !highAoa && aoa >= -2;
+    const fastLow = t.gearDown ? aoa < 10.5 : aoa < -2;
+
+    c.textAlign = 'center';
+    c.fillStyle = MINT_DIM;
+    c.font = `700 16px ${MONO}`;
+    c.fillText('AOA INDEX', cx, y + 28);
+
+    // Upper chevron ▼ (FAST / LOW AOA — amber)
+    c.fillStyle = fastLow ? AMBER : '#1f1a0d';
+    c.strokeStyle = fastLow ? '#ffe49e' : '#3b331d';
+    c.lineWidth = 2.5;
+    c.beginPath();
+    c.moveTo(cx - 42, y + 44);
+    c.lineTo(cx + 42, y + 44);
+    c.lineTo(cx, y + 84);
+    c.closePath();
+    c.fill();
+    c.stroke();
+
+    // Center ring ○ (ON SPEED / NOMINAL — emerald)
+    c.fillStyle = onSpeed ? MINT : '#0b2117';
+    c.strokeStyle = onSpeed ? '#d2ffe9' : '#1b3d2d';
+    c.lineWidth = 4;
+    c.beginPath();
+    c.arc(cx, y + 114, 22, 0, Math.PI * 2);
+    c.fill();
+    c.stroke();
+
+    // Lower chevron ▲ (SLOW / HIGH AOA — red/amber)
+    const blinkHigh = !t.alphaWarning || Math.floor(t.timeSec * 5) % 2 === 0;
+    c.fillStyle = highAoa && blinkHigh ? RED : '#240d0d';
+    c.strokeStyle = highAoa && blinkHigh ? '#ffabab' : '#401b1b';
+    c.lineWidth = 2.5;
+    c.beginPath();
+    c.moveTo(cx, y + 144);
+    c.lineTo(cx + 42, y + 184);
+    c.lineTo(cx - 42, y + 184);
+    c.closePath();
+    c.fill();
+    c.stroke();
+
+    // Digital α & Mach readout bar
+    c.fillStyle = highAoa ? RED : MINT;
+    c.font = `700 22px ${MONO}`;
+    c.fillText(`α ${aoa.toFixed(1)}°`, cx, y + 216);
+    c.fillStyle = t.mach >= 1 ? CYAN : AMBER;
+    c.font = `700 18px ${MONO}`;
+    c.fillText(`M ${t.mach.toFixed(2)} · ${(t.fbwMode ?? 'norm').toUpperCase()}`, cx, y + 242);
+  }
+
+  /** Tile (3,1): Live Master Caution / Warning / GPWS / Systems Annunciator Matrix. */
+  private drawStandbyAnnunciators(
+    c: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    t: JetTelemetry,
+    abStage: number,
+  ): void {
+    c.fillStyle = '#050809';
+    c.fillRect(x, y, w, h);
+    c.strokeStyle = 'rgba(120, 145, 138, 0.35)';
+    c.lineWidth = 3;
+    c.strokeRect(x + 6, y + 6, w - 12, h - 12);
+
+    const blink = Math.floor(t.timeSec * 4) % 2 === 0;
+    const altInfo = resolveAltitudeTelemetry(t);
+    const pullUp = Boolean(t.warning === 1 || (t.airWorld && altInfo.gpwsMode === 'pull-up'));
+    const terrain = Boolean(t.airWorld && altInfo.terrainWarning);
+    const lowFuel = clamp(t.fuelFrac ?? t.boostEnergy, 0, 1) <= 0.2;
+    const masterWarn = Boolean(pullUp || t.spinWarning || t.overGWarning);
+    const masterCaut = Boolean(terrain || t.alphaWarning || lowFuel);
+
+    const pad = 12;
+    const gap = 8;
+    const cellW = (w - pad * 2 - gap) * 0.5;
+    const cellH = (h - pad * 2 - gap * 3) / 4;
+
+    const drawLamp = (
+      col: number,
+      row: number,
+      label: string,
+      lit: boolean,
+      onBg: string,
+      onFg: string,
+      offFg: string,
+    ): void => {
+      const lx = x + pad + col * (cellW + gap);
+      const ly = y + pad + row * (cellH + gap);
+      c.fillStyle = lit ? onBg : '#0b0f10';
+      c.fillRect(lx, ly, cellW, cellH);
+      c.strokeStyle = lit ? onFg : '#1f282a';
+      c.lineWidth = lit ? 2.4 : 1.2;
+      c.strokeRect(lx, ly, cellW, cellH);
+      c.fillStyle = lit ? onFg : offFg;
+      c.font = `700 15px ${MONO}`;
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.fillText(label, lx + cellW * 0.5, ly + cellH * 0.5 + 1);
+      c.textBaseline = 'alphabetic';
+    };
+
+    drawLamp(0, 0, 'MSTR WARN', masterWarn && blink, '#6e0d12', '#ff6464', '#2e1618');
+    drawLamp(1, 0, 'CAUTION', masterCaut, '#593d08', '#ffd266', '#2b2210');
+    drawLamp(0, 1, 'PULL UP', pullUp && blink, '#7a0a0e', '#ff5252', '#2d1416');
+    drawLamp(1, 1, 'TERRAIN', terrain, '#523407', '#ffbe4d', '#281f10');
+    drawLamp(0, 2, 'OVER-G', Boolean(t.overGWarning), '#690c10', '#ff6060', '#2b1517');
+    drawLamp(1, 2, 'HIGH α', Boolean(t.alphaWarning), '#4f3307', '#ffbe4d', '#261e10');
+    drawLamp(0, 3, abStage > 0 ? `A/B Z${abStage}` : 'A/B OFF', abStage > 0, '#4f2c06', '#ffaa3b', '#221c12');
+    drawLamp(
+      1,
+      3,
+      t.airbrakeActive ? 'SPDBRK' : t.gearDown ? 'GEAR DN' : 'LOW FUEL',
+      Boolean(t.airbrakeActive || t.gearDown || lowFuel),
+      t.airbrakeActive ? '#4f3307' : t.gearDown ? '#0b4527' : '#631010',
+      t.airbrakeActive ? AMBER : t.gearDown ? MINT : RED,
+      '#17241e',
+    );
   }
 }

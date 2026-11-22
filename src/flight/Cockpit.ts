@@ -46,9 +46,9 @@ export class Cockpit {
   private lastDraw = -1;
 
   constructor() {
-    const panelMat = new THREE.MeshStandardMaterial({ color: 0x15181d, roughness: 0.85, metalness: 0.2 });
-    const shieldMat = new THREE.MeshStandardMaterial({ color: 0x0b0c0f, roughness: 0.95 });
-    const bezelMat = new THREE.MeshStandardMaterial({ color: 0x23272e, roughness: 0.6, metalness: 0.4 });
+    const panelMat = new THREE.MeshStandardMaterial({ color: 0x14171b, roughness: 0.90, metalness: 0.16, envMapIntensity: 0.28 });
+    const shieldMat = new THREE.MeshStandardMaterial({ color: 0x0a0b0e, roughness: 0.96, metalness: 0.05, envMapIntensity: 0.20 });
+    const bezelMat = new THREE.MeshStandardMaterial({ color: 0x1d2128, roughness: 0.78, metalness: 0.30, envMapIntensity: 0.32 });
     this.disposables.push(panelMat, shieldMat, bezelMat, this.nav.tex, this.tgt.tex, this.eng.tex);
 
     // Panel: tilted back towards the pilot, below the eye line
@@ -94,10 +94,10 @@ export class Cockpit {
     this.group.visible = false;
   }
 
-  /** Redraw the displays (a few times a second is plenty). */
+  /** Redraw the displays smoothly at 30 Hz when visible. */
   public update(t: JetTelemetry, planets: NavPoint[], jet: { x: number; z: number }, target: { x: number; z: number } | null): void {
     if (!this.group.visible) return;
-    if (t.timeSec - this.lastDraw < 0.15) return;
+    if (t.timeSec - this.lastDraw < 0.033) return;
     this.lastDraw = t.timeSec;
     this.drawNav(planets, jet, target, t);
     this.drawTarget(t);
@@ -108,19 +108,16 @@ export class Cockpit {
   }
 
   private frame(ctx: CanvasRenderingContext2D, title: string): void {
-    ctx.fillStyle = '#020604';
+    ctx.fillStyle = '#040907';
     ctx.fillRect(0, 0, S, S);
-    const g = ctx.createRadialGradient(S / 2, S / 2, 10, S / 2, S / 2, S * 0.75);
-    g.addColorStop(0, 'rgba(30,70,55,0.35)');
-    g.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, S, S);
-    ctx.font = `600 13px ${MONO}`;
+    ctx.fillStyle = 'rgba(88, 255, 170, 0.09)';
+    ctx.fillRect(5, 5, S - 10, 22);
+    ctx.font = `700 13px ${MONO}`;
     ctx.fillStyle = MINT;
     ctx.textAlign = 'left';
     ctx.fillText(title, 10, 20);
-    ctx.strokeStyle = 'rgba(109,252,192,0.35)';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(88, 255, 170, 0.42)';
+    ctx.lineWidth = 1.2;
     ctx.strokeRect(4.5, 4.5, S - 9, S - 9);
   }
 
@@ -203,21 +200,35 @@ export class Cockpit {
     ctx.fillStyle = '#4a3420';
     ctx.fillRect(-r * 2, off, r * 4, r * 2);
     ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(-r, off);
     ctx.lineTo(r, off);
     ctx.stroke();
+    ctx.strokeStyle = 'rgba(230,250,240,0.75)';
+    ctx.lineWidth = 1.2;
+    for (const deg of [-20, -10, 10, 20]) {
+      const py = off - (deg / 90) * r;
+      const hw = deg % 20 === 0 ? 18 : 11;
+      ctx.beginPath();
+      ctx.moveTo(-hw, py);
+      ctx.lineTo(hw, py);
+      ctx.stroke();
+    }
     ctx.restore();
-    ctx.strokeStyle = MINT;
-    ctx.lineWidth = 2;
+    ctx.strokeStyle = AMBER;
+    ctx.lineWidth = 2.4;
     ctx.beginPath();
     ctx.moveTo(cx - 24, cy);
     ctx.lineTo(cx - 8, cy);
+    ctx.lineTo(cx - 4, cy + 5);
     ctx.moveTo(cx + 8, cy);
     ctx.lineTo(cx + 24, cy);
+    ctx.moveTo(cx + 4, cy + 5);
+    ctx.lineTo(cx + 8, cy);
     ctx.stroke();
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = 'rgba(109,252,192,0.5)';
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = 'rgba(88,255,170,0.55)';
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.stroke();
@@ -227,12 +238,12 @@ export class Cockpit {
     const ctx = this.eng.ctx;
     this.frame(ctx, 'ENG · DRIVE');
     const bar = (x: number, label: string, v: number, colour: string): void => {
-      ctx.strokeStyle = 'rgba(109,252,192,0.5)';
+      ctx.strokeStyle = 'rgba(88,255,170,0.5)';
       ctx.strokeRect(x, 40, 34, 150);
       ctx.fillStyle = colour;
       ctx.fillRect(x + 3, 40 + 147 * (1 - v), 28, 147 * v);
-      ctx.fillStyle = 'rgba(238,233,222,0.7)';
-      ctx.font = `11px ${MONO}`;
+      ctx.fillStyle = 'rgba(232,244,238,0.82)';
+      ctx.font = `600 11px ${MONO}`;
       ctx.textAlign = 'center';
       ctx.fillText(label, x + 17, 208);
       ctx.fillText(`${Math.round(v * 100)}`, x + 17, 224);
@@ -240,19 +251,25 @@ export class Cockpit {
     };
     bar(18, 'THR', t.throttle, MINT);
     bar(64, 'BST', t.boostEnergy, t.boost > 0 ? '#ff9a50' : AMBER);
-    ctx.font = `600 15px ${MONO}`;
+    const ias = t.airDensity > 0 && t.iasMps !== undefined ? t.iasMps : t.speedMps;
+    ctx.font = `700 15px ${MONO}`;
     ctx.fillStyle = MINT;
-    ctx.fillText(formatSpeed(t.speedMps), 112, 60);
-    ctx.font = `12px ${MONO}`;
-    ctx.fillStyle = 'rgba(238,233,222,0.7)';
-    ctx.fillText(t.airWorld ? `AIR  M ${t.mach.toFixed(2)}` : 'VACUUM', 112, 84);
-    ctx.fillText(`G    ${t.gLoad.toFixed(1)}`, 112, 104);
-    ctx.fillText(`FA   ${t.assist ? 'ON' : 'OFF'}`, 112, 124);
-    ctx.fillText(`ALT  ${formatDistance(t.altKm)}`, 112, 144);
-    if (t.warning) {
-      ctx.fillStyle = '#ff7a66';
+    ctx.fillText(formatSpeed(ias), 112, 58);
+    ctx.font = `600 12px ${MONO}`;
+    ctx.fillStyle = 'rgba(232,244,238,0.82)';
+    ctx.fillText(t.airWorld ? `IAS  ${Math.round(ias * 1.943844)} KT` : 'VACUUM', 112, 80);
+    ctx.fillText(t.airWorld ? `MACH ${t.mach.toFixed(2)}` : `DRV  ${t.speedTier.toUpperCase()}`, 112, 100);
+    ctx.fillText(`G    ${t.gLoad.toFixed(1)}`, 112, 120);
+    ctx.fillText(`ALT  ${formatDistance(t.altKm)}`, 112, 140);
+    ctx.fillText(`FBW  ${(t.fbwMode ?? (t.assist ? 'norm' : 'raw')).toUpperCase()}`, 112, 160);
+    if (t.warning && Math.floor(t.timeSec * 4) % 2 === 0) {
+      ctx.fillStyle = 'rgba(120, 12, 16, 0.9)';
+      ctx.fillRect(108, 174, 134, 24);
+      ctx.strokeStyle = '#ff5252';
+      ctx.strokeRect(108, 174, 134, 24);
+      ctx.fillStyle = '#ff6666';
       ctx.font = `700 14px ${MONO}`;
-      ctx.fillText(t.warning === 1 ? 'PULL UP' : 'HEAT', 112, 176);
+      ctx.fillText(t.warning === 1 ? 'PULL UP' : 'HEAT', 120, 191);
     }
   }
 

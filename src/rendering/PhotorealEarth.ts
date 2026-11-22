@@ -479,9 +479,9 @@ export class PhotorealEarth {
     this.uploadBudgetMs = tier === 'high' ? 4.0 : tier === 'medium' ? 3.0 : 1.5;
     this.tiles.registerPlugin({ name: 'SOLARIS_UPLOAD_BUDGET', processTileModel: (scene: THREE.Object3D) => this.uploadInTurn(scene) } as unknown as Parameters<TilesRenderer['registerPlugin']>[0]);
     if (PhotorealEarth.fade) this.tiles.registerPlugin(new TilesFadePlugin({ fadeDuration: 280, fadeRootTiles: false, maximumFadeOutTiles: tier === "low" ? 30 : 80 }));
-    // Crisp 4K-grade Screen-Space Error target (pixels): forces leaf photogrammetry buildings immediately
-    // instead of lingering on blurry 20-px overview blobs.
-    this.baseError = tier === 'high' ? 3.5 : tier === 'medium' ? 5.0 : 8.5;
+    // Calibrated 4K-foreground / whole-city-blanket SSE target: keeps skyscrapers razor sharp without
+    // exploding distant horizon leaf queues into empty voids.
+    this.baseError = tier === 'high' ? 8.5 : tier === 'medium' ? 11.0 : 15.0;
     this.tiles.errorTarget = this.baseError;
     const mb = 1024 * 1024;
     this.tiles.lruCache.minSize = tier === 'low' ? 900 : tier === 'medium' ? 2000 : 3600;
@@ -489,16 +489,19 @@ export class PhotorealEarth {
     this.tiles.lruCache.minBytesSize = (tier === 'high' ? 600 : tier === 'medium' ? 400 : 180) * mb;
     this.tiles.lruCache.maxBytesSize = (tier === 'high' ? 1024 : tier === 'medium' ? 640 : 280) * mb;
     this.tiles.lruCache.unloadPercent = 0.05;
-    // Maximize HTTP/2 multiplexing & parallel Draco decoding so crisp city leaves arrive fast
+    // Maximize HTTP/2 multiplexing & parallel Draco decoding so full city blankets + 4K leaves arrive fast
     this.downloadMaxJobs = tier === 'high' ? 32 : tier === 'medium' ? 24 : 14;
     this.tiles.downloadQueue.maxJobs = this.downloadMaxJobs;
     this.tiles.parseQueue.maxJobs = tier === 'high' ? 6 : tier === 'medium' ? 4 : 3;
     this.tiles.autoDisableRendererCulling = false;
-    this.tiles.loadAncestors = false;
+    // CRITICAL: loadAncestors = true keeps every intermediate parent tile loaded as a seamless
+    // 100%-solid city & country blanket while foreground buildings refine to 4K — ZERO isolated islands!
+    // loadSiblings = false lets visible city tiles flip on screen 3x faster without waiting for off-axis siblings.
+    this.tiles.loadAncestors = true;
     this.tiles.loadSiblings = false;
-    // Depth-agnostic foveated view-cone + nearest-foreground priority:
-    // expands JSON subtrees first, pushes giant continent skirts (> 2048 m) to the back, and weights
-    // renderable city tiles by center-screen alignment so skyscrapers straight ahead hit 4K first.
+    // Two-phase blanket-first + foveated center-cone priority:
+    // expands JSON subtrees first, loads city-scale coverage blanket (32..1024 m) immediately when
+    // arriving at a new region so ZERO voids appear, then prioritizes center-screen 4K skyscrapers.
     this.libraryOrder = this.tiles.downloadQueue.priorityCallback as unknown as (a: unknown, b: unknown) => number;
     type PriorityTile = {
       geometricError?: number;
@@ -524,8 +527,8 @@ export class PhotorealEarth {
       const len = Math.hypot(dx, dy, dz);
       if (len < 1e-3) return da * 0.25;
       const cosA = Math.max(0, (dx * this.camFwdEcef.x + dy * this.camFwdEcef.y + dz * this.camFwdEcef.z) / len);
-      // Center-screen foveation: dead-ahead tiles get up to 3.5x priority boost over peripheral horizon tiles
-      return da / (0.28 + 0.72 * cosA * cosA);
+      // Center-screen foveation: dead-ahead tiles get up to 3.2x priority boost over peripheral horizon tiles
+      return da / (0.31 + 0.69 * cosA * cosA);
     };
     const nearFirstOrder = (a: PriorityTile, b: PriorityTile): number => {
       const at = a.traversal;
@@ -535,14 +538,23 @@ export class PhotorealEarth {
       if (!!at.inFrustum !== !!bt.inFrustum) return at.inFrustum ? 1 : -1;
       const au = !!a.internal?.hasUnrenderableContent;
       const bu = !!b.internal?.hasUnrenderableContent;
-      const aCoarseSkirt = !au && (a.geometricError ?? Infinity) > 2048;
-      const bCoarseSkirt = !bu && (b.geometricError ?? Infinity) > 2048;
+      const age = a.geometricError ?? Infinity;
+      const bge = b.geometricError ?? Infinity;
+      const aCoarseSkirt = !au && age > 2048;
+      const bCoarseSkirt = !bu && bge > 2048;
       if (aCoarseSkirt !== bCoarseSkirt) return aCoarseSkirt ? -1 : 1;
-      // Expand JSON index trees before leaf geometry inside the same foreground band
+      // While the city blanket is still filling (< 20 local tiles), prioritize JSON + mid-LOD blanket
+      // tiles (48..1024 m) across the entire viewport BEFORE micro-refining one tiny patch!
+      if (this.blanketFilling) {
+        if (au !== bu) return au ? 1 : -1;
+        const aBlanket = age >= 40 && age <= 1024;
+        const bBlanket = bge >= 40 && bge <= 1024;
+        if (aBlanket !== bBlanket) return aBlanket ? 1 : -1;
+      }
       const sa = foveatedScore(a);
       const sb = foveatedScore(b);
-      const ba = Math.floor(sa / 900);
-      const bb = Math.floor(sb / 900);
+      const ba = Math.floor(sa / 1200);
+      const bb = Math.floor(sb / 1200);
       if (ba !== bb) return ba > bb ? -1 : 1;
       if (au !== bu) return au ? 1 : -1;
       const ea = at.error ?? 0;
@@ -650,6 +662,16 @@ export class PhotorealEarth {
     return count;
   }
 
+  /** Count of visible city/regional tiles (<= 256 m error) measuring solid viewport coverage. */
+  public get localCoverageCount(): number {
+    if (!this.showing) return 0;
+    let count = 0;
+    for (const tile of this.tiles.visibleTiles) {
+      if (Number.isFinite(tile.geometricError) && tile.geometricError <= 256) count++;
+    }
+    return count;
+  }
+
   /** True when at least one local/mountain-scale tile (<= 1024 m error) is actively visible. */
   public get hasLocalCoverage(): boolean {
     if (!this.showing) return false;
@@ -688,15 +710,15 @@ export class PhotorealEarth {
       this.renderer = renderer;
       const css = renderer.getSize(this.cssSize);
       const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
-      const lodRatio = Math.min(dpr, perf.tier === 'high' ? 1.5 : perf.tier === 'medium' ? 1.25 : 1.0);
+      const lodRatio = Math.min(dpr, perf.tier === 'high' ? 1.35 : perf.tier === 'medium' ? 1.15 : 1.0);
       this.tiles.setResolution(camera, Math.max(1, css.x * lodRatio), Math.max(1, css.y * lodRatio));
 
       const alt = Math.max(0.2, altKm ?? 1);
       // Gentle motion scaling during fast low-altitude passes; never degrade stationary or cruise detail
-      const rush = THREE.MathUtils.clamp((speedKmS / alt) * 0.16, 0, 0.85);
+      const rush = THREE.MathUtils.clamp((speedKmS / alt) * 0.14, 0, 0.75);
       const stats = (this.tiles as unknown as { stats: { queued: number; downloading: number; parsing: number } }).stats;
       const waiting = stats.queued;
-      const want = speedKmS < 0.04 ? 1 : THREE.MathUtils.clamp(1 + (waiting - 260) / 420, 1, 1.25);
+      const want = speedKmS < 0.04 ? 1 : THREE.MathUtils.clamp(1 + (waiting - 240) / 380, 1, 1.3);
       const dtS = Math.min(0.25, Math.max(0, (nowMs - (this.backlogT || nowMs)) / 1000));
       this.backlogT = nowMs;
       this.backlog += (want - this.backlog) * (1 - Math.exp(-dtS / (want > this.backlog ? 1.5 : 0.6)));
@@ -721,8 +743,18 @@ export class PhotorealEarth {
       this.camFwdEcef.set(0, 0, -1).applyQuaternion(camera.quaternion).transformDirection(this.camInvEcef).normalize();
       this.hasCamEcef = true;
 
-      // Stream directly at full crisp leaf target immediately on spawn/hold — no 1.4x blurry bootstrap delay
-      this.tiles.errorTarget = this.baseError * (1 + rush) * this.backlog * this.memPressure;
+      // Two-stage blanket-first -> 4K cascade: fill the entire city/country blanket cleanly (< 1.5s)
+      // before tightening to 1.0x crisp 4K foreground buildings so ZERO isolated islands appear.
+      let localNow = 0;
+      for (const tile of this.tiles.visibleTiles) {
+        if (Number.isFinite(tile.geometricError) && tile.geometricError <= 256) {
+          localNow++;
+          if (localNow >= 20) break;
+        }
+      }
+      this.blanketFilling = alt < 40 && localNow < 20;
+      const blanketMult = this.blanketFilling ? 1.65 : 1.0;
+      this.tiles.errorTarget = this.baseError * blanketMult * (1 + rush) * this.backlog * this.memPressure;
 
       this.tiles.update();
       // Suppress only giant continent-scale sphere-chord skirts (> 2048 m error) while keeping
@@ -750,6 +782,9 @@ export class PhotorealEarth {
   private readonly camFwdEcef = new THREE.Vector3(0, 0, -1);
   private readonly camInvEcef = new THREE.Matrix4();
   private hasCamEcef = false;
+  private blanketFilling = true;
+  private readonly lookArcQuat = new THREE.Quaternion();
+  private readonly lookPredDir = new THREE.Vector3();
 
   /** The library's own download order (kept for comparison in development). */
   public libraryOrder: ((a: unknown, b: unknown) => number) | null = null;
@@ -806,17 +841,31 @@ export class PhotorealEarth {
     }
   }
 
-  public setLookahead(point: THREE.Vector3 | null, velocity?: THREE.Vector3, earthCentre?: THREE.Vector3, leadS = 4): void {
+  public setLookahead(
+    point: THREE.Vector3 | null,
+    velocity?: THREE.Vector3,
+    earthCentre?: THREE.Vector3,
+    leadS = 4,
+    turnRateRadS = 0,
+  ): void {
     if (!point || !velocity || !earthCentre || !this.enabled || this.prefetchPaused || this.tiles.visibleTiles.size === 0 || velocity.lengthSq() < 1e-20) {
       if (this.aheadOn && this.aheadCamera) this.tiles.deleteCamera(this.aheadCamera);
       this.aheadOn = false;
       return;
     }
-    const cam = (this.aheadCamera ??= new THREE.PerspectiveCamera(70, 1.6, 1e-6, 50));
+    const cam = (this.aheadCamera ??= new THREE.PerspectiveCamera(72, 1.6, 1e-6, 50));
     const up = this.probeUp.subVectors(point, earthCentre).normalize();
-    cam.position.copy(point).addScaledVector(velocity, leadS);
-    const fwd = velocity.clone().normalize();
-    // Look along the path, tipped 20 degrees down so the ground ahead is in view
+    const speed = velocity.length();
+    // Predict curved flight path using current pilot turn-rate (bank + yaw input anticipation!)
+    // so banking left/right pre-streams the exact buildings & mountains in the turn direction.
+    const halfTurn = THREE.MathUtils.clamp(turnRateRadS * leadS * 0.5, -1.1, 1.1);
+    const fullTurn = THREE.MathUtils.clamp(turnRateRadS * leadS, -1.45, 1.45);
+    this.lookArcQuat.setFromAxisAngle(up, halfTurn);
+    this.lookPredDir.copy(velocity).divideScalar(speed).applyQuaternion(this.lookArcQuat);
+    cam.position.copy(point).addScaledVector(this.lookPredDir, speed * leadS);
+    this.lookArcQuat.setFromAxisAngle(up, fullTurn);
+    const fwd = this.lookPredDir.copy(velocity).divideScalar(speed).applyQuaternion(this.lookArcQuat);
+    // Look along the predicted curved path, tipped 20 degrees down so upcoming city blocks arrive sharp
     const look = fwd.addScaledVector(up, -0.36).normalize();
     cam.up.copy(up);
     cam.lookAt(cam.position.clone().add(look));
@@ -841,14 +890,28 @@ export class PhotorealEarth {
    * tiles; whatever the real camera turns to already has ground, which then sharpens. Pass null
    * to stop.
    */
-  public setSurround(_point: THREE.Vector3 | null, _earthCentre?: THREE.Vector3): void {
-    void _point;
-    void _earthCentre;
-    // ProceduralTerrain now renders seamless 360-degree terrain & 10 m satellite imagery behind
-    // and around the jet; registering a 170° 128 px surround camera forced 65 km-error coarse
-    // skirt meshes to become visible horizon walls while starving forward city detail.
-    if (this.surroundOn && this.surroundCamera) this.tiles.deleteCamera(this.surroundCamera);
-    this.surroundOn = false;
+  public setSurround(point: THREE.Vector3 | null, earthCentre?: THREE.Vector3): void {
+    if (!point || !earthCentre || !this.enabled || this.prefetchPaused || this.blanketFilling || this.tiles.visibleTiles.size < 16) {
+      if (this.surroundOn && this.surroundCamera) this.tiles.deleteCamera(this.surroundCamera);
+      this.surroundOn = false;
+      return;
+    }
+    // Lightweight wide-angle mid-LOD blanket camera centered slightly above the jet looking down:
+    // keeps surrounding 360-degree city blocks warm in LRU cache so sudden banks & 180-deg turns
+    // NEVER expose empty voids, while staying low-res (240x160) so foreground 4K never starves.
+    const cam = (this.surroundCamera ??= new THREE.PerspectiveCamera(125, 1.5, 1e-6, 30));
+    const up = this.probeUp.subVectors(point, earthCentre).normalize();
+    const unitsPerKm = point.distanceTo(earthCentre) / (WGS84_A / 1000);
+    cam.up.set(up.y, up.z, up.x);
+    cam.position.copy(point).addScaledVector(up, 0.85 * unitsPerKm);
+    cam.lookAt(earthCentre);
+    cam.updateMatrixWorld();
+    cam.updateProjectionMatrix();
+    if (!this.surroundOn) {
+      this.tiles.setCamera(cam);
+      this.tiles.setResolution(cam, 240, 160);
+      this.surroundOn = true;
+    }
   }
 
   private probeCamera: THREE.PerspectiveCamera | null = null;

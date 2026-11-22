@@ -1723,15 +1723,21 @@ export class JetController {
       void earthElevation.ensure(lat - 0.14, lon - 0.14, lat + 0.14, lon + 0.14, 13, -100);
       const solidKm = Math.max(getLandmarkSolidElevationKm(lat, lon), getLandmarkSolidElevationKm(lm.lat, lm.lon) * 0.85);
       const rawDemKm = earthElevation.heightKm(lat, lon, 13);
+      // For colossal mountains (Everest 8,849 m, Matterhorn, Mont Blanc, Fuji, Kilimanjaro), spawn
+      // cleanly at the scenic ridge approach (looking UP/ACROSS the giant summit massif) rather than
+      // forcing the jet far above the peak, so you feel the authentic 1:1 monumental scale!
+      const isMonumentalPeak = (lm.viewPitchDeg ?? 0) >= 12 && (lm.viewAltitudeKm ?? 0) >= 2.5;
       let demKm = rawDemKm;
-      // Also sample 0.5 km and 1.5 km ahead along heading so steep ridges (Everest, Grand Canyon) are cleared
-      const cosLat = Math.max(0.15, Math.cos(THREE.MathUtils.degToRad(lat)));
-      for (const distKm of [0.5, 1.5]) {
-        const aLat = lat + (distKm * Math.cos(h)) / 111.32;
-        const aLon = lon + (distKm * Math.sin(h)) / (111.32 * cosLat);
-        demKm = Math.max(demKm, earthElevation.heightKm(aLat, aLon, 13), getLandmarkSolidElevationKm(aLat, aLon));
+      if (!isMonumentalPeak) {
+        // Sample 0.5 km and 1.5 km ahead along heading so urban/canyon obstacles are cleared
+        const cosLat = Math.max(0.15, Math.cos(THREE.MathUtils.degToRad(lat)));
+        for (const distKm of [0.5, 1.5]) {
+          const aLat = lat + (distKm * Math.cos(h)) / 111.32;
+          const aLon = lon + (distKm * Math.sin(h)) / (111.32 * cosLat);
+          demKm = Math.max(demKm, earthElevation.heightKm(aLat, aLon, 13), getLandmarkSolidElevationKm(aLat, aLon));
+        }
       }
-      const elevKm = Math.max(demKm, solidKm);
+      const elevKm = Math.max(demKm, isMonumentalPeak ? getLandmarkSolidElevationKm(lat, lon) : solidKm);
       site.addScaledVector(up, elevKm / kmNear);
       const g = this.drawnGround(b, site, up);
       const extraUnits = g !== null ? Math.max(g, -0.08 / kmNear) : 0;
@@ -2088,8 +2094,20 @@ export class JetController {
     if (photo && b.name === 'Earth') {
       if (rough * kmNear < 80 && !this.scripted) {
         const speedKmS = f.velocity.length() * kmNear;
-        const lead = THREE.MathUtils.clamp(25 / Math.max(speedKmS, 0.05), 1.2, 5);
-        photo.setLookahead(f.position, f.velocity, b.center, lead);
+        const lead = THREE.MathUtils.clamp(22 / Math.max(speedKmS, 0.05), 1.5, 5.0);
+        // Predictive input-steered turn curvature: anticipates pilot bank + yaw turns so the
+        // tiles along the curved turn arc stream in BEFORE the nose finishes swinging!
+        const upNow = this.pv1.subVectors(f.position, b.center).normalize();
+        const rightNow = this.pv2.set(1, 0, 0).applyQuaternion(f.quaternion);
+        const bodyUpNow = this.pv3.set(0, 1, 0).applyQuaternion(f.quaternion);
+        const bankRad = Math.atan2(rightNow.dot(upNow), bodyUpNow.dot(upNow));
+        const speedMpsNow = Math.max(55, speedKmS * 1000);
+        // Right bank (bankRad < 0) curves clockwise (-up rotation); +yaw input also turns right
+        const predTurnRateRadS =
+          THREE.MathUtils.clamp((9.80665 * Math.tan(THREE.MathUtils.clamp(bankRad, -1.1, 1.1))) / speedMpsNow, -0.38, 0.38) -
+          this.lastInput.roll * 0.16 -
+          this.lastInput.yaw * 0.12;
+        photo.setLookahead(f.position, f.velocity, b.center, lead, predTurnRateRadS);
         if (rough * kmNear < (constrained ? 22 : 48)) {
           photo.setSurround(f.position, b.center);
         } else {
@@ -3283,7 +3301,9 @@ export class JetController {
       camera.position.copy(f.position).add(off);
       camera.quaternion.copy(q);
       const kickScale = camera.aspect > 2.2 ? Math.max(0.65, 2.2 / camera.aspect) : 1;
-      camera.fov = this.responsiveFov(60 + Math.min(54, this.fovKick * kickScale), camera.aspect, 108);
+      // Natural 1:1 telephoto chase lens (48° baseline instead of wide-angle 60° shrinkage) so
+      // 8,849 m peaks (Mount Everest) and skyscrapers tower with true colossal 1:1 perspective!
+      camera.fov = this.responsiveFov(48 + Math.min(34, this.fovKick * 0.62 * kickScale), camera.aspect, 96);
     } else if (this.view === 'flyby') {
       this.flybyDirector(dt, timeSec, camera, f, upm, speedMps, fwd, nearest);
     }

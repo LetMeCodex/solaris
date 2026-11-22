@@ -80,10 +80,10 @@ export class CockpitControls {
     }
     if (this.throttle) this.throttleRest.copy(this.throttle.rotation);
 
-    const metal = new THREE.MeshStandardMaterial({ color: 0x8a8f96, metalness: 0.8, roughness: 0.35 });
-    const black = new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.7 });
-    const white = new THREE.MeshStandardMaterial({ color: 0xe8e8e0, roughness: 0.5 });
-    const redPaint = new THREE.MeshStandardMaterial({ color: 0xb4141a, roughness: 0.45 });
+    const metal = new THREE.MeshStandardMaterial({ color: 0x7b828a, metalness: 0.78, roughness: 0.38, envMapIntensity: 0.45 });
+    const black = new THREE.MeshStandardMaterial({ color: 0x111417, roughness: 0.88, metalness: 0.14, envMapIntensity: 0.26 });
+    const white = new THREE.MeshStandardMaterial({ color: 0xd6d8d0, roughness: 0.62, envMapIntensity: 0.32 });
+    const redPaint = new THREE.MeshStandardMaterial({ color: 0xa81319, roughness: 0.52, envMapIntensity: 0.36 });
     this.gearLamp = new THREE.MeshBasicMaterial({ color: 0x33ff66, toneMapped: false });
     this.armLamp = new THREE.MeshBasicMaterial({ color: 0xffaa22, toneMapped: false });
     this.brkLamp = new THREE.MeshBasicMaterial({ color: 0x22100a, toneMapped: false });
@@ -98,9 +98,52 @@ export class CockpitControls {
     this.group.position.copy(c);
     if (layout.consoleScale) this.group.scale.setScalar(layout.consoleScale);
 
+    // Illuminated NVG-compatible panel placard texture for left console switches & annunciators
+    const placardCanvas = document.createElement('canvas');
+    placardCanvas.width = 256;
+    placardCanvas.height = 384;
+    const pc = placardCanvas.getContext('2d') as CanvasRenderingContext2D;
+    pc.fillStyle = '#0c0f12';
+    pc.fillRect(0, 0, 256, 384);
+    pc.strokeStyle = 'rgba(88, 255, 170, 0.35)';
+    pc.lineWidth = 3;
+    pc.strokeRect(8, 8, 240, 368);
+    pc.fillStyle = 'rgba(88, 255, 170, 0.85)';
+    pc.font = `700 20px ${MONO}`;
+    pc.textAlign = 'center';
+    pc.fillText('GEAR', 74, 62);
+    pc.fillText('A/B ARM', 184, 62);
+    pc.strokeStyle = 'rgba(88, 255, 170, 0.22)';
+    pc.lineWidth = 2;
+    pc.beginPath();
+    pc.moveTo(16, 256);
+    pc.lineTo(240, 256);
+    pc.stroke();
+    pc.font = `700 17px ${MONO}`;
+    pc.fillStyle = 'rgba(130, 245, 195, 0.85)';
+    pc.fillText('BRK', 52, 344);
+    pc.fillText('FBW', 128, 344);
+    pc.fillText('FLP', 202, 344);
+    const placardTex = new THREE.CanvasTexture(placardCanvas);
+    placardTex.colorSpace = THREE.SRGBColorSpace;
+    placardTex.anisotropy = 8;
+    const placardMat = new THREE.MeshStandardMaterial({
+      map: placardTex,
+      emissiveMap: placardTex,
+      emissive: new THREE.Color(0x52ffaa),
+      emissiveIntensity: 0.42,
+      roughness: 0.85,
+      metalness: 0.1,
+      envMapIntensity: 0.22,
+    });
+    this.disposables.push(placardTex, placardMat);
+
     // Gear lever: a short arm with the wheel-shaped knob pilots know by feel, and a gear lamp
     const plate = new THREE.Mesh(add(new THREE.BoxGeometry(0.11, 0.008, 0.16)), black);
     plate.position.set(-0.01, 0, 0.05);
+    const placard = new THREE.Mesh(add(new THREE.PlaneGeometry(0.106, 0.156)), placardMat);
+    placard.rotation.x = -Math.PI / 2;
+    placard.position.set(-0.01, 0.0042, 0.05);
     this.gearLever = new THREE.Group();
     this.gearLever.position.set(-0.03, 0.004, 0.03);
     const shaft = new THREE.Mesh(add(new THREE.CylinderGeometry(0.005, 0.005, 0.07, 10)), metal);
@@ -160,7 +203,7 @@ export class CockpitControls {
     bezel.rotation.copy(this.display.rotation);
     bezel.translateZ(-0.0045);
 
-    this.group.add(plate, this.gearLever, gearLampMesh, toggle, guardPivot, armLampMesh, brkLed, fbwLed, flapLed, bezel, this.display);
+    this.group.add(plate, placard, this.gearLever, gearLampMesh, toggle, guardPivot, armLampMesh, brkLed, fbwLed, flapLed, bezel, this.display);
     this.group.traverse((o) => {
       o.frustumCulled = false;
       if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).receiveShadow = true;
@@ -198,19 +241,29 @@ export class CockpitControls {
     opts?: CockpitControlOptions,
   ): void {
     this.group.visible = visible;
-    const k = 1 - Math.exp(-14 * dt);
+    const k = 1 - Math.exp(-16 * dt);
     const buffet = opts?.buffet ?? 0;
+    const engineBuzz = Math.max(0, throttle - 0.72) * 0.0045;
     if (this.stick) {
       // Pull back to climb: the grip comes towards the pilot; roll right: it leans right
-      this.stickTargetX += (this.stickRest.x + pitch * 0.24 - this.stickTargetX) * k;
-      this.stickTargetZ += (this.stickRest.z - roll * 0.24 - this.stickTargetZ) * k;
-      const shakeX = buffet > 0.01 ? Math.sin(timeSec * 41) * buffet * 0.022 : 0;
-      const shakeZ = buffet > 0.01 ? Math.cos(timeSec * 33) * buffet * 0.018 : 0;
-      this.stick.rotation.x = this.stickTargetX + shakeX;
+      this.stickTargetX += (this.stickRest.x + pitch * 0.25 - this.stickTargetX) * k;
+      this.stickTargetZ += (this.stickRest.z - roll * 0.25 - this.stickTargetZ) * k;
+      const shakeX =
+        buffet > 0.01
+          ? (Math.sin(timeSec * 41) * 0.65 + Math.sin(timeSec * 73) * 0.35) * buffet * 0.024
+          : 0;
+      const shakeZ =
+        buffet > 0.01
+          ? (Math.cos(timeSec * 33) * 0.65 + Math.cos(timeSec * 61) * 0.35) * buffet * 0.02
+          : 0;
+      const rumble = engineBuzz > 0 ? Math.sin(timeSec * 91) * engineBuzz : 0;
+      this.stick.rotation.x = this.stickTargetX + shakeX + rumble;
       this.stick.rotation.z = this.stickTargetZ + shakeZ;
     }
     if (this.throttle) {
-      this.throttle.rotation.x += (this.throttleRest.x - (throttle - 0.4) * 0.7 - this.throttle.rotation.x) * k;
+      const thrRumble = engineBuzz > 0 ? Math.cos(timeSec * 83) * engineBuzz * 1.4 : 0;
+      this.throttle.rotation.x +=
+        (this.throttleRest.x - (throttle - 0.4) * 0.72 + thrRumble - this.throttle.rotation.x) * k;
     }
     this.gearAngle += ((gearDown ? 0.5 : -0.35) - this.gearAngle) * k;
     this.gearLever.rotation.x = this.gearAngle;
@@ -237,31 +290,36 @@ export class CockpitControls {
     const x = this.ctx;
     const W = this.canvas.width;
     const H = this.canvas.height;
-    x.fillStyle = '#020604';
+    x.fillStyle = '#040907';
     x.fillRect(0, 0, W, H);
-    x.strokeStyle = 'rgba(109,252,192,0.35)';
+    x.fillStyle = 'rgba(88, 255, 170, 0.10)';
+    x.fillRect(6, 6, W - 12, 42);
+    x.strokeStyle = 'rgba(88, 255, 170, 0.48)';
+    x.lineWidth = 2;
     x.strokeRect(4.5, 4.5, W - 9, H - 9);
-    x.fillStyle = '#6dfcc0';
-    x.font = `600 22px ${MONO}`;
+    x.fillStyle = '#58ffaa';
+    x.font = `700 22px ${MONO}`;
     x.textAlign = 'left';
-    x.fillText('DEST', 16, 34);
-    x.fillStyle = 'rgba(238,233,222,0.6)';
-    x.font = `500 16px ${MONO}`;
-    x.fillText(title, 90, 34);
+    x.fillText('DEST', 16, 35);
+    x.fillStyle = 'rgba(232, 242, 236, 0.76)';
+    x.font = `600 16px ${MONO}`;
+    x.fillText(title, 92, 35);
     const rowH = (H - 82) / ROWS;
     rows.slice(0, ROWS).forEach((r, i) => {
-      const y = 70 + i * rowH;
+      const y = 66 + i * rowH;
       if (r.active) {
-        x.fillStyle = 'rgba(244,205,114,0.16)';
+        x.fillStyle = 'rgba(255, 190, 77, 0.18)';
         x.fillRect(10, y, W - 20, rowH - 3);
+        x.fillStyle = '#ffbe4d';
+        x.fillRect(10, y, 4, rowH - 3);
       }
-      x.fillStyle = r.active ? '#f4cd72' : 'rgba(238,233,222,0.88)';
-      x.font = `500 19px ${MONO}`;
-      x.fillText(r.label.slice(0, 22), 18, y + rowH * 0.62);
-      x.fillStyle = 'rgba(238,233,222,0.45)';
-      x.font = `400 15px ${MONO}`;
+      x.fillStyle = r.active ? '#ffbe4d' : 'rgba(232, 244, 238, 0.90)';
+      x.font = `600 19px ${MONO}`;
+      x.fillText(r.label.slice(0, 22), 20, y + rowH * 0.64);
+      x.fillStyle = r.active ? 'rgba(255, 214, 130, 0.85)' : 'rgba(130, 230, 185, 0.58)';
+      x.font = `500 15px ${MONO}`;
       x.textAlign = 'right';
-      x.fillText(r.sub, W - 18, y + rowH * 0.62);
+      x.fillText(r.sub, W - 18, y + rowH * 0.64);
       x.textAlign = 'left';
     });
     this.texture.needsUpdate = true;

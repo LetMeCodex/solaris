@@ -395,7 +395,7 @@ export interface AirframeAnchors {
    */
   canopyProfile?: Array<[number, number, number, number]>;
   /** Fixes for materials the model ships untextured (plain white): colour, finish, glass. */
-  materialTweaks?: Record<string, { color?: number; roughness?: number; metalness?: number; opacity?: number; emissive?: number }>;
+  materialTweaks?: Record<string, { color?: number; roughness?: number; metalness?: number; opacity?: number; emissive?: number; envMapIntensity?: number }>;
   lengthM: number;
   eye: THREE.Vector3;
   /** Exhaust exits, port then starboard. */
@@ -454,6 +454,13 @@ export const SU30_ANCHORS: AirframeAnchors = {
     console: new THREE.Vector3(-0.35, 0.425, -7.74),
   },
   airframeId: 'su30',
+  materialTweaks: {
+    // Anti-glare cockpit interior & glareshield finish so noon sunlight never washes out the panel
+    '3305ca56-f56e-4f85-ad2d-32863f146ae0': { color: 0x8d97a2, roughness: 0.88, metalness: 0.12, envMapIntensity: 0.32 },
+    'ffeddf5a-6eb4-4326-a840-bd26797b18c6': { color: 0x383d44, roughness: 0.86, metalness: 0.15, envMapIntensity: 0.3 },
+    '3324ca19-059f-4f68-9c3d-7a7f86712c55': { color: 0x161a1f, roughness: 0.82, metalness: 0.18, envMapIntensity: 0.28 },
+    'ff5a8533-2b31-4c3e-a6d1-db2b4d924566': { color: 0x7c848e, roughness: 0.86, metalness: 0.14, envMapIntensity: 0.34 },
+  },
   strakeVortex: [new THREE.Vector3(-2.05, 0.22, -2.55), new THREE.Vector3(2.05, 0.22, -2.55)],
   wheelAnchors: {
     nose: new THREE.Vector3(0, -2.25, -7.65),
@@ -501,26 +508,34 @@ export const GRIPEN_ANCHORS: AirframeAnchors = {
   // The windscreen arch and canopy rails, part of the fuselage mesh: above the sill, pilot's bay
   insideClip: [
     { material: 'saab_jas39a_aircraft_normal_detail', min: [-0.66, 0.4, -5.38], max: [0.66, 1.6, -2.85] },
+    // Lower side bow stubs along the forward windscreen arch (z: -4.94..-4.80)
+    { material: 'saab_jas39a_aircraft_normal_detail', min: [-0.45, 0.34, -5.05], max: [0.45, 0.42, -4.75] },
     // The canopy's clips and the mirror mount, in the cockpit mesh (the panel and HUD sit lower)
     { material: 'saab_jas39a_cockpit', min: [-0.7, 0.62, -5.38], max: [0.7, 1.6, -2.85] },
-    // The canopy's front supports (two rods left standing in the air once the bow was gone)
-    { material: 'saab_jas39a_cockpit', min: [-0.42, 0.345, -5.32], max: [-0.14, 0.62, -4.82] },
-    { material: 'saab_jas39a_cockpit', min: [0.14, 0.345, -5.32], max: [0.42, 0.62, -4.82] },
+    // Two floating black canopy-bow latch brackets at (±0.355, 0.421, -4.831) left behind when bow is hidden
+    { material: 'saab_jas39a_cockpit', min: [-0.46, 0.345, -5.06], max: [-0.27, 0.62, -4.72] },
+    { material: 'saab_jas39a_cockpit', min: [0.27, 0.345, -5.06], max: [0.46, 0.62, -4.72] },
     // The HUD's two bare posts above the up-front panel (the combiner glass and its symbols stay)
     { material: 'sw_sight_saab_39c', min: [-0.3, 0.36, -5.3], max: [0.3, 1.2, -4.7] },
   ],
   materialTweaks: {
     // The canopy's reflection layer: a whisper of glass, not a white veil
-    dynamic_glass_chrome: { opacity: 0.035, roughness: 0.04 },
-    empty_glass: { opacity: 0.08, roughness: 0.03 },
+    dynamic_glass_chrome: { opacity: 0.035, roughness: 0.04, envMapIntensity: 0.65 },
+    empty_glass: { opacity: 0.08, roughness: 0.03, envMapIntensity: 0.65 },
     dynamic_mirror: { color: 0xd8dadc, metalness: 1, roughness: 0.05 },
-    // Multi-function displays: dark screens with a faint live glow
-    dynamic_mfd: { color: 0x0a0f0d, roughness: 0.12, emissive: 0x0b2416 },
-    saab_jas39a_interior: { color: 0x202326, roughness: 0.75 },
-    saab_jas39a_inside: { color: 0x2c3034, roughness: 0.8 },
-    saab_jas39a_lables_1: { color: 0x1c1d1f, roughness: 0.7 },
-    sw_gauge_rpm_jas39a: { color: 0x17181a, roughness: 0.5 },
-    sw_gauge_exhaust_temperature_jas39a: { color: 0x17181a, roughness: 0.5 },
+    // Multi-function displays: deep matte anti-glare OLED backing (replaced at runtime by MfdDisplays)
+    dynamic_mfd: { color: 0x050a08, roughness: 0.14, emissive: 0x071a11, envMapIntensity: 0.12 },
+    // Military Nextel matte charcoal cockpit coaming & HUD housing: eliminates sunlit white washout
+    saab_jas39a_cockpit: { color: 0x9298a0, roughness: 0.89, metalness: 0.08, envMapIntensity: 0.30 },
+    sw_sight_saab_39c: { color: 0x4b5058, roughness: 0.92, metalness: 0.12, envMapIntensity: 0.24 },
+    sw_gauge_mfd_jas39a: { color: 0x5c626b, roughness: 0.86, metalness: 0.14, envMapIntensity: 0.28 },
+    saab_jas39a_lables: { color: 0xb0b7bf, roughness: 0.85, metalness: 0.05, envMapIntensity: 0.32 },
+    seat_saab_jas39: { color: 0x989ea5, roughness: 0.87, metalness: 0.08, envMapIntensity: 0.34 },
+    saab_jas39a_interior: { color: 0x1a1d21, roughness: 0.88, envMapIntensity: 0.28 },
+    saab_jas39a_inside: { color: 0x22262b, roughness: 0.9, envMapIntensity: 0.28 },
+    saab_jas39a_lables_1: { color: 0x191b1e, roughness: 0.82, envMapIntensity: 0.3 },
+    sw_gauge_rpm_jas39a: { color: 0x15171a, roughness: 0.6, envMapIntensity: 0.25 },
+    sw_gauge_exhaust_temperature_jas39a: { color: 0x15171a, roughness: 0.6, envMapIntensity: 0.25 },
     lau_7: { color: 0x8d9296, roughness: 0.55 },
     lavett_71: { color: 0x8d9296, roughness: 0.55 },
     bol_451_container: { color: 0x7d8288, roughness: 0.6 },
@@ -959,10 +974,10 @@ export class JetModel {
   private buildCanopyFrame(profile: Array<[number, number, number, number]>): THREE.Group {
     const group = new THREE.Group();
     group.name = 'canopy_frame';
-    // The cockpit's own grey (the Gripen's interior), a little worn; flush fasteners, not studs
-    const paint = new THREE.MeshStandardMaterial({ color: 0x3b4148, roughness: 0.62, metalness: 0.25 });
-    const seal = new THREE.MeshStandardMaterial({ color: 0x08090a, roughness: 0.88, metalness: 0 });
-    const steel = new THREE.MeshStandardMaterial({ color: 0x4d535a, roughness: 0.5, metalness: 0.6 });
+    // Anti-glare anodized military charcoal canopy rail (matches the Gripen/Su-30 cockpit coaming)
+    const paint = new THREE.MeshStandardMaterial({ color: 0x262b31, roughness: 0.78, metalness: 0.2, envMapIntensity: 0.42 });
+    const seal = new THREE.MeshStandardMaterial({ color: 0x070809, roughness: 0.9, metalness: 0, envMapIntensity: 0.25 });
+    const steel = new THREE.MeshStandardMaterial({ color: 0x454b52, roughness: 0.52, metalness: 0.58, envMapIntensity: 0.5 });
     this.disposables.push(paint, seal, steel);
     const z0 = profile[0][0];
     const z1 = profile[profile.length - 1][0];
@@ -1093,23 +1108,35 @@ float gSpecks(vec3 p, float scale) {
   vec3 c = floor(q);
   vec3 f = fract(q) - 0.5;
   float r = 0.06 + 0.16 * gH(c + 3.1);
-  return step(0.82, gH(c)) * smoothstep(r, r * 0.3, length(f));
+  return step(0.84, gH(c)) * smoothstep(r, r * 0.3, length(f));
+}
+// Fine acrylic canopy micro-scratches / cleaning hairline arcs (visible only under direct sunlight)
+float gMicroScratch(vec2 uv) {
+  vec2 p = uv * vec2(18.0, 26.0);
+  vec2 cell = floor(p);
+  vec2 f = fract(p) - 0.5;
+  float h = gH(vec3(cell, 7.3));
+  if (h < 0.72) return 0.0;
+  float ang = (h - 0.72) * 22.0;
+  float cs = cos(ang), sn = sin(ang);
+  vec2 r = vec2(f.x * cs - f.y * sn, f.x * sn + f.y * cs);
+  float len = 0.26 + 0.18 * fract(h * 19.7);
+  float line = smoothstep(0.014, 0.002, abs(r.y)) * smoothstep(len, len * 0.4, abs(r.x));
+  return line;
 }`)
         .replace(
         '#include <opaque_fragment>',
         `{
   vec3 V = normalize(vViewPosition);
   float nv = abs(dot(normalize(normal), V));
-  float fres = pow(1.0 - nv, 3.5);
-  // The glass: a faint film everywhere (a cool coating) and the reflection of the cockpit and the
-  // world round it, ~4% head-on per surface (Schlick), rising towards grazing angles; a canopy
-  // shows ~8% from its two faces, so the bright things, the displays, the sky, the Sun, are seen
-  // in it from any angle
+  float fres = pow(1.0 - nv, 3.8);
+  // Coated fighter acrylic canopy: crisp ~5% head-on reflection (crystal-clear forward sightline),
+  // smoothly building to ~38% grazing sky/cockpit reflection so the bubble reads without milky haze
   vec3 reflDir = inverseTransformDirection(reflect(-V, normalize(normal)), viewMatrix);
-  // ~8% head-on (two faces at ~4%), rising to ~45% at grazing angles (a coated canopy reflects
-  // less than bare glass's mirror at the edge)
-  float reflK = mix(0.08, 0.45, pow(1.0 - nv, 4.0));
+  float reflK = mix(0.05, 0.38, pow(1.0 - nv, 4.2));
   vec3 mirrored = textureCube(uGlassEnv, reflDir).rgb;
+  // Softly compress HDR reflection spikes so direct bright clouds never wash the canopy milky white
+  mirrored = mirrored / (vec3(1.0) + mirrored * 0.38);
   // The pilot in the glass: the cube is captured from the eye, inside the helmet, so it can never
   // see the pilot; the helmet and the shoulders are traced here instead, as the glass mirrors
   // them back (looking sideways you see your own helmet faintly in the canopy, as in real footage)
@@ -1143,28 +1170,29 @@ float gSpecks(vec3 p, float scale) {
     }
   }
   outgoingLight = mirrored * reflK * uGlassEnvK;
-  float a = 0.035 + 0.22 * fres;
-  outgoingLight += vec3(0.006, 0.009, 0.014);
-  // Near the frame the acrylic is thick and seen edge-on: a green-blue tint deepening into the
-  // seal and a brighter mirror (this is what makes the bubble's outline readable from inside)
+  float a = 0.022 + 0.19 * fres;
+  // Subtle laminated fighter canopy cool-emerald coating tint
+  outgoingLight += vec3(0.004, 0.009, 0.011);
+  // Near the frame the acrylic is thick and seen edge-on: green-teal laminated edge rim deepening
+  // into the rubber seal so the bubble outline stays crisp from inside
   float toSill = min(vGlassUv.x, 1.0 - vGlassUv.x);
   float toEnd = min(vGlassUv.y * 1.6, 1.0 - vGlassUv.y);
-  float rim = 1.0 - smoothstep(0.0, 0.07, min(toSill, toEnd * 0.6));
-  outgoingLight += vec3(0.010, 0.032, 0.030) * rim + textureCube(uGlassEnv, reflDir).rgb * 0.18 * rim * rim * uGlassEnvK;
-  a += 0.10 * rim + 0.18 * rim * rim * rim;
-  // The Sun on the curved glass: a sharp glint drawn out along the curve, and its soft sheen
+  float rim = 1.0 - smoothstep(0.0, 0.068, min(toSill, toEnd * 0.6));
+  outgoingLight += vec3(0.010, 0.038, 0.034) * rim + mirrored * 0.20 * rim * rim * uGlassEnvK;
+  a += 0.11 * rim + 0.20 * rim * rim * rim;
+  // Warm solar specular glint drawn crisply along the bubble curve
   vec3 sunV = normalize(uGlassSun);
   float sAlign = max(dot(reflect(-V, normalize(normal)), sunV), 0.0);
-  float glint = pow(sAlign, 900.0) * 6.0 + pow(sAlign, 60.0) * 0.12;
-  outgoingLight += vec3(1.0, 0.96, 0.88) * glint * uGlassSunK;
-  a += min(0.5, glint * 0.2) * uGlassSunK;
-  // Dust and smears: dull in shade, lit up when the Sun is behind them
-  float dust = gSpecks(vGlassLocal, 140.0) + 0.7 * gSpecks(vGlassLocal + 3.7, 310.0);
-  float smear = 0.0;
-  float toward = pow(max(dot(-V, uGlassSun), 0.0), 6.0) * uGlassSunK;
-  outgoingLight += vec3(1.0, 0.95, 0.85) * (dust * (0.04 + 2.4 * toward) + smear * 0.12 * toward);
-  a += dust * (0.05 + 0.4 * toward) + smear * 0.05 * toward;
-  diffuseColor.a = clamp(a, 0.0, 0.9);
+  float glint = pow(sAlign, 1100.0) * 5.2 + pow(sAlign, 72.0) * 0.10;
+  outgoingLight += vec3(1.0, 0.94, 0.82) * glint * uGlassSunK;
+  a += min(0.45, glint * 0.18) * uGlassSunK;
+  // Micro-dust and fine acrylic hairline scratches: invisible in shade, catching warm fire toward the Sun
+  float dust = gSpecks(vGlassLocal, 145.0) + 0.65 * gSpecks(vGlassLocal + 3.7, 320.0);
+  float scratch = gMicroScratch(vGlassUv) + 0.6 * gMicroScratch(vGlassUv * 1.63 + vec2(0.31, 0.19));
+  float toward = pow(max(dot(-V, uGlassSun), 0.0), 5.5) * uGlassSunK;
+  outgoingLight += vec3(1.0, 0.94, 0.80) * (dust * (0.025 + 1.9 * toward) + scratch * (0.008 + 0.42 * toward));
+  a += dust * (0.035 + 0.32 * toward) + scratch * (0.01 + 0.12 * toward);
+  diffuseColor.a = clamp(a, 0.0, 0.88);
 }
 #include <opaque_fragment>`,
       );
@@ -1186,12 +1214,29 @@ float gSpecks(vec3 p, float scale) {
     if (this.canopyFrame) this.canopyFrame.visible = on;
   }
 
-  private addInsideClip(m: THREE.MeshStandardMaterial, min: [number, number, number], max: [number, number, number]): void {
+  private addInsideClip(
+    m: THREE.MeshStandardMaterial,
+    boxes: Array<{ min: [number, number, number]; max: [number, number, number] }>,
+  ): void {
+    const MAX_BOXES = 4;
+    const count = Math.min(boxes.length, MAX_BOXES);
+    if (count === 0) return;
+    const mins: THREE.Vector3[] = [];
+    const maxs: THREE.Vector3[] = [];
+    for (let i = 0; i < MAX_BOXES; i++) {
+      const b = boxes[Math.min(i, count - 1)];
+      mins.push(new THREE.Vector3(...b.min));
+      maxs.push(new THREE.Vector3(...b.max));
+    }
     const prev = m.onBeforeCompile;
-    const box = { uClipMin: { value: new THREE.Vector3(...min) }, uClipMax: { value: new THREE.Vector3(...max) } };
+    const uniforms = {
+      uClipCount: { value: count },
+      uClipMin: { value: mins },
+      uClipMax: { value: maxs },
+    };
     m.onBeforeCompile = (shader, renderer) => {
       prev?.call(m, shader, renderer);
-      Object.assign(shader.uniforms, this.clipU, box);
+      Object.assign(shader.uniforms, this.clipU, uniforms);
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
 uniform mat4 uRootInv;
@@ -1201,13 +1246,18 @@ vRootPos = (uRootInv * modelMatrix * vec4(transformed, 1.0)).xyz;`);
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
 uniform float uClipOn;
-uniform vec3 uClipMin;
-uniform vec3 uClipMax;
+uniform int uClipCount;
+uniform vec3 uClipMin[${MAX_BOXES}];
+uniform vec3 uClipMax[${MAX_BOXES}];
 varying vec3 vRootPos;`)
         .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>
-if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootPos, uClipMax))) discard;`);
+if (uClipOn > 0.5) {
+  for (int i = 0; i < ${MAX_BOXES}; i++) {
+    if (i < uClipCount && all(greaterThan(vRootPos, uClipMin[i])) && all(lessThan(vRootPos, uClipMax[i]))) discard;
+  }
+}`);
     };
-    m.customProgramCacheKey = () => 'solaris-canopy-clip';
+    m.customProgramCacheKey = () => `solaris-canopy-clip-${MAX_BOXES}`;
     m.needsUpdate = true;
   }
 
@@ -1587,6 +1637,16 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
     if (anchors.noseAlongPositiveX) model.rotation.y = Math.PI / 2;
     if (anchors.modelScale) model.scale.setScalar(anchors.modelScale);
     const hidden = anchors.hideMaterials ?? [];
+    // Group all insideClip boxes per material so multi-box clipping never drops subsequent boxes
+    const clipsByMat = new Map<string, Array<{ min: [number, number, number]; max: [number, number, number] }>>();
+    for (const clip of anchors.insideClip ?? []) {
+      let arr = clipsByMat.get(clip.material);
+      if (!arr) {
+        arr = [];
+        clipsByMat.set(clip.material, arr);
+      }
+      arr.push({ min: clip.min, max: clip.max });
+    }
     model.traverse((o) => {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
@@ -1598,12 +1658,11 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
       if (anchors.hideMeshes?.includes(mesh.name)) mesh.visible = false;
       if (anchors.insideHideMeshes?.includes(mesh.name)) this.insideMeshes.push(mesh);
 
-      for (const clip of anchors.insideClip ?? []) {
-        for (const mat of mats) {
-          if (mat.name !== clip.material || mat.userData.canopyClip) continue;
-          mat.userData.canopyClip = true;
-          this.addInsideClip(mat as THREE.MeshStandardMaterial, clip.min, clip.max);
-        }
+      for (const mat of mats) {
+        const boxes = clipsByMat.get(mat.name);
+        if (!boxes || mat.userData.canopyClip) continue;
+        mat.userData.canopyClip = true;
+        this.addInsideClip(mat as THREE.MeshStandardMaterial, boxes);
       }
       if (mats[0]?.name?.startsWith(anchors.canopyMaterial)) this.canopyMesh = mesh;
       for (const m of mats) {
@@ -1626,6 +1685,7 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
           if (tw.roughness !== undefined) sm.roughness = tw.roughness;
           if (tw.metalness !== undefined) sm.metalness = tw.metalness;
           if (tw.opacity !== undefined) sm.opacity = tw.opacity;
+          if (tw.envMapIntensity !== undefined && 'envMapIntensity' in sm) sm.envMapIntensity = tw.envMapIntensity;
           if (tw.emissive !== undefined) {
             sm.emissive?.setHex(tw.emissive);
             sm.emissiveIntensity = 1;
@@ -2476,6 +2536,183 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
     parent.add(mesh);
   }
 
+  /**
+   * Build a single-draw-call live standby avionics & annunciator cluster (`dynamic_standby` material)
+   * fitted flush into the upper glareshield & engine gauge bezels of both JAS 39 Gripen and Su-30MKK.
+   *
+   * Atlas layout (4x2 tiles, flipY = false -> v=0 top, v=1 bottom):
+   *  - (0, 0): Speedometer (IAS knots / km/h + Mach + Vne barber pole)
+   *  - (1, 0): Standby Artificial Horizon (ADI pitch/roll ball + slip ball)
+   *  - (2, 0): Barometric / Radar Altimeter (dual needles + digital AGL/MSL)
+   *  - (3, 0): VSI + G-Meter (climb/sink rate + live G & peak-G bug)
+   *  - (0, 1): Engine N1 RPM % + AB Stage
+   *  - (1, 1): Engine EGT °C + Fuel %
+   *  - (2, 1): AoA Indexer (▼ ○ ▲) + Mach/AoA/FBW strip
+   *  - (3, 1): Master Warning / Caution / GPWS / Gear / Airbrake Annunciator Matrix
+   */
+  private buildStandbyCluster(parent: THREE.Group, id: 'gripen' | 'su30'): void {
+    const pos: number[] = [];
+    const nor: number[] = [];
+    const uv: number[] = [];
+    const idx: number[] = [];
+
+    const bezelMat = new THREE.MeshStandardMaterial({
+      color: 0x101317,
+      roughness: 0.86,
+      metalness: 0.24,
+      envMapIntensity: 0.28,
+    });
+    const faceMat = new THREE.MeshStandardMaterial({
+      color: 0x050a08,
+      roughness: 0.16,
+      emissive: 0x06160e,
+      emissiveIntensity: 1,
+      envMapIntensity: 0.15,
+    });
+    faceMat.name = 'dynamic_standby';
+    this.disposables.push(bezelMat, faceMat);
+
+    const euler = new THREE.Euler(0, 0, 0, 'YXZ');
+    const q = new THREE.Quaternion();
+    const p = new THREE.Vector3();
+    const n = new THREE.Vector3();
+    const ctr = new THREE.Vector3();
+
+    const addDial = (
+      cx: number,
+      cy: number,
+      cz: number,
+      radius: number,
+      rx: number,
+      ry: number,
+      col: number,
+      row: number,
+      addBezelRing: boolean,
+    ): void => {
+      euler.set(rx, ry, 0, 'YXZ');
+      q.setFromEuler(euler);
+      n.set(0, 0, 1).applyQuaternion(q).normalize();
+      ctr.set(cx, cy, cz);
+
+      if (addBezelRing) {
+        const ringGeo = new THREE.TorusGeometry(radius * 1.04, radius * 0.09, 8, 28);
+        this.disposables.push(ringGeo);
+        const ring = new THREE.Mesh(ringGeo, bezelMat);
+        ring.position.copy(ctr).addScaledVector(n, 0.001);
+        ring.quaternion.copy(q);
+        ring.frustumCulled = false;
+        parent.add(ring);
+      }
+
+      const segs = 28;
+      const base = pos.length / 3;
+      const uMid = (col + 0.5) * 0.25;
+      const vMid = (row + 0.5) * 0.5;
+      // Center vertex
+      pos.push(ctr.x, ctr.y, ctr.z);
+      nor.push(n.x, n.y, n.z);
+      uv.push(uMid, vMid);
+
+      for (let k = 0; k < segs; k++) {
+        const a = (k / segs) * Math.PI * 2;
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        p.set(ca * radius, sa * radius, 0).applyQuaternion(q).add(ctr);
+        pos.push(p.x, p.y, p.z);
+        nor.push(n.x, n.y, n.z);
+        // flipY = false: +Y (up) maps to smaller v
+        uv.push((col + 0.5 + 0.485 * ca) * 0.25, (row + 0.5 - 0.485 * sa) * 0.5);
+      }
+      for (let k = 0; k < segs; k++) {
+        const next = (k + 1) % segs;
+        idx.push(base, base + 1 + k, base + 1 + next);
+      }
+    };
+
+    const addPod = (
+      cx: number,
+      cy: number,
+      cz: number,
+      w: number,
+      h: number,
+      rx: number,
+      ry: number,
+      col: number,
+      row: number,
+    ): void => {
+      euler.set(rx, ry, 0, 'YXZ');
+      q.setFromEuler(euler);
+      n.set(0, 0, 1).applyQuaternion(q).normalize();
+      ctr.set(cx, cy, cz);
+
+      const bGeo = new THREE.BoxGeometry(w + 0.006, h + 0.006, 0.008);
+      this.disposables.push(bGeo);
+      const bezel = new THREE.Mesh(bGeo, bezelMat);
+      bezel.quaternion.copy(q);
+      bezel.position.copy(ctr).addScaledVector(n, -0.0045);
+      bezel.frustumCulled = false;
+      parent.add(bezel);
+
+      const hw = w * 0.5;
+      const hh = h * 0.5;
+      const u0 = col * 0.25 + 0.004;
+      const u1 = (col + 1) * 0.25 - 0.004;
+      const vTop = row * 0.5 + 0.008;
+      const vBot = (row + 1) * 0.5 - 0.008;
+      const base = pos.length / 3;
+      const corners: Array<[number, number, number, number]> = [
+        [-hw, hh, u0, vTop],
+        [hw, hh, u1, vTop],
+        [-hw, -hh, u0, vBot],
+        [hw, -hh, u1, vBot],
+      ];
+      for (const [lx, ly, cu, cv] of corners) {
+        p.set(lx, ly, 0).applyQuaternion(q).add(ctr);
+        pos.push(p.x, p.y, p.z);
+        nor.push(n.x, n.y, n.z);
+        uv.push(cu, cv);
+      }
+      idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+    };
+
+    if (id === 'gripen') {
+      // Exact jet-space positions measured from gripen.glb sw_gauge_* meshes (rx = -0.142 rad upper, -0.24 rad lower)
+      addDial(-0.2125, 0.3027, -5.1745, 0.0298, -0.142, 0, 0, 0, false); // Speedometer (sw_gauge_speed_1400)
+      addDial(-0.1438, 0.3027, -5.1725, 0.0285, -0.142, 0, 1, 0, false); // Artificial Horizon (sw_gauge_aviahorizon)
+      addDial(0.1453, 0.3027, -5.1745, 0.0298, -0.142, 0, 3, 0, false); // VSI + G-Meter (sw_gauge_gyrocompass)
+      addDial(0.2125, 0.3027, -5.1735, 0.0298, -0.142, 0, 2, 0, false); // Baro / Radar Altimeter (sw_gauge_altimeter)
+      addDial(0.3025, 0.0562, -5.1165, 0.0195, -0.24, 0, 0, 1, false); // Engine N1 RPM (sw_gauge_rpm)
+      addDial(0.3534, 0.0562, -5.1165, 0.0195, -0.24, 0, 1, 1, false); // Engine EGT / Fuel (sw_gauge_exhaust_temp)
+      // Left & right glareshield corner pods: AoA Indexer + Master Caution / GPWS Annunciator Matrix
+      addPod(-0.272, 0.301, -5.171, 0.036, 0.054, -0.142, 0.06, 2, 1);
+      addPod(0.272, 0.301, -5.171, 0.036, 0.054, -0.142, -0.06, 3, 1);
+    } else {
+      // Su-30MKK upper glareshield standby cluster aligned above buildSu30MfdCluster
+      addDial(-0.252, 0.892, -8.444, 0.031, -0.18, 0.1, 0, 0, true); // Speedometer
+      addDial(-0.178, 0.892, -8.436, 0.031, -0.18, 0.08, 1, 0, true); // Artificial Horizon
+      addDial(0.178, 0.892, -8.436, 0.031, -0.18, -0.08, 3, 0, true); // VSI + G-Meter
+      addDial(0.252, 0.892, -8.444, 0.031, -0.18, -0.1, 2, 0, true); // Baro / Radar Altimeter
+      addDial(0.326, 0.805, -8.442, 0.024, -0.18, -0.12, 0, 1, true); // Engine N1 RPM
+      addDial(0.326, 0.742, -8.430, 0.024, -0.18, -0.12, 1, 1, true); // Engine EGT / Fuel
+      // AoA Indexer & Master Caution / Warning Annunciator Matrix flanking HUD combiner
+      addPod(-0.118, 0.962, -8.352, 0.038, 0.060, -0.14, 0.08, 2, 1);
+      addPod(0.118, 0.962, -8.352, 0.044, 0.060, -0.14, -0.08, 3, 1);
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    geo.setIndex(idx);
+    this.disposables.push(geo);
+
+    const mesh = new THREE.Mesh(geo, faceMat);
+    mesh.name = id === 'gripen' ? 'GripenStandbyCluster' : 'Su30StandbyCluster';
+    mesh.frustumCulled = false;
+    mesh.renderOrder = 3;
+    parent.add(mesh);
+  }
+
   /** Slice articulated GLB control surfaces, wire TVC/iris, airbrakes, landing gear, and vapor sheets. */
   private setupLoadedRig(model: THREE.Object3D, anchors: AirframeAnchors): void {
     this.loadedExtras.clear();
@@ -2809,6 +3046,7 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
         new THREE.Vector3(3.75, -0.1, 2.55),
         new THREE.Vector3(0.85, 0.04, 2.38),
       ]);
+      this.buildStandbyCluster(this.loadedExtras, 'gripen');
     } else {
       this.buildAirbrakeUnits(rig, this.loadedExtras, [
         { pos: new THREE.Vector3(0, 1.46, -4.3), size: new THREE.Vector3(0.96, 0.055, 1.75), axis: new THREE.Vector3(1, 0, 0), maxRad: -0.92, bayColor: 0x10141b, flapColor: 0x627488 },
@@ -2821,6 +3059,7 @@ if (uClipOn > 0.5 && all(greaterThan(vRootPos, uClipMin)) && all(lessThan(vRootP
       ]);
       if (id === 'su30') {
         this.buildSu30MfdCluster(this.loadedExtras);
+        this.buildStandbyCluster(this.loadedExtras, 'su30');
       }
     }
 

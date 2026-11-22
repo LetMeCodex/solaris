@@ -2005,33 +2005,66 @@ export class SolarSystemScene {
    * highest), held still until the page reveals it.
    */
   public startFlyPage(): { name: string; lat: number; lon: number } | null {
-    const picks = ['earth-eiffel-tower', 'earth-manhattan', 'earth-christ-redeemer', 'earth-tokyo-tower', 'earth-sydney-opera', 'earth-cape-town', 'earth-golden-gate', 'earth-chamonix-mont-blanc', 'earth-hong-kong', 'earth-colosseum', 'earth-las-vegas', 'earth-venice'];
+    // Curated Showcase Tier of Earth's most visually jaw-dropping 3D cities & monumental 1:1 wonders
+    const picks = [
+      'earth-manhattan',
+      'earth-golden-gate',
+      'earth-eiffel-tower',
+      'earth-tokyo-tower',
+      'earth-sydney-opera',
+      'earth-hong-kong',
+      'earth-venice',
+      'earth-chamonix-mont-blanc',
+      'earth-everest',
+      'earth-grand-canyon',
+      'earth-matterhorn',
+      'earth-christ-redeemer',
+      'earth-fuji',
+      'earth-colosseum',
+      'earth-london-tower-bridge',
+      'earth-yosemite',
+    ];
     const now = new Date(this.clock.getUtcMs());
     const doy = (Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - Date.UTC(now.getUTCFullYear(), 0, 0)) / 86400000;
     const decl = THREE.MathUtils.degToRad(23.44 * Math.sin((2 * Math.PI * (doy - 81)) / 365));
     const subLon = (12 - (now.getUTCHours() + now.getUTCMinutes() / 60)) * 15;
-    let best: Landmark | undefined;
-    let bestScore = -Infinity;
+    const scored: Array<{ lm: Landmark; score: number; elev: number }> = [];
     for (const id of picks) {
       const lm = getLandmark(id);
       if (!lm) continue;
       const la = THREE.MathUtils.degToRad(lm.lat);
       const dl = THREE.MathUtils.degToRad(lm.lon - subLon);
-      // Sun's elevation there; a mid-morning or afternoon Sun (~35°) looks best, not noon's glare
+      // Sun's elevation there; crisp golden/morning/afternoon light (~20°..55°) reveals 3D depth best
       const elev = THREE.MathUtils.radToDeg(Math.asin(Math.sin(la) * Math.sin(decl) + Math.cos(la) * Math.cos(decl) * Math.cos(dl)));
-      const score = elev > 5 ? 60 - Math.abs(elev - 35) : elev;
-      if (score > bestScore) {
-        bestScore = score;
-        best = lm;
+      const score = elev > 10 ? 70 - Math.abs(elev - 34) : elev;
+      scored.push({ lm, score, elev });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    // Pick randomly among the top sunlit jaw-dropping landmarks (never repeating back-to-back)
+    const sunlitPool = scored.filter((s) => s.elev > 12).slice(0, 6);
+    const pool = sunlitPool.length > 0 ? sunlitPool : scored.slice(0, 4);
+    let lastId = '';
+    try {
+      lastId = sessionStorage.getItem('solaris.lastFlySpawn') ?? '';
+    } catch {
+      /* ignore storage errors */
+    }
+    const filtered = pool.length > 1 ? pool.filter((s) => s.lm.id !== lastId) : pool;
+    const chosen = filtered[Math.floor(Math.random() * filtered.length)] ?? pool[0];
+    const best = chosen?.lm;
+    if (best) {
+      try {
+        sessionStorage.setItem('solaris.lastFlySpawn', best.id);
+      } catch {
+        /* ignore storage errors */
       }
     }
     this.enterJet(best);
     this.jet.hold = true;
-    // Kick off spawn-region DEM (tight z13 footprint + regional z10) & high-res Earth tiles
-    // immediately on tick 0 without flooding Terrarium with 100+ tiles.
+    // Kick off spawn-region DEM (tight z13 footprint + wide regional z10) & high-res Earth tiles
     if (best) {
-      void earthElevation.ensure(best.lat - 0.03, best.lon - 0.03, best.lat + 0.03, best.lon + 0.03, 13, -50);
-      void earthElevation.ensure(best.lat - 0.12, best.lon - 0.12, best.lat + 0.12, best.lon + 0.12, 10, 0);
+      void earthElevation.ensure(best.lat - 0.04, best.lon - 0.04, best.lat + 0.04, best.lon + 0.04, 13, -60);
+      void earthElevation.ensure(best.lat - 0.18, best.lon - 0.18, best.lat + 0.18, best.lon + 0.18, 10, 0);
     }
     this.jet.update(0.001, performance.now() * 0.001, this.cameraRig.camera, this.container.clientWidth, this.container.clientHeight, this.jetToScreen);
     this.explorer.update('Earth', this.cameraRig.camera, this.renderer.domElement.height);
@@ -2057,6 +2090,12 @@ export class SolarSystemScene {
       const tilesPending = st ? (st.queued ?? 0) + (st.downloading ?? 0) + (st.parsing ?? 0) : 0;
       const tilesVisible = st?.visible ?? 0;
       const detailedTiles = this.photoreal!.detailedTilesVisible;
+      const localCoverage = this.photoreal!.localCoverageCount;
+      // Wait for a full solid city/country blanket + crisp foreground buildings before unlocking ENGAGE
+      const spawnTilesReady =
+        (localCoverage >= 18 && detailedTiles >= 10 && tilesPending <= 24) ||
+        (localCoverage >= 28 && detailedTiles >= 14) ||
+        (localCoverage >= 12 && tilesPending === 0);
       return {
         jet: this.jet.active,
         aircraft: this.jet.aircraftReady,
@@ -2064,7 +2103,7 @@ export class SolarSystemScene {
         tilesVisible,
         detailedTiles,
         source: 'photoreal',
-        spawnTilesReady: detailedTiles >= 2 || (tilesVisible >= 4 && tilesPending <= 12),
+        spawnTilesReady,
       };
     }
     const layer = this.explorer.getStatus().layer;
