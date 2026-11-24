@@ -1257,6 +1257,28 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
         <EraButton controller={controller} />
         <IconButton icon={slow.assist ? 'assist' : 'inertial'} label="Flight assist" state={slow.assist ? 'on' : 'inertial'} on={!slow.assist} title="Flight assist (G): off for pure Newtonian drift" onClick={() => controller.toggleAssist()} />
         <IconButton icon={slow.muted ? 'muted' : 'sound'} label="Sound" state={slow.muted ? 'muted' : 'on'} title="Engine sound (N)" onClick={() => { controller.audio.muted = !controller.audio.muted; }} />
+        <a
+          href={`${import.meta.env.BASE_URL}walk/`}
+          title="Walk Mode: Explore 1:1 Photorealistic Times Square, NYC on foot"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            height: 30,
+            padding: '0 10px',
+            borderRadius: 999,
+            background: 'rgba(10, 14, 24, 0.72)',
+            border: '1px solid rgba(120, 220, 255, 0.35)',
+            color: '#d8f4ff',
+            fontFamily: 'var(--font-mono, monospace)',
+            fontSize: 10,
+            letterSpacing: '0.14em',
+            textDecoration: 'none',
+            pointerEvents: 'auto',
+          }}
+        >
+          WALK NYC
+        </a>
         <IconButton icon="help" label="Controls" on={slow.help} title="Controls (H)" onClick={() => { controller.helpOpen = !controller.helpOpen; }} />
     </>
   );

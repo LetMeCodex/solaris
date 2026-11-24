@@ -26,6 +26,7 @@ export default defineConfig({
         report: path.resolve(__dirname, 'report/index.html'),
         book: path.resolve(__dirname, 'book/index.html'),
         fly: path.resolve(__dirname, 'fly/index.html'),
+        walk: path.resolve(__dirname, 'walk/index.html'),
       },
       output: {
         // Split the large, rarely-changing libraries into their own long-cacheable chunks
