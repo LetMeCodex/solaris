@@ -85,9 +85,61 @@ interface BodyInfo {
 const FLY_KEYS = new Set([
   'w', 's', 'a', 'd', 'q', 'e', 'r', 'f', 'x', 'c', 'v', 't', 'z', 'g', 'h', 'n', 'i', ' ',
   'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'escape', 'shift', 'tab', 'u', 'l', 'b', 'k',
-  '[', ']', 'y', '`', ';', ',', '.', "'",
+  '[', ']', 'y', '`', ';', ',', '.', "'", 'backspace', 'home', 'o', 'j', 'p', 'm',
   '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
 ]);
+
+/** Maps physical KeyboardEvent.code to canonical FLY_KEYS tokens so Shift chords never leave stuck keys. */
+export function canonicalFlyKey(e: Pick<KeyboardEvent, 'code' | 'key'>): string {
+  const code = e.code;
+  if (code) {
+    if (code.startsWith('Key') && code.length === 4) return code[3].toLowerCase();
+    if (code.startsWith('Digit') && code.length === 6) return code[5];
+    switch (code) {
+      case 'Space': return ' ';
+      case 'ShiftLeft':
+      case 'ShiftRight': return 'shift';
+      case 'ArrowUp': return 'arrowup';
+      case 'ArrowDown': return 'arrowdown';
+      case 'ArrowLeft': return 'arrowleft';
+      case 'ArrowRight': return 'arrowright';
+      case 'Tab': return 'tab';
+      case 'Escape': return 'escape';
+      case 'Backspace': return 'backspace';
+      case 'Home': return 'home';
+      case 'BracketLeft': return '[';
+      case 'BracketRight': return ']';
+      case 'Backquote': return '`';
+      case 'Semicolon': return ';';
+      case 'Comma': return ',';
+      case 'Period': return '.';
+      case 'Quote': return "'";
+    }
+  }
+  return e.key.toLowerCase();
+}
+
+/** Relative virtual-stick drag-steer calculation anchored at mouse-down origin (zero screen-center jump). */
+export function computeRelativeDragSteer(
+  cx: number,
+  cy: number,
+  startX: number,
+  startY: number,
+  viewW: number,
+  viewH: number,
+): { x: number; y: number } {
+  const s = Math.max(96, Math.min(viewW, viewH) * 0.24);
+  const x = (cx - startX) / s;
+  const y = (cy - startY) / s;
+  const shape = (v: number): number => {
+    const a = Math.abs(v);
+    if (a < 0.04) return 0;
+    const t = Math.min(1, (a - 0.04) / 0.96);
+    // Progressive precision curve: fine surgical control near center, crisp full authority at rim
+    return Math.sign(v) * (0.45 * t + 0.55 * t * t);
+  };
+  return { x: shape(x), y: shape(y) };
+}
 const TARGET_ORDER = ['Mercury', 'Venus', 'Earth', 'Moon', 'Mars', 'Phobos', 'Ceres', 'Jupiter', 'Io', 'Europa', 'Ganymede', 'Callisto',
   'Saturn', 'Enceladus', 'Titan', 'Iapetus', 'Uranus', 'Miranda', 'Titania', 'Neptune', 'Triton', 'Pluto', 'Charon', 'Sun', 'Sagittarius A*',
   'International Space Station', 'Hubble Space Telescope', 'James Webb Space Telescope', 'Artemis II',
@@ -102,7 +154,7 @@ export class JetController {
   public active = false;
   public view: JetView = 'chase';
   public assist = true;
-  public throttle = 0.4;
+  public throttle = 0.68;
   /** The era of the sky you fly under (a deep-time scene id, src/explorer/DeepTime), or null: today. */
   public era: string | null = null;
   /** A cobra asked for (V): taken by the next flight step. */
@@ -268,6 +320,8 @@ export class JetController {
   private spinValid = false;
 
   private keys = new Set<string>();
+  /** Smoothed analog-feel shaping for digital keyboard flight axes (W/S/A/D/Q/E). */
+  private kbdSmooth = { pitch: 0, roll: 0, yaw: 0 };
   private dragSteer = false;
   private dragSteerArmed = false;
   private dragStart = new THREE.Vector2();
@@ -322,6 +376,12 @@ export class JetController {
 
   private chaseQuat = new THREE.Quaternion();
   private chaseDist = 17;
+  private chasePullSmooth = 1;
+  private chaseLeadX = 0;
+  private chaseLeadY = 0;
+  private chaseVelQ = new THREE.Quaternion();
+  private chaseTargetQ = new THREE.Quaternion();
+  private chaseVelDir = new THREE.Vector3();
   private flybyPoint = new THREE.Vector3();
   private flybyValid = false;
   /** The fly-by director's current shot and how long it has run. */
@@ -594,7 +654,10 @@ export class JetController {
     const kpu = localKmPerUnit(alt, start.radius, start.radiusKm);
     this.flight.speed = 2500 * unitsPerMps(kpu);
     this.flight.velocity.copy(fwd).multiplyScalar(this.flight.speed);
-    this.throttle = 0.4;
+    this.throttle = 0.68;
+    this.kbdSmooth.pitch = this.kbdSmooth.roll = this.kbdSmooth.yaw = 0;
+    this.chasePullSmooth = 1;
+    this.chaseLeadX = this.chaseLeadY = 0;
     this.anchor = start;
     this.anchorPrev.copy(start.center);
     this.spinValid = false;
@@ -911,7 +974,7 @@ export class JetController {
 
   private onKeyDown = (e: KeyboardEvent): void => {
     if (this.isTyping(e)) return;
-    const k = e.key.toLowerCase();
+    const k = canonicalFlyKey(e);
     if (!FLY_KEYS.has(k)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -941,6 +1004,10 @@ export class JetController {
     else if (k === 'i') this.setPitchPreference(!this.invertPitch);
     else if (k === 'o') this.nextTimeOfDay();
     else if (k === 'home') this.flyHome();
+    else if (k === 'backspace') {
+      this.flight.requestLevelWings();
+      this.radio('WINGS LEVEL · HORIZON TRIM', 2.2);
+    }
     else if (k === 'x') this.throttle = 0;
     else if (k === 'v') this.cobraQueued = true;
     else if (k === 'j') this.cycleSpeedTier();
@@ -954,18 +1021,21 @@ export class JetController {
   };
 
   private onKeyUp = (e: KeyboardEvent): void => {
-    const k = e.key.toLowerCase();
-    if (!FLY_KEYS.has(k)) return;
+    const k = canonicalFlyKey(e);
+    const raw = e.key.toLowerCase();
+    if (!FLY_KEYS.has(k) && !FLY_KEYS.has(raw)) return;
     // Also stops Space "clicking" a HUD button that kept the focus
     e.preventDefault();
     e.stopPropagation();
     this.keys.delete(k);
+    this.keys.delete(raw);
     if (k === 'z') this.zFpvHoldLatched = false;
     if (k === 'shift' && this.mouseHead) this.steer.set(0, 0);
   };
 
   private clearHeldInputs = (): void => {
     this.keys.clear();
+    this.kbdSmooth.pitch = this.kbdSmooth.roll = this.kbdSmooth.yaw = 0;
     this.zFpvHoldLatched = false;
     this.dragSteer = false;
     this.dragSteerArmed = false;
@@ -1194,14 +1264,8 @@ export class JetController {
   private updateSteer(cx: number, cy: number): void {
     const r = this.dom?.getBoundingClientRect();
     if (!r) return;
-    const s = Math.min(r.width, r.height) * 0.32;
-    const x = (cx - (r.left + r.width / 2)) / s;
-    const y = (cy - (r.top + r.height / 2)) / s;
-    const dz = (v: number): number => {
-      const a = Math.abs(v);
-      return a < 0.06 ? 0 : Math.sign(v) * Math.min(1, (a - 0.06) / 0.94);
-    };
-    this.steer.set(dz(x), dz(y));
+    const st = computeRelativeDragSteer(cx, cy, this.dragStart.x, this.dragStart.y, r.width, r.height);
+    this.steer.set(st.x, st.y);
   }
 
   private onWheel = (e: WheelEvent): void => {
@@ -1778,10 +1842,10 @@ export class JetController {
     this.flight.velocity.copy(fwd).multiplyScalar(this.flight.speed);
     this.flight.resetEnvelopePeaks();
     this.velocityWorld.copy(this.flight.velocity);
-    this.throttle = spawnRho > 0.02 ? THREE.MathUtils.clamp(0.58 + (1 - Math.min(1, spawnRho)) * 0.14, 0.58, 0.72) : 0.55;
+    this.throttle = spawnRho > 0.02 ? THREE.MathUtils.clamp(0.66 + (1 - Math.min(1, spawnRho)) * 0.14, 0.66, 0.80) : 0.62;
     this.anchor = b;
     this.anchorPrev.copy(b.center);
-    this.target = b.name;
+    this.target = b.name === 'Earth' ? 'Moon' : b.name;
   }
 
   /**
@@ -2241,14 +2305,33 @@ export class JetController {
   private readInput(dt: number): FlightInput {
     const k = this.keys;
     const axis = (neg: boolean, pos: boolean): number => (pos ? 1 : 0) - (neg ? 1 : 0);
-    let pitch = axis(k.has('w') || k.has('arrowup'), k.has('s') || k.has('arrowdown'));
-    let roll = axis(k.has('a') || k.has('arrowleft'), k.has('d') || k.has('arrowright'));
-    let yaw = axis(k.has('q'), k.has('e'));
-    // Mouse drag: a virtual stick around the screen centre (drag up = nose up)
+    let kbdPitchRaw = axis(k.has('w') || k.has('arrowup'), k.has('s') || k.has('arrowdown'));
+    // invertPitch ("W nose up" vs "W nose down") applies STRICTLY to keyboard pitch — never
+    // flips mouse drag, touch stick, or gamepad!
+    if (this.invertPitch) kbdPitchRaw = -kbdPitchRaw;
+    const kbdRollRaw = axis(k.has('a') || k.has('arrowleft'), k.has('d') || k.has('arrowright'));
+    const kbdYawRaw = axis(k.has('q'), k.has('e'));
+
+    // Smooth analog-feel shaping on digital keyboard keys: fast 16/s ramp-in (surgical micro-taps)
+    // and crisp 30/s snap-out (zero sluggish coasting)
+    const smoothKbd = (cur: number, dst: number): number => {
+      const rate = Math.abs(dst) > 0.01 ? 16 : 30;
+      const next = cur + (dst - cur) * (1 - Math.exp(-rate * dt));
+      return Math.abs(dst) < 0.01 && Math.abs(next) < 0.015 ? 0 : next;
+    };
+    this.kbdSmooth.pitch = smoothKbd(this.kbdSmooth.pitch, kbdPitchRaw);
+    this.kbdSmooth.roll = smoothKbd(this.kbdSmooth.roll, kbdRollRaw);
+    this.kbdSmooth.yaw = smoothKbd(this.kbdSmooth.yaw, kbdYawRaw);
+
+    const shapeKbd = (v: number): number => Math.sign(v) * (0.58 * Math.abs(v) + 0.42 * v * v);
+    let pitch = shapeKbd(this.kbdSmooth.pitch);
+    let roll = shapeKbd(this.kbdSmooth.roll);
+    let yaw = shapeKbd(this.kbdSmooth.yaw);
+    // Mouse drag & touch virtual stick: drag UP -> nose UP, drag RIGHT -> roll RIGHT
     pitch += -this.steer.y - this.touchSteer.y;
     roll += this.steer.x + this.touchSteer.x;
-    if (k.has('r')) this.throttle = Math.min(1, this.throttle + dt * 0.45);
-    if (k.has('f')) this.throttle = Math.max(0, this.throttle - dt * 0.45);
+    if (k.has('r')) this.throttle = Math.min(1, this.throttle + dt * 0.68);
+    if (k.has('f')) this.throttle = Math.max(0, this.throttle - dt * 0.68);
 
     const kbdBrake = k.has('tab') || k.has(';');
     let boost = (k.has(' ') || this.touchBoost) && this.abArmed;
@@ -2313,7 +2396,6 @@ export class JetController {
       this.gpPrevButtons.set(p.index, cur);
       break;
     }
-    if (this.invertPitch) pitch = -pitch;
     this.aligning = (k.has('z') && !k.has('shift') && !this.zFpvHoldLatched) || this.touchAlign || this.aligning;
     return {
       pitch: THREE.MathUtils.clamp(pitch, -1, 1),
@@ -2328,7 +2410,8 @@ export class JetController {
       gearDown: this.gearDown,
       highG,
       psm,
-      fbwMode: this.flight.fbwMode,
+      // Always pass base latched mode — NEVER echo momentary effectiveMode ('psm'/'high-g') back!
+      fbwMode: this.flight.baseFbwMode,
       flapMode: this.flight.flapMode,
       fpvHold: this.flight.fpvHoldActive,
     };
@@ -2669,8 +2752,9 @@ export class JetController {
     }
     this.terrainWarning = this.gpwsMode !== 'none';
 
-    // Emergency-only Auto-GCAS pitch arrest: engages ONLY for imminent hands-off CFIT (< 130 m AGL,
-    // < 1.6 s to impact, NORM FBW, gear up) and NEVER hijacks roll or fights active pilot maneuvers!
+    // Emergency-only Auto-GCAS pitch arrest: engages ONLY for imminent hands-off CFIT (< 85 m AGL,
+    // diving steeper than -7 deg, < 1.3 s to impact, NORM FBW, gear up) and NEVER hijacks low-level
+    // canyon runs or fights active pilot stick inputs!
     if (
       this.gpwsMode === 'pull-up' &&
       !this.gearDown &&
@@ -2682,11 +2766,13 @@ export class JetController {
       !input.highG &&
       density > 0.02 &&
       preSpeedMps > 55 &&
-      altAglMPre < 130 &&
-      Math.abs(input.pitch) < 0.25 &&
-      (bestTti < 1.6 || minLookaheadClearM < 12)
+      altAglMPre < 85 &&
+      gammaRadPre < -0.12 &&
+      Math.abs(input.pitch) < 0.08 &&
+      Math.abs(input.roll) < 0.12 &&
+      (bestTti < 1.3 || minLookaheadClearM < 10)
     ) {
-      const urgency = THREE.MathUtils.clamp(1.0 - bestTti * 0.45, 0.35, 0.78);
+      const urgency = THREE.MathUtils.clamp(1.0 - bestTti * 0.52, 0.35, 0.72);
       input.pitch = Math.max(input.pitch, urgency);
       if (timeSec - this.lastGpwsRadioAt > 5.0) {
         this.lastGpwsRadioAt = timeSec;
@@ -3289,15 +3375,57 @@ export class JetController {
       // Rendered wide; the lens folds it into an action camera's picture (zoom still applies)
       camera.fov = this.responsiveFov(Math.min(132, this.insideFovNow * 1.32 + this.fovKick * 0.4), camera.aspect, 136);
     } else if (this.view === 'chase') {
-      // The camera lags the airframe a little so turns show; drag right mouse or touch to look around
-      this.chaseQuat.slerp(f.quaternion, 1 - Math.exp(-5.5 * dt));
-      if (!this.lookDrag) this.look.multiplyScalar(Math.exp(-1.5 * dt));
-      this.eChase.set(this.look.y * 0.8 - 0.06, this.look.x, 0, 'YXZ');
+      // Ace-Combat-meets-DCS Velocity-Vector Cinematic Chase Camera:
+      // Smoothly blends camera aim toward the flight path during high-AoA maneuvers (Cobra, Kulbit,
+      // Herbst, High-G Drift) so you watch the jet pitch dramatically across the frame while keeping
+      // total spatial awareness, with visceral thrust/airbrake breathing and subtle turn framing!
+      const absAoa = Math.abs(f.aoaDeg);
+      const velBlend =
+        density > 0.02 && speedMps > 30
+          ? THREE.MathUtils.smoothstep(absAoa, 8, 34) * (f.cobraT >= 0 ? 0.80 : f.fbwMode === 'psm' ? 0.65 : 0.45)
+          : 0;
+      this.chaseTargetQ.copy(f.quaternion);
+      if (velBlend > 0.01 && f.velocity.lengthSq() > 1e-12) {
+        // Singularity-free minimal-arc alignment from jet forward (-Z) to velocity vector:
+        // rotates cleanly by -alpha across 0° -> 90° -> 120° -> 180° -> 360° with ZERO gimbal
+        // roll-flip snap (unlike Matrix4.lookAt(0, velDir, bodyUp) which breaks at 90° Cobra AoA!).
+        const jetFwd = this.v1.set(0, 0, -1).applyQuaternion(f.quaternion);
+        this.chaseVelDir.copy(f.velocity).normalize();
+        const dotFV = THREE.MathUtils.clamp(jetFwd.dot(this.chaseVelDir), -1, 1);
+        if (dotFV > -0.995) {
+          this.q1.setFromUnitVectors(jetFwd, this.chaseVelDir);
+          this.chaseVelQ.copy(this.q1).multiply(f.quaternion).normalize();
+          this.chaseTargetQ.slerp(this.chaseVelQ, velBlend);
+        }
+      }
+      const cobraFrac = f.cobraT >= 0 ? THREE.MathUtils.smoothstep(absAoa, 18, 65) : 0;
+      const chaseRotRate = f.cobraT >= 0 ? 4.4 : 6.4;
+      this.chaseQuat.slerp(this.chaseTargetQ, 1 - Math.exp(-chaseRotRate * dt));
+      if (!this.lookDrag) this.look.multiplyScalar(Math.exp(-1.8 * dt));
+      this.eChase.set(this.look.y * 0.8 - 0.055 + cobraFrac * 0.075, this.look.x, 0, 'YXZ');
       this.q1.setFromEuler(this.eChase);
       const q = this.q2.copy(this.chaseQuat).multiply(this.q1);
-      const pullBack = 1 + THREE.MathUtils.clamp((machVal - 1) * 0.012 + (f.boosting ? 0.08 : 0), 0, 0.25);
-      const effChaseDist = this.chaseDist * pullBack;
-      const off = this.v2.set(0, effChaseDist * 0.17, effChaseDist).applyQuaternion(q).multiplyScalar(upm);
+
+      // Visceral thrust-pull / airbrake-push breathing + heroic Cobra pullback so the entire jet stays centered
+      const pullTarget =
+        1 +
+        THREE.MathUtils.clamp((machVal - 0.9) * 0.018, 0, 0.22) +
+        (f.boosting ? 0.095 : 0) -
+        (f.airbrakeActive ? 0.065 : 0) +
+        (f.cobraT >= 0 ? 0.26 * Math.max(0.45, cobraFrac) : 0);
+      this.chasePullSmooth += (pullTarget - this.chasePullSmooth) * (1 - Math.exp(-4.2 * dt));
+      const effChaseDist = this.chaseDist * this.chasePullSmooth;
+
+      const leadTargetX = THREE.MathUtils.clamp(f.rates.z * 0.24 - f.rates.y * 0.35, -0.75, 0.75);
+      const leadTargetY = THREE.MathUtils.clamp((g - 1) * 0.055, -0.35, 0.45);
+      const kLead = 1 - Math.exp(-5.0 * dt);
+      this.chaseLeadX += (leadTargetX - this.chaseLeadX) * kLead;
+      this.chaseLeadY += (leadTargetY - this.chaseLeadY) * kLead;
+
+      const off = this.v2
+        .set(this.chaseLeadX, effChaseDist * 0.175 + this.chaseLeadY, effChaseDist)
+        .applyQuaternion(q)
+        .multiplyScalar(upm);
       camera.position.copy(f.position).add(off);
       camera.quaternion.copy(q);
       const kickScale = camera.aspect > 2.2 ? Math.max(0.65, 2.2 / camera.aspect) : 1;
@@ -3761,7 +3889,9 @@ export class JetController {
       const closingUnits = f.velocity.dot(to.normalize());
       t.closingMps = surfUnits > 0 ? (closingUnits * (dKm / surfUnits)) * 1000 : closingUnits / unitsPerMps(kmPerUnit);
       t.targetEtaS = closingUnits > 1e-12 ? surfUnits / closingUnits : Infinity;
-      t.targetScreen = this.projectDir(to, camera, toScreen);
+      // Suppress target chevron when flying inside the target planet's own atmosphere / near surface
+      const onSameWorld = tgt === nearest && shownAltKm < nearest.radiusKm * 0.5;
+      t.targetScreen = onSameWorld ? null : this.projectDir(to, camera, toScreen);
     } else {
       t.targetScreen = null;
     }

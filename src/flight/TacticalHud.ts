@@ -277,9 +277,10 @@ function panelBg(ctx: CanvasRenderingContext2D, x: number, y: number, w: number,
   ctx.save();
   chamferPanel(ctx, x, y, w, h, 14, flip);
   const g = ctx.createLinearGradient(flip ? x + w : x, y, flip ? x : x + w, y);
-  g.addColorStop(0, 'rgba(4, 10, 12, 0.46)');
-  g.addColorStop(0.7, 'rgba(4, 10, 12, 0.22)');
-  g.addColorStop(1, 'rgba(4, 10, 12, 0.0)');
+  // Crisp tactical dark glass scrim so AGL/MSL/IAS/G/α stay razor-legible even over bright clouds
+  g.addColorStop(0, 'rgba(4, 10, 12, 0.72)');
+  g.addColorStop(0.7, 'rgba(4, 10, 12, 0.54)');
+  g.addColorStop(1, 'rgba(4, 10, 12, 0.26)');
   ctx.fillStyle = g;
   ctx.fill();
   // Fine scanlines over the panel
@@ -722,12 +723,15 @@ function flightCard(ctx: CanvasRenderingContext2D, t: JetTelemetry, now: number,
   const flp = (t.flapMode ?? 'auto').toUpperCase();
   const ab = t.abStage ?? (t.boost > 0.66 ? 3 : t.boost > 0.33 ? 2 : t.boost > 0 ? 1 : 0);
   const fuelPct = Math.round(Math.max(0, Math.min(1, t.fuelFrac ?? t.boostEnergy)) * 100);
+  const hasManeuver = !!(t.maneuver && t.maneuver !== 'none');
+  const hasBrk = !!(t.airbrakeActive || t.wheelBrakeActive);
   const pills = [
     `${fbw}${t.tvcActive ? '+TVC' : ''}`,
-    `FLP ${flp === 'COMBAT' ? 'CMB' : flp === 'LAND' ? 'LND' : 'AUTO'}`,
+    // Omit default FLP AUTO and passive ARM during active maneuvers/airbrake so FUEL XX% NEVER truncates!
+    flp !== 'AUTO' ? `FLP ${flp === 'COMBAT' ? 'CMB' : 'LND'}` : '',
     t.airbrakeActive ? 'BRK' : t.wheelBrakeActive ? 'W-BRK' : '',
-    t.supercruise ? 'SUPR' : ab > 0 ? `AB${ab}` : t.abArmed ? 'ARM' : '',
-    t.maneuver && t.maneuver !== 'none' ? t.maneuver.toUpperCase() : '',
+    t.supercruise ? 'SUPR' : ab > 0 ? `AB${ab}` : t.abArmed && !hasManeuver && !hasBrk ? 'ARM' : '',
+    hasManeuver ? t.maneuver!.toUpperCase() : '',
     `FUEL ${fuelPct}%`,
   ].filter(Boolean);
   ctx.fillStyle = WHITE(0.08);
@@ -852,11 +856,21 @@ function centreReveal(ctx: CanvasRenderingContext2D, t: JetTelemetry, place: Pla
   const age = now - reveal.shownAt;
   const DUR = 5;
   if (age < 0 || age > DUR || !reveal.title) return;
+  // Suppress airspace reveal banner during urgent GPWS/spin warnings so text never collides with RADIO/PULL UP
+  const altWarn = resolveAltitudeTelemetry(t);
+  if (altWarn.terrainWarning || t.warning > 0 || t.spinWarning) return;
   // The detail line keeps updating (the clock runs) while the title holds
   if (key === reveal.key) reveal.line = line;
   const cx = w / 2;
   const cy = centreY;
-  const fs = Math.min(64, w / 14, h / 12);
+  // Dynamically fit title font size & tracking inside 82% viewport width (NEVER clips "UNITED STATES OF AMERICA"!)
+  let fs = Math.min(60, w / 14, h / 12);
+  let titleSpacing = Math.min(12, Math.max(3, fs * 0.2));
+  const maxTitleW = w * 0.82;
+  while (fs > 22 && measureSpacedText(ctx, reveal.title, `700 ${fs}px ${HEAD}`, titleSpacing) > maxTitleW) {
+    fs = Math.max(22, fs * 0.88);
+    titleSpacing = Math.max(2, titleSpacing * 0.82);
+  }
   // The tag sits clear above the title's capitals
   const tagY = cy - 12 - fs * 0.72 - 14;
   const out = age > DUR - 0.9 ? ease((age - (DUR - 0.9)) / 0.9) : 0;
@@ -886,17 +900,17 @@ function centreReveal(ctx: CanvasRenderingContext2D, t: JetTelemetry, place: Pla
       ctx.fillRect(cx + tw / 2 + 4, tagY - 10, 7, 12);
     }
   }
-  // The title: a chromatic split as it lands, then clean
+  // The title: a chromatic split as it lands, then clean (guaranteed strictly inside viewport)
   const tAge = age - 0.4;
   if (tAge > 0) {
     const shown = decode(reveal.title, tAge, 0.045, 0.0);
     const font = `700 ${fs}px ${HEAD}`;
     const glitch = Math.max(0, 1 - tAge / 0.35);
     if (glitch > 0) {
-      text(ctx, shown, cx - 6 * glitch, cy - 12, font, `rgba(255, 80, 90, ${0.5 * glitch})`, 'center', 14);
-      text(ctx, shown, cx + 6 * glitch, cy - 12, font, `rgba(80, 220, 255, ${0.5 * glitch})`, 'center', 14);
+      text(ctx, shown, cx - 6 * glitch, cy - 12, font, `rgba(255, 80, 90, ${0.5 * glitch})`, 'center', titleSpacing);
+      text(ctx, shown, cx + 6 * glitch, cy - 12, font, `rgba(80, 220, 255, ${0.5 * glitch})`, 'center', titleSpacing);
     }
-    text(ctx, shown, cx, cy - 12, font, WHITE(0.98), 'center', 14);
+    text(ctx, shown, cx, cy - 12, font, WHITE(0.98), 'center', titleSpacing);
   }
   // Detail line under the rule
   const lAge = age - 0.9;
@@ -1161,7 +1175,7 @@ export function drawTactical(ctx: CanvasRenderingContext2D, t: JetTelemetry, ear
     ctx.restore();
   }
   // The title sits clearly below the top heading tape + radio comms lane, or below the top cards on tablets
-  centreReveal(ctx, t, place, earth, now, L.top ? Math.min(h * 0.62, Math.max(h * 0.44, fltBottom + 96)) : h * 0.35);
+  centreReveal(ctx, t, place, earth, now, L.top ? Math.min(h * 0.62, Math.max(h * 0.44, fltBottom + 96)) : h * 0.41);
   warning(ctx, t, now);
   ctx.restore();
 }

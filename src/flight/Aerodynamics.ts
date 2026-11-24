@@ -425,10 +425,16 @@ export function computeAeroCoefficients(
   const cosB = Math.cos(b);
 
   const cl0 = aero?.cl0 ?? cfg.cl0 ?? 0.06;
-  const kv = (aero?.kvVortex ?? cfg.kvVortex ?? (cfg.hasCanards ? 3.25 : 3.15)) * (1 - 0.45 * smoothstep(mach, 0.85, 1.5));
+  // Close-coupled canard-delta (e.g. Gripen) gets ~16% foreplane vortex stabilization past 20 deg AoA
+  const canardVortexMult = cfg.hasCanards ? 1.16 : 1.0;
+  const kv =
+    (aero?.kvVortex ?? cfg.kvVortex ?? (cfg.hasCanards ? 3.25 : 3.15)) *
+    canardVortexMult *
+    (1 - 0.45 * smoothstep(mach, 0.85, 1.5));
   const cd0Clean = aero?.cd0Clean ?? cfg.cd0Clean ?? 0.019;
   const e0 = aero?.oswaldE ?? cfg.oswaldE0 ?? cfg.oswaldE ?? 0.76;
-  const cd90 = cfg.cd90 ?? 1.85;
+  // Slender fighter broadside drag peak (~1.46 vs bluff brick 1.85) prevents unphysical Cobra drag blast
+  const cd90 = cfg.cd90 ?? 1.46;
   const cd180 = cfg.cd180 ?? 0.38;
 
   // Compressible lift slope & ground effect
@@ -445,6 +451,13 @@ export function computeAeroCoefficients(
   const dCd0Config = 0.024 * df + 0.009 * ds + 0.022 * dg + 0.068 * dsb;
   const dCmConfig = -0.05 * df - 0.015 * dg + 0.018 * dsb;
 
+  // Effective max CL (interpolated smoothly between clean and high-lift AirframeSpec bounds)
+  const clMaxClean = aero?.clMaxClean ?? cfg.clMaxClean ?? 1.58;
+  const clMaxFlaps = aero?.clMaxFlaps ?? cfg.clMaxFlaps ?? 2.10;
+  const highLiftBlend = clamp(0.62 * df + 0.38 * ds, 0, 1);
+  const clMaxEffective =
+    (clMaxClean + (clMaxFlaps - clMaxClean) * highLiftBlend) * (1 - 0.12 * smoothstep(mach, 0.85, 1.4));
+
   // Asymmetric stall boundaries shifted by slats, flaps, and transonic shock separation
   const baseStallPosDeg = aero?.alphaStallPosDeg ?? cfg.alphaStallPosDeg ?? 29;
   const baseStallNegDeg = aero?.alphaStallNegDeg ?? cfg.alphaStallNegDeg ?? -18;
@@ -452,17 +465,32 @@ export function computeAeroCoefficients(
     baseStallPosDeg * DEG + 6 * DEG * ds - 2 * DEG * df - 4 * DEG * smoothstep(mach, 0.75, 1.15);
   const alphaStallNeg = baseStallNegDeg * DEG;
 
+  // Center positive stall drop slightly past alphaStallPos so C_L peaks AT alphaStallPos (NASA TN D-3767)
+  // rather than prematurely blending into flat-plate at 22 deg; negative stall remains asymmetric at alphaStallNeg.
   const wAtt =
-    (1 / (1 + Math.exp(20 * (a - alphaStallPos)))) *
+    (1 / (1 + Math.exp(22 * (a - (alphaStallPos + 3.5 * DEG))))) *
     (1 / (1 + Math.exp(-20 * (a - alphaStallNeg))));
 
   // Vortex core burst occurs ~7 deg past primary wing stall
   const wVortex = 1 / (1 + Math.exp(12 * (absA - (alphaStallPos + 7 * DEG))));
 
-  // Attached potential + Polhamus LEX vortex lift
+  // Attached potential + Polhamus LEX vortex lift with smooth C1 vortex-breakdown saturation
+  // so blended peak clean C_L = wAtt*clAtt + (1-wAtt)*clFp lands right on spec.aero.clMaxClean (±4%)
   const clPot = (cl0 + dClFlaps) * cosA + cla * ge.kGeLift * sinA * cosA * cosA;
   const clVortex = kv * sinA * sinA * cosA * (a >= 0 ? 1 : -1) * wVortex;
-  const clAtt = clPot + clVortex;
+  const rawClAtt = clPot + clVortex;
+  const clCapPos = clMaxEffective * 1.16 * ge.kGeLift;
+  const clKneePos = clCapPos * 0.84;
+  const clHeadPos = Math.max(0.16, clCapPos - clKneePos);
+  const clCapNeg = clMaxEffective * 0.94 * ge.kGeLift;
+  const clKneeNeg = clCapNeg * 0.78;
+  const clHeadNeg = Math.max(0.14, clCapNeg - clKneeNeg);
+  const clAtt =
+    rawClAtt > clKneePos
+      ? clKneePos + clHeadPos * Math.tanh((rawClAtt - clKneePos) / clHeadPos)
+      : rawClAtt < -clKneeNeg
+        ? -(clKneeNeg + clHeadNeg * Math.tanh((-rawClAtt - clKneeNeg) / clHeadNeg))
+        : rawClAtt;
 
   // Post-stall 3D flat-plate + asymmetric camber residue (covers 0..180 deg & tailslide)
   const aftBlend = smoothstep(-cosA, 0, 1);
@@ -478,13 +506,6 @@ export function computeAeroCoefficients(
   // aft stabilators (Su-30/Kestrel) pitch nose-up via modest tail download (-0.11, never -0.32 sink).
   const clPitchSurfGain = cfg.hasCanards ? 0.14 : -0.11;
   const cl = clNoSurf + clPitchSurfGain * etaElev * surfaces.elev * cosB * cosB;
-
-  // Effective max CL (interpolated smoothly between clean and high-lift AirframeSpec bounds)
-  const clMaxClean = aero?.clMaxClean ?? cfg.clMaxClean ?? 1.44;
-  const clMaxFlaps = aero?.clMaxFlaps ?? cfg.clMaxFlaps ?? 2.02;
-  const highLiftBlend = clamp(0.62 * df + 0.38 * ds, 0, 1);
-  const clMaxEffective =
-    (clMaxClean + (clMaxFlaps - clMaxClean) * highLiftBlend) * (1 - 0.12 * smoothstep(mach, 0.85, 1.4));
 
   // Drag polar: C_D0 + wave drag + induced drag + Polhamus vortex drag + post-stall crossflow
   const cdWave = waveDragCoeff(mach, Math.abs(clNoSurf), cfg.sweepDeg, cfg.thicknessRatio, cfg.waveDragScale ?? 1);

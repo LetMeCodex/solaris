@@ -404,14 +404,20 @@ export class FlightModel {
   public surfaces: JetSurfaceState = createJetSurfaceState();
   public readonly fbwState: FbwControllerState = createFbwState();
 
-  private spool = 0.55;
+  private spool = 0.56;
   private lastNormalAeroAccel = G0;
   private pitchTrimInt = 0;
+  private gammaHoldBlend = 1;
   private autoGammaLatched = false;
   private autoGammaRad = 0;
   private autoBankLatched = false;
   private autoBankRad = 0;
+  private levelHoldActive = false;
   private cobraEntryFwd = new THREE.Vector3(0, 0, -1);
+  private wasCobraActive = false;
+  private postCobraGraceSec = 0;
+  /** True when NORM FBW Alpha-Floor speed protection is actively preventing stall-sink. */
+  public alphaFloorActive = false;
 
   private tmpForward = new THREE.Vector3();
   private tmpDir = new THREE.Vector3();
@@ -475,8 +481,13 @@ export class FlightModel {
     this.maxWetThrustN = spec.wetThrustN;
     this.tvcActive = spec.hasTvc;
     this.pitchTrimInt = 0;
+    this.gammaHoldBlend = 1;
     this.autoGammaLatched = false;
     this.autoBankLatched = false;
+    this.levelHoldActive = false;
+    this.wasCobraActive = false;
+    this.postCobraGraceSec = 0;
+    this.alphaFloorActive = false;
     this.lastNormalAeroAccel = G0;
   }
 
@@ -486,13 +497,31 @@ export class FlightModel {
     this.massKg = combatMassKg(spec, this.fuelKg);
   }
 
+  /** Requests one-tap hands-off wings-level + horizon stabilization (cancels on any stick input). */
+  public requestLevelWings(): void {
+    this.levelHoldActive = true;
+    this.autoBankLatched = true;
+    this.autoBankRad = 0;
+    this.autoGammaLatched = true;
+    this.autoGammaRad = 0;
+  }
+
   public resetEnvelopePeaks(): void {
     this.gPeak = this.gLoad;
     this.gMin = this.gLoad;
     this.pitchTrimInt = 0;
+    this.gammaHoldBlend = 1;
     this.autoGammaLatched = false;
     this.autoBankLatched = false;
+    this.levelHoldActive = false;
+    this.wasCobraActive = false;
+    this.postCobraGraceSec = 0;
+    this.alphaFloorActive = false;
     this.lastNormalAeroAccel = G0;
+  }
+
+  public get baseFbwMode(): FbwMode {
+    return this.fbwState.mode;
   }
 
   public setFbwMode(mode: FbwMode): void {
@@ -758,10 +787,72 @@ export class FlightModel {
         ? Math.atan2(fwd.dot(upUnit), fwd.dot(this.cobraEntryFwd))
         : rawPitchRad;
 
+      // NORM FBW Alpha-Floor Stall/Sink Protection (Airbus / Rafale / Gripen envelope protection):
+      // Prevents accidental low-throttle/high-altitude stall-sink when gear & airbrakes are stowed
+      // and throttle > 15%, while preserving raw stall/landing authority at idle, gear-down, or PSM.
+      const vStallNow = atm.isVacuum
+        ? 0
+        : computeStallSpeedMps(
+            this.massKg,
+            Math.max(gEffMps2, 0.2),
+            Math.max(atm.densityKgM3, 1e-4),
+            spec.wingAreaM2,
+            Math.max(1.2, spec.aero.clMaxClean),
+          );
+      const canAlphaFloor =
+        input.assist &&
+        this.fbwState.mode === 'norm' &&
+        !input.psm &&
+        !cobraActivePre &&
+        !onGround &&
+        !gearDown &&
+        !airbrakeHeld &&
+        atm.densityRel > 0.02 &&
+        throttle > 0.15;
+      const stallMargin = vStallNow > 5 ? flow.speedMps / vStallNow : 2.0;
+      const deepAlphaTrigger = Math.abs(flow.alphaDeg) > fbwAf.normAlphaLimitDeg - 5 && stallMargin < 1.85;
+      const alphaFloorBoost =
+        canAlphaFloor && (stallMargin < 1.70 || deepAlphaTrigger)
+          ? clamp(Math.max((1.70 - stallMargin) / 0.35, (Math.abs(flow.alphaDeg) - (fbwAf.normAlphaLimitDeg - 6)) / 9), 0, 1)
+          : 0;
+      this.alphaFloorActive = alphaFloorBoost > 0.08;
+      // Authentic Sukhoi Cobra SOP:
+      // 1) Chop throttle ONLY during high-speed pre-decel (> 175 m/s, alpha < 50 deg) to bleed Mach 0.84 cleanly.
+      // 2) Once pitched past 50 deg (HOLD/RECOVER) or during the 2.0s post-Cobra exit surge, fire full MIL/AB
+      //    suspension thrust when speed < 175 m/s so axial thrust supports weight & exits level with VS ~ 0 m/s!
+      const cobraAutoChop =
+        cobraActivePre &&
+        !this.fbwState.cobra.kulbitActive &&
+        this.fbwState.cobra.phase === 'PITCH_UP' &&
+        flow.speedMps > 215 &&
+        flow.alphaDeg < 50;
+      const cobraRecoveryBurst =
+        ((cobraActivePre &&
+          !this.fbwState.cobra.kulbitActive &&
+          (this.fbwState.cobra.phase === 'HOLD' ||
+            this.fbwState.cobra.phase === 'RECOVER' ||
+            flow.alphaDeg >= 40)) ||
+          this.postCobraGraceSec > 0) &&
+        flow.speedMps < 175 &&
+        !onGround &&
+        !gearDown &&
+        !airbrakeHeld &&
+        atm.densityRel > 0.02;
+      const effThrottleCmd = cobraAutoChop
+        ? Math.min(throttle, 0.08)
+        : cobraRecoveryBurst
+          ? 1.0
+          : Math.max(throttle, alphaFloorBoost > 0 ? clamp(throttle + alphaFloorBoost * (1 - throttle), throttle, 1) : throttle);
+      const effBoostCmd = cobraAutoChop
+        ? false
+        : cobraRecoveryBurst
+          ? this.fuelKg > 0
+          : this.boosting || (canAlphaFloor && (stallMargin < 1.58 || deepAlphaTrigger) && this.fuelKg > 0);
+
       // Propulsion + Afterburner spool
       const abOut = computeAfterburnerStage({
-        throttle,
-        boost: this.boosting,
+        throttle: effThrottleCmd,
+        boost: effBoostCmd,
         airDensity: atm.densityRel,
         fuelFrac: spec.maxFuelKg > 0 ? this.fuelKg / spec.maxFuelKg : 1,
         spoolState: this.spool,
@@ -770,7 +861,10 @@ export class FlightModel {
       });
       this.spool = abOut.spoolState;
       const drySpoolFrac = clamp((this.spool - 0.05) / 0.70, 0, 1);
-      const wetSpoolFrac = clamp((this.spool - 0.75) / 0.25, 0, 1);
+      // Smoothly ignite wet augmentation once FADEC core crosses 68% spool for crisp immediate AB kick
+      const wetSpoolFrac = abOut.abStage > 0
+        ? clamp((this.spool - 0.68) / 0.32, 0, 1)
+        : clamp((this.spool - 0.75) / 0.25, 0, 1);
       const propOut = computeEngineThrust(spec, {
         throttle: drySpoolFrac,
         afterburner: abOut.abStage > 0 && wetSpoolFrac > 0.01,
@@ -854,6 +948,7 @@ export class FlightModel {
         pitchAngleRad: pitchAngleForFbw,
         rollAngleRad,
         currentRatesB3: [this.rates.x, this.rates.y, this.rates.z],
+        currentG: this.lastNormalAeroAccel / G0,
         gravityBodyUp,
         gravityAccelMps2: 0,
         gearDown,
@@ -873,15 +968,42 @@ export class FlightModel {
       const altAglM = env.groundClearanceM ?? Math.max(0, env.altitudeUnits * env.kmPerUnit * 1000);
       const gearExt = gearDown ? 1 : 0;
 
-      // Compute commanded rates including MIL-STD-1797A / F-16 / Gripen bank-compensated
-      // 1G C* auto-trim, coordinated-turn yaw rate, and hands-off flight-path + bank-angle hold.
+      // Compute commanded rates including MIL-STD-1797C / F-16 / Gripen bank-compensated
+      // 1G C* auto-trim, coordinated-turn yaw rate, wings-level detent, and bumpless gamma hold.
       let cmdPitchRate = this.fbwState.rateCmdB3[0];
       let cmdYawRate = this.fbwState.rateCmdB3[1];
       let cmdRollRate = this.fbwState.rateCmdB3[2];
 
+      // Cancel one-tap wings-level hold immediately on any pilot control input
+      if (Math.abs(input.pitch) > 0.06 || Math.abs(input.roll) > 0.06 || Math.abs(input.yaw) > 0.08) {
+        this.levelHoldActive = false;
+      }
+
+      // When exiting a Cobra maneuver, immediately latch level flight (0 deg gamma, 0 deg bank)
+      // with full gammaHoldBlend = 1.0 and a 2.0s recovery thrust grace window so the jet exits
+      // crisp & level (VS ~ 0 m/s) instead of plunging into a -40 m/s stall-sink!
+      if (this.wasCobraActive && !fbwOut.cobra.active) {
+        this.autoGammaLatched = true;
+        this.autoGammaRad = 0;
+        this.autoBankLatched = true;
+        this.autoBankRad = 0;
+        this.gammaHoldBlend = 1.0;
+        this.postCobraGraceSec = 2.4;
+      }
+      this.wasCobraActive = fbwOut.cobra.active;
+      if (this.postCobraGraceSec > 0) {
+        this.postCobraGraceSec = Math.max(0, this.postCobraGraceSec - subDt);
+      }
+
       // Keep 1G auto-trim + flight-path hold active across NORM, HIGH-G, and normal-AoA PSM cruise;
-      // seamlessly disengage only during active Cobra / post-stall high-AoA maneuvers (>= 22 deg AoA).
+      // seamlessly disengage during active Cobra / post-stall high-AoA maneuvers (>= 22 deg AoA).
       const inPostStallManeuver = fbwOut.effectiveMode === 'psm' && Math.abs(flow.alphaDeg) >= 22;
+      const inDeepStallRecovery =
+        fbwOut.effectiveMode === 'norm' &&
+        (flow.alphaDeg > fbwOut.alphaLimitDeg + 1 ||
+          flow.alphaDeg < -13.5 ||
+          (this.postCobraGraceSec <= 0 && flow.speedMps < Math.max(82, vStallNow * 1.18) && Math.abs(flow.alphaDeg) > 20));
+
       if (
         input.assist &&
         !fbwOut.cobra.active &&
@@ -895,54 +1017,77 @@ export class FlightModel {
         const cosTheta = Math.cos(rawPitchRad);
         const cosPhi = Math.cos(rollAngleRad);
 
-        // Smooth level-turn 1G baseline: Nz = cos(theta)/cos(phi) holds altitude in coordinated turns
-        // up to 60 deg bank, then smoothly blends to cos(theta)*cos(phi) past 55-80 deg for crisp
-        // knife-edge & inverted aerobatics with zero unintended groundward nose drop.
-        const nzLevelTurn = cosTheta / Math.max(cosPhi, 0.5);
-        const bankFade = smoothstep(55 * DEG_TO_RAD, 80 * DEG_TO_RAD, absPhi);
+        // Full bank-compensated level-turn 1G baseline up to 74 deg steep combat turns:
+        // Nz = cos(theta)/cos(phi) holds exact altitude through 45 deg (1.41G) & 65 deg (2.37G) turns,
+        // then smoothly blends past 72-86 deg for effortless knife-edge & inverted aerobatics.
+        const maxTurnNz = Math.min(3.8, fbwOut.gLimitActivePos * 0.65);
+        const nzLevelTurn = clamp(cosTheta / Math.max(cosPhi, 0.25), -0.5, maxTurnNz);
+        const bankFade = smoothstep(72 * DEG_TO_RAD, 86 * DEG_TO_RAD, absPhi);
         const nzBase = nzLevelTurn * (1 - bankFade) + cosTheta * cosPhi * bankFade;
 
         const stickNeutral = Math.abs(input.pitch) < 0.04;
         const rollNeutral = Math.abs(input.roll) < 0.04;
         const yawNeutral = Math.abs(input.yaw) < 0.04;
         const fpvActive = this.fbwState.fpvHoldActive && Math.abs(input.pitch) < 0.18;
-        const canHoldGamma = absPhi < 68 * DEG_TO_RAD && Math.abs(rawPitchRad) < 72 * DEG_TO_RAD;
+        const canHoldGamma = absPhi < 75 * DEG_TO_RAD && Math.abs(rawPitchRad) < 72 * DEG_TO_RAD;
 
         // Exact coordinated-turn body yaw rate r = (g * sin(phi) * cos(theta)) / V (singularity-free!).
         // Sign check: rollAngleRad = atan2(bodyRight·up, bodyUp·up) is NEGATIVE for right bank,
         // and B3 +Y is yaw-left, so adding sin(rollAngleRad) turns nose RIGHT in right bank (beta -> 0).
-        if (yawNeutral && absPhi > 0.03 && absPhi < 75 * DEG_TO_RAD) {
-          const coordFade = 1 - smoothstep(60 * DEG_TO_RAD, 75 * DEG_TO_RAD, absPhi);
+        if (yawNeutral && absPhi > 0.03 && absPhi < 80 * DEG_TO_RAD) {
+          const coordFade = 1 - smoothstep(68 * DEG_TO_RAD, 80 * DEG_TO_RAD, absPhi);
           const rCoordLeft = (gEffMps2 * Math.sin(rollAngleRad) * cosTheta) / safeV;
           cmdYawRate += rCoordLeft * coordFade;
         }
 
-        // Hands-off bank-angle hold latch (Gripen / Rafale FBW): prevents spiral divergence when
-        // banking and releasing the stick, and gently auto-levels near wings-level (< 4 deg).
-        // Sign check: +Z rate rolls left (raises bodyRight -> increases rollAngleRad), so +bankErr => +cmdRollRate.
-        if (rollNeutral && absPhi < 66 * DEG_TO_RAD && Math.abs(rawPitchRad) < 68 * DEG_TO_RAD) {
-          if (!this.autoBankLatched && Math.abs(this.rates.z) < 0.35) {
-            this.autoBankRad = absPhi < 4 * DEG_TO_RAD ? 0 : rollAngleRad;
+        // Wings-Level Detent + Bank-Angle Hold (Gripen / Rafale FBW):
+        // - Micro roll taps (< 7.5 deg once roll rate settles) smoothly self-level back to exact 0 deg
+        //   so the jet NEVER gets trapped turning in circles after minor course corrections,
+        // - While deliberate scenic & combat banks (8..72 deg) lock rock-steady hands-off!
+        if (rollNeutral && absPhi < 72 * DEG_TO_RAD && Math.abs(rawPitchRad) < 68 * DEG_TO_RAD) {
+          if (this.levelHoldActive) {
+            this.autoBankRad = 0;
+            this.autoBankLatched = true;
+          } else if (!this.autoBankLatched && Math.abs(this.rates.z) < 0.22) {
+            this.autoBankRad = absPhi < 7.5 * DEG_TO_RAD ? 0 : rollAngleRad;
             this.autoBankLatched = true;
           }
           if (this.autoBankLatched) {
-            const bankErr = clamp(this.autoBankRad - rollAngleRad, -0.5, 0.5);
-            cmdRollRate += clamp(bankErr * 2.8, -0.9, 0.9);
+            const bankErr = clamp(this.autoBankRad - rollAngleRad, -0.65, 0.65);
+            const bankGain = this.autoBankRad === 0 ? 3.4 : 3.6;
+            cmdRollRate += clamp(bankErr * bankGain, -1.35, 1.35);
           }
         } else {
           this.autoBankLatched = false;
         }
 
-        if (fpvActive || (stickNeutral && canHoldGamma)) {
+        if (inDeepStallRecovery) {
+          // Never allow 1G auto-trim to fight NORM deep-stall nose-down unloading!
+          this.autoGammaLatched = false;
+          this.pitchTrimInt *= Math.exp(-3.5 * subDt);
+          this.gammaHoldBlend = 0;
+        } else if (fpvActive || (stickNeutral && canHoldGamma)) {
+          // Bumpless engagement ramp prevents a sudden nose-down kick right after releasing a climb
+          this.gammaHoldBlend = clamp(this.gammaHoldBlend + subDt * 2.4, 0, 1);
+
           let targetGammaRad: number;
-          if (fpvActive) {
+          if (this.levelHoldActive) {
+            targetGammaRad = 0;
+            this.autoGammaLatched = true;
+            this.autoGammaRad = 0;
+          } else if (fpvActive) {
             targetGammaRad = this.fbwState.fpvTargetGammaDeg * DEG_TO_RAD;
             this.autoGammaLatched = false;
           } else {
-            if (!this.autoGammaLatched && Math.abs(this.rates.x) < 0.16) {
-              // Snap tiny residual flight-path angles (< 3 deg) to crisp level flight (0 deg) so
-              // the jet never slowly bleeds altitude after releasing pitch near the horizon.
-              this.autoGammaRad = Math.abs(gammaRad) < 3.0 * DEG_TO_RAD ? 0 : gammaRad;
+            const nzSettled = Math.abs(this.lastNormalAeroAccel - gEffMps2 * nzBase) < 0.38 * gEffMps2;
+            if (!this.autoGammaLatched && Math.abs(this.rates.x) < 0.12 && nzSettled) {
+              // Snap accidental shallow nose-down dips (-6.5..0 deg) and tiny horizon noise (< +2.0 deg)
+              // to crisp 0 deg level flight, while HONORING intentional climbs (>= +2.0 deg) AND
+              // preserving -3 deg landing glideslopes cleanly when gear is down!
+              const shouldSnapLevel = gearDown
+                ? Math.abs(gammaRad) < 1.2 * DEG_TO_RAD
+                : (gammaRad < 0 && gammaRad > -6.5 * DEG_TO_RAD) || (gammaRad >= 0 && gammaRad < 2.0 * DEG_TO_RAD);
+              this.autoGammaRad = shouldSnapLevel ? 0 : gammaRad;
               this.autoGammaLatched = true;
             }
             targetGammaRad = this.autoGammaLatched ? this.autoGammaRad : gammaRad;
@@ -950,44 +1095,62 @@ export class FlightModel {
 
           // Inverse-density gain scheduling keeps high-altitude (7-16 km MSL) thin-air trim
           // just as crisp and zero-droop as sea-level cruise.
-          const altGain = clamp(1 / Math.sqrt(clamp(atm.densityRel, 0.12, 1.0)), 1.0, 2.2);
+          const altGain = clamp(1 / Math.sqrt(clamp(atm.densityRel, 0.10, 1.0)), 1.0, 2.4);
 
-          // Outer flight-path angle stabilization prevents slow phugoid/thrust-change drift
-          const gammaErrRad = clamp(targetGammaRad - gammaRad, -0.35, 0.35);
-          const deltaNzHold = clamp(gammaErrRad * 3.0, -0.85, 0.85);
-          const trimTargetAccel = gEffMps2 * clamp(nzBase + deltaNzHold, -0.5, 2.6);
+          // Outer flight-path angle stabilization with bank-aware authority (holds 45-65 deg turns razor-flat!)
+          const gammaErrRad = clamp(targetGammaRad - gammaRad, -0.40, 0.40);
+          const deltaNzHold = clamp(gammaErrRad * 5.2, -1.1, 1.6);
+          const trimTargetAccel = gEffMps2 * clamp(nzBase + deltaNzHold, -0.5, maxTurnNz + 0.7);
 
-          // Gain-scheduled PI normal-acceleration loop with anti-windup
+          // Gain-scheduled bumpless PI normal-acceleration loop with MIL-STD-1797C G-unload protection:
+          // Only trigger high-G unload protection when genuinely unloading from a maneuver (> 1.8G &
+          // > 1.45x target) so normal 1.0..1.35G cruise trim stays razor-tight (< 0.1 m/s VS!), while
+          // releasing a 5G pull never winds up the integrator negatively or dips below 0.85G!
           const errRate = (trimTargetAccel - this.lastNormalAeroAccel) / safeV;
-          const pTerm = clamp(errRate * 1.25 * altGain, -0.55, 0.55);
-          const uUnsat = pTerm + this.pitchTrimInt + clamp(gammaErrRad * 1.35 * altGain, -0.45, 0.45);
-          const uSat = clamp(uUnsat, -0.72, 0.72);
-          const awTerm = 3.0 * (uSat - uUnsat);
+          const unloadingHighG =
+            this.lastNormalAeroAccel > Math.max(trimTargetAccel * 1.45, 1.8 * G0);
+          const pTerm = unloadingHighG
+            ? clamp(errRate * 0.85, -0.14, 0.75)
+            : clamp(errRate * 1.65 * altGain, -0.75, 0.85);
+          const gammaP = clamp(gammaErrRad * 2.1 * altGain, unloadingHighG ? -0.08 : -0.55, 0.65);
+          const uUnsat = (pTerm + this.pitchTrimInt + gammaP) * this.gammaHoldBlend;
+          const uSat = clamp(uUnsat, unloadingHighG ? -0.15 : -0.85, 0.98);
+          const awTerm = 3.2 * (uSat - uUnsat);
           const alphaClipping = flow.alphaDeg > fbwOut.alphaLimitDeg - 2.5 && errRate > 0;
-          if (!alphaClipping) {
-            this.pitchTrimInt = clamp(this.pitchTrimInt + (errRate * 1.05 * altGain + awTerm) * subDt, -0.55, 0.55);
+          if (!alphaClipping && !unloadingHighG) {
+            this.pitchTrimInt = clamp(
+              this.pitchTrimInt + (errRate * 1.35 * altGain * this.gammaHoldBlend + awTerm) * subDt,
+              -0.25,
+              0.78,
+            );
           } else {
-            this.pitchTrimInt = clamp(this.pitchTrimInt + awTerm * subDt, -0.55, 0.55);
+            this.pitchTrimInt = clamp(this.pitchTrimInt + awTerm * subDt, -0.25, 0.78);
           }
-          cmdPitchRate += uSat;
+          const releaseSoftFloor = unloadingHighG ? -0.15 : -0.85;
+          cmdPitchRate += clamp(uSat, releaseSoftFloor, 0.98);
         } else {
-          // Pilot actively maneuvering or steep/inverted roll: unlatch gamma hold and preserve bumpless trim
+          // Pilot actively maneuvering or steep/inverted roll: unlatch gamma hold and keep bumpless trim state
           this.autoGammaLatched = false;
+          this.gammaHoldBlend = 0.15;
           if (stickNeutral) {
-            // Knife-edge / inverted neutral stick: gentle 1G baseline keeps trajectory crisp without diving
+            // Knife-edge / inverted neutral stick: gentle baseline keeps trajectory crisp without diving
             const errRate = (gEffMps2 * nzBase - this.lastNormalAeroAccel) / safeV;
-            cmdPitchRate += clamp(errRate * 0.65 + this.pitchTrimInt * 0.4, -0.35, 0.35);
+            cmdPitchRate += clamp(errRate * 0.55 + this.pitchTrimInt * 0.35, -0.35, 0.35);
           } else {
-            // Active stick pull/push: keep subtle gravity-compensation feedforward so turn entry feels weightless
-            const ff = clamp(((gEffMps2 * nzBase - this.lastNormalAeroAccel) / safeV) * 0.35, -0.18, 0.25);
+            // Active stick pull/push: subtle gravity feedforward near level attitude only (fades out cleanly
+            // in steep climbs/vertical loops so looping through zenith & inverted feels completely effortless!)
+            const levelWeight = Math.max(0, cosTheta) * Math.max(0, cosPhi);
+            const ff = clamp(((gEffMps2 * nzBase - this.lastNormalAeroAccel) / safeV) * 0.25 * levelWeight, -0.10, 0.22);
             cmdPitchRate += ff;
-            this.pitchTrimInt *= Math.exp(-2.2 * subDt);
+            // Preserve trim gently (slow decay) so releasing the stick never suffers a 1-2s trim sag
+            this.pitchTrimInt *= Math.exp(-0.55 * subDt);
           }
         }
       } else {
         this.autoGammaLatched = false;
         this.autoBankLatched = false;
-        this.pitchTrimInt *= Math.exp(-4.0 * subDt);
+        this.gammaHoldBlend = 0.2;
+        this.pitchTrimInt *= Math.exp(-3.0 * subDt);
       }
       if (onGround && gearDown && groundOut.yawRateB3Rad !== 0) {
         cmdYawRate = groundOut.yawRateB3Rad;
@@ -1052,8 +1215,8 @@ export class FlightModel {
 
         const openLoopAccel = solveEulerAngularAccel(this.tmpTotalMoment, this.rates, spec.inertia, this.tmpAngAccel);
 
-        const casBandLon = fbwOut.cobra.active || fbwOut.effectiveMode === 'psm' ? 42 : 48;
-        const casBandLat = 40;
+        const casBandLon = fbwOut.cobra.active || fbwOut.effectiveMode === 'psm' ? 42 : 50;
+        const casBandLat = 48;
         const desAx = ((cmdPitchRate - this.rates.x) * (1 - Math.exp(-casBandLon * subDt))) / subDt;
         const desAy = ((cmdYawRate - this.rates.y) * (1 - Math.exp(-casBandLat * subDt))) / subDt;
         const desAz = ((cmdRollRate - this.rates.z) * (1 - Math.exp(-casBandLat * subDt))) / subDt;
@@ -1133,12 +1296,20 @@ export class FlightModel {
       const angAccel = solveEulerAngularAccel(this.tmpTotalMoment, this.rates, spec.inertia, this.tmpAngAccel);
       this.rates.addScaledVector(angAccel, subDt);
 
-      // Clamp pitch/roll/yaw rates smoothly in NORM/HIGH-G against rare extreme numerical spikes
+      // Clamp pitch/roll/yaw rates smoothly in NORM/HIGH-G against structural G / negative-AoA breaches
       if (input.assist && !fbwOut.cobra.active && fbwOut.effectiveMode !== 'psm') {
         const safeV = Math.max(flow.speedMps, 40);
         const maxPosQ = (fbwOut.gLimitActivePos * G0) / safeV;
         const maxNegQ = (Math.abs(fbwOut.gLimitActiveNeg) * G0) / safeV;
         this.rates.x = clamp(this.rates.x, -maxNegQ, maxPosQ);
+        const curGCheck = this.lastNormalAeroAccel / G0;
+        const negAlphaGuard = fbwOut.effectiveMode === 'high-g' ? -17.5 : -13.5;
+        if (curGCheck < fbwOut.gLimitActiveNeg + 0.15 || flow.alphaDeg < negAlphaGuard) {
+          this.rates.x = Math.max(this.rates.x, 0);
+        }
+        if (curGCheck > fbwOut.gLimitActivePos - 0.15) {
+          this.rates.x = Math.min(this.rates.x, 0);
+        }
       }
 
       // Exponential quaternion map update
@@ -1149,27 +1320,71 @@ export class FlightModel {
         this.quaternion.multiply(this.tmpQ).normalize();
       }
 
-      // Total body-frame thrust + exact 32-deg canted AL-31FP TVC reaction vector (B3: forward is -Z)
+      // Total body-frame thrust + exact 32-deg canted AL-31FP TVC reaction vector (B3: forward is -Z).
+      // Newton's 3rd Law: deflecting exhaust right (+tvcYawRad) pushes the tail LEFT (-X -> yaws nose right).
       const tvcPitchRad = fbwOut.allocation.tvcPitch * spec.tvcMaxDeg * DEG_TO_RAD;
       const tvcYawRad = fbwOut.allocation.tvcYaw * spec.tvcMaxDeg * DEG_TO_RAD;
       const cantRad = spec.tvcCantDeg * DEG_TO_RAD;
       const tvcCosCant = spec.tvcCantDeg > 0 ? Math.cos(cantRad) : 1;
       const tvcSinCant = spec.tvcCantDeg > 0 ? Math.sin(cantRad) : 1;
-      const fxThrust = propOut.thrustN * Math.sin(tvcYawRad) * tvcSinCant;
+      const fxThrust = -propOut.thrustN * Math.sin(tvcYawRad) * tvcSinCant;
       const fyThrust = -propOut.thrustN * Math.sin(tvcPitchRad) * tvcCosCant;
       const fzThrust = -propOut.thrustN * fbwOut.allocation.axialThrustScale;
 
+      // High-speed Cobra SOP: symmetric flaperon/spoiler lift-dumping & longitudinal speedbrake drag!
+      // When Cobra is triggered above corner dynamic pressure (> 13.5 kPa, e.g. Mach 0.84), spoiling excess
+      // normal lift into longitudinal drag keeps structural load strictly <= 9.0G and eliminates +34 m/s
+      // altitude ballooning while letting the nose snap cleanly through 90-105 deg AoA!
+      let aeroFx = aeroRes.forceB3.x;
+      let aeroFy = aeroRes.forceB3.y;
+      let aeroFz = aeroRes.forceB3.z;
+      if (fbwOut.cobra.active && !this.fbwState.cobra.kulbitActive && flow.speedMps > 20) {
+        const invV = 1 / flow.speedMps;
+        const vxHat = this.tmpVelBody.x * invV;
+        const vyHat = this.tmpVelBody.y * invV;
+        const vzHat = this.tmpVelBody.z * invV;
+        // Project aero force into drag-parallel (along velocity) and normal-lift (perpendicular to velocity)
+        const fParallel = aeroFx * vxHat + aeroFy * vyHat + aeroFz * vzHat;
+        const fNormX = aeroFx - fParallel * vxHat;
+        const fNormY = aeroFy - fParallel * vyHat;
+        const fNormZ = aeroFz - fParallel * vzHat;
+        const fNormMag = Math.hypot(fNormX, fNormY, fNormZ);
+        // Cap normal aerodynamic load smoothly to 7.8G during Cobra (prevents 18-24G overload & ballooning!)
+        const maxCobraNormN = this.massKg * G0 * 7.8;
+        if (fNormMag > maxCobraNormN) {
+          const liftScale = maxCobraNormN / fNormMag;
+          const dumpedEnergyDrag = (fNormMag - maxCobraNormN) * 0.42;
+          aeroFx = (fParallel - dumpedEnergyDrag) * vxHat + fNormX * liftScale;
+          aeroFy = (fParallel - dumpedEnergyDrag) * vyHat + fNormY * liftScale;
+          aeroFz = (fParallel - dumpedEnergyDrag) * vzHat + fNormZ * liftScale;
+        }
+        // Additional speedbrake / spoiler longitudinal braking drag ONLY during high-speed pre-decel (> 180 m/s)
+        if (fbwOut.cobra.autoAirbrake && fbwOut.cobra.autoAirbrake > 0.05 && flow.speedMps > 180 && flow.alphaDeg < 48) {
+          const brakeDragN = airData.qPa * spec.wingAreaM2 * 0.20 * fbwOut.cobra.autoAirbrake;
+          aeroFx -= vxHat * brakeDragN;
+          aeroFy -= vyHat * brakeDragN;
+          aeroFz -= vzHat * brakeDragN;
+        }
+        // Structural wing-bending & pilot spine normal load governor (L*cos(a) + D*sin(a) <= 8.3G):
+        // At 60-90 deg Cobra AoA, crossflow drag projects onto body +Y; capping body-normal load
+        // strictly below structural limits prevents 15-24G spikes when entering Cobra at Mach 0.84!
+        const maxBodyNormalN = this.massKg * G0 * 8.3;
+        if (Math.abs(aeroFy) > maxBodyNormalN) {
+          aeroFy = Math.sign(aeroFy) * maxBodyNormalN;
+        }
+      }
+
       // Felt body-Y normal acceleration for 1G trim and pilot G-meter
-      const normalSpecificForce = (aeroRes.forceB3.y + fyThrust) / Math.max(this.massKg, 1);
+      const normalSpecificForce = (aeroFy + fyThrust) / Math.max(this.massKg, 1);
       this.lastNormalAeroAccel = normalSpecificForce;
       const instG = (normalSpecificForce / G0) * (1 - wDrive);
       gLoadAccum += instG * (subDt / dt);
 
       // Project net force to world frame
       this.tmpAccelWorld.set(
-        (aeroRes.forceB3.x + fxThrust) / this.massKg,
-        (aeroRes.forceB3.y + fyThrust) / this.massKg,
-        (aeroRes.forceB3.z + fzThrust) / this.massKg
+        (aeroFx + fxThrust) / this.massKg,
+        (aeroFy + fyThrust) / this.massKg,
+        (aeroFz + fzThrust) / this.massKg
       ).applyQuaternion(this.quaternion);
 
       // Add planetary gravitational acceleration

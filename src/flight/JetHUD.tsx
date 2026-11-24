@@ -591,47 +591,58 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
   ctx.letterSpacing = '0px';
 
   // Target: four thin corner brackets on the world itself, or a chevron at the edge
+  // Respect HUD exclusion zones (LOC, FLT, bottom bars, and cockpit lower MFD bay) so MOON
+  // or off-world markers NEVER draw inside telemetry cards or over cockpit MFDs!
   const ts = t.targetScreen;
+  const targetExclusions: HudRect[] = inside
+    ? [...minExclusions, { l: w / 2 - 230, t: h - 245, r: w / 2 + 230, b: h }]
+    : minExclusions;
   ctx.strokeStyle = AMBER;
   ctx.fillStyle = AMBER;
   ctx.lineWidth = 1.2;
   ctx.shadowColor = 'rgba(244,205,114,0.45)';
   if (ts && ts.on) {
     const r = 15;
-    const c = 6;
-    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
-      ctx.beginPath();
-      ctx.moveTo(ts.x + sx * r, ts.y + sy * (r - c));
-      ctx.lineTo(ts.x + sx * r, ts.y + sy * r);
-      ctx.lineTo(ts.x + sx * (r - c), ts.y + sy * r);
-      ctx.stroke();
+    const targetBox: HudRect = { l: ts.x - 52, t: ts.y - r - 4, r: ts.x + 52, b: ts.y + r + 34 };
+    if (!targetExclusions.some((z) => overlapsMin(targetBox, z))) {
+      const c = 6;
+      for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        ctx.beginPath();
+        ctx.moveTo(ts.x + sx * r, ts.y + sy * (r - c));
+        ctx.lineTo(ts.x + sx * r, ts.y + sy * r);
+        ctx.lineTo(ts.x + sx * (r - c), ts.y + sy * r);
+        ctx.stroke();
+      }
+      ctx.font = `600 9.5px ${SANS}`;
+      ctx.letterSpacing = '2.5px';
+      ctx.textAlign = 'center';
+      ctx.fillText(t.target.toUpperCase(), ts.x, ts.y + r + 15);
+      ctx.font = `400 9.5px ${SANS}`;
+      ctx.letterSpacing = '1px';
+      ctx.fillStyle = AMBER_DIM;
+      ctx.fillText(`${formatDistance(t.targetDistKm)}  ·  ${formatEta(t.targetEtaS)}`, ts.x, ts.y + r + 28);
     }
-    ctx.font = `600 9.5px ${SANS}`;
-    ctx.letterSpacing = '2.5px';
-    ctx.textAlign = 'center';
-    ctx.fillText(t.target.toUpperCase(), ts.x, ts.y + r + 15);
-    ctx.font = `400 9.5px ${SANS}`;
-    ctx.letterSpacing = '1px';
-    ctx.fillStyle = AMBER_DIM;
-    ctx.fillText(`${formatDistance(t.targetDistKm)}  ·  ${formatEta(t.targetEtaS)}`, ts.x, ts.y + r + 28);
   } else if (ts) {
     const unit = Math.min(w, h);
     const ax = w / 2 + Math.cos(ts.angle) * unit * 0.42;
     // Kept below the speed readout at the top of the frame
     const ay = Math.max(118, h / 2 - Math.sin(ts.angle) * unit * 0.42);
-    ctx.save();
-    ctx.translate(ax, ay);
-    ctx.rotate(-ts.angle);
-    ctx.beginPath();
-    ctx.moveTo(-5, -7);
-    ctx.lineTo(4, 0);
-    ctx.lineTo(-5, 7);
-    ctx.stroke();
-    ctx.restore();
-    ctx.font = `600 9px ${SANS}`;
-    ctx.letterSpacing = '2px';
-    ctx.textAlign = 'center';
-    ctx.fillText(t.target.toUpperCase(), ax, ay + (Math.sin(ts.angle) > 0 ? 22 : -14));
+    const edgeBox: HudRect = { l: ax - 42, t: ay - 22, r: ax + 42, b: ay + 30 };
+    if (!targetExclusions.some((z) => overlapsMin(edgeBox, z))) {
+      ctx.save();
+      ctx.translate(ax, ay);
+      ctx.rotate(-ts.angle);
+      ctx.beginPath();
+      ctx.moveTo(-5, -7);
+      ctx.lineTo(4, 0);
+      ctx.lineTo(-5, 7);
+      ctx.stroke();
+      ctx.restore();
+      ctx.font = `600 9px ${SANS}`;
+      ctx.letterSpacing = '2px';
+      ctx.textAlign = 'center';
+      ctx.fillText(t.target.toUpperCase(), ax, ay + (Math.sin(ts.angle) > 0 ? 22 : -14));
+    }
   }
 
   // Waypoint on Earth (a landmark chosen as the target): a diamond over the place with a pin to
@@ -851,7 +862,9 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
     const n = 20;
     const total = n * segW + (n - 1) * gap;
     const bx = w / 2 - total / 2;
-    const by = h - 34;
+    // Lift cleanly above 2-line Google Earth / Map credits bar + safe-area insets (strict >= 16px air gap!)
+    const botClear = Math.max(0, creditsHeight() + safeInsets().bottom);
+    const by = h - Math.max(54, botClear + 36);
     for (let i = 0; i < n; i++) {
       const on = (i + 0.5) / n <= t.throttle;
       ctx.fillStyle = on ? (t.boost > 0 ? 'rgba(255,170,90,0.95)' : 'rgba(255,255,255,0.85)') : 'rgba(255,255,255,0.16)';
@@ -876,7 +889,7 @@ function drawMinimal(ctx: CanvasRenderingContext2D, t: JetTelemetry, dpr: number
       t.view.toUpperCase(),
       t.aligning ? 'ALIGNING' : '',
     ].filter(Boolean);
-    ctx.fillText(modeParts.join('  ·  '), w / 2, by + 22);
+    ctx.fillText(modeParts.join('  ·  '), w / 2, by + 19);
     ctx.letterSpacing = '0px';
   }
 
@@ -949,10 +962,17 @@ let creditsH = 0;
 let creditsAt = 0;
 function creditsHeight(): number {
   const now = performance.now();
-  if (now - creditsAt > 500 && typeof document !== 'undefined') {
+  if (now - creditsAt > 300 && typeof document !== 'undefined') {
     creditsAt = now;
     const el = document.querySelector<HTMLElement>('.photoreal-attribution');
-    creditsH = el && el.style.display !== 'none' ? el.offsetHeight : 0;
+    if (el && el.style.display !== 'none') {
+      const rect = el.getBoundingClientRect();
+      // Measure true occupied bottom pixels (includes bottom CSS margin + 2-line text wrapping!)
+      const fromBottom = rect.height > 0 ? Math.max(0, Math.ceil(window.innerHeight - rect.top)) : 0;
+      creditsH = Math.max(el.offsetHeight, fromBottom);
+    } else {
+      creditsH = 0;
+    }
   }
   return creditsH;
 }
@@ -1021,6 +1041,7 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     let lastSlow = 0;
+    let lastManeuver: ManeuverKind = 'none';
     let lastTelemetry: JetTelemetry | null = null;
     const syncCanvasAndDraw = (t: JetTelemetry): void => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -1048,9 +1069,11 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
       if (!t.active) return;
       lastTelemetry = t;
       syncCanvasAndDraw(t);
-      // The DOM bits only need a few updates a second
-      if (t.timeSec - lastSlow > 0.25) {
+      // Sync DOM immediately on maneuver transition (zero stale COBRA/KULBIT mismatch), else ~4 Hz
+      const curMan: ManeuverKind = t.maneuver ?? 'none';
+      if (t.timeSec - lastSlow > 0.25 || curMan !== lastManeuver) {
         lastSlow = t.timeSec;
+        lastManeuver = curMan;
         const status = t.airWorld
           ? `IN ${t.airWorld.toUpperCase()}'S AIR`
           : t.anchor && t.anchor !== 'Sun'
@@ -1067,12 +1090,9 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
         const altInfoSlow = resolveAltitudeTelemetry(t);
         let promptText = '';
         let promptTone: 'mint' | 'amber' | 'red' = 'mint';
-        if (altInfoSlow.terrainWarning) {
-          // TacticalHud / drawFull renders the dedicated GPWS TERRAIN · PULL UP alert; keep the lower hint lane clear
+        if (altInfoSlow.terrainWarning || t.spinWarning) {
+          // TacticalHud / drawFull renders the dedicated hazard-striped GPWS & SPIN alerts; keep the lower lane clear!
           promptText = '';
-        } else if (t.spinWarning) {
-          promptText = 'SPIN RECOVERY · STICK FWD + OPP Q / E RUDDER';
-          promptTone = 'red';
         } else if (t.gearDown && t.onGround && t.speedMps > 4) {
           promptText = 'ROLLOUT · HOLD TAB / ; FOR WHEEL BRAKES';
           promptTone = 'mint';
@@ -1322,7 +1342,7 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
                   position: 'absolute',
                   top: 'max(14px, calc(env(safe-area-inset-top, 0px) + 8px))',
                   left: 'max(18px, calc(env(safe-area-inset-left, 0px) + 12px))',
-                  maxWidth: 'min(320px, calc(50vw - 170px))',
+                  maxWidth: 'min(254px, calc(50vw - 245px))',
                   padding: '7px 11px',
                   borderRadius: 8,
                   background: 'rgba(4, 10, 14, 0.48)',
@@ -1357,17 +1377,17 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
         <FpsCounter style={{ marginTop: 4 }} />
       </div>
 
-      {/* Non-intrusive maneuver banner and contextual micro-prompt (strictly inside center lane between LOC and FLT cards) */}
-      {(slow.maneuver !== 'none' || slow.promptText) && (
+      {/* Non-intrusive maneuver banner and contextual micro-prompt (strictly inside center lane above throttle & credits) */}
+      {((slow.maneuver !== 'none' && slow.maneuver !== 'spin') || slow.promptText) && (
         <div
           style={{
             position: 'absolute',
             left: '50%',
             bottom: touch
-              ? 'calc(env(safe-area-inset-bottom, 0px) + 92px)'
+              ? 'calc(env(safe-area-inset-bottom, 0px) + 104px)'
               : compact
-                ? 'calc(env(safe-area-inset-bottom, 0px) + 74px)'
-                : 'calc(env(safe-area-inset-bottom, 0px) + 58px)',
+                ? 'calc(env(safe-area-inset-bottom, 0px) + 98px)'
+                : `calc(env(safe-area-inset-bottom, 0px) + ${Math.max(96, creditsHeight() + 64)}px)`,
             transform: 'translateX(-50%)',
             pointerEvents: 'none',
             zIndex: 3,
@@ -1788,7 +1808,7 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
                 <div><b>Drag / LMB</b> steer · <b>RMB</b> look · <b>W S A D / Q E</b> pitch/roll/yaw</div>
                 <div><b>R F / Wheel</b> throttle · <b>1–0</b> set · <b>X</b> idle · <b>Space</b> AB/boost</div>
                 <div><b>Tab / ;</b> brakes · <b>Space+Tab / ,</b> Hi-G drift · <b>`</b> FBW · <b>.</b> flaps</div>
-                <div><b>V</b> Cobra / PSM-TVC · <b>B</b> gear · <b>G</b> FA · <b>Z</b> align · <b>&apos;</b> FPV hold</div>
+                <div><b>V</b> Cobra / 360° Kulbit · <b>Backspace</b> level wings · <b>B</b> gear · <b>G</b> FA · <b>Z</b> align · <b>&apos;</b> FPV</div>
                 <div><b>C</b> view · <b>U</b> HUD · <b>T/Shift+T</b> target · <b>L/M/P</b> land · <b>J</b> tier</div>
                 <div><b>O / [ ]</b> time · <b>Y</b> weather · <b>I</b> invert · <b>N</b> sound · <b>H</b> help · <b>Esc</b> exit</div>
                 <div style={{ color: 'var(--sol-dim)', marginTop: 3 }}>

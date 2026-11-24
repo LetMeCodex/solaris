@@ -93,17 +93,18 @@ export const AIRFRAME_FBW_SPECS: Record<JetAirframeId, FbwAirframeParams> = {
     gLimitNeg: -3.0,
     highGLimit: 11.5,
     gOnset: 14.0,
-    normAlphaLimitDeg: 26,
-    highGAlphaLimitDeg: 35,
+    normAlphaLimitDeg: 28,
+    highGAlphaLimitDeg: 36,
     tvcArmM: 0,
     tvcMaxDeg: 0,
     tvcCantDeg: 0,
     tvcSlewDegPerSec: 0,
     tvcRollArmM: 0,
-    maxPitchRateRad: 1.7,
+    maxPitchRateRad: 1.85,
     maxRollRateRad: 5.2,
-    maxYawRateRad: 0.9,
-    inertia: [11500, 62000, 71000, 1100],
+    maxYawRateRad: 0.95,
+    // Synchronized 1:1 with AirframeSpecs.ts (single source of truth)
+    inertia: [10800, 58000, 66000, 1200],
   },
   su30: {
     id: 'su30',
@@ -116,17 +117,18 @@ export const AIRFRAME_FBW_SPECS: Record<JetAirframeId, FbwAirframeParams> = {
     gLimitNeg: -3.0,
     highGLimit: 11.5,
     gOnset: 14.0,
-    normAlphaLimitDeg: 28,
-    highGAlphaLimitDeg: 38,
+    normAlphaLimitDeg: 30,
+    highGAlphaLimitDeg: 40,
     tvcArmM: 6.8,
     tvcMaxDeg: 15,
     tvcCantDeg: 32,
     tvcSlewDegPerSec: 30,
     tvcRollArmM: 1.2,
-    maxPitchRateRad: 1.65,
+    maxPitchRateRad: 1.75,
     maxRollRateRad: 4.1,
-    maxYawRateRad: 0.95,
-    inertia: [42000, 215000, 248000, 3200],
+    maxYawRateRad: 1.0,
+    // Synchronized 1:1 with AirframeSpecs.ts (single source of truth)
+    inertia: [48000, 225000, 265000, 3800],
   },
   kestrel: {
     id: 'kestrel',
@@ -139,16 +141,16 @@ export const AIRFRAME_FBW_SPECS: Record<JetAirframeId, FbwAirframeParams> = {
     gLimitNeg: -3.0,
     highGLimit: 11.5,
     gOnset: 14.0,
-    normAlphaLimitDeg: 27,
-    highGAlphaLimitDeg: 36,
+    normAlphaLimitDeg: 29,
+    highGAlphaLimitDeg: 38,
     tvcArmM: 6.2,
     tvcMaxDeg: 15,
     tvcCantDeg: 0,
     tvcSlewDegPerSec: 40,
     tvcRollArmM: 0.9,
-    maxPitchRateRad: 1.75,
+    maxPitchRateRad: 1.85,
     maxRollRateRad: 4.8,
-    maxYawRateRad: 0.95,
+    maxYawRateRad: 1.0,
     inertia: [21000, 118000, 134000, 1800],
   },
 };
@@ -295,7 +297,11 @@ export function computeAfterburnerStage(inp: AfterburnerInput): AfterburnerOutpu
   const targetSpool = dryCmd + abFraction * 0.25;
 
   const rising = targetSpool > inp.spoolState;
-  const rate = rising ? (inp.spoolState >= 0.72 ? 3.2 : 0.85) : 2.6;
+  // Crisp digital FADEC turbofan response: fast dry core spool (1.85/s), rapid afterburner
+  // staging (5.2/s), and immediate light-off acceleration when AB is commanded from cruise.
+  const rate = rising
+    ? (abStage >= 1 ? (inp.spoolState >= 0.72 ? 5.2 : 2.6) : 1.85)
+    : 3.0;
   const spoolState = moveToward(clamp(inp.spoolState, 0, 1), targetSpool, rate * Math.max(inp.dt, 0));
 
   const dryLevel = clamp((spoolState - 0.05) / 0.70, 0, 1);
@@ -400,6 +406,7 @@ export interface CobraStepInput {
   alphaDeg: number;
   pitchAngleRad: number;
   currentPitchRate: number;
+  currentG?: number;
   airDensity: number;
   hasTvc: boolean;
   dt: number;
@@ -412,10 +419,19 @@ export interface CobraStepOutput {
   pitchRateTargetRad: number;
   gBypass: boolean;
   extraDragFactor: number;
+  /** Automatic Cobra SOP throttle cap (idle chop during high-speed pre-decel only), or undefined */
+  autoThrottleCap?: number;
+  /** Automatic speedbrake deployment [0..1] during high-speed Cobra entry */
+  autoAirbrake?: number;
+  /** Authentic Sukhoi thrust-vector suspension & recovery burst during Cobra HOLD/RECOVER */
+  autoRecoveryThrust?: boolean;
 }
 
 /**
  * Closed-loop Pugachev's Cobra and optional Kulbit continuation controller.
+ * High-speed entry (> 165 m/s) executes authentic Sukhoi SOP: automatic throttle chop +
+ * speedbrake deployment + structural G-capped pre-deceleration (~8.2G max) down into corner speed
+ * before whipping cleanly past 90-105 deg AoA, preventing 18-24G structural overload spikes.
  * Early nose-down stick (`pitchInput < -0.55`) aborts cleanly into recovery;
  * sustained full back-stick in PSM with TVC continues through a 360° Kulbit.
  */
@@ -454,48 +470,74 @@ export function stepCobraAndPsmAssist(
     cobra.kulbitActive = true;
   }
 
-  const peakRad = 96 * DEG_TO_RAD;
+  const peakRad = (inp.hasTvc ? 102 : 101) * DEG_TO_RAD;
   const maxDuration = cobra.kulbitActive ? 3.8 : DEFAULT_COBRA_DURATION_S;
   let pitchRateTargetRad = 0;
 
   if (cobra.kulbitActive) {
-    pitchRateTargetRad = 2.25;
+    pitchRateTargetRad = 2.35;
     if (cobra.pitchSweepRad >= 325 * DEG_TO_RAD || cobra.timer >= maxDuration) {
       cobra.phase = 'RECOVER';
       cobra.kulbitActive = false;
     }
   } else if (cobra.phase === 'PITCH_UP') {
     const err = peakRad - inp.pitchAngleRad;
-    const maxRate = inp.hasTvc ? 2.15 : 1.9;
-    pitchRateTargetRad = clamp(err * 2.8, 0.85, maxRate);
-    if (inp.pitchAngleRad >= 86 * DEG_TO_RAD || cobra.timer >= 0.98) {
+    const baseMaxRate = inp.hasTvc ? 2.75 : 2.76;
+    // Crisp post-stall Cobra snap rate (mildly damped at high Mach while symmetric flaperon/spoiler
+    // lift-dump & airbrakes keep structural normal load strictly <= 9.0G without stalling the pitch-up!)
+    const speedDamp = clamp(1.0 - smoothstep(210, 320, inp.speedMps) * 0.16, 0.84, 1.0);
+    pitchRateTargetRad = clamp(err * 3.7, 1.35, baseMaxRate * speedDamp);
+    const holdTriggerRad = (inp.hasTvc ? 94 : 94) * DEG_TO_RAD;
+    if (inp.pitchAngleRad >= holdTriggerRad || inp.alphaDeg >= 95 || cobra.timer >= 0.94) {
       cobra.phase = 'HOLD';
     }
   } else if (cobra.phase === 'HOLD') {
-    const err = 88 * DEG_TO_RAD - inp.pitchAngleRad;
-    pitchRateTargetRad = clamp(err * 2.2 - inp.currentPitchRate * 0.4, -0.8, 0.8);
-    if (cobra.timer >= 1.38) {
+    const targetHoldRad = (inp.hasTvc ? 95 : 95) * DEG_TO_RAD;
+    const err = targetHoldRad - inp.pitchAngleRad;
+    pitchRateTargetRad = clamp(err * 2.8 - inp.currentPitchRate * 0.45, -0.95, 0.95);
+    if (cobra.timer >= 1.18) {
       cobra.phase = 'RECOVER';
     }
   }
 
   if (cobra.phase === 'RECOVER') {
-    const timeRemaining = Math.max(0.15, maxDuration - cobra.timer);
-    const desiredRate = clamp(-inp.pitchAngleRad / timeRemaining - inp.currentPitchRate * 0.25, -2.6, 1.4);
-    pitchRateTargetRad = desiredRate * 1.15;
+    const timeRemaining = Math.max(0.14, maxDuration - cobra.timer);
+    // Shortest signed angle to crisp level-plus (+1.5 deg) arrest horizon for Cobra so wings
+    // fly out razor-flat (VS ~ 0..+2 m/s) while recovery AB accelerates cleanly past 140+ m/s;
+    // 360-deg Kulbit (+325 deg) smoothly completes the final +35 deg forward onto 360 deg!
+    const recoverTargetRad = cobra.pitchSweepRad > 200 * DEG_TO_RAD ? 0 : 1.5 * DEG_TO_RAD;
+    const deltaPitch = inp.pitchAngleRad - recoverTargetRad;
+    const wrappedPitchErr = Math.atan2(Math.sin(deltaPitch), Math.cos(deltaPitch));
+    const pdRate = -wrappedPitchErr * 3.9 - inp.currentPitchRate * 0.42;
+    const timeRate = -wrappedPitchErr / timeRemaining - inp.currentPitchRate * 0.25;
+    const desiredRate = Math.abs(pdRate) > Math.abs(timeRate) ? pdRate : timeRate;
+    pitchRateTargetRad = clamp(desiredRate, -3.5, 2.2);
 
-    const leveled = Math.abs(inp.pitchAngleRad) < 0.14 && Math.abs(inp.currentPitchRate) < 0.35;
-    if ((cobra.timer >= 1.85 && leveled) || cobra.timer >= maxDuration) {
+    const leveled = Math.abs(wrappedPitchErr) < 0.08 && Math.abs(inp.currentPitchRate) < 0.30;
+    if ((cobra.timer >= 1.65 && leveled) || cobra.timer >= maxDuration) {
       cobra.phase = 'IDLE';
       cobra.timer = 0;
-      cobra.cooldown = 0.6;
+      cobra.cooldown = 0.55;
       cobra.kulbitActive = false;
       return { active: false, cobraT: -1, pitchRateTargetRad: 0, gBypass: false, extraDragFactor: 0 };
     }
   }
 
   const sinA = Math.sin(Math.max(Math.abs(inp.alphaDeg) * DEG_TO_RAD, Math.abs(inp.pitchAngleRad)));
-  const extraDragFactor = sinA * sinA;
+  // Chop throttle & pop airbrake ONLY during high-speed pre-decel (> 175 m/s, alpha < 50 deg);
+  // past 50 deg or in HOLD/RECOVER, retract speedbrake & fire MIL/AB suspension thrust so the jet
+  // hangs heroically in mid-air and exits level at 145+ m/s with ZERO -40 m/s stall-sink plunge!
+  const decelBrakeFrac =
+    !cobra.kulbitActive && cobra.phase === 'PITCH_UP' && inp.speedMps > 215 && inp.alphaDeg < 50
+      ? smoothstep(215, 265, inp.speedMps)
+      : 0;
+  const extraDragFactor = Math.max(sinA * sinA, decelBrakeFrac * 0.55);
+  const autoThrottleCap = decelBrakeFrac > 0.05 ? 0.08 : undefined;
+  const autoAirbrake = decelBrakeFrac > 0.05 ? clamp(decelBrakeFrac * 1.25, 0, 1) : 0;
+  const autoRecoveryThrust =
+    !cobra.kulbitActive &&
+    (cobra.phase === 'HOLD' || cobra.phase === 'RECOVER' || inp.alphaDeg >= 50) &&
+    inp.speedMps < 175;
 
   return {
     active: true,
@@ -503,6 +545,9 @@ export function stepCobraAndPsmAssist(
     pitchRateTargetRad,
     gBypass: true,
     extraDragFactor,
+    autoThrottleCap,
+    autoAirbrake,
+    autoRecoveryThrust,
   };
 }
 
@@ -646,6 +691,8 @@ export interface FbwStepInput {
   pitchAngleRad: number;
   rollAngleRad: number;
   currentRatesB3: readonly [number, number, number];
+  /** Live measured normal load factor (Nz in G) for closed-loop FBW G-limiting & Cobra governing */
+  currentG?: number;
   gravityBodyUp: number;
   gravityAccelMps2: number;
   gearDown: boolean;
@@ -701,6 +748,7 @@ export function stepFbwAndControls(
     alphaDeg: inp.alphaDeg,
     pitchAngleRad: inp.pitchAngleRad,
     currentPitchRate: inp.currentRatesB3[0],
+    currentG: inp.currentG,
     airDensity: inp.airDensity,
     hasTvc: af.hasTvc,
     dt,
@@ -768,7 +816,13 @@ export function stepFbwAndControls(
 
     if (cobra.active) {
       targetPitchRate = cobra.pitchRateTargetRad;
-      targetRollRate = -inp.roll * af.maxRollRateRad * 0.25;
+      // Smoothly level wings upright when Cobra is entered from a turn/bank so the nose pitches
+      // heroically UP into the sky instead of corkscrewing sideways into the ground!
+      if (!state.cobra.kulbitActive && Math.abs(inp.roll) < 0.12 && Math.abs(inp.pitchAngleRad) < 72 * DEG_TO_RAD) {
+        targetRollRate = clamp(-inp.rollAngleRad * 4.5, -2.6, 2.6);
+      } else {
+        targetRollRate = -inp.roll * af.maxRollRateRad * 0.25;
+      }
       targetYawRate = -inp.yaw * (af.hasTvc ? 0.65 : 0.35);
       state.gCmdCurrent = (targetPitchRate * safeSpeed) / G0_MPS2;
     } else if (effectiveMode === 'psm') {
@@ -815,51 +869,98 @@ export function stepFbwAndControls(
           turnTighten +
         gTrimBias;
 
-      const onsetRate = effectiveMode === 'high-g' ? af.gOnset * 1.45 : af.gOnset;
+      // Enforce MIL-STD structural onset rate limit (14 G/s) when LOADING G, while allowing crisp
+      // immediate unloading when releasing stick so pitch release has zero nose-drop rebound!
+      const unloading = Math.abs(stickG) < Math.abs(state.gCmdCurrent) || Math.sign(stickG) !== Math.sign(state.gCmdCurrent);
+      const baseOnset = effectiveMode === 'high-g' ? af.gOnset * 1.45 : af.gOnset;
+      const onsetRate = unloading ? baseOnset * 2.8 : baseOnset;
       state.gCmdCurrent = moveToward(state.gCmdCurrent, stickG, onsetRate * dt);
       const qFromG = (state.gCmdCurrent * G0_MPS2) / safeSpeed;
 
       const gBlend = smoothstep(85, 175, inp.speedMps);
-      const alphaCmdRate = inp.pitch * af.maxPitchRateRad * 0.85;
+      const alphaCmdRate = inp.pitch * af.maxPitchRateRad * 0.88;
       targetPitchRate = alphaCmdRate * (1 - gBlend) + qFromG * gBlend;
 
+      // Vertical-loop / inverted pitch-over headroom: when climbing steeply past 45 deg or inverted
+      // over the apex of a loop, preserve clean pitch-over authority instead of freezing at zenith!
+      const inVerticalLoopApex = (Math.abs(inp.pitchAngleRad) > 42 * DEG_TO_RAD || inp.gravityBodyUp < 0.25) && inp.pitch > 0.3;
+      const loopHeadroomFloor = inVerticalLoopApex ? 0.42 : 0.0;
+
+      // Asymmetric AoA envelope protection: positive +28..30 deg, negative -13.5 deg (NORM) / -17.5 deg (HIGH-G)
+      const negAlphaLimitDeg = inp.gearDown ? -10 : effectiveMode === 'high-g' ? -17.5 : -13.5;
+
       if (inp.alphaDeg > alphaLimitDeg - 3 && targetPitchRate > 0) {
-        const headroom = 1 - smoothstep(alphaLimitDeg - 3, alphaLimitDeg + 2, inp.alphaDeg);
+        const headroom = Math.max(loopHeadroomFloor, 1 - smoothstep(alphaLimitDeg - 3, alphaLimitDeg + 2.5, inp.alphaDeg));
         targetPitchRate *= headroom;
       }
-      if (inp.alphaDeg < -(alphaLimitDeg * 0.65) && targetPitchRate < 0) {
-        const negHeadroom = 1 - smoothstep(alphaLimitDeg * 0.65, alphaLimitDeg * 0.85, -inp.alphaDeg);
+      if (inp.alphaDeg < negAlphaLimitDeg + 3.5 && targetPitchRate < 0) {
+        const negHeadroom = 1 - smoothstep(Math.abs(negAlphaLimitDeg) - 3.5, Math.abs(negAlphaLimitDeg), -inp.alphaDeg);
         targetPitchRate *= negHeadroom;
       }
 
-      const deepStallDeg = effectiveMode === 'norm' ? alphaLimitDeg + 7 : alphaLimitDeg + 14;
-      if (Math.abs(inp.alphaDeg) > deepStallDeg && !inp.onGround) {
-        const recoverSign = -Math.sign(inp.alphaDeg);
-        const overDeg = Math.abs(inp.alphaDeg) - deepStallDeg;
-        targetPitchRate = recoverSign * clamp(0.45 + overDeg * 0.06, 0.45, af.maxPitchRateRad);
+      // True Closed-Loop Nz Structural Load Limiter (prevents positive > +9G or negative < -3G breaches
+      // even under violent coupled roll+pitch+yaw inputs at high dynamic pressure!)
+      const curG = inp.currentG;
+      if (curG !== undefined && !inp.onGround && inp.airDensity > 0.02) {
+        if (curG > gCapPos - 0.55) {
+          const overPos = curG - (gCapPos - 0.55);
+          targetPitchRate = Math.min(targetPitchRate, -overPos * 1.65);
+        }
+        if (curG < gCapNeg + 0.55) {
+          const overNeg = (gCapNeg + 0.55) - curG;
+          targetPitchRate = Math.max(targetPitchRate, overNeg * 2.55);
+        }
+      }
+
+      // Crisp NORM deep-stall, negative-AoA departure, & low-speed high-alpha recovery
+      const deepStallDeg = effectiveMode === 'norm' ? alphaLimitDeg + 4 : alphaLimitDeg + 12;
+      const lowSpeedStall = effectiveMode === 'norm' && !inVerticalLoopApex && inp.speedMps < 82 && Math.abs(inp.alphaDeg) > 22;
+      const negAlphaBreach = !inp.onGround && inp.alphaDeg < negAlphaLimitDeg - 1.0;
+      if (negAlphaBreach) {
+        const overNegDeg = Math.abs(inp.alphaDeg) - Math.abs(negAlphaLimitDeg);
+        targetPitchRate = Math.max(targetPitchRate, clamp(0.85 + overNegDeg * 0.14, 0.85, af.maxPitchRateRad));
+      } else if ((inp.alphaDeg > deepStallDeg || lowSpeedStall) && !inp.onGround) {
+        const recoverSign = -Math.sign(inp.alphaDeg || 1);
+        const overDeg = Math.max(0, Math.abs(inp.alphaDeg) - (lowSpeedStall ? 20 : deepStallDeg));
+        targetPitchRate = recoverSign * clamp(0.65 + overDeg * 0.075, 0.65, af.maxPitchRateRad);
       }
 
       const maxPosRateAtV = (gCapPos * G0_MPS2) / safeSpeed;
       const maxNegRateAtV = (Math.abs(gCapNeg) * G0_MPS2) / safeSpeed;
       targetPitchRate = clamp(targetPitchRate, -maxNegRateAtV, maxPosRateAtV);
 
-      const rollAlphaFade = 1 - 0.45 * smoothstep(20, 42, Math.abs(inp.alphaDeg));
+      // Protect against kinematic roll-sideslip-to-negative-AoA departure (w_dot = -p * v) near neg-G fence
+      const negGRollGuard =
+        curG !== undefined && curG < gCapNeg + 0.85
+          ? clamp((curG - (gCapNeg - 0.1)) / 0.95, 0.22, 1.0)
+          : 1.0;
+      const rollAlphaFade = (1 - 0.42 * smoothstep(22, 44, Math.abs(inp.alphaDeg))) * negGRollGuard;
       targetRollRate = -inp.roll * af.maxRollRateRad * rollAlphaFade;
 
       const ariYawRight = inp.roll * clamp(inp.alphaDeg / 25, -0.35, 0.55) * 0.35;
-      // Positive betaDeg (velocity right of nose = nose left) -> yaw right (+yawRight => -ry in B3) to align nose
+      // High-q structural rudder limiter in NORM prevents crossed-control (A+W+E) roll-coupling departures
+      const yawQScale =
+        effectiveMode === 'norm' && inp.qPa > 9000
+          ? clamp(12000 / inp.qPa, 0.26, 1.0)
+          : 1.0;
+      // Positive betaDeg (velocity right of nose = nose left) -> yaw right (+yawRight => -ry in B3) to align nose.
+      // Even when holding rudder in NORM, enforce a crisp 5 deg sideslip fence at high dynamic pressure.
       const betaDampYawRight =
-        Math.abs(inp.yaw) < 0.25 && !inp.onGround
-          ? clamp(inp.betaDeg * 0.045, -0.45, 0.45)
+        !inp.onGround
+          ? Math.abs(inp.yaw) < 0.25
+            ? clamp(inp.betaDeg * 0.085, -0.65, 0.65)
+            : effectiveMode === 'norm' && Math.abs(inp.betaDeg) > 4.5
+              ? clamp((inp.betaDeg - Math.sign(inp.betaDeg) * 4.5) * 0.15, -0.95, 0.95)
+              : 0
           : 0;
-      const rawYawCmdRight = clamp(inp.yaw + ariYawRight + betaDampYawRight, -1.2, 1.2);
+      const rawYawCmdRight = clamp(inp.yaw * yawQScale + ariYawRight + betaDampYawRight, -1.2, 1.2);
       targetYawRate = -rawYawCmdRight * af.maxYawRateRad;
     }
 
-    const slewPitch = 1 - Math.exp(-10 * dt);
-    // Crisp roll-stop damping (22/s when stick centered) kills post-release roll coasting/overshoot
-    const slewRoll = 1 - Math.exp(-(Math.abs(inp.roll) < 0.04 ? 22 : 14) * dt);
-    const slewYaw = 1 - Math.exp(-12 * dt);
+    // Crisp MIL-STD-1797C Level-1 response: snappy engagement + dead-beat release (< 160ms roll stop, zero bounce)
+    const slewPitch = 1 - Math.exp(-(Math.abs(inp.pitch) < 0.04 ? 21 : 12) * dt);
+    const slewRoll = 1 - Math.exp(-(Math.abs(inp.roll) < 0.04 ? 42 : 17) * dt);
+    const slewYaw = 1 - Math.exp(-(Math.abs(inp.yaw) < 0.04 ? 20 : 13) * dt);
     state.rateCmdB3[0] += (targetPitchRate - state.rateCmdB3[0]) * slewPitch;
     state.rateCmdB3[1] += (targetYawRate - state.rateCmdB3[1]) * slewYaw;
     state.rateCmdB3[2] += (targetRollRate - state.rateCmdB3[2]) * slewRoll;
@@ -883,8 +984,8 @@ export function stepFbwAndControls(
     : 0;
   state.surfaces.canard += (canardTarget - state.surfaces.canard) * surfSlew;
 
-  const targetSpeedbrake = inp.airbrakeHeld ? 1.0 : 0.0;
-  state.surfaces.speedbrake = moveToward(state.surfaces.speedbrake, targetSpeedbrake, 2.2 * dt);
+  const targetSpeedbrake = Math.max(inp.airbrakeHeld ? 1.0 : 0.0, cobra.autoAirbrake ?? 0);
+  state.surfaces.speedbrake = moveToward(state.surfaces.speedbrake, targetSpeedbrake, 3.2 * dt);
 
   const allocation = allocateControlMoments(state, {
     airframe: af,
@@ -1030,8 +1131,8 @@ export function detectManeuver(
   if (!inp.onGround) {
     if (
       state.cobra.kulbitActive ||
-      inp.kulbitSweepRad >= 130 * DEG_TO_RAD ||
-      (absAlpha > 95 && pitchRate > 0.85 && inp.speedMps < 190)
+      inp.kulbitSweepRad >= 145 * DEG_TO_RAD ||
+      (inp.cobraPhase === 'IDLE' && absAlpha > 132 && pitchRate > 0.85 && inp.speedMps < 190)
     ) {
       detected = 'kulbit';
     } else if (

@@ -304,18 +304,23 @@ const PLUME_VERT = /* glsl */ `
   varying vec3 vPos;
   varying vec3 vNormalV;
   varying vec3 vViewDir;
+  varying float vAxialView;
   void main() {
     vPos = position;
     vec4 mv = modelViewMatrix * vec4(position, 1.0);
     vNormalV = normalize(normalMatrix * normal);
     vViewDir = normalize(-mv.xyz);
+    // 1.0 when looking straight down the tailpipe (chase view), 0.0 from side profile
+    vec3 axisV = normalize((modelViewMatrix * vec4(0.0, 0.0, 1.0, 0.0)).xyz);
+    vAxialView = abs(dot(axisV, vViewDir));
     gl_Position = projectionMatrix * mv;
   }
 `;
 
 /**
- * Exhaust: an additive volume along +Z behind the nozzle. Shock diamonds in air; in vacuum the
- * under-expanded jet balloons out and fades, as real exhaust does with no air to hold it in.
+ * Exhaust: an additive volume along +Z behind the nozzle. View-angle compensated so both
+ * dead-astern chase view and 3/4 side view display a vivid translucent flame cone + 6 crisp
+ * supersonic Mach shock diamonds in daylight without washing out to flat white.
  */
 const PLUME_FRAG = /* glsl */ `
   uniform float uThrottle;
@@ -323,10 +328,11 @@ const PLUME_FRAG = /* glsl */ `
   uniform float uVacuum;
   uniform float uTime;
   uniform float uLength;
-  uniform float uCore;      // 1: the short white-hot core, 0: the flame around it
+  uniform float uCore;      // 1: the inner Mach shock-diamond core, 0: translucent outer flame sheath
   varying vec3 vPos;
   varying vec3 vNormalV;
   varying vec3 vViewDir;
+  varying float vAxialView;
   float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
   float noise(vec2 p) {
     vec2 i = floor(p), f = fract(p);
@@ -336,30 +342,79 @@ const PLUME_FRAG = /* glsl */ `
   void main() {
     float t = clamp(vPos.z / uLength, 0.0, 1.0);           // 0 at the nozzle, 1 at the tail
     float facing = abs(dot(normalize(vNormalV), normalize(vViewDir)));
-    float body = pow(facing, mix(1.9, 3.2, uCore));          // smooth feathered silhouette, thickest along core
-    float lipFade = smoothstep(0.0, 0.055, t);               // soft entry from nozzle lip (no hard ring)
+    float lipFade = smoothstep(0.0, 0.045, t);             // soft entry from nozzle lip (no hard ring)
     // Turbulence flowing downstream
     float ang = atan(vPos.y, vPos.x);
-    float flow = noise(vec2(ang * 2.5, t * 9.0 - uTime * 26.0)) * 0.6 + noise(vec2(ang * 6.0, t * 22.0 - uTime * 55.0)) * 0.4;
-    // Mach disks: crisp shock diamonds at regular spacing, prominent under afterburner (air only)
+    float flow = noise(vec2(ang * 2.5, t * 9.0 - uTime * 28.0)) * 0.6 + noise(vec2(ang * 6.0, t * 22.0 - uTime * 58.0)) * 0.4;
+    // Supersonic Mach shock diamonds: 6 crisp glowing nodes separated by dark expansion troughs
     float diamonds = 0.0;
+    float diamondHalo = 0.0;
     for (int k = 0; k < 6; k++) {
-      float x = 0.075 + float(k) * 0.085;
-      float d = (t - x) / 0.013;
-      diamonds += exp(-d * d) * (1.0 - float(k) / 6.0);
+      float x = 0.085 + float(k) * 0.145;
+      float dCore = (t - x) / 0.025;
+      float dHalo = (t - x) / 0.052;
+      float w = pow(1.0 - float(k) / 6.6, 0.78);
+      diamonds += exp(-dCore * dCore) * w;
+      diamondHalo += exp(-dHalo * dHalo) * w;
     }
-    diamonds *= (1.0 - uVacuum) * (0.14 + 0.86 * uBoost) * lipFade;
-    float fade = pow(1.0 - t, mix(mix(1.5, 2.4, uVacuum), 3.4, uCore)) * lipFade;
-    vec3 white = vec3(1.0, 0.96, 0.88);
-    vec3 dry = vec3(0.36, 0.56, 0.86);                       // military power: subtle realistic turbine heat-blue
-    vec3 ab = mix(vec3(1.0, 0.76, 0.34), vec3(1.0, 0.34, 0.10), smoothstep(0.10, 0.72, t)); // amber -> orange
-    vec3 col = mix(dry, ab, uBoost);
-    col = mix(white, col, smoothstep(0.0, mix(0.20, 0.50, uCore), t));
-    col = mix(col, vec3(0.92, 0.94, 1.0), diamonds * 0.55);  // hot shock diamonds glow pale blue-white
-    float power = (0.10 + 0.75 * uThrottle) * (0.65 + 1.45 * uBoost);
-    float a = body * fade * (0.52 + 0.55 * flow) * power + diamonds * body * power * 1.25;
-    a *= mix(1.0, 0.4, uVacuum) * mix(1.0, 1.75, uCore);
-    gl_FragColor = vec4(col * a * 1.15, 1.0);
+    float airMask = (1.0 - uVacuum) * (0.04 + 0.96 * smoothstep(0.05, 0.55, uBoost)) * lipFade;
+    diamonds *= airMask;
+    diamondHalo *= airMask;
+
+    // View-angle compensated volumetric body: stays vividly visible from dead-astern chase view!
+    float axialBoost = smoothstep(0.54, 0.93, vAxialView);
+    float cellWave = 0.76 + 0.24 * cos((t - 0.085) * 43.3);
+    float bodyOuter = mix(pow(facing, 1.35), 0.78, axialBoost);
+    float bodyCore = mix(pow(facing, 1.95), 0.92, axialBoost);
+    float fadeOuter = pow(1.0 - t, mix(1.35, 2.2, uVacuum)) * lipFade;
+    float fadeCore = pow(1.0 - t, 1.2) * lipFade;
+
+    vec3 dryCol = vec3(0.28, 0.54, 0.96);                  // military dry power: crisp translucent heat-blue
+    vec3 blueCollar = vec3(0.36, 0.58, 1.0);               // stoichiometric blue-violet combustion collar at lip
+    vec3 abOuter = mix(vec3(1.0, 0.54, 0.12), vec3(1.0, 0.24, 0.03), smoothstep(0.10, 0.80, t));
+    vec3 abCol = mix(blueCollar, abOuter, smoothstep(0.02, 0.18, t));
+    vec3 envCol = mix(dryCol, abCol, smoothstep(0.05, 0.35, uBoost));
+    vec3 diamondCol = mix(vec3(1.0, 0.78, 0.38), vec3(0.94, 0.97, 1.0), smoothstep(0.22, 0.90, diamonds));
+
+    float pwrDry = 0.05 + 0.28 * uThrottle;
+    float pwrAb = 1.15 + 1.55 * uBoost;
+    float pwr = mix(pwrDry, pwrAb, smoothstep(0.04, 0.35, uBoost));
+
+    // Outer translucent shear cone (uCore == 0) frames the flame clearly in daylight without whiteout
+    float aOuter = bodyOuter * fadeOuter * cellWave * (0.42 + 0.38 * flow) * pwr * 0.56;
+    // Inner Mach shock-diamond train (uCore == 1): dark inter-shock troughs + blazing pale-blue-gold diamonds
+    float aCore = bodyCore * fadeCore * (0.08 * pwr + diamondHalo * 0.52 * pwr + diamonds * 1.75 * pwr);
+
+    vec3 outRgb = mix(envCol * aOuter, mix(abOuter, diamondCol, clamp(diamonds * 1.25 + 0.22, 0.0, 1.0)) * aCore, uCore);
+    outRgb *= mix(1.0, 0.45, uVacuum);
+    gl_FragColor = vec4(outRgb, 1.0);
+  }
+`;
+
+const SHOCK_DISC_VERT = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+/** Cross-axial supersonic Mach shock disk nodes: guarantees unmistakable shock diamonds from chase & 3/4 views. */
+const SHOCK_DISC_FRAG = /* glsl */ `
+  uniform float uBoost;
+  uniform float uVacuum;
+  uniform float uTime;
+  uniform float uWeight;
+  varying vec2 vUv;
+  void main() {
+    float r = length(vUv * 2.0 - 1.0);
+    float core = exp(-r * r * 6.5);
+    float halo = exp(-r * r * 2.2);
+    float pulse = 0.90 + 0.10 * sin(uTime * 54.0 + uWeight * 12.0);
+    float vis = (1.0 - uVacuum) * smoothstep(0.08, 0.55, uBoost) * uWeight * pulse;
+    vec3 col = mix(vec3(1.0, 0.52, 0.12), vec3(0.95, 0.96, 1.0), core);
+    float intensity = (halo * 0.45 + core * 1.45) * vis * (0.75 + 0.85 * uBoost);
+    gl_FragColor = vec4(col * intensity, 1.0);
   }
 `;
 
@@ -814,6 +869,9 @@ interface ArticulatedRig {
   wingFlex: [THREE.Group | null, THREE.Group | null];
   tvcPivots: THREE.Group[];
   irisPetals: THREE.Group[][];
+  turbineRotors: THREE.Group[];
+  flameholderMats: THREE.MeshStandardMaterial[];
+  turbineAngleRad: number;
   airbrakes: AirbrakeUnit[];
   gear: GearLegRig[];
   taxiLight: THREE.Sprite | null;
@@ -1301,6 +1359,9 @@ if (uClipOn > 0.5) {
       wingFlex: [null, null],
       tvcPivots: [...this.tvcAnchors],
       irisPetals: [[], []],
+      turbineRotors: [],
+      flameholderMats: [],
+      turbineAngleRad: 0,
       airbrakes: [],
       gear: [],
       taxiLight: null,
@@ -1486,11 +1547,32 @@ if (uClipOn > 0.5) {
         transparent: true,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
-        side: THREE.DoubleSide,
+        side: core > 0.5 ? THREE.DoubleSide : THREE.FrontSide,
       });
     this.plumeMat = plumeMaterial(0);
     const coreMat = plumeMaterial(1);
     this.disposables.push(this.plumeMat, coreMat);
+    const shockDiscGeo = new THREE.CircleGeometry(0.26, 20);
+    this.disposables.push(shockDiscGeo);
+    const shockDiscMats: THREE.ShaderMaterial[] = [];
+    for (let k = 0; k < 6; k++) {
+      const m = new THREE.ShaderMaterial({
+        uniforms: {
+          uBoost: plumeUniforms.uBoost,
+          uVacuum: plumeUniforms.uVacuum,
+          uTime: plumeUniforms.uTime,
+          uWeight: { value: Math.pow(1 - k / 6.6, 0.78) },
+        },
+        vertexShader: SHOCK_DISC_VERT,
+        fragmentShader: SHOCK_DISC_FRAG,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
+      });
+      this.disposables.push(m);
+      shockDiscMats.push(m);
+    }
 
     this.nozzles.forEach((n, i) => {
       const anchor = this.tvcAnchors[i];
@@ -1508,7 +1590,8 @@ if (uClipOn > 0.5) {
       nz.castShadow = nz.receiveShadow = true;
       nz.name = `kestrel_nozzle_${i}`;
       anchor.add(nz);
-      this.kestrelRig.irisPetals[i] = this.buildNozzleIris(anchor, 0.44, 0.55, 0.42, titanium);
+      this.kestrelRig.irisPetals[i] = this.buildNozzleIris(anchor, 0.44, 0.55, 0.42, titanium, `kestrel_iris_${i}`);
+      this.buildTurbineCore(this.kestrelRig, anchor, 0.40, 0.24, `kestrel_turbine_${i}`);
 
       const faceGeo = new THREE.CircleGeometry(0.42, 48);
       this.disposables.push(faceGeo);
@@ -1526,8 +1609,18 @@ if (uClipOn > 0.5) {
       this.disposables.push(g, gc);
       const p = new THREE.Mesh(g, this.plumeMat);
       const c = new THREE.Mesh(gc, coreMat);
-      c.scale.set(1, 1, 0.38);
+      c.scale.set(0.76, 0.76, 0.80);
       p.add(c);
+      // 6 cross-axial Mach shock diamond discs along the core centerline
+      for (let k = 0; k < 6; k++) {
+        const disc = new THREE.Mesh(shockDiscGeo, shockDiscMats[k]);
+        const sDisc = 1.0 - k * 0.11;
+        disc.position.set(0, 0, (0.085 + k * 0.145) * 9 * 0.80);
+        disc.scale.set(sDisc, sDisc, 1);
+        disc.renderOrder = 7;
+        disc.frustumCulled = false;
+        p.add(disc);
+      }
       p.position.set(0, 0, 1.05);
       p.renderOrder = 5;
       c.renderOrder = 6;
@@ -1927,23 +2020,111 @@ if (uClipOn > 0.5) {
     return out.copy(this.wheels[index]).applyMatrix4(this.root.matrixWorld);
   }
 
-  /** Build 14 overlapping titanium iris petals (convergent-divergent AB nozzle). */
+  /**
+   * Build a spinning 18-blade low-pressure turbine rotor, central spinner cone, recessed titanium
+   * afterburner liner, and twin concentric glowing radial flameholder rings inside each nozzle.
+   */
+  private buildTurbineCore(
+    rig: ArticulatedRig,
+    parent: THREE.Group,
+    innerR: number,
+    coreZ: number,
+    hostName?: string,
+  ): void {
+    const linerMat = new THREE.MeshStandardMaterial({
+      color: 0x171a20,
+      roughness: 0.72,
+      metalness: 0.78,
+      side: THREE.BackSide,
+    });
+    const bladeMat = new THREE.MeshStandardMaterial({
+      color: 0x626975,
+      roughness: 0.34,
+      metalness: 0.90,
+    });
+    const flameMat = new THREE.MeshStandardMaterial({
+      color: 0x3b3532,
+      roughness: 0.52,
+      metalness: 0.75,
+      emissive: new THREE.Color(0xff7220),
+      emissiveIntensity: 0.08,
+    });
+    this.disposables.push(linerMat, bladeMat, flameMat);
+    rig.flameholderMats.push(flameMat);
+
+    const host = new THREE.Group();
+    if (hostName) host.name = hostName;
+    host.position.set(0, 0, coreZ);
+    parent.add(host);
+
+    // Recessed cylindrical titanium liner for realistic deep tailpipe volume
+    const linerLen = Math.max(0.32, innerR * 1.15);
+    const linerGeo = new THREE.CylinderGeometry(innerR * 0.94, innerR * 0.90, linerLen, 24, 1, true);
+    linerGeo.rotateX(Math.PI / 2);
+    linerGeo.translate(0, 0, linerLen * 0.35);
+    this.disposables.push(linerGeo);
+    host.add(new THREE.Mesh(linerGeo, linerMat));
+
+    // Spinning 18-blade LP turbine wheel + bullet spinner cone
+    const rotor = new THREE.Group();
+    const hubR = innerR * 0.26;
+    const coneGeo = new THREE.ConeGeometry(hubR, innerR * 0.65, 16);
+    coneGeo.rotateX(Math.PI / 2);
+    coneGeo.translate(0, 0, innerR * 0.22);
+    this.disposables.push(coneGeo);
+    rotor.add(new THREE.Mesh(coneGeo, bladeMat));
+
+    const bladeCount = 18;
+    const bladeLen = innerR * 0.66;
+    const bladeW = ((Math.PI * 2 * innerR * 0.58) / bladeCount) * 0.82;
+    const bladeGeo = new THREE.BoxGeometry(bladeW, bladeLen, 0.018);
+    bladeGeo.translate(0, hubR + bladeLen * 0.45, 0);
+    this.disposables.push(bladeGeo);
+
+    for (let k = 0; k < bladeCount; k++) {
+      const ang = (k / bladeCount) * Math.PI * 2;
+      const pivot = new THREE.Group();
+      pivot.rotation.z = ang;
+      const blade = new THREE.Mesh(bladeGeo, bladeMat);
+      // Aerodynamic turbine stator/rotor pitch angle so spinning reads sharply from aft chase view
+      blade.rotation.y = 0.54;
+      pivot.add(blade);
+      rotor.add(pivot);
+    }
+    host.add(rotor);
+    rig.turbineRotors.push(rotor);
+
+    // Twin concentric afterburner flameholder V-gutter rings + 8 radial fuel spraybars
+    const ringOuterGeo = new THREE.TorusGeometry(innerR * 0.68, Math.max(0.014, innerR * 0.042), 8, 28);
+    const ringInnerGeo = new THREE.TorusGeometry(innerR * 0.39, Math.max(0.012, innerR * 0.036), 8, 22);
+    const spokeGeo = new THREE.BoxGeometry(Math.max(0.014, innerR * 0.038), innerR * 0.72, 0.022);
+    this.disposables.push(ringOuterGeo, ringInnerGeo, spokeGeo);
+    const fhGroup = new THREE.Group();
+    fhGroup.position.z = innerR * 0.34;
+    fhGroup.add(new THREE.Mesh(ringOuterGeo, flameMat), new THREE.Mesh(ringInnerGeo, flameMat));
+    for (let s = 0; s < 8; s++) {
+      const sp = new THREE.Mesh(spokeGeo, flameMat);
+      sp.rotation.z = (s / 8) * Math.PI;
+      fhGroup.add(sp);
+    }
+    host.add(fhGroup);
+  }
+
+  /** Build 20 overlapping forged-titanium iris petals (convergent-divergent AB nozzle). */
   private buildNozzleIris(
     parent: THREE.Group,
     innerR: number,
     lengthM: number,
     hingeZ: number,
     mat?: THREE.Material,
+    ringName?: string,
   ): THREE.Group[] {
     const petalMat =
       mat ??
-      new THREE.MeshPhysicalMaterial({
-        color: 0x2c2f36,
-        roughness: 0.44,
-        metalness: 0.88,
-        iridescence: 0.14,
-        iridescenceIOR: 1.4,
-        iridescenceThicknessRange: [180, 320],
+      new THREE.MeshStandardMaterial({
+        color: 0x24282f,
+        roughness: 0.46,
+        metalness: 0.86,
         side: THREE.DoubleSide,
       });
     if (!mat) this.disposables.push(petalMat);
@@ -1957,6 +2138,7 @@ if (uClipOn > 0.5) {
 
     const petals: THREE.Group[] = [];
     const ring = new THREE.Group();
+    if (ringName) ring.name = ringName;
     ring.position.set(0, 0, hingeZ);
     parent.add(ring);
 
@@ -2726,6 +2908,10 @@ if (uClipOn > 0.5) {
       const anchor = this.tvcAnchors[i];
       const kestrelNz = anchor.getObjectByName(`kestrel_nozzle_${i}`);
       if (kestrelNz) kestrelNz.visible = false;
+      const kestrelIris = anchor.getObjectByName(`kestrel_iris_${i}`);
+      if (kestrelIris) kestrelIris.visible = false;
+      const kestrelTurb = anchor.getObjectByName(`kestrel_turbine_${i}`);
+      if (kestrelTurb) kestrelTurb.visible = false;
       anchor.position.set(n.x, n.y, tvcPivotsZ);
       anchor.quaternion.identity();
       const active = !(single && i > 0);
@@ -2738,8 +2924,10 @@ if (uClipOn > 0.5) {
       }
       const f = this.nozzleFaces[i];
       if (f) {
-        f.position.set(0, 0, dz - anchors.nozzleRadiusM * 0.6);
-        f.scale.setScalar(anchors.nozzleRadiusM / 0.42);
+        // Seat inner combustion glow disc cleanly BEHIND the spinning 18-blade turbine rotor so
+        // metallic blades and dark titanium liner read with crisp depth during dry cruise!
+        f.position.set(0, 0, Math.max(0.02, dz - anchors.nozzleRadiusM * 1.18));
+        f.scale.setScalar((anchors.nozzleRadiusM * 0.76) / 0.42);
         f.visible = active;
       }
     });
@@ -2767,29 +2955,29 @@ if (uClipOn > 0.5) {
         axisBind.set(canId, { role: 'canard', side, axis: new THREE.Vector3(1, 0, 0), sign: 1 });
 
         const fA = new THREE.Vector3(s * 0.85, -0.14, 1.82);
-        const fB = new THREE.Vector3(s * 2.02, -0.15, 1.88);
+        const fB = new THREE.Vector3(s * 2.03, -0.15, 1.88);
         const flapId = `flap_${side}`;
         specs.push({
           id: flapId,
           pivot: fA.clone().lerp(fB, 0.5),
           planes: [
             makeClipPlaneFromPoints(fA, fB, up, new THREE.Vector3(s * 1.4, -0.15, 2.45)),
-            makeAxisPlane('x', s > 0 ? 0.85 : -2.02, true),
-            makeAxisPlane('x', s > 0 ? 2.02 : -0.85, false),
+            makeAxisPlane('x', s > 0 ? 0.85 : -2.03, true),
+            makeAxisPlane('x', s > 0 ? 2.03 : -0.85, false),
             makeAxisPlane('y', -0.37, true),
             makeAxisPlane('y', 0.08, false),
           ],
           materialPrefixes: gMat,
           bounds: new THREE.Box3(
-            new THREE.Vector3(s > 0 ? 0.82 : -2.06, -0.4, 1.7),
-            new THREE.Vector3(s > 0 ? 2.06 : -0.82, 0.12, 2.68),
+            new THREE.Vector3(s > 0 ? 0.82 : -2.07, -0.4, 1.7),
+            new THREE.Vector3(s > 0 ? 2.07 : -0.82, 0.12, 2.68),
           ),
           addHingeSpar: { start: fA, end: fB, radius: 0.018 },
         });
         const fAxis = new THREE.Vector3().subVectors(side === 1 ? fB : fA, side === 1 ? fA : fB).normalize();
         axisBind.set(flapId, { role: 'flap', side, axis: fAxis, sign: 1 });
 
-        const aA = new THREE.Vector3(s * 2.04, -0.16, 1.88);
+        const aA = new THREE.Vector3(s * 2.03, -0.16, 1.88);
         const aB = new THREE.Vector3(s * 3.48, -0.18, 2.02);
         const ailId = `aileron_${side}`;
         specs.push({
@@ -2797,15 +2985,15 @@ if (uClipOn > 0.5) {
           pivot: aA.clone().lerp(aB, 0.5),
           planes: [
             makeClipPlaneFromPoints(aA, aB, up, new THREE.Vector3(s * 2.75, -0.17, 2.55)),
-            makeAxisPlane('x', s > 0 ? 2.04 : -3.48, true),
-            makeAxisPlane('x', s > 0 ? 3.48 : -2.04, false),
+            makeAxisPlane('x', s > 0 ? 2.03 : -3.48, true),
+            makeAxisPlane('x', s > 0 ? 3.48 : -2.03, false),
             makeAxisPlane('y', -0.38, true),
             makeAxisPlane('y', 0.06, false),
           ],
           materialPrefixes: gMat,
           bounds: new THREE.Box3(
-            new THREE.Vector3(s > 0 ? 2.01 : -3.52, -0.42, 1.75),
-            new THREE.Vector3(s > 0 ? 3.52 : -2.01, 0.1, 2.68),
+            new THREE.Vector3(s > 0 ? 2.0 : -3.52, -0.42, 1.75),
+            new THREE.Vector3(s > 0 ? 3.52 : -2.0, 0.1, 2.68),
           ),
           addHingeSpar: { start: aA, end: aB, radius: 0.016 },
         });
@@ -2814,8 +3002,8 @@ if (uClipOn > 0.5) {
 
         pass2Specs.push({
           id: `flex_${side}`,
-          pivot: new THREE.Vector3(s * 2.04, -0.16, 1.3),
-          planes: [makeAxisPlane('x', s * 2.04, s > 0)],
+          pivot: new THREE.Vector3(s * 2.03, -0.16, 1.3),
+          planes: [makeAxisPlane('x', s * 2.03, s > 0)],
           materialPrefixes: ['saab_jas39a_aircraft_normal_detail', 'lau_7', 'bol_451_container'],
           bounds: new THREE.Box3(
             new THREE.Vector3(s > 0 ? 2.0 : -4.15, -0.78, -0.8),
@@ -2947,25 +3135,27 @@ if (uClipOn > 0.5) {
         });
         axisBind.set(stabId, { role: 'stab', side, axis: new THREE.Vector3(1, 0, 0), sign: 1 });
 
-        const rA = new THREE.Vector3(s * 2.18, 1.65, 4.9);
-        const rB = new THREE.Vector3(s * 2.18, 3.85, 5.38);
+        // Su-30MKK twin vertical fin rudders (measured directly from su30mkk.glb):
+        // Fin chord runs z = [2.60..4.53] at y=1.30 to z = [3.89..5.50] at y=3.12 (x = ±2.15).
+        // Hinge sits cleanly INSIDE the fin at 74% chord (zero protruding hinge rod in empty sky!).
+        const rA = new THREE.Vector3(s * 2.15, 1.30, 4.08);
+        const rB = new THREE.Vector3(s * 2.15, 3.12, 5.06);
         const rudId = `rudder_${side}`;
         specs.push({
           id: rudId,
           pivot: rA.clone().lerp(rB, 0.5),
           planes: [
-            makeClipPlaneFromPoints(rA, rB, new THREE.Vector3(1, 0, 0), new THREE.Vector3(s * 2.18, 2.8, 5.6)),
-            makeAxisPlane('x', s * 2.18 - 0.26, true),
-            makeAxisPlane('x', s * 2.18 + 0.26, false),
-            makeAxisPlane('y', 1.65, true),
-            makeAxisPlane('y', 3.9, false),
+            makeClipPlaneFromPoints(rA, rB, new THREE.Vector3(1, 0, 0), new THREE.Vector3(s * 2.15, 2.2, 5.6)),
+            makeAxisPlane('x', s * 2.15 - 0.18, true),
+            makeAxisPlane('x', s * 2.15 + 0.18, false),
+            makeAxisPlane('y', 1.30, true),
+            makeAxisPlane('y', 3.12, false),
           ],
           materialPrefixes: ['0c5b', 'a04b'],
           bounds: new THREE.Box3(
-            new THREE.Vector3(s * 2.18 - 0.3, 1.6, 4.75),
-            new THREE.Vector3(s * 2.18 + 0.3, 3.95, 5.8),
+            new THREE.Vector3(s * 2.15 - 0.24, 1.25, 3.95),
+            new THREE.Vector3(s * 2.15 + 0.24, 3.18, 5.75),
           ),
-          addHingeSpar: { start: rA, end: rB, radius: 0.02 },
         });
         axisBind.set(rudId, { role: 'rudder', side, axis: new THREE.Vector3().subVectors(rB, rA).normalize(), sign: 1 });
 
@@ -3026,11 +3216,17 @@ if (uClipOn > 0.5) {
         this.tvcAnchors[i].add(tvc.group);
       }
       const dz = this.nozzles[i].z - tvcPivotsZ;
-      rig.irisPetals[i] = this.buildNozzleIris(
+      // Inset Gripen's inner convergent-divergent iris petals cleanly INSIDE the GLB outer nozzle shroud
+      // so zero boxy petals ever poke outside the tailcone lip!
+      const irisRadius = id === 'gripen' ? anchors.nozzleRadiusM * 0.78 : anchors.nozzleRadiusM * 0.89;
+      const irisLen = id === 'gripen' ? anchors.nozzleRadiusM * 0.66 : anchors.nozzleRadiusM * 0.90;
+      const irisHingeZ = Math.max(0.06, dz - anchors.nozzleRadiusM * (id === 'gripen' ? 0.50 : 0.58));
+      rig.irisPetals[i] = this.buildNozzleIris(this.tvcAnchors[i], irisRadius, irisLen, irisHingeZ);
+      this.buildTurbineCore(
+        rig,
         this.tvcAnchors[i],
-        anchors.nozzleRadiusM * 0.96,
-        anchors.nozzleRadiusM * 1.1,
-        Math.max(0.08, dz - anchors.nozzleRadiusM * 0.62),
+        anchors.nozzleRadiusM * (id === 'gripen' ? 0.75 : 0.84),
+        Math.max(0.04, dz - anchors.nozzleRadiusM * 0.88),
       );
     }
 
@@ -3168,7 +3364,7 @@ if (uClipOn > 0.5) {
       for (let d = 0; d < lg.doors.length; d++) {
         lg.doors[d].quaternion.setFromAxisAngle(lg.doorAxis, lg.doorSigns[d] * doorOpen * 1.48);
       }
-      if (lg.isNose) lg.piston.rotation.y = sm.rudderRad * 0.45 * strutOut;
+      if (lg.isNose) lg.piston.rotation.y = -sm.rudderRad * 0.45 * strutOut;
     }
     if (rig.taxiLight) rig.taxiLight.visible = sm.gear > 0.7;
 
@@ -3270,6 +3466,10 @@ if (uClipOn > 0.5) {
       anchor.rotation.set(0, 0, 0);
       const kestrelNz = anchor.getObjectByName(`kestrel_nozzle_${i}`);
       if (kestrelNz) kestrelNz.visible = true;
+      const kestrelIris = anchor.getObjectByName(`kestrel_iris_${i}`);
+      if (kestrelIris) kestrelIris.visible = true;
+      const kestrelTurb = anchor.getObjectByName(`kestrel_turbine_${i}`);
+      if (kestrelTurb) kestrelTurb.visible = true;
       this.plumes[i]?.position.set(0, 0, 1.05);
       if (this.plumes[i]) this.plumes[i].visible = true;
       this.nozzleFaces[i]?.position.set(0, 0, 0.35);
@@ -3279,26 +3479,72 @@ if (uClipOn > 0.5) {
     this.baseWingtips[1].set(5.45, -0.02, 4.4);
   }
 
+  /** Diagnostic rig summary for flight-qualification verification & browser QA. */
+  public getRigSummary(): {
+    airframeId: JetAirframeId;
+    turbineRotors: number;
+    turbineAngleRad: number;
+    irisPetalCount: number;
+    canards: number;
+    flaps: number;
+    ailerons: number;
+    slats: number;
+    stabs: number;
+    rudders: number;
+    airbrakes: number;
+  } {
+    const r = this.rig;
+    return {
+      airframeId: this.airframeId,
+      turbineRotors: r.turbineRotors.length,
+      turbineAngleRad: r.turbineAngleRad,
+      irisPetalCount: r.irisPetals[0].length + r.irisPetals[1].length,
+      canards: r.canards.filter(Boolean).length,
+      flaps: r.flaps.filter(Boolean).length,
+      ailerons: r.ailerons.filter(Boolean).length,
+      slats: r.slats.filter(Boolean).length,
+      stabs: r.stabs.filter(Boolean).length,
+      rudders: r.rudders.length,
+      airbrakes: r.airbrakes.length,
+    };
+  }
+
   /** Engines, exhaust, lights, and articulated surfaces/gear/vapor for this frame. */
   public update(timeSec: number, throttle: number, boost: number, vacuum: number, visual?: JetVisualState): void {
     const abBoost = visual?.abStage !== undefined ? Math.max(boost, visual.abStage / 3) : boost;
+    const dt = THREE.MathUtils.clamp(visual?.dt ?? 1 / 60, 0, 0.1);
     const u = this.plumeMat.uniforms;
     u.uThrottle.value = throttle;
     u.uBoost.value = abBoost;
     u.uVacuum.value = vacuum;
     u.uTime.value = timeSec;
-    // Visible flame: subtle dry heat plume at cruise, ~8-10 m Mach-diamond jet on zone-3 afterburner
-    const dryVis = THREE.MathUtils.smoothstep(throttle, 0.25, 1.0);
-    const len = 0.65 + dryVis * 1.45 + abBoost * 4.4 + vacuum * 2.5;
+    // Subtle translucent blue heat shimmer in dry cruise expanding into a vivid 7-10 m Mach-diamond
+    // flame jet under Afterburner Zones 1..3
+    const dryVis = THREE.MathUtils.smoothstep(throttle, 0.08, 1.0);
+    const len = 0.85 + dryVis * 1.75 + abBoost * 6.8 + vacuum * 2.5;
     // Under-expanded in vacuum: a little wider, never a balloon
     const widen = 1 + vacuum * 0.45 * (0.3 + throttle);
-    const r = widen * (0.76 + 0.16 * dryVis + abBoost * 0.34) * this.plumeScale;
+    const r = widen * (0.82 + 0.16 * dryVis + abBoost * 0.34) * this.plumeScale;
     for (const p of this.plumes) p.scale.set(r, r, (len / 9) * Math.sqrt(this.plumeScale));
-    // Natural warm turbine glow deep inside nozzle (no magenta/purple plug at dry cruise)
-    this.nozzleGlowMat.opacity = 0.08 + 0.28 * dryVis + 0.58 * abBoost;
-    this.nozzleGlowMat.color.setRGB(1.0, 0.52 + 0.32 * abBoost, 0.16 + 0.28 * abBoost);
+    // Natural recessed turbine glow deep behind spinning LP blades: dark metallic contrast at dry cruise
+    // (18 spinning titanium blades read sharply!), exploding into incandescent gold-amber under AB1..3!
+    this.nozzleGlowMat.opacity = 0.015 + 0.045 * dryVis + 0.76 * abBoost;
+    this.nozzleGlowMat.color.setRGB(1.0, 0.44 + 0.42 * abBoost, 0.12 + 0.40 * abBoost);
 
-    const dt = THREE.MathUtils.clamp(visual?.dt ?? 1 / 60, 0, 0.1);
+    // Spin LP turbine rotors & illuminate radial afterburner flameholder rings proportional to power
+    const omegaRadS = 9.0 + throttle * 34.0 + abBoost * 26.0;
+    this.rig.turbineAngleRad = (this.rig.turbineAngleRad + omegaRadS * dt) % (Math.PI * 200);
+    for (let i = 0; i < this.rig.turbineRotors.length; i++) {
+      // Twin-engine jets counter-rotate slightly for balanced visual sheen
+      const dir = i % 2 === 0 ? 1 : -1;
+      this.rig.turbineRotors[i].rotation.z = this.rig.turbineAngleRad * dir;
+    }
+    const fhEmissive = 0.02 + 0.08 * dryVis + 3.0 * abBoost;
+    for (const fm of this.rig.flameholderMats) {
+      fm.emissiveIntensity = fhEmissive;
+      fm.emissive.setRGB(1.0, 0.32 + 0.50 * abBoost, 0.05 + 0.42 * abBoost);
+    }
+
     this.applyRigAnimation(dt, timeSec, visual);
 
     // Anti-collision strobes: a double flash every 1.4 s
