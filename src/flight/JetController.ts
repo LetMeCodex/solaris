@@ -544,34 +544,69 @@ export class JetController {
       this.jetGroup.add(this.model.root);
       this.cockpit = new Cockpit();
       this.model.root.add(this.cockpit.group);
-      // The chosen airframe (CC BY 4.0, see ASSETS.md) takes over from the procedural one once loaded
+      // The chosen airframe (CC BY 4.0, see ASSETS.md) takes over from the procedural one once loaded.
+      // Retry transient network/CDN hiccups automatically (so 150+ concurrent 3D tile fetches never
+      // strand the user on the Kestrel fallback), and if fallback is ever shown, keep retrying in
+      // the background so the real Gripen / Su-30MKK hot-swaps in seamlessly once the network settles.
       const model = this.model;
       const { url, anchors } = this.airframe;
-      model
-        .loadAirframe(import.meta.env.BASE_URL + url, anchors)
-        .then(() => {
-          this.cockpitLight.position.copy(model.eye).add(new THREE.Vector3(0, -0.25, -0.5));
-          this.mirrorCount = this.mirror.attach(model.root, (m) => m.name.startsWith('dynamic_mirror'));
-          this.mfdCount = this.mfd.attach(model.root);
-          // Close behind: the jet fills the frame (wheel + Shift pulls back)
-          this.chaseDist = model.length * 0.82;
-          this.shock.group.scale.setScalar(model.length / JET_LENGTH_M);
-          const half = model.length * 0.56;
-          const sc = this.sun.shadow.camera;
-          sc.left = -half; sc.right = half; sc.top = half; sc.bottom = -half;
-          sc.near = 24; sc.far = 58;
-          sc.updateProjectionMatrix();
-          if (anchors.cockpit) this.controls = new CockpitControls(model, anchors.cockpit);
-          if (model.hud) {
-            this.hudGlass = new HudGlass(model.hud.centre, model.eye, model.hud.widthM);
-            model.root.add(this.hudGlass.mesh);
+      const fullUrl = import.meta.env.BASE_URL + url;
+      const attachLoadedAirframe = (): void => {
+        this.fallbackAircraftReady = false;
+        this.cockpitLight.position.copy(model.eye).add(new THREE.Vector3(0, -0.25, -0.5));
+        this.mirrorCount = this.mirror.attach(model.root, (m) => m.name.startsWith('dynamic_mirror'));
+        this.mfdCount = this.mfd.attach(model.root);
+        // Close behind: the jet fills the frame (wheel + Shift pulls back)
+        this.chaseDist = model.length * 0.82;
+        this.shock.group.scale.setScalar(model.length / JET_LENGTH_M);
+        const half = model.length * 0.56;
+        const sc = this.sun.shadow.camera;
+        sc.left = -half; sc.right = half; sc.top = half; sc.bottom = -half;
+        sc.near = 24; sc.far = 58;
+        sc.updateProjectionMatrix();
+        if (anchors.cockpit) this.controls = new CockpitControls(model, anchors.cockpit);
+        if (model.hud) {
+          this.hudGlass = new HudGlass(model.hud.centre, model.eye, model.hud.widthM);
+          model.root.add(this.hudGlass.mesh);
+        }
+      };
+      const loadWithRetry = async (): Promise<void> => {
+        const retryDelaysMs = [0, 700, 1800, 3500];
+        let lastErr: unknown = null;
+        for (let attempt = 0; attempt < retryDelaysMs.length; attempt++) {
+          if (retryDelaysMs[attempt] > 0) {
+            await new Promise((r) => window.setTimeout(r, retryDelaysMs[attempt]));
           }
-        })
-        .catch((err) => {
-          console.warn('[Solaris] jet model not loaded; flying the built-in airframe', err);
-          model.showBuiltIn();
-          this.fallbackAircraftReady = true;
-        });
+          if (this.model !== model) return;
+          try {
+            const bustUrl = attempt === 0 ? fullUrl : `${fullUrl}${fullUrl.includes('?') ? '&' : '?'}r=${attempt}`;
+            await model.loadAirframe(bustUrl, anchors);
+            if (this.model !== model) return;
+            attachLoadedAirframe();
+            return;
+          } catch (err) {
+            lastErr = err;
+          }
+        }
+        console.warn('[Solaris] jet model delayed; flying built-in airframe while retrying', lastErr);
+        model.showBuiltIn();
+        this.chaseDist = JET_LENGTH_M * 0.90;
+        this.fallbackAircraftReady = true;
+        // Quiet background hot-swap recovery if connectivity returns later in flight
+        for (let bg = 1; bg <= 3; bg++) {
+          await new Promise((r) => window.setTimeout(r, 9000 * bg));
+          if (this.model !== model || model.airframe) return;
+          try {
+            await model.loadAirframe(`${fullUrl}${fullUrl.includes('?') ? '&' : '?'}bg=${bg}`, anchors);
+            if (this.model !== model) return;
+            attachLoadedAirframe();
+            return;
+          } catch {
+            /* keep flying built-in until next quiet retry */
+          }
+        }
+      };
+      void loadWithRetry();
       this.model.root.add(this.cockpitLight);
       this.cockpitLight.position.copy(this.model.eye).add(new THREE.Vector3(0, -0.25, -0.5));
     }

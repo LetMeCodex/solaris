@@ -1394,9 +1394,8 @@ if (uClipOn > 0.5) {
     const darkHull = hull.clone();
     darkHull.color.set(0x5a626c);
     const edge = new THREE.MeshPhysicalMaterial({ color: 0x2b3036, roughness: 0.45, metalness: 0.4, clearcoat: 0.4 });
-    const titanium = new THREE.MeshPhysicalMaterial({
-      color: 0x6f6a72, roughness: 0.32, metalness: 1.0, iridescence: 0.55, iridescenceIOR: 1.6,
-      iridescenceThicknessRange: [250, 700],
+    const titanium = new THREE.MeshStandardMaterial({
+      color: 0x262b33, roughness: 0.44, metalness: 0.88, envMapIntensity: 0.85,
     });
     const intakeDark = new THREE.MeshStandardMaterial({ color: 0x050607, roughness: 0.9, metalness: 0 });
     // Thin, nearly clear glass with a faint gold film: reflections show only as Fresnel glints
@@ -1596,7 +1595,8 @@ if (uClipOn > 0.5) {
       const faceGeo = new THREE.CircleGeometry(0.42, 48);
       this.disposables.push(faceGeo);
       const face = new THREE.Mesh(faceGeo, this.nozzleGlowMat);
-      face.position.set(0, 0, 0.35);
+      // Seat combustion glow behind the recessed 18-blade LP turbine rotor (coreZ = 0.24)
+      face.position.set(0, 0, 0.14);
       anchor.add(face);
       this.nozzleFaces.push(face);
 
@@ -1722,9 +1722,28 @@ if (uClipOn > 0.5) {
    * and the pilot's eye move to the model's own positions (`anchors`, in the turned frame).
    */
   public async loadAirframe(url: string, anchors: AirframeAnchors): Promise<void> {
+    if (this.airframe) return;
+    // Wait for Meshopt WASM decoder readiness before parsing compressed GLB buffers
+    if (MeshoptDecoder && 'ready' in MeshoptDecoder && MeshoptDecoder.ready) {
+      await MeshoptDecoder.ready;
+    }
     const loader = new GLTFLoader();
     loader.setMeshoptDecoder(MeshoptDecoder);
-    const gltf = await loader.loadAsync(url);
+    let gltf: Awaited<ReturnType<GLTFLoader['loadAsync']>>;
+    if (typeof fetch === 'function') {
+      // High-priority fetch prevents 150+ concurrent Google 3D Tile requests from starving/aborting the jet GLB
+      const res = await fetch(url, { priority: 'high' } as RequestInit);
+      if (!res.ok) throw new Error(`HTTP ${res.status} loading airframe ${url}`);
+      const buf = await res.arrayBuffer();
+      const head = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
+      if (buf.byteLength < 12 || head[0] !== 0x67 || head[1] !== 0x6c || head[2] !== 0x54 || head[3] !== 0x46) {
+        throw new Error(`Invalid glTF binary response for ${url} (${buf.byteLength} bytes)`);
+      }
+      const basePath = url.slice(0, url.lastIndexOf('/') + 1);
+      gltf = await loader.parseAsync(buf, basePath);
+    } else {
+      gltf = await loader.loadAsync(url);
+    }
     const model = gltf.scene;
     if (anchors.noseAlongPositiveZ) model.rotation.y = Math.PI;
     if (anchors.noseAlongPositiveX) model.rotation.y = Math.PI / 2;
@@ -3472,7 +3491,7 @@ if (uClipOn > 0.5) {
       if (kestrelTurb) kestrelTurb.visible = true;
       this.plumes[i]?.position.set(0, 0, 1.05);
       if (this.plumes[i]) this.plumes[i].visible = true;
-      this.nozzleFaces[i]?.position.set(0, 0, 0.35);
+      this.nozzleFaces[i]?.position.set(0, 0, 0.14);
       if (this.nozzleFaces[i]) this.nozzleFaces[i].visible = true;
     });
     this.baseWingtips[0].set(-5.45, -0.02, 4.4);
