@@ -84,6 +84,8 @@ export class EarthElevation {
   };
   /** Height tiles decoded so far (a change means new heights to build with). */
   public loadedCount = 0;
+  /** Optional bounding box where standalone zero-API local terrain supersedes external S3 DEM tiles. */
+  public suppressedBox: { south: number; west: number; north: number; east: number } | null = null;
 
   /** The service is temporarily in outage cooldown (recovers automatically after a pause). */
   public get disabled(): boolean {
@@ -124,6 +126,10 @@ export class EarthElevation {
   ): Promise<void> {
     EarthElevation.now = performance.now();
     if (this.disabled || ![south, west, north, east, z].every(Number.isFinite)) return Promise.resolve();
+    const sb = this.suppressedBox;
+    if (sb && north >= sb.south && south <= sb.north && east >= sb.west && west <= sb.east) {
+      return Promise.resolve();
+    }
     z = Math.max(0, Math.min(MAX_Z, Math.floor(z)));
     south = Math.max(-MAX_LAT, Math.min(MAX_LAT, south));
     north = Math.max(south, Math.min(MAX_LAT, north));

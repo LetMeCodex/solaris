@@ -1,0 +1,34 @@
+{
+  "source": "AWS Open Data Terrain Tiles (Terrarium SRTM/Copernicus/GMTED public domain) + offline geomorphology",
+  "encoding": {
+    "formula": "elev_m = 1500 + ((R*256 + G) / 65535) * 8000",
+    "minM": 1500,
+    "spanM": 8000,
+    "opaqueAlpha": true
+  },
+  "region": {
+    "size": 1024,
+    "latMin": 27.7181,
+    "latMax": 28.2581,
+    "lonMin": 86.6193,
+    "lonMax": 87.23129999999999,
+    "minH": 2496,
+    "maxH": 8856,
+    "cellM": 58.76
+  },
+  "core": {
+    "size": 1024,
+    "latMin": 27.903,
+    "latMax": 28.067,
+    "lonMin": 86.797,
+    "lonMax": 86.983,
+    "minH": 4290,
+    "maxH": 8855,
+    "cellM": 17.85
+  },
+  "summit": {
+    "lat": 27.9881,
+    "lon": 86.9253,
+    "elevM": 8855
+  }
+}

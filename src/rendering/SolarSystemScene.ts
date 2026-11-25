@@ -1,6 +1,12 @@
 import { Avatar } from '../explorer/Avatar';
 import { GroundCover } from '../flight/GroundCover';
 import { ProceduralTerrain } from './ProceduralTerrain';
+import {
+  EverestProceduralRegion,
+  EVEREST_ACTIVE_RADIUS_KM,
+  EVEREST_PROCEDURAL_ID,
+  EVEREST_VANTAGES,
+} from '../explorer/EverestProceduralRegion';
 import { MOON_DIR, MOON_LIGHT, NIGHT_AIR } from './AerialPerspective';
 import { emitVela } from '../companion/events';
 import * as THREE from 'three';
@@ -947,6 +953,7 @@ export class SolarSystemScene {
 
   /** Fly to a curated landmark (selects its body). */
   public flyToLandmark(id: string): Landmark | null {
+    this.setProceduralEverestMode(id === EVEREST_PROCEDURAL_ID);
     if (this.surface.isActive()) this.exitSurface(false);
     const lm = this.explorer.flyToLandmark(id);
     if (lm) {
@@ -954,6 +961,25 @@ export class SolarSystemScene {
       if (def) this.selectedBody = def;
     }
     return lm;
+  }
+
+  /** Activate/deactivate the standalone Zero-API 1:1 Procedural Mount Everest landmark without touching `earth-everest`. */
+  public setProceduralEverestMode(on: boolean): void {
+    this.proceduralEverestMode = on;
+    earthElevation.suppressedBox = on
+      ? { south: 27.3, west: 86.2, north: 28.7, east: 87.7 }
+      : null;
+    if (on) {
+      this.everestProcedural ??= new EverestProceduralRegion();
+      this.everestProcedural.active = true;
+      const earth = this.planetBundles.get('Earth');
+      if (earth) this.everestProcedural.attach(earth.surfaceMesh);
+      void this.everestProcedural.ensureLoaded();
+      if (this.photoreal) this.photoreal.tiles.group.visible = false;
+    } else if (this.everestProcedural) {
+      this.everestProcedural.active = false;
+      this.everestProcedural.group.visible = false;
+    }
   }
 
   public setExplorerDaylight(on: boolean): void {
@@ -1832,6 +1858,29 @@ export class SolarSystemScene {
       this.exitJet(false);
       this.enterDeepTime(id);
     };
+    this.jet.onLandmarkSelected = (lm) => {
+      this.setProceduralEverestMode(lm.id === EVEREST_PROCEDURAL_ID);
+    };
+    this.jet.onEverestVantage = (idx, hold = false) => {
+      const v = EVEREST_VANTAGES[Math.max(0, Math.min(EVEREST_VANTAGES.length - 1, idx))];
+      this.setProceduralEverestMode(true);
+      // Keep crisp raking afternoon Himalayan sunlight (~14:15 NPT = 08:30 UTC) if currently outside daylight
+      const curNow = new Date(this.clock.getUtcMs());
+      const nepalLocalH = ((curNow.getUTCHours() + curNow.getUTCMinutes() / 60) + 5.75) % 24;
+      if (nepalLocalH < 8.5 || nepalLocalH > 16.5) {
+        this.clock.setUtcMs(Date.UTC(curNow.getUTCFullYear(), curNow.getUTCMonth(), curNow.getUTCDate(), 8, 30, 0));
+      }
+      this.jet.teleportToPose(v.lat, v.lon, v.mslKm, v.headingDeg, v.pitchDeg, v.speedMps ?? 200, hold);
+      this.jet.radio(`VANTAGE · ${v.label.toUpperCase()}`, 2.6);
+    };
+    this.jet.onEverestCompareOriginal = () => {
+      this.setProceduralEverestMode(false);
+      const orig = getLandmark('earth-everest');
+      if (orig) this.jet.flyNowToLandmark(orig);
+    };
+    if (takeOffFrom) {
+      this.setProceduralEverestMode(takeOffFrom.id === EVEREST_PROCEDURAL_ID);
+    }
     if (this.spacecraftLayer) {
       // Ensure every spacecraft has an evaluated world position before JetController indexes targets
       this.updateSpacecraftAndComets(0, false);
@@ -2053,8 +2102,28 @@ export class SolarSystemScene {
     }
     const filtered = pool.length > 1 ? pool.filter((s) => s.lm.id !== lastId) : pool;
     const chosen = filtered[Math.floor(Math.random() * filtered.length)] ?? pool[0];
-    const best = chosen?.lm;
-    if (best) {
+    // Optional direct landmark URL parameter (e.g. /fly/?landmark=earth-everest-procedural or ?landmark=earth-everest)
+    let paramLm: Landmark | undefined;
+    try {
+      const qId = new URLSearchParams(window.location.search).get('landmark');
+      if (qId) paramLm = getLandmark(qId);
+    } catch {
+      /* ignore URL parsing errors */
+    }
+    const best = paramLm ?? chosen?.lm;
+    if (best?.id === EVEREST_PROCEDURAL_ID) {
+      this.setProceduralEverestMode(true);
+      // Crisp National Geographic raking afternoon Himalayan sunlight (~14:15 NPT = 08:30 UTC):
+      // illuminates SW Face, Yellow Band, Khumbu Icefall & North Face with zero glare behind the jet!
+      const curNow = new Date(this.clock.getUtcMs());
+      const hUtc = curNow.getUTCHours() + curNow.getUTCMinutes() / 60;
+      const nepalLocalH = (hUtc + 5.75) % 24;
+      if (nepalLocalH < 8.5 || nepalLocalH > 16.5) {
+        const dayStart = Date.UTC(curNow.getUTCFullYear(), curNow.getUTCMonth(), curNow.getUTCDate(), 8, 30, 0);
+        this.clock.setUtcMs(dayStart);
+      }
+    }
+    if (best && !paramLm) {
       try {
         sessionStorage.setItem('solaris.lastFlySpawn', best.id);
       } catch {
@@ -2063,10 +2132,41 @@ export class SolarSystemScene {
     }
     this.enterJet(best);
     this.jet.hold = true;
-    // Kick off spawn-region DEM (tight z13 footprint + wide regional z10) & high-res Earth tiles
-    if (best) {
+    // Kick off spawn-region DEM only when NOT in standalone zero-API Procedural Everest mode
+    if (best && !this.proceduralEverestMode) {
       void earthElevation.ensure(best.lat - 0.04, best.lon - 0.04, best.lat + 0.04, best.lon + 0.04, 13, -60);
       void earthElevation.ensure(best.lat - 0.18, best.lon - 0.18, best.lat + 0.18, best.lon + 0.18, 10, 0);
+    }
+    // Dev-mode deterministic Everest vantage & comparison helper (fast scripted QA without manual flight)
+    if (import.meta.env.DEV) {
+      (window as unknown as Record<string, unknown>).__solarisEverest = {
+        vantages: EVEREST_VANTAGES,
+        ready: () => ({
+          ready: Boolean(this.everestProcedural?.ready),
+          active: Boolean(this.everestProcedural?.active),
+          proceduralMode: this.proceduralEverestMode,
+          jetActive: this.jet.active,
+        }),
+        setProcedural: (on: boolean) => {
+          this.setProceduralEverestMode(on);
+          const lm = getLandmark(on ? EVEREST_PROCEDURAL_ID : 'earth-everest');
+          if (lm && this.jet.active) this.jet.flyNowToLandmark(lm);
+          this.updatePhotoreal();
+          return { proceduralMode: this.proceduralEverestMode, ready: Boolean(this.everestProcedural?.ready) };
+        },
+        vantage: (idx: number, view: 'chase' | 'cockpit' | 'flyby' = 'chase', sunHourUtc = 8.5) => {
+          const v = EVEREST_VANTAGES[Math.max(0, Math.min(EVEREST_VANTAGES.length - 1, idx))];
+          const d = new Date(this.clock.getUtcMs());
+          const h = Math.floor(sunHourUtc);
+          const m = Math.round((sunHourUtc - h) * 60);
+          this.clock.setUtcMs(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), h, m, 0));
+          this.jet.view = view;
+          this.jet.teleportToPose(v.lat, v.lon, v.mslKm, v.headingDeg, v.pitchDeg, v.speedMps ?? 200, true);
+          this.jet.update(0.001, performance.now() * 0.001, this.cameraRig.camera, this.container.clientWidth, this.container.clientHeight, this.jetToScreen);
+          this.updatePhotoreal();
+          return { vantage: v.id, label: v.label, view, proceduralMode: this.proceduralEverestMode, ready: Boolean(this.everestProcedural?.ready) };
+        },
+      };
     }
     this.jet.update(0.001, performance.now() * 0.001, this.cameraRig.camera, this.container.clientWidth, this.container.clientHeight, this.jetToScreen);
     this.explorer.update('Earth', this.cameraRig.camera, this.renderer.domElement.height);
@@ -2084,6 +2184,19 @@ export class SolarSystemScene {
     source: 'photoreal' | 'surface' | 'none';
     spawnTilesReady: boolean;
   } {
+    // Standalone Zero-API 1:1 Procedural Everest readiness: zero Google API dependency!
+    if (this.proceduralEverestMode) {
+      const ready = Boolean(this.everestProcedural?.ready);
+      return {
+        jet: this.jet.active,
+        aircraft: this.jet.aircraftReady,
+        tilesPending: ready ? 0 : 1,
+        tilesVisible: ready ? 36 : 0,
+        detailedTiles: ready ? 24 : 0,
+        source: 'surface',
+        spawnTilesReady: ready,
+      };
+    }
     const hasPhotoreal = !!this.photoreal && !this.photoreal.isDegraded;
     if (hasPhotoreal) {
       const st = (this.photoreal!.tiles as unknown as { stats?: object } | undefined)?.stats as
@@ -2578,19 +2691,50 @@ export class SolarSystemScene {
       p.setPreloading(preloading);
     }
 
-    this.updateCity(earth, altKm);
+    if (!this.proceduralEverestMode) {
+      this.updateCity(earth, altKm);
+    }
     this.updateJetSky(earth, altKm);
+
+    // Standalone Zero-API 1:1 Procedural Mount Everest mode (strictly isolated from untouched `earth-everest`)
+    const camLocalEarth = earth.surfaceMesh.worldToLocal(this.hiResTmp.copy(cam.position));
+    const camLl = bodyLocalToLatLon('Earth', camLocalEarth.x, camLocalEarth.y, camLocalEarth.z);
+    if (
+      this.proceduralEverestMode &&
+      altKm < 120 &&
+      EverestProceduralRegion.distanceFromSummitKm(camLl.lat, camLl.lon) > EVEREST_ACTIVE_RADIUS_KM
+    ) {
+      this.setProceduralEverestMode(false);
+    }
+    const everestProcOn = this.proceduralEverestMode && altKm < 120 && !deepLand && !this.deepTimeHideGround;
+    if (everestProcOn || this.everestProcedural) {
+      if (everestProcOn) {
+        this.everestProcedural ??= new EverestProceduralRegion();
+        this.everestProcedural.attach(earth.surfaceMesh);
+      }
+      const kmTrueEv = 6378.137 / earth.visualRadius;
+      const sunLocalEv = earth.surfaceMesh.worldToLocal(this.nightTmp.sun.set(0, 0, 0));
+      this.everestProcedural!.update(
+        everestProcOn,
+        kmTrueEv,
+        Math.max(0, altKm),
+        p?.air.haze ?? 1,
+        dayOfYearNow,
+        sunLocalEv,
+        performance.now() * 0.001,
+      );
+    }
 
     const onEarthSurface = this.surface.isActive() ? this.surface.getLocation()?.body === 'Earth' : altKm < 1200;
     if (p) {
-      p.update(cam, this.renderer, onEarthSurface && !deepLand && !this.deepTimeHideGround, altKm, speedKmS);
+      p.update(cam, this.renderer, onEarthSurface && !deepLand && !this.deepTimeHideGround && !everestProcOn, altKm, speedKmS);
     }
     // Only let PhotorealEarth + ProceduralTerrain take over below 60 km where Google 3D Tiles
     // actually has local coverage (city <= 36 m or mountain/canyon <= 1024 m via p.hasLocalCoverage).
     // Where Google has only continent-scale root tiles (> 1024 m), hide the stray coarse mesh and
     // let SurfaceTileLayer stream full high-res ArcGIS z17 imagery + Terrarium z13 DEM instead.
     let photoCoveringView = false;
-    if (p && p.showing) {
+    if (p && p.showing && !everestProcOn) {
       if (altKm >= 60) {
         photoCoveringView = true;
       } else {
@@ -2641,6 +2785,7 @@ export class SolarSystemScene {
     // ring or double-render in Manhattan / SF / Grand Canyon.
     {
       const on =
+        !everestProcOn &&
         photoCoveringView &&
         (this.jet.active || (this.surface.isActive() ? this.surface.getLocation()?.body === 'Earth' : true)) &&
         altKm < 400 &&
@@ -2666,7 +2811,7 @@ export class SolarSystemScene {
           sunLocal,
         );
       }
-      const proceduralActive = on && altKm < 45;
+      const proceduralActive = (on && altKm < 45) || everestProcOn;
       this.explorer.proceduralGround = proceduralActive;
       const viewingEarth =
         this.explorer.getStatus().body === 'Earth' ||
@@ -2675,13 +2820,15 @@ export class SolarSystemScene {
       this.explorer.hideGround = this.deepTimeHideGround || (viewingEarth && proceduralActive);
     }
     if (earth.atmosphereMesh) {
-      const lowPhoto = photoCoveringView && altKm < 60;
+      const lowPhoto = (photoCoveringView || everestProcOn) && altKm < 60;
       earth.atmosphereMesh.renderOrder = lowPhoto ? 0.95 : 3;
       (earth.atmosphereMesh.material as THREE.Material).transparent = true;
     }
   }
 
   private terrain: ProceduralTerrain | null = null;
+  private everestProcedural: EverestProceduralRegion | null = null;
+  public proceduralEverestMode = false;
   private avatar: Avatar | null = null;
   /** Whether the person stands in front in the look-up view (on by default). */
   public avatarOn = true;

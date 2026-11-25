@@ -15,6 +15,7 @@ import {
 } from '../rendering/AerialPerspective';
 import { LiveSpaceWeatherService } from './SpaceWeather';
 import { earthElevation } from '../explorer/Elevation';
+import { EverestProceduralRegion } from '../explorer/EverestProceduralRegion';
 import { perf } from '../rendering/Performance';
 
 /**
@@ -164,7 +165,10 @@ export class EarthClouds {
   private regionalGround(lat: number, lon: number, camKm: number, aglKm: number, dt: number): number {
     let target: number | null = null;
     let teleported = false;
-    if (!earthElevation.disabled) {
+    const procEverestKm = EverestProceduralRegion.activeElevationKm(lat, lon);
+    if (procEverestKm !== null) {
+      target = procEverestKm;
+    } else if (!earthElevation.disabled) {
       if (!this.demAt || Math.abs(lat - this.demAt.lat) > 0.1 || Math.abs(lon - this.demAt.lon) > 0.1) {
         teleported = !this.demAt || Math.abs(lat - this.demAt.lat) > 0.4 || Math.abs(lon - this.demAt.lon) > 0.4;
         this.demAt = { lat, lon };

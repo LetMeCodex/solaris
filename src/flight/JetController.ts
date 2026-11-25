@@ -28,6 +28,7 @@ import { KM_PER_UNIT, UNITS_PER_AU } from '../rendering/Scale';
 import { HudGlass } from './HudGlass';
 import { CockpitControls, DestinationRow } from './CockpitControls';
 import { Landmark, landmarksFor } from '../explorer/Landmarks';
+import { EverestProceduralRegion, EVEREST_PROCEDURAL_ID, EVEREST_ACTIVE_RADIUS_KM } from '../explorer/EverestProceduralRegion';
 import { getLandmarkSolidElevationKm } from './LandmarkColliders';
 import { bodyLatLonToLocal } from '../explorer/TileMath';
 import { MirrorView } from './MirrorView';
@@ -1358,6 +1359,16 @@ export class JetController {
       const unitsPerKm = b.radius / b.radiusKm;
       const kmPerUnit = b.radiusKm / b.radius;
       const ll = bodyLocalToLatLon('Earth', d.x, d.y, d.z);
+      // When the 100% zero-API 1:1 Procedural Everest region is active, use its exact baked DEM
+      // and NEVER fall back to external S3 Terrarium fetches while inside its active radius!
+      const procElevKm = EverestProceduralRegion.activeElevationKm(ll.lat, ll.lon);
+      if (procElevKm !== null) {
+        return { ellipR, surfR: ellipR + procElevKm * unitsPerKm, elevKm: procElevKm };
+      }
+      if (EverestProceduralRegion.current?.active && EverestProceduralRegion.distanceFromSummitKm(ll.lat, ll.lon) < EVEREST_ACTIVE_RADIUS_KM) {
+        const estKm = this.localGroundKm > 0 ? this.localGroundKm : 5.4;
+        return { ellipR, surfR: ellipR + estKm * unitsPerKm, elevKm: estKm };
+      }
       const demKm = earthElevation.heightKm(ll.lat, ll.lon, 13);
       // Clear local takeoff DEM fallback as soon as real DEM resolves or jet moves > 0.5 km away
       // (never allow a skyscraper/bridge-tower rooftop height to inflate terrainElevationM over water).
@@ -1407,6 +1418,8 @@ export class JetController {
   private reliefAsked = 0;
   private ensureRelief(b: BodyInfo, altKm: number): void {
     if (b.name === 'Earth') {
+      // Zero external DEM network fetches when flying standalone 1:1 Procedural Everest!
+      if (EverestProceduralRegion.current?.active) return;
       // Stream z=13 DEM around the jet and predictively ahead along velocity so steep ridges
       // (Everest, Grand Canyon, SF) are always loaded before the aircraft reaches them.
       if (altKm > 60) return;
@@ -1543,9 +1556,90 @@ export class JetController {
     return this.landing;
   }
 
+  /** Notifies SolarSystemScene when a landmark is selected (e.g. toggling 1:1 Procedural Everest mode). */
+  public onLandmarkSelected: ((lm: Landmark) => void) | null = null;
+  /** Optional scene-wired scenic vantage jumper for the 1:1 Procedural Everest landmark. */
+  public onEverestVantage: ((idx: number, hold?: boolean) => void) | null = null;
+  /** Optional scene-wired comparison switch back to untouched original `earth-everest`. */
+  public onEverestCompareOriginal: (() => void) | null = null;
+
+  /** Instantly warp into scenic trimmed flight at a curated landmark (without autopilot landing hop). */
+  public flyNowToLandmark(lm: Landmark): void {
+    if (!this.bodyIndex.has(lm.body)) return;
+    this.transit = null;
+    this.hop = null;
+    this.cutscene = null;
+    this.landing = null;
+    this.siteFix = null;
+    this.landMenu = false;
+    this.assist = true;
+    this.onLandmarkSelected?.(lm);
+    this.placeAtLandmark(lm);
+    this.radio(
+      lm.id === EVEREST_PROCEDURAL_ID
+        ? '1:1 PROCEDURAL EVEREST · ZERO-API OPEN DEM ACTIVE'
+        : `ARRIVED · ${lm.name.toUpperCase()}`,
+      4.0,
+    );
+  }
+
+  /** Instant deterministic jet/camera placement for scenic vantage presets & visual verification. */
+  public teleportToPose(
+    lat: number,
+    lon: number,
+    mslKm: number,
+    headingDeg: number,
+    pitchDeg = 0,
+    speedMps = 200,
+    holdFlight = false,
+  ): boolean {
+    const b = this.bodyIndex.get('Earth');
+    if (!b) return false;
+    this.transit = null;
+    this.hop = null;
+    this.cutscene = null;
+    this.landing = null;
+    this.siteFix = null;
+    this.landMenu = false;
+    this.hold = holdFlight;
+    this.holdSpawnAglKm = null;
+
+    const kmNear = b.radiusKm / b.radius;
+    const [lx, ly, lz] = bodyLatLonToLocal('Earth', lat, lon);
+    b.bundle.surfaceMesh.updateWorldMatrix(true, false);
+    const surfSea = new THREE.Vector3(lx, ly, lz).applyMatrix4(b.bundle.surfaceMesh.matrixWorld);
+    const up = surfSea.clone().sub(b.bundle.bodyGroup.position).normalize();
+    const pos = surfSea.clone().addScaledVector(up, mslKm / kmNear);
+
+    const pole = new THREE.Vector3(0, 1, 0).applyQuaternion(b.bundle.bodyGroup.quaternion);
+    const north = pole.addScaledVector(up, -pole.dot(up)).normalize();
+    const east = new THREE.Vector3().crossVectors(north, up).normalize();
+    const hRad = THREE.MathUtils.degToRad(headingDeg);
+    const pRad = THREE.MathUtils.degToRad(pitchDeg);
+    const horizFwd = north.clone().multiplyScalar(Math.cos(hRad)).addScaledVector(east, Math.sin(hRad)).normalize();
+    const fwd = horizFwd.clone().multiplyScalar(Math.cos(pRad)).addScaledVector(up, Math.sin(pRad)).normalize();
+
+    this.flight.position.copy(pos);
+    const spdUnits = speedMps * unitsPerMps(kmNear);
+    this.flight.velocity.copy(fwd).multiplyScalar(spdUnits);
+    this.flight.speed = spdUnits;
+    this.m1.lookAt(new THREE.Vector3(), fwd, up);
+    this.flight.quaternion.setFromRotationMatrix(this.m1);
+    this.flight.rates.set(0, 0, 0);
+    this.chaseQuat.copy(this.flight.quaternion);
+    this.look.set(0, 0);
+    this.throttle = 0.68;
+    // Clear exhaust smoke & wingtip/contrail ribbons so instant vantage jumps never stretch a streak across the sky
+    this.vortex.clear();
+    this.smoke.clear();
+    for (const l of this.lastNozzleWorld) l.valid = false;
+    return true;
+  }
+
   /** Engage the landing autopilot to a landmark on a world in the catalogue. */
   public startLanding(lm: Landmark): void {
     if (!this.bodyIndex.has(lm.body)) return;
+    this.onLandmarkSelected?.(lm);
     this.transit = null;
     this.hop = null;
     this.cutscene = null;
@@ -1818,33 +1912,41 @@ export class JetController {
 
     let groundMslKm = 0;
     if (lm.body === 'Earth') {
-      // Immediately warm high-res DEM around and ahead of the landmark so mountain peaks resolve fast
-      void earthElevation.ensure(lat - 0.14, lon - 0.14, lat + 0.14, lon + 0.14, 13, -100);
-      const solidKm = Math.max(getLandmarkSolidElevationKm(lat, lon), getLandmarkSolidElevationKm(lm.lat, lm.lon) * 0.85);
-      const rawDemKm = earthElevation.heightKm(lat, lon, 13);
-      // For colossal mountains (Everest 8,849 m, Matterhorn, Mont Blanc, Fuji, Kilimanjaro), spawn
-      // cleanly at the scenic ridge approach (looking UP/ACROSS the giant summit massif) rather than
-      // forcing the jet far above the peak, so you feel the authentic 1:1 monumental scale!
-      const isMonumentalPeak = (lm.viewPitchDeg ?? 0) >= 12 && (lm.viewAltitudeKm ?? 0) >= 2.5;
-      let demKm = rawDemKm;
-      if (!isMonumentalPeak) {
-        // Sample 0.5 km and 1.5 km ahead along heading so urban/canyon obstacles are cleared
-        const cosLat = Math.max(0.15, Math.cos(THREE.MathUtils.degToRad(lat)));
-        for (const distKm of [0.5, 1.5]) {
-          const aLat = lat + (distKm * Math.cos(h)) / 111.32;
-          const aLon = lon + (distKm * Math.sin(h)) / (111.32 * cosLat);
-          demKm = Math.max(demKm, earthElevation.heightKm(aLat, aLon, 13), getLandmarkSolidElevationKm(aLat, aLon));
+      if (lm.id === EVEREST_PROCEDURAL_ID) {
+        const procKm = EverestProceduralRegion.activeElevationKm(lat, lon) ?? 5.611;
+        site.addScaledVector(up, procKm / kmNear);
+        groundMslKm = procKm;
+        this.localGroundKm = procKm;
+        this.localGroundPos.copy(site);
+      } else {
+        // Immediately warm high-res DEM around and ahead of the landmark so mountain peaks resolve fast
+        void earthElevation.ensure(lat - 0.14, lon - 0.14, lat + 0.14, lon + 0.14, 13, -100);
+        const solidKm = Math.max(getLandmarkSolidElevationKm(lat, lon), getLandmarkSolidElevationKm(lm.lat, lm.lon) * 0.85);
+        const rawDemKm = earthElevation.heightKm(lat, lon, 13);
+        // For colossal mountains (Everest 8,849 m, Matterhorn, Mont Blanc, Fuji, Kilimanjaro), spawn
+        // cleanly at the scenic ridge approach (looking UP/ACROSS the giant summit massif) rather than
+        // forcing the jet far above the peak, so you feel the authentic 1:1 monumental scale!
+        const isMonumentalPeak = (lm.viewPitchDeg ?? 0) >= 12 && (lm.viewAltitudeKm ?? 0) >= 2.5;
+        let demKm = rawDemKm;
+        if (!isMonumentalPeak) {
+          // Sample 0.5 km and 1.5 km ahead along heading so urban/canyon obstacles are cleared
+          const cosLat = Math.max(0.15, Math.cos(THREE.MathUtils.degToRad(lat)));
+          for (const distKm of [0.5, 1.5]) {
+            const aLat = lat + (distKm * Math.cos(h)) / 111.32;
+            const aLon = lon + (distKm * Math.sin(h)) / (111.32 * cosLat);
+            demKm = Math.max(demKm, earthElevation.heightKm(aLat, aLon, 13), getLandmarkSolidElevationKm(aLat, aLon));
+          }
         }
+        const elevKm = Math.max(demKm, isMonumentalPeak ? getLandmarkSolidElevationKm(lat, lon) : solidKm);
+        site.addScaledVector(up, elevKm / kmNear);
+        const g = this.drawnGround(b, site, up);
+        const extraUnits = g !== null ? Math.max(g, -0.08 / kmNear) : 0;
+        site.addScaledVector(up, extraUnits);
+        groundMslKm = Math.max(solidKm, elevKm + extraUnits * kmNear);
+        // Only cache raw ground DEM (never a skyscraper/bridge spire rooftop) as a short-range fallback
+        this.localGroundKm = rawDemKm;
+        this.localGroundPos.copy(site);
       }
-      const elevKm = Math.max(demKm, isMonumentalPeak ? getLandmarkSolidElevationKm(lat, lon) : solidKm);
-      site.addScaledVector(up, elevKm / kmNear);
-      const g = this.drawnGround(b, site, up);
-      const extraUnits = g !== null ? Math.max(g, -0.08 / kmNear) : 0;
-      site.addScaledVector(up, extraUnits);
-      groundMslKm = Math.max(solidKm, elevKm + extraUnits * kmNear);
-      // Only cache raw ground DEM (never a skyscraper/bridge spire rooftop) as a short-range fallback
-      this.localGroundKm = rawDemKm;
-      this.localGroundPos.copy(site);
     } else {
       // Real relief (Moon, Mars): stand on the drawn ground, not the bare sphere
       groundMslKm = groundHeightKm(lm.body, lat, lon);
@@ -2186,6 +2288,15 @@ export class JetController {
   private probePhotoGround(b: BodyInfo, dt: number): void {
     const f = this.flight;
     const kmNear = b.radiusKm / b.radius;
+    if (b.name === 'Earth' && EverestProceduralRegion.current?.active) {
+      // Zero-API 1:1 Procedural Everest owns the ground via exact baked DEM in surfaceSample()
+      this.photoGround = null;
+      this.tileGround = null;
+      PhotorealEarth.current?.setGroundProbe(null);
+      PhotorealEarth.current?.setLookahead(null);
+      PhotorealEarth.current?.setSurround(null);
+      return;
+    }
     const target = b.name === 'Earth' && !this.scripted ? PhotorealEarth.current?.raycastTarget() ?? null : null;
     const rough = f.position.distanceTo(b.center) - b.radius;
     const constrained = perf.tier === 'low' || perf.scale < 0.72;
@@ -2588,7 +2699,9 @@ export class JetController {
     this.velocityWorld.copy(f.velocity);
     // Worlds are drawn oblate (Earth 1/298, Saturn 1/10): measure height above real displaced terrain
     this.probePhotoGround(nearest, dt);
-    this.ensureRelief(nearest, (f.position.distanceTo(nearest.center) - nearest.radius) * kmNear);
+    if (!(nearest.name === 'Earth' && EverestProceduralRegion.current?.active)) {
+      this.ensureRelief(nearest, (f.position.distanceTo(nearest.center) - nearest.radius) * kmNear);
+    }
     const surf = this.surfaceSample(nearest, f.position, true);
     const surfR = surf.surfR;
     // While held behind the preloader, lift seamlessly with newly streamed mountain DEMs (e.g. Everest)

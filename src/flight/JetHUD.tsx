@@ -19,6 +19,7 @@ import {
   type HudRect,
 } from './TacticalHud';
 import { Landmark, landmarksFor } from '../explorer/Landmarks';
+import { EverestProceduralRegion, EVEREST_VANTAGES } from '../explorer/EverestProceduralRegion';
 import { CatalogueManager } from '../data/CatalogueManager';
 
 /**
@@ -1303,11 +1304,101 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
     </>
   );
 
+  const [everestHold, setEverestHold] = useState(false);
+  const everestProcActive = Boolean(EverestProceduralRegion.current?.active);
+
   return (
     <div className="hud-root" style={{ pointerEvents: 'none' }}>
       <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} />
       <EraTitle controller={controller} />
       <LandingFade controller={controller} />
+      {everestProcActive && !compact && (
+        <div
+          onMouseDown={stop}
+          style={{
+            position: 'absolute',
+            left: 'max(18px, calc(env(safe-area-inset-left, 0px) + 12px))',
+            top: 'calc(env(safe-area-inset-top, 0px) + 178px)',
+            zIndex: 6,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+            padding: '7px 8px',
+            borderRadius: 6,
+            background: 'rgba(6, 10, 16, 0.74)',
+            border: '1px solid rgba(109, 252, 192, 0.32)',
+            backdropFilter: 'blur(8px)',
+            fontFamily: 'var(--sol-mono)',
+            pointerEvents: 'auto',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, fontSize: 8.5, letterSpacing: '0.14em', color: '#7cffcb', paddingBottom: 3, borderBottom: '1px solid rgba(109, 252, 192, 0.16)' }}>
+            <span>EVEREST 1:1 · ZERO-API</span>
+            <button
+              type="button"
+              onClick={() => {
+                const next = !everestHold;
+                setEverestHold(next);
+                controller.hold = next;
+              }}
+              style={{
+                fontSize: 8,
+                padding: '1px 5px',
+                borderRadius: 3,
+                cursor: 'pointer',
+                background: everestHold ? 'rgba(244, 205, 114, 0.25)' : 'rgba(255,255,255,0.08)',
+                border: `1px solid ${everestHold ? 'rgba(244, 205, 114, 0.65)' : 'rgba(255,255,255,0.2)'}`,
+                color: everestHold ? '#ffd97d' : 'rgba(255,255,255,0.8)',
+                letterSpacing: '0.1em',
+              }}
+            >
+              {everestHold ? 'HOLD ON' : 'FLYING'}
+            </button>
+          </div>
+          {EVEREST_VANTAGES.map((v, idx) => (
+            <button
+              key={v.id}
+              type="button"
+              onClick={() => controller.onEverestVantage?.(idx, everestHold)}
+              style={{
+                textAlign: 'left',
+                fontSize: 9,
+                padding: '3px 6px',
+                borderRadius: 3,
+                cursor: 'pointer',
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid rgba(255,255,255,0.10)',
+                color: 'rgba(235, 244, 252, 0.9)',
+                letterSpacing: '0.07em',
+              }}
+            >
+              {idx + 1}. {v.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              setEverestHold(false);
+              controller.hold = false;
+              controller.onEverestCompareOriginal?.();
+            }}
+            style={{
+              marginTop: 2,
+              textAlign: 'center',
+              fontSize: 8.5,
+              padding: '3px 6px',
+              borderRadius: 3,
+              cursor: 'pointer',
+              background: 'rgba(120, 190, 255, 0.14)',
+              border: '1px solid rgba(120, 190, 255, 0.35)',
+              color: '#b8e2ff',
+              letterSpacing: '0.1em',
+            }}
+          >
+            COMPARE ORIGINAL EVEREST
+          </button>
+        </div>
+      )}
       <EraHint controller={controller} />
       <RadioSubtitle controller={controller} />
       <PitchQuestion controller={controller} />
@@ -1711,18 +1802,46 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
                 onClick={() => controller.startLanding(lm)}
                 style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'transparent', cursor: 'pointer', padding: '4px 0' }}
               >
-                <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.92)', letterSpacing: '0.04em' }}>{lm.name}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'rgba(255,255,255,0.92)', letterSpacing: '0.04em' }}>
+                  <span>{lm.name}</span>
+                  {lm.id === 'earth-everest-procedural' && (
+                    <span
+                      style={{
+                        fontSize: 8.5,
+                        padding: '1px 5px',
+                        borderRadius: 3,
+                        background: 'rgba(84, 245, 184, 0.16)',
+                        border: '1px solid rgba(84, 245, 184, 0.45)',
+                        color: '#7cffcb',
+                        letterSpacing: '0.1em',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      ZERO-API 1:1
+                    </span>
+                  )}
+                </div>
                 <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.5)', marginTop: 3, lineHeight: 1.45 }}>{lm.scene ?? lm.description}</div>
               </button>
               {lm.body === 'Earth' && (
-                <button
-                  type="button"
-                  className="hud-btn"
-                  title="Make it the target and fly there yourself: a marker shows the way, Z turns towards it"
-                  onClick={() => controller.setWaypoint(lm.name, lm.lat, lm.lon)}
-                >
-                  Target
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="hud-btn"
+                    title="Warp straight into scenic flight over this landmark"
+                    onClick={() => controller.flyNowToLandmark(lm)}
+                  >
+                    Fly
+                  </button>
+                  <button
+                    type="button"
+                    className="hud-btn"
+                    title="Make it the target and fly there yourself: a marker shows the way, Z turns towards it"
+                    onClick={() => controller.setWaypoint(lm.name, lm.lat, lm.lon)}
+                  >
+                    Target
+                  </button>
+                </>
               )}
             </div>
           ))}
