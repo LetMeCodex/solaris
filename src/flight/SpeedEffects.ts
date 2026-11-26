@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { AIRSHOW_SMOKE_BY_ID, type AirshowSmokeId } from './JetSkins';
 
 /**
  * Near-field effects in the jet's own metre-scale space (the overlay scene, camera at the origin).
@@ -147,6 +148,7 @@ export class Trail {
         uColor: { value: new THREE.Color(color) },
         uTime: { value: 0 },
         uTightness: { value: coreTightness },
+        uOpacityGain: { value: 1.0 },
       },
       vertexShader: /* glsl */ `
         attribute float alpha;
@@ -165,6 +167,7 @@ export class Trail {
         uniform vec3 uColor;
         uniform float uTime;
         uniform float uTightness;
+        uniform float uOpacityGain;
         varying float vA;
         varying float vAcross;
         varying float vAge;
@@ -180,9 +183,9 @@ export class Trail {
           float core = exp(-vAcross * vAcross * focus);
           float swirl = 0.72 + 0.28 * noise(vec2(vAge * 18.0 - uTime * 3.5, vAcross * 2.5 + sin(vAge * 9.0)));
           float wispyBreak = smoothstep(0.0, 0.28, core * swirl);
-          float a = vA * mix(core, core * wispyBreak, 0.65);
+          float a = clamp(vA * mix(core, core * wispyBreak, 0.65) * uOpacityGain, 0.0, 0.92);
           if (a < 0.002) discard;
-          vec3 col = mix(uColor * 0.92, vec3(1.0), core * 0.28);
+          vec3 col = mix(uColor * 0.92, mix(vec3(1.0), uColor * 1.45, clamp(uOpacityGain - 1.0, 0.0, 1.0)), core * 0.34);
           gl_FragColor = vec4(col * a, a);
         }`,
       transparent: true,
@@ -193,6 +196,12 @@ export class Trail {
     this.mesh = new THREE.Mesh(g, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 3;
+    this.mesh.userData.noAO = true;
+  }
+
+  public setAppearance(color: THREE.ColorRepresentation, opacityGain = 1.0): void {
+    this.material.uniforms.uColor.value.set(color);
+    this.material.uniforms.uOpacityGain.value = opacityGain;
   }
 
   public clear(): void {
@@ -312,6 +321,23 @@ export class VortexRig {
 
   constructor() {
     this.all = [...this.wingtips, ...this.strakes, ...this.contrails];
+  }
+
+  public setAirshowSmoke(mode: AirshowSmokeId): void {
+    if (mode === 'off') {
+      this.wingtips[0].setAppearance(0xffffff, 1.0);
+      this.wingtips[1].setAppearance(0xffffff, 1.0);
+      this.contrails[0].setAppearance(0xeef3ff, 1.0);
+      this.contrails[1].setAppearance(0xeef3ff, 1.0);
+      return;
+    }
+    const spec = AIRSHOW_SMOKE_BY_ID[mode];
+    const tipCol = new THREE.Color(0xffffff).lerp(new THREE.Color(spec.accentHex), 0.72);
+    const conCol = new THREE.Color(spec.colorHex).lerp(new THREE.Color(0xffffff), 0.22);
+    this.wingtips[0].setAppearance(tipCol, 1.28);
+    this.wingtips[1].setAppearance(tipCol, 1.28);
+    this.contrails[0].setAppearance(conCol, 1.35);
+    this.contrails[1].setAppearance(conCol, 1.35);
   }
 
   public addTo(parent: THREE.Object3D): void {
@@ -672,6 +698,7 @@ export class ExhaustSmoke {
   private material: THREE.ShaderMaterial;
   private tmp = new THREE.Vector3();
   private tmpCol = new THREE.Color();
+  private airshowMode: AirshowSmokeId = 'off';
 
   constructor() {
     this.colors.fill(1);
@@ -681,7 +708,13 @@ export class ExhaustSmoke {
     g.setAttribute('aAlpha', new THREE.BufferAttribute(this.alphas, 1).setUsage(THREE.DynamicDrawUsage));
     g.setAttribute('aColor', new THREE.BufferAttribute(this.colors, 3).setUsage(THREE.DynamicDrawUsage));
     this.material = new THREE.ShaderMaterial({
-      uniforms: { uScale: { value: 500 }, uColor: { value: new THREE.Color(0.82, 0.82, 0.84) }, uTime: { value: 0 } },
+      uniforms: {
+        uScale: { value: 500 },
+        uColor: { value: new THREE.Color(0.82, 0.82, 0.84) },
+        uTime: { value: 0 },
+        uAirshowOn: { value: 0 },
+        uEmberGlow: { value: 0 },
+      },
       vertexShader: /* glsl */ `
         attribute float aSize;
         attribute float aAlpha;
@@ -702,6 +735,9 @@ export class ExhaustSmoke {
         }`,
       fragmentShader: /* glsl */ `
         uniform vec3 uColor;
+        uniform float uTime;
+        uniform float uAirshowOn;
+        uniform float uEmberGlow;
         varying float vAlpha;
         varying float vSeed;
         varying vec3 vTint;
@@ -720,6 +756,14 @@ export class ExhaustSmoke {
           float a = smoothstep(1.0, 0.15, r + (n - 0.5) * 0.55) * vAlpha;
           // Lit from above-ish: brighter top, shaded bottom
           vec3 col = uColor * vTint * (0.75 + 0.35 * (-p.y));
+          if (uAirshowOn > 0.5) {
+            col = mix(col, vTint * (0.85 + 0.30 * (-p.y)), 0.58);
+          }
+          if (uEmberGlow > 0.5) {
+            float core = exp(-r * 3.8) * smoothstep(0.35, 0.92, n + 0.28);
+            float spark = step(0.86, noise(p * 9.0 + vec2(vSeed * 31.0, uTime * 3.0))) * exp(-r * 2.2);
+            col += vec3(1.0, 0.42, 0.08) * core * 1.45 + vec3(1.0, 0.85, 0.42) * spark * 2.6;
+          }
           gl_FragColor = vec4(col, a);
         }`,
       transparent: true,
@@ -729,6 +773,17 @@ export class ExhaustSmoke {
     this.mesh = new THREE.Points(g, this.material);
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 4;
+    this.mesh.userData.noAO = true;
+  }
+
+  public setAirshowSmoke(mode: AirshowSmokeId): void {
+    this.airshowMode = mode;
+    this.material.uniforms.uAirshowOn.value = mode === 'off' ? 0 : 1;
+    this.material.uniforms.uEmberGlow.value = mode === 'ember' ? 1 : 0;
+  }
+
+  public getAirshowSmoke(): AirshowSmokeId {
+    return this.airshowMode;
   }
 
   public clear(): void {
@@ -783,7 +838,9 @@ export class ExhaustSmoke {
    */
   public update(dt: number, camWorld: THREE.Vector3, metresPerUnit: number, pxScale: number, light: number): void {
     this.material.uniforms.uScale.value = pxScale;
-    this.material.uniforms.uColor.value.setRGB(0.12 + 0.72 * light, 0.12 + 0.72 * light, 0.14 + 0.72 * light);
+    this.material.uniforms.uTime.value += dt;
+    const airshowLight = this.airshowMode === 'off' ? light : Math.max(light, 0.55);
+    this.material.uniforms.uColor.value.setRGB(0.12 + 0.72 * airshowLight, 0.12 + 0.72 * airshowLight, 0.14 + 0.72 * airshowLight);
     for (let i = 0; i < SMOKE_MAX; i++) {
       const o = i * 3;
       const a = this.age[i];

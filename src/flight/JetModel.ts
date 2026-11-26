@@ -3,6 +3,14 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import type { CockpitLayout } from './CockpitControls';
 import { createJetSurfaceState, type JetAirframeId, type JetSurfaceState } from './JetTelemetry';
+import {
+  JET_SKIN_BY_ID,
+  chosenCanopyTint,
+  chosenHoloAura,
+  chosenJetSkin,
+  type CanopyTintId,
+  type JetSkinId,
+} from './JetSkins';
 
 /** Optional real-time aerodynamic and surface telemetry fed from FlightModel / JetController. */
 export interface JetVisualState {
@@ -12,6 +20,8 @@ export interface JetVisualState {
   surfaces?: JetSurfaceState;
   /** Angle of attack (deg) driving over-wing/LERX condensation sheet intensity. */
   aoaDeg?: number;
+  /** True airspeed (m/s) driving airflow advection & reactive skin animation. */
+  airspeedMps?: number;
   /** Current Mach number for transonic vapor surge. */
   mach?: number;
   /** Normal load factor (G) driving subtle outboard wing aeroelastic flex. */
@@ -22,6 +32,14 @@ export interface JetVisualState {
   qPa?: number;
   /** Discrete afterburner zone [0..3]. */
   abStage?: 0 | 1 | 2 | 3;
+  /** Normalized boost / afterburner surge [0..1]. */
+  boost?: number;
+  /** Ambient darkness factor [0..1] boosting emissive skin details at night. */
+  ambientDarkness?: number;
+  /** Angular maneuver jerk [0..1+] exciting living flame turbulence. */
+  maneuverJerk?: number;
+  /** Live environment bounce tint hex driving world-reactive clearcoat/nebula highlights. */
+  worldTintHex?: number;
   /** Weight-on-wheels flag for oleo strut compression and taxi light glow. */
   onGround?: boolean;
   /** Forward ground roll speed (m/s). */
@@ -707,6 +725,8 @@ interface TriVert {
   p: THREE.Vector3;
   n: THREE.Vector3;
   u: THREE.Vector2;
+  rp: THREE.Vector3;
+  rn: THREE.Vector3;
 }
 
 interface SlicePartSpec {
@@ -751,13 +771,33 @@ function splitPolygonHalfSpace(poly: TriVert[], plane: ClipPlane): { inside: Tri
         p: new THREE.Vector3().lerpVectors(a.p, b.p, t),
         n: new THREE.Vector3().lerpVectors(a.n, b.n, t).normalize(),
         u: new THREE.Vector2().lerpVectors(a.u, b.u, t),
+        rp: new THREE.Vector3().lerpVectors(a.rp, b.rp, t),
+        rn: new THREE.Vector3().lerpVectors(a.rn, b.rn, t).normalize(),
       };
       inside.push(mid);
-      outside.push({ p: mid.p.clone(), n: mid.n.clone(), u: mid.u.clone() });
+      outside.push({
+        p: mid.p.clone(),
+        n: mid.n.clone(),
+        u: mid.u.clone(),
+        rp: mid.rp.clone(),
+        rn: mid.rn.clone(),
+      });
     } else if (aIn && !bIn && Math.abs(da) <= eps && !aOut) {
-      outside.push({ p: a.p.clone(), n: a.n.clone(), u: a.u.clone() });
+      outside.push({
+        p: a.p.clone(),
+        n: a.n.clone(),
+        u: a.u.clone(),
+        rp: a.rp.clone(),
+        rn: a.rn.clone(),
+      });
     } else if (!aIn && bIn && Math.abs(db) <= eps && !bOut) {
-      outside.push({ p: b.p.clone(), n: b.n.clone(), u: b.u.clone() });
+      outside.push({
+        p: b.p.clone(),
+        n: b.n.clone(),
+        u: b.u.clone(),
+        rp: b.rp.clone(),
+        rn: b.rn.clone(),
+      });
     }
   }
   return { inside: inside.length >= 3 ? inside : [], outside: outside.length >= 3 ? outside : [] };
@@ -840,6 +880,7 @@ interface HingeSurface {
 }
 
 interface AirbrakeUnit {
+  mount: THREE.Group;
   pivot: THREE.Group;
   axis: THREE.Vector3;
   maxRad: number;
@@ -903,6 +944,254 @@ export class JetModel {
   /** The pilot's helmet: hidden when the camera is on it (the helmet-mounted GoPro). */
   public crewHead: THREE.Object3D | null = null;
   private canopyGlass!: THREE.MeshPhysicalMaterial;
+
+  private skinId: JetSkinId = chosenJetSkin();
+  private canopyTint: CanopyTintId = chosenCanopyTint();
+  private holoAuraEnabled: boolean = chosenHoloAura();
+  private hullSkinMats: THREE.MeshPhysicalMaterial[] = [];
+  private canopyMats: THREE.MeshPhysicalMaterial[] = [];
+  private markingsTex: THREE.CanvasTexture | null = null;
+  private airframeDisposables: Array<{ dispose(): void }> = [];
+  private loadToken = 0;
+  private readonly skinTmpV = new THREE.Vector3();
+  private readonly skinTmpM = new THREE.Matrix4();
+  private readonly skinU = {
+    uSkinMode: { value: 1 },
+    uAirframeType: { value: 0 },
+    uSkinTime: { value: 0 },
+    uSkinAirspeed: { value: 0 },
+    uSkinMach: { value: 0 },
+    uSkinGLoad: { value: 1 },
+    uSkinAB: { value: 0 },
+    uSkinDarkness: { value: 0 },
+    uSkinJerk: { value: 0 },
+    uSkinLightSweep: { value: 0 },
+    uSkinPulseAge: { value: 99 },
+    uSkinPulseOrigin: { value: new THREE.Vector3(0, 0.25, -8.5) },
+    uSkinCamLocal: { value: new THREE.Vector3(-8, 3.5, -14) },
+    uWorldTint: { value: new THREE.Color(0x62b6ff) },
+    uCanopyMode: { value: 0 },
+    uSkinInside: { value: 0 },
+    uMarkingsTex: { value: null as THREE.Texture | null },
+  };
+  private holoAuraGroup: THREE.Group | null = null;
+  private holoAuraQuads: THREE.Mesh[] = [];
+  private holoAuraMat: THREE.ShaderMaterial | null = null;
+  private emberPoints: THREE.Points | null = null;
+  private emberMat: THREE.ShaderMaterial | null = null;
+  private emberState: {
+    pos: Float32Array;
+    vel: Float32Array;
+    age: Float32Array;
+    life: Float32Array;
+    seed: Float32Array;
+    size: Float32Array;
+    rng: number;
+  } | null = null;
+
+  /** Set the active 3D livery (`'flame_phantom'`, `'plasma_ion'`, `'nebula_prism'`, `'aurora_jade'`, or `'stock'`) without shader recompilation. */
+  public setSkin(skinId: JetSkinId): void {
+    const prevMode = this.skinU.uSkinMode.value;
+    this.skinId = skinId;
+    const spec = JET_SKIN_BY_ID[skinId] ?? JET_SKIN_BY_ID.flame_phantom;
+    this.skinU.uSkinMode.value = spec.shaderMode;
+    this.applySkinMaterialProps();
+    this.syncSkinFXPalette();
+    if (spec.shaderMode !== prevMode && spec.shaderMode > 0) {
+      this.triggerSkinPulse();
+    }
+  }
+
+  public getSkin(): JetSkinId {
+    return this.skinId;
+  }
+
+  /** Enable or disable floating 3D wing/tail holographic tactical crest rings. */
+  public setHoloAuraEnabled(enabled: boolean): void {
+    this.holoAuraEnabled = enabled;
+    if (this.holoAuraGroup) {
+      this.holoAuraGroup.visible = enabled && this.skinId !== 'stock' && !this.insideOn;
+    }
+  }
+
+  public getHoloAuraEnabled(): boolean {
+    return this.holoAuraEnabled;
+  }
+
+  /** Set the ambient planet/sky rim color reflected cleanly through thin-film clearcoat and nebula depth. */
+  public setWorldTint(color: THREE.ColorRepresentation): void {
+    this.skinU.uWorldTint.value.set(color);
+  }
+
+  /** Update camera position in jet local rest-pose space for crisp 3D wing parallax depth. */
+  public setSkinCameraWorld(camWorld: THREE.Vector3): void {
+    this.root.updateMatrixWorld();
+    this.skinTmpV.copy(camWorld).applyMatrix4(this.skinTmpM.copy(this.root.matrixWorld).invert());
+    this.skinU.uSkinCamLocal.value.copy(this.skinTmpV);
+  }
+
+  /** Trigger a radial energy shockwave sweeping across the 3D skin (on click, AB light-off, Mach cone, or world switch). */
+  public triggerSkinPulse(pos?: THREE.Vector3, isWorldSpace = false): void {
+    if (pos) {
+      if (isWorldSpace) {
+        this.root.updateMatrixWorld();
+        this.skinTmpV.copy(pos).applyMatrix4(this.skinTmpM.copy(this.root.matrixWorld).invert());
+        this.skinU.uSkinPulseOrigin.value.copy(this.skinTmpV);
+      } else {
+        this.skinU.uSkinPulseOrigin.value.copy(pos);
+      }
+    } else {
+      const zNose = this.airframeId === 'gripen' ? -5.6 : this.airframeId === 'su30' ? -9.8 : -7.5;
+      this.skinU.uSkinPulseOrigin.value.set(0, 0.2, zNose);
+    }
+    this.skinU.uSkinPulseAge.value = 0;
+  }
+
+  /** Set exterior canopy film tint (`'clear'`, `'smoked'`, or `'gold'`) without obscuring cockpit view. */
+  public setCanopyTint(tint: CanopyTintId): void {
+    this.canopyTint = tint;
+    this.skinU.uCanopyMode.value = tint === 'gold' ? 2 : tint === 'smoked' ? 1 : 0;
+    this.applyCanopyMaterialProps();
+  }
+
+  public getCanopyTint(): CanopyTintId {
+    return this.canopyTint;
+  }
+
+  private getMarkingsTexture(): THREE.CanvasTexture {
+    if (this.markingsTex) return this.markingsTex;
+    const c = document.createElement('canvas');
+    c.width = 1024;
+    c.height = 256;
+    const ctx = c.getContext('2d') as CanvasRenderingContext2D;
+    ctx.clearRect(0, 0, c.width, c.height);
+    // Crisp high-contrast stencil 'SB-143' matching SU-30MKI Flame Phantom nose lettering
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '800 172px "Bahnschrift", "DIN Condensed", "Arial Narrow", "Inter", sans-serif';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 8;
+    ctx.strokeStyle = 'rgba(245, 247, 250, 0.35)';
+    ctx.strokeText('SB-143', 512, 132);
+    ctx.fillStyle = '#181c22';
+    ctx.fillText('SB-143', 512, 132);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 8;
+    this.markingsTex = t;
+    this.skinU.uMarkingsTex.value = t;
+    this.disposables.push(t);
+    return t;
+  }
+
+  private applySkinMaterialProps(): void {
+    const mode = this.skinU.uSkinMode.value;
+    const isCustom = mode > 0.5;
+    for (const mat of this.hullSkinMats) {
+      const stock = mat.userData.stockProps as
+        | {
+            color: THREE.Color;
+            roughness: number;
+            metalness: number;
+            emissive: THREE.Color;
+            emissiveIntensity: number;
+            clearcoat: number;
+            clearcoatRoughness: number;
+            envMapIntensity: number;
+            aoMapIntensity: number;
+            normalScale: THREE.Vector2;
+            iridescence?: number;
+            iridescenceIOR?: number;
+          }
+        | undefined;
+      if (isCustom) {
+        const isRivet = !!mat.userData.isRivetLayer;
+        mat.color.setHex(0xffffff);
+        mat.roughness = 1.0;
+        mat.metalness = 1.0;
+        mat.emissive.setHex(0xffffff);
+        mat.emissiveIntensity = 1.0;
+        mat.clearcoat = isRivet ? 0.20 : 0.82;
+        mat.clearcoatRoughness = isRivet ? 0.32 : 0.085;
+        mat.envMapIntensity = 0.92;
+        mat.aoMapIntensity = 0.05;
+        mat.iridescence = isRivet ? 0.15 : mode === 4 ? 0.85 : mode >= 2 ? 0.55 : 0.35;
+        mat.iridescenceIOR = mode === 2 ? 1.62 : mode === 3 ? 1.82 : mode === 4 ? 1.72 : 1.48;
+        mat.iridescenceThicknessRange = mode === 4 ? [220, 560] : mode === 3 ? [260, 620] : [180, 480];
+        mat.normalScale?.set(0.45, 0.45);
+      } else if (stock) {
+        mat.color.copy(stock.color);
+        mat.roughness = stock.roughness;
+        mat.metalness = stock.metalness;
+        mat.emissive.copy(stock.emissive);
+        mat.emissiveIntensity = stock.emissiveIntensity;
+        mat.clearcoat = stock.clearcoat;
+        mat.clearcoatRoughness = stock.clearcoatRoughness;
+        mat.envMapIntensity = stock.envMapIntensity;
+        mat.aoMapIntensity = stock.aoMapIntensity;
+        mat.iridescence = stock.iridescence ?? 0.001;
+        mat.iridescenceIOR = stock.iridescenceIOR ?? 1.35;
+        if (stock.normalScale) mat.normalScale?.copy(stock.normalScale);
+      }
+    }
+  }
+
+  private applyCanopyMaterialProps(): void {
+    const inside = this.insideOn;
+    const tint = this.canopyTint;
+    for (const mat of this.canopyMats) {
+      const stock = mat.userData.stockProps as
+        | {
+            color: THREE.Color;
+            roughness: number;
+            metalness: number;
+            opacity: number;
+            envMapIntensity: number;
+            iridescence: number;
+            iridescenceIOR: number;
+          }
+        | undefined;
+      if (inside) {
+        mat.color.setHex(0xb8c4cc);
+        mat.roughness = 0.025;
+        mat.metalness = 0.0;
+        mat.opacity = mat === this.canopyGlass ? 0.06 : 0.055;
+        mat.envMapIntensity = 0.35;
+        mat.iridescence = 0.05;
+      } else if (tint === 'gold') {
+        mat.color.setHex(0xc88b22);
+        mat.roughness = 0.04;
+        mat.metalness = 0.38;
+        mat.opacity = 0.68;
+        mat.envMapIntensity = 1.75;
+        mat.iridescence = 1.0;
+        mat.iridescenceIOR = 1.85;
+        mat.iridescenceThicknessRange = [280, 560];
+        mat.clearcoat = 1.0;
+        mat.clearcoatRoughness = 0.04;
+      } else if (tint === 'smoked') {
+        mat.color.setHex(0x0c0e13);
+        mat.roughness = 0.03;
+        mat.metalness = 0.12;
+        mat.opacity = 0.62;
+        mat.envMapIntensity = 1.35;
+        mat.iridescence = 0.12;
+        mat.iridescenceIOR = 1.45;
+        mat.clearcoat = 1.0;
+        mat.clearcoatRoughness = 0.04;
+      } else if (stock) {
+        mat.color.copy(stock.color);
+        mat.roughness = stock.roughness;
+        mat.metalness = stock.metalness;
+        mat.opacity = stock.opacity;
+        mat.envMapIntensity = stock.envMapIntensity;
+        mat.iridescence = stock.iridescence;
+        mat.iridescenceIOR = stock.iridescenceIOR;
+        mat.clearcoat = 0.35;
+        mat.clearcoatRoughness = 0.06;
+      }
+    }
+  }
 
   /** The procedural airframe: flown until a loaded model takes over. */
   private body = new THREE.Group();
@@ -1266,10 +1555,15 @@ float gMicroScratch(vec2 uv) {
     if (on) this.clipU.uRootInv.value.copy(this.root.matrixWorld).invert();
     if (on === this.insideOn) return;
     this.insideOn = on;
+    this.skinU.uSkinInside.value = on ? 1 : 0;
+    this.applyCanopyMaterialProps();
     for (const m of this.insideMeshes) m.visible = !on;
     this.clipU.uClipOn.value = on ? 1 : 0;
     if (this.bubble) this.bubble.visible = on;
     if (this.canopyFrame) this.canopyFrame.visible = on;
+    const fxVisible = this.skinId !== 'stock' && !on;
+    if (this.holoAuraGroup) this.holoAuraGroup.visible = fxVisible && this.holoAuraEnabled;
+    if (this.emberPoints) this.emberPoints.visible = fxVisible;
   }
 
   private addInsideClip(
@@ -1287,6 +1581,7 @@ float gMicroScratch(vec2 uv) {
       maxs.push(new THREE.Vector3(...b.max));
     }
     const prev = m.onBeforeCompile;
+    const prevKey = m.customProgramCacheKey;
     const uniforms = {
       uClipCount: { value: count },
       uClipMin: { value: mins },
@@ -1315,8 +1610,771 @@ if (uClipOn > 0.5) {
   }
 }`);
     };
-    m.customProgramCacheKey = () => `solaris-canopy-clip-${MAX_BOXES}`;
+    m.customProgramCacheKey = () => `${prevKey ? `${prevKey.call(m)}|` : ''}solaris-canopy-clip-${MAX_BOXES}`;
     m.needsUpdate = true;
+  }
+
+  /** Upgrade any MeshStandardMaterial to MeshPhysicalMaterial while preserving PBR maps & stock defaults. */
+  private upgradeToPhysical(src: THREE.Material): THREE.MeshPhysicalMaterial {
+    const sm = src as THREE.MeshStandardMaterial;
+    const pm =
+      src instanceof THREE.MeshPhysicalMaterial
+        ? src
+        : new THREE.MeshPhysicalMaterial({
+            name: sm.name,
+            color: sm.color?.clone(),
+            map: sm.map,
+            normalMap: sm.normalMap,
+            normalScale: sm.normalScale?.clone(),
+            roughnessMap: sm.roughnessMap,
+            roughness: sm.roughness,
+            metalnessMap: sm.metalnessMap,
+            metalness: sm.metalness,
+            aoMap: sm.aoMap,
+            aoMapIntensity: sm.aoMapIntensity,
+            bumpMap: sm.bumpMap,
+            bumpScale: sm.bumpScale,
+            emissive: sm.emissive?.clone(),
+            emissiveMap: sm.emissiveMap,
+            emissiveIntensity: sm.emissiveIntensity,
+            transparent: sm.transparent,
+            opacity: sm.opacity,
+            alphaTest: sm.alphaTest,
+            side: sm.side,
+            depthWrite: sm.depthWrite,
+            envMapIntensity: sm.envMapIntensity,
+          });
+    pm.name = sm.name;
+    pm.userData = { ...sm.userData };
+    pm.userData.stockProps = {
+      color: pm.color.clone(),
+      roughness: pm.roughness,
+      metalness: pm.metalness,
+      emissive: pm.emissive.clone(),
+      emissiveIntensity: pm.emissiveIntensity,
+      clearcoat: pm.clearcoat || 0.001,
+      clearcoatRoughness: pm.clearcoatRoughness || 0.12,
+      envMapIntensity: pm.envMapIntensity ?? 1.0,
+      aoMapIntensity: pm.aoMapIntensity ?? 1.0,
+      normalScale: pm.normalScale ? pm.normalScale.clone() : new THREE.Vector2(1, 1),
+      opacity: pm.opacity,
+      iridescence: pm.iridescence || 0.001,
+      iridescenceIOR: pm.iridescenceIOR || 1.35,
+    };
+    if (pm.clearcoat === 0) pm.clearcoat = 0.001;
+    if (pm.iridescence === 0) pm.iridescence = 0.001;
+    return pm;
+  }
+
+  /** Stamp jet-local rest-pose `aRestPos` & `aRestNormal` attributes onto exterior meshes. */
+  private stampRestPose(targetObj: THREE.Object3D): void {
+    this.root.updateMatrixWorld(true);
+    const toJet = new THREE.Matrix4().copy(this.root.matrixWorld).invert();
+    const m = new THREE.Matrix4();
+    const nm = new THREE.Matrix3();
+    const p = new THREE.Vector3();
+    const n = new THREE.Vector3();
+    targetObj.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const geo = mesh.geometry;
+      const pos = geo.attributes.position;
+      if (!pos || geo.attributes.aRestPos) return;
+      m.multiplyMatrices(toJet, mesh.matrixWorld);
+      nm.getNormalMatrix(m);
+      const nor = geo.attributes.normal;
+      const rp = new Float32Array(pos.count * 3);
+      const rn = new Float32Array(pos.count * 3);
+      for (let i = 0; i < pos.count; i++) {
+        p.fromBufferAttribute(pos, i).applyMatrix4(m);
+        rp[i * 3] = p.x;
+        rp[i * 3 + 1] = p.y;
+        rp[i * 3 + 2] = p.z;
+        if (nor) n.fromBufferAttribute(nor, i).applyMatrix3(nm).normalize();
+        else n.set(0, 1, 0);
+        rn[i * 3] = n.x;
+        rn[i * 3 + 1] = n.y;
+        rn[i * 3 + 2] = n.z;
+      }
+      geo.setAttribute('aRestPos', new THREE.BufferAttribute(rp, 3));
+      geo.setAttribute('aRestNormal', new THREE.BufferAttribute(rn, 3));
+    });
+  }
+
+  /** Attach the rest-pose 3D Flame Phantom livery shader onto an exterior hull PhysicalMaterial. */
+  private patchHullSkinMaterial(mat: THREE.MeshPhysicalMaterial, isRivetLayer = false): void {
+    if (mat.userData.solarisSkinPatched) return;
+    mat.userData.solarisSkinPatched = true;
+    mat.userData.isRivetLayer = isRivetLayer;
+    this.getMarkingsTexture();
+    const prev = mat.onBeforeCompile;
+    const prevKey = mat.customProgramCacheKey;
+    const isRivetU = { value: isRivetLayer ? 1 : 0 };
+
+    mat.onBeforeCompile = (shader, renderer) => {
+      prev?.call(mat, shader, renderer);
+      Object.assign(shader.uniforms, this.skinU, { uIsRivetOverlay: isRivetU });
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+attribute vec3 aRestPos;
+attribute vec3 aRestNormal;
+varying vec3 vRestPos;
+varying vec3 vRestNormal;`,
+        )
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+vRestPos = aRestPos;
+vRestNormal = aRestNormal;`,
+        );
+
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+uniform float uSkinMode;
+uniform float uAirframeType;
+uniform float uSkinTime;
+uniform float uSkinAirspeed;
+uniform float uSkinMach;
+uniform float uSkinGLoad;
+uniform float uSkinAB;
+uniform float uSkinDarkness;
+uniform float uSkinJerk;
+uniform float uSkinLightSweep;
+uniform float uSkinPulseAge;
+uniform vec3 uSkinPulseOrigin;
+uniform vec3 uSkinCamLocal;
+uniform vec3 uWorldTint;
+uniform float uIsRivetOverlay;
+uniform sampler2D uMarkingsTex;
+varying vec3 vRestPos;
+varying vec3 vRestNormal;
+
+struct FpSkinEval {
+  vec3 color;
+  float roughness;
+  float metalness;
+  float clearcoatMul;
+  vec3 emissive;
+  float skinWeight;
+};
+
+float fpHash2(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+}
+float fpHash3(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.zyx + 31.32);
+  return fract((p.x + p.y) * p.z);
+}
+float fpNoise2(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(fpHash2(i), fpHash2(i + vec2(1.0, 0.0)), f.x),
+    mix(fpHash2(i + vec2(0.0, 1.0)), fpHash2(i + vec2(1.0, 1.0)), f.x),
+    f.y
+  );
+}
+float fpFbm2(vec2 p) {
+  return fpNoise2(p) * 0.56 + fpNoise2(p * 2.17 + vec2(3.1, 1.7)) * 0.29 + fpNoise2(p * 4.43 - vec2(1.9, 5.3)) * 0.15;
+}
+// Ridged organic energy veins (magma cracks / plasma arcs / cosmic filaments)
+float fpVeinRidge(vec2 p) {
+  float a = abs(fpFbm2(p) - 0.5) * 2.0;
+  float b = abs(fpFbm2(p * 1.9 + vec2(5.2, -3.7)) - 0.5) * 2.0;
+  return pow(1.0 - clamp(min(a, b * 1.15), 0.0, 1.0), 5.5);
+}
+// Optical thin-film interference spectral iridescence
+vec3 fpThinFilm(float ndv, float phase) {
+  return 0.5 + 0.5 * cos(6.28318 * (ndv * 1.38 + phase + vec3(0.0, 0.33, 0.67)));
+}
+// Individual sculpted asymmetrical S-curved flame tongue
+float fpTongue(float s, float center, float width, float zOff, float lean) {
+  float d = (s - center - lean * zOff) / width;
+  float env = max(0.0, 1.0 - d * d);
+  return pow(env, 1.65);
+}
+// Sharp (-Z) pointed flame cusps with broad (+Z) rounded obsidian bays
+float fpFlameCusps(float u, float skew, float freq2, float phase2) {
+  float s1 = abs(sin((u + skew) * 0.5));
+  float tip1 = 1.0 - pow(clamp(s1, 0.0, 1.0), 0.50);
+  float s2 = abs(sin(u * freq2 + phase2));
+  float tip2 = 1.0 - pow(clamp(s2, 0.0, 1.0), 0.58);
+  return tip1 * 0.74 + tip2 * 0.26;
+}
+// Crisp rest-pose aerospace panel lines, hatches & rivet rows (zero stock camo/decal bleed)
+float fpPanelGrooves(vec3 mp) {
+  float ax = abs(mp.x);
+  float seamZ = smoothstep(0.015, 0.003, abs(fract(mp.z * 0.62) - 0.5));
+  float seamX = smoothstep(0.015, 0.003, abs(fract(ax * 0.74) - 0.5));
+  float swept = smoothstep(0.014, 0.003, abs(fract((mp.z - ax * 0.56) * 0.72) - 0.5)) * step(1.6, ax);
+  vec2 cell = floor(vec2(ax * 0.74, mp.z * 0.62));
+  float cellTone = (fpHash2(cell) - 0.5) * 0.06;
+  float rivetZ = smoothstep(0.010, 0.003, abs(fract(mp.z * 0.62 + 0.03) - 0.5))
+               * smoothstep(0.18, 0.05, abs(fract(ax * 6.5) - 0.5));
+  float lines = max(max(seamZ, seamX), swept);
+  return clamp(lines * 0.65 + rivetZ * 0.28 + max(cellTone, 0.0), 0.0, 0.85);
+}
+// Animated parallax starfield & prismatic metal flakes
+float fpParallaxStars(vec2 uv, float t, float scale) {
+  vec2 g = uv * scale;
+  vec2 id = floor(g);
+  vec2 lv = fract(g) - 0.5;
+  float h = fpHash2(id);
+  vec2 jitter = (vec2(fract(h * 19.3), fract(h * 41.7)) - 0.5) * 0.62;
+  float d = length(lv - jitter);
+  float twinkle = 0.45 + 0.55 * sin(t * (2.2 + fract(h * 11.1) * 4.5) + h * 42.0);
+  return step(0.84, h) * smoothstep(0.13, 0.02, d) * twinkle;
+}
+// Indian Air Force tricolor roundel (saffron outer, white middle, green center + crisp edge)
+vec4 fpIafRoundel(vec2 delta, float r, float aa) {
+  float d = length(delta) / r;
+  float alpha = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, d);
+  vec3 saffron = vec3(1.0, 0.36, 0.03);
+  vec3 white = vec3(0.94, 0.95, 0.97);
+  vec3 green = vec3(0.015, 0.42, 0.022);
+  vec3 rim = vec3(0.04, 0.045, 0.055);
+  vec3 col = mix(white, saffron, smoothstep(0.66 - aa, 0.66 + aa, d));
+  col = mix(green, col, smoothstep(0.34 - aa, 0.34 + aa, d));
+  col = mix(col, rim, smoothstep(0.93 - aa, 0.97 + aa, d));
+  return vec4(col, alpha * step(0.005, alpha));
+}
+// IAF rectangular tricolor fin flash (left-to-right nose->tail: Saffron | White | Green)
+vec4 fpIafFinFlash(vec2 uv, float aa) {
+  vec2 d2 = max(abs(uv - 0.5) - 0.5, vec2(0.0));
+  float box = length(d2);
+  float mask = (1.0 - smoothstep(0.0, aa, box)) * step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+  vec3 saffron = vec3(1.0, 0.38, 0.03);
+  vec3 white = vec3(0.96, 0.97, 0.99);
+  vec3 green = vec3(0.018, 0.48, 0.028);
+  vec3 col = mix(saffron, white, smoothstep(0.333 - aa, 0.333 + aa, uv.x));
+  col = mix(col, green, smoothstep(0.666 - aa, 0.666 + aa, uv.x));
+  float border = 1.0 - smoothstep(0.0, 0.055, min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y)));
+  col = mix(col, vec3(0.03, 0.035, 0.045), border * 0.75);
+  return vec4(col, mask * step(0.005, mask));
+}
+
+FpSkinEval fpEvalSkin(vec3 rp, vec3 rnRaw, vec3 baseTex) {
+  FpSkinEval res;
+  res.color = baseTex;
+  res.roughness = 0.5;
+  res.metalness = 0.1;
+  res.clearcoatMul = 1.0;
+  res.emissive = vec3(0.0);
+  res.skinWeight = 0.0;
+
+  vec3 rn = normalize(rnRaw);
+  float isGripen = step(0.5, uAirframeType) * (1.0 - step(1.5, uAirframeType));
+  float isKestrel = step(1.5, uAirframeType);
+  float isSu30 = 1.0 - step(0.5, uAirframeType);
+  float ax = abs(rp.x);
+
+  // Compute view-space / decal coords BEFORE any conditional branch to guarantee clean derivative evaluation
+  vec3 camOffset = uSkinCamLocal - rp;
+  vec3 viewDir = normalize(length(camOffset) > 0.05 ? camOffset : vec3(-0.4, 0.35, -0.85));
+  float ndv = clamp(abs(dot(rn, viewDir)), 0.0, 1.0);
+  float fresnel = pow(1.0 - ndv, 2.75);
+
+  vec2 wCenter = isSu30 > 0.5 ? vec2(5.15, 2.38) : (isGripen > 0.5 ? vec2(2.75, 1.72) : vec2(3.65, 3.65));
+  float wRad = isSu30 > 0.5 ? 0.50 : (isGripen > 0.5 ? 0.38 : 0.42);
+  float aaWingRnd = max(fwidth(length(vec2(ax - wCenter.x, rp.z - wCenter.y)) / wRad), 0.015);
+  vec2 rCheekPos = isSu30 > 0.5 ? vec2(-10.44, 0.02) : (isGripen > 0.5 ? vec2(-6.12, -0.05) : vec2(-6.35, 0.02));
+  float rCheekRad = isSu30 > 0.5 ? 0.165 : 0.125;
+  float aaCheekRnd = max(fwidth(length(rp.zy - rCheekPos) / rCheekRad), 0.015);
+  float z0Fin = isSu30 > 0.5 ? 4.18 : (isGripen > 0.5 ? 3.40 : 5.30);
+  float z1Fin = isSu30 > 0.5 ? 4.94 : (isGripen > 0.5 ? 4.08 : 6.10);
+  float y0Fin = isSu30 > 0.5 ? 2.20 : (isGripen > 0.5 ? 1.48 : 1.40);
+  float y1Fin = isSu30 > 0.5 ? 2.66 : (isGripen > 0.5 ? 1.84 : 1.80);
+  vec2 fUv = vec2((rp.z - z0Fin) / (z1Fin - z0Fin), (rp.y - y0Fin) / (y1Fin - y0Fin));
+  float aaFin = max(fwidth(fUv.x) + fwidth(fUv.y), 0.015);
+  float zFront = isSu30 > 0.5 ? -10.14 : (isGripen > 0.5 ? -5.88 : -6.10);
+  float zBack  = isSu30 > 0.5 ? -8.72  : (isGripen > 0.5 ? -4.92 : -5.05);
+  float yBot   = isSu30 > 0.5 ? -0.15  : (isGripen > 0.5 ? -0.18 : -0.12);
+  float yTop   = isSu30 > 0.5 ?  0.21  : (isGripen > 0.5 ?  0.08 :  0.14);
+  float uSB = rp.x < 0.0 ? (rp.z - zFront) / (zBack - zFront) : (zBack - rp.z) / (zBack - zFront);
+  float vSB = (rp.y - yBot) / (yTop - yBot);
+  vec4 sbSample = texture2D(uMarkingsTex, clamp(vec2(uSB, vSB), 0.0, 1.0));
+
+  if (uSkinMode < 0.5) return res;
+
+  // 1. Engine nozzles untouched (heat-tinted titanium & bronze petals)
+  float nozzleMask = 0.0;
+  float shroudCollar = 0.0;
+  if (isSu30 > 0.5) {
+    float rNoz = length(vec2(ax - 1.22, rp.y + 0.51));
+    nozzleMask = smoothstep(5.58, 5.74, rp.z) * (1.0 - smoothstep(0.61, 0.72, rNoz));
+    shroudCollar = smoothstep(5.16, 5.34, rp.z) * (1.0 - smoothstep(5.58, 5.74, rp.z)) * (1.0 - smoothstep(0.58, 0.68, rNoz));
+  } else if (isGripen > 0.5) {
+    float rNoz = length(rp.xy);
+    nozzleMask = smoothstep(4.78, 4.92, rp.z) * (1.0 - smoothstep(0.41, 0.50, rNoz));
+    shroudCollar = smoothstep(4.52, 4.66, rp.z) * (1.0 - smoothstep(4.78, 4.92, rp.z)) * (1.0 - smoothstep(0.41, 0.50, rNoz));
+  } else {
+    float rNoz = length(vec2(ax - 0.56, rp.y));
+    nozzleMask = smoothstep(7.05, 7.25, rp.z) * (1.0 - smoothstep(0.46, 0.56, rNoz));
+  }
+  res.skinWeight = clamp(1.0 - nozzleMask, 0.0, 1.0);
+  if (uIsRivetOverlay > 0.5) {
+    res.skinWeight *= 0.85;
+  }
+
+  // Map Gripen & Kestrel cleanly into Su-30 metric silhouette space for consistent proportions
+  vec3 mp = rp;
+  if (isGripen > 0.5) {
+    mp = vec3(rp.x * (7.35 / 4.02), rp.y * 1.48 + 0.25, (rp.z + 8.63) * (22.6 / 14.10) - 13.80);
+  } else if (isKestrel > 0.5) {
+    mp = vec3(rp.x * (7.35 / 5.45), rp.y * 1.35 + 0.15, (rp.z + 9.0) * (22.6 / 16.50) - 13.80);
+  }
+  float maxX = abs(mp.x);
+
+  // 2. Matte cool slate grey radome nose cone (no flames on radome)
+  float radomeZ = -11.00 - mp.y * 0.14;
+  float radomeMask = 1.0 - smoothstep(radomeZ - 0.025, radomeZ + 0.025, rp.z);
+  if (isGripen > 0.5) {
+    float gRadZ = -6.48 - rp.y * 0.12;
+    radomeMask = 1.0 - smoothstep(gRadZ - 0.025, gRadZ + 0.025, rp.z);
+  } else if (isKestrel > 0.5) {
+    radomeMask = 1.0 - smoothstep(-6.75, -6.70, rp.z);
+  }
+  float radomeSeam = isSu30 > 0.5
+    ? exp(-pow((rp.z - radomeZ) / 0.022, 2.0))
+    : (isGripen > 0.5 ? exp(-pow((rp.z + 6.48 + rp.y * 0.12) / 0.02, 2.0)) : exp(-pow((rp.z + 6.72) / 0.02, 2.0)));
+
+  // 3. Clean aerospace panel seams & micro-rivets + forged carbon geometric micro-weave
+  float groove = fpPanelGrooves(mp);
+  float weave = sin((mp.x + mp.z) * 44.0) * sin((mp.x - mp.z) * 44.0) * 0.5 + 0.5;
+
+  // 4. Swept Flame Boundary with genuine billowing airflow curls & plasma ripples!
+  float gNorm = clamp((uSkinGLoad - 1.0) / 8.0, 0.0, 1.0);
+  float flowRate = 2.4 + uSkinAirspeed * 5.4 + uSkinAB * 6.2 + gNorm * 3.0 + uSkinJerk * 2.2;
+  float advZ = mp.z - uSkinTime * flowRate;
+  vec2 warp = vec2(
+    fpNoise2(vec2(maxX * 1.4 - uSkinTime * 0.9, advZ * 0.45)) - 0.5,
+    fpNoise2(vec2(maxX * 1.1 + mp.y * 0.9, advZ * 0.52 + 7.3)) - 0.5
+  );
+  float nMacro = fpFbm2(vec2(maxX * 0.92 + mp.y * 0.65, advZ * 0.58) + warp * 0.65) - 0.5;
+  float nFine = fpNoise2(vec2(maxX * 3.2 - mp.y * 1.9, advZ * 2.3)) - 0.5;
+  float rollWave = sin(advZ * 1.35 + maxX * 1.85) * 0.095;
+  float liveWiggle = nMacro * (0.28 + 0.22 * uSkinAB + 0.16 * gNorm) + nFine * (0.09 + 0.10 * uSkinAB) + rollWave * (0.75 + 0.85 * uSkinAB);
+
+  // Zone weights
+  float finZone = isSu30 > 0.5
+    ? smoothstep(1.80, 2.02, ax) * smoothstep(0.68, 0.92, rp.y)
+    : (isGripen > 0.5 ? (1.0 - smoothstep(0.20, 0.42, ax)) * smoothstep(0.55, 0.82, rp.y) * smoothstep(0.8, 1.15, rp.z)
+                       : smoothstep(0.65, 1.0, ax) * smoothstep(0.40, 0.72, rp.y) * smoothstep(2.8, 3.2, rp.z));
+  float stabZone = isSu30 > 0.5
+    ? smoothstep(1.90, 2.12, ax) * smoothstep(3.98, 4.22, rp.z) * (1.0 - smoothstep(0.18, 0.45, rp.y))
+    : 0.0;
+  float wingZone = smoothstep(1.62, 1.95, maxX) * (1.0 - finZone) * (1.0 - stabZone);
+
+  // A) Twin / Center Vertical Fin Flame Contour
+  float zFinLE = isSu30 > 0.5 ? (1.65 + max(0.0, rp.y - 0.80) * 0.98)
+               : (isGripen > 0.5 ? (0.85 + max(0.0, rp.y - 0.60) * 1.18) : (3.1 + max(0.0, rp.y - 0.4) * 1.15));
+  float fyFin = isSu30 > 0.5 ? clamp((rp.y - 0.85) / 2.75, 0.0, 1.0) : clamp((rp.y - 0.62) / 1.85, 0.0, 1.0);
+  float finZBase = zFinLE + (isSu30 > 0.5 ? mix(0.68, 0.46, fyFin) : mix(0.42, 0.26, fyFin));
+  float finOff = rp.z - finZBase;
+  float finT1 = fpTongue(fyFin, 0.22, 0.14, finOff, 0.08 + 0.04 * sin(uSkinTime * 2.1));
+  float finT2 = fpTongue(fyFin, 0.56, 0.13, finOff, 0.09 + 0.04 * cos(uSkinTime * 2.6 + 1.1));
+  float finT3 = fpTongue(fyFin, 0.86, 0.11, finOff, 0.07 + 0.03 * sin(uSkinTime * 3.1 + 2.3));
+  float finTongues = (isSu30 > 0.5 ? 0.54 : 0.38) * max(finT1, max(finT2, finT3));
+  float dFin = finOff + finTongues + liveWiggle * 0.52;
+
+  // B) Horizontal Stabilator Flame Contour
+  float sStab = clamp((ax - 2.0) / 2.85, 0.0, 1.0);
+  float zStabLE = 4.05 + max(0.0, ax - 2.0) * 0.76;
+  float stabBase = zStabLE + 0.42;
+  float stabOff = rp.z - stabBase;
+  float st1 = fpTongue(sStab, 0.20, 0.19, stabOff, 0.10 + 0.04 * sin(uSkinTime * 2.2));
+  float st2 = fpTongue(sStab, 0.58, 0.18, stabOff, 0.11 + 0.04 * cos(uSkinTime * 2.7 + 0.9));
+  float st3 = fpTongue(sStab, 0.88, 0.14, stabOff, 0.08 + 0.04 * sin(uSkinTime * 3.0 + 1.8));
+  float stabTongues = 0.44 * max(st1, max(st2, st3));
+  float dStab = stabOff + stabTongues + liveWiggle * 0.45;
+
+  // C) Main Wing TOP & BOTTOM Flame Contours (4 asymmetrical animated S-curved tongues)
+  float isTop = smoothstep(-0.20, 0.15, rn.y);
+  float sWing = clamp((maxX - 1.85) / 5.55, 0.0, 1.0);
+  float zWingTopBase = -0.58 + (maxX - 2.0) * 0.58;
+  float wTopOff = mp.z - zWingTopBase;
+  float wt1 = 1.44 * fpTongue(sWing, 0.06, 0.13, wTopOff, -0.05 + 0.05 * sin(uSkinTime * 2.1));
+  float wt2 = 1.18 * fpTongue(sWing, 0.30, 0.12, wTopOff,  0.07 + 0.06 * cos(uSkinTime * 2.5 + 1.2));
+  float wt3 = 1.00 * fpTongue(sWing, 0.56, 0.115, wTopOff, 0.08 + 0.06 * sin(uSkinTime * 2.9 + 2.4));
+  float wt4 = 0.84 * fpTongue(sWing, 0.85, 0.11, wTopOff,  0.07 + 0.05 * cos(uSkinTime * 3.3 + 0.7));
+  float dWingTop = wTopOff + max(max(wt1, wt2), max(wt3, wt4)) + liveWiggle;
+  if (isGripen > 0.5) {
+    float gS = clamp((ax - 0.82) / 3.20, 0.0, 1.0);
+    float gLE = -2.15 + max(0.0, ax - 0.82) * 1.36;
+    float gBase = gLE + 0.82 - max(0.0, ax - 0.82) * 0.14;
+    float gOff = rp.z - gBase;
+    float gt1 = 0.74 * fpTongue(gS, 0.14, 0.18, gOff, 0.07 + 0.05 * sin(uSkinTime * 2.3));
+    float gt2 = 0.64 * fpTongue(gS, 0.48, 0.16, gOff, 0.09 + 0.05 * cos(uSkinTime * 2.8 + 1.0));
+    float gt3 = 0.54 * fpTongue(gS, 0.82, 0.15, gOff, 0.08 + 0.05 * sin(uSkinTime * 3.1));
+    dWingTop = (gOff + max(gt1, max(gt2, gt3))) * 1.35 + liveWiggle;
+  }
+
+  float zWingBotBase = 1.18 + (maxX - 5.0) * 0.48 + max(0.0, 3.55 - maxX) * 2.15;
+  float wBotOff = mp.z - zWingBotBase;
+  float wb1 = 0.85 * fpTongue(sWing, 0.34, 0.13, wBotOff, 0.06 + 0.05 * sin(uSkinTime * 2.4));
+  float wb2 = 0.80 * fpTongue(sWing, 0.62, 0.12, wBotOff, 0.08 + 0.05 * cos(uSkinTime * 2.9));
+  float wb3 = 0.72 * fpTongue(sWing, 0.88, 0.11, wBotOff, 0.07 + 0.05 * sin(uSkinTime * 3.3));
+  float dWingBot = wBotOff + max(wb1, max(wb2, wb3)) + liveWiggle * 0.9;
+  if (isGripen > 0.5) {
+    float gS = clamp((ax - 0.82) / 3.20, 0.0, 1.0);
+    float gLEb = -1.75 + max(0.0, ax - 0.82) * 1.30 + max(0.0, 1.85 - ax) * 1.90;
+    float gOffB = rp.z - (gLEb + 0.75);
+    float gb1 = 0.58 * fpTongue(gS, 0.35, 0.16, gOffB, 0.07 + 0.05 * sin(uSkinTime * 2.3));
+    float gb2 = 0.52 * fpTongue(gS, 0.75, 0.15, gOffB, 0.08 + 0.05 * cos(uSkinTime * 2.9));
+    dWingBot = (gOffB + max(gb1, gb2)) * 1.35 + liveWiggle;
+  }
+  float dWing = mix(dWingBot, dWingTop, isTop);
+
+  // D) Unified Dorsal Spine, Side LERX Shoulder Tongues, Engine Cowls & True Ventral Belly
+  float isVentral = isGripen > 0.5
+    ? smoothstep(-0.35, -0.68, rn.y) * (1.0 - smoothstep(-0.42, -0.15, rp.y)) * (1.0 - smoothstep(3.2, 3.8, rp.z))
+    : smoothstep(-0.35, -0.68, rn.y) * (1.0 - smoothstep(-0.74, -0.50, rp.y)) * (1.0 - smoothstep(3.9, 4.5, rp.z));
+
+  float spineTongue = 3.05 * exp(-pow(maxX / 0.78, 2.0));
+  float sideShoulderMask = smoothstep(0.45, 0.75, abs(rn.x)) * smoothstep(0.60, 1.05, maxX);
+  float sideTongue = sideShoulderMask * (2.65 * exp(-pow((mp.y - 0.10) / 0.38, 2.0)) + 1.35 * exp(-pow((mp.y + 0.45) / 0.32, 2.0)));
+  float cowlCusps = 0.62 * fpFlameCusps(maxX * 2.55, 0.18 * mp.y, 1.75, 0.8);
+  float dFuseTop = mp.z - (0.15 - max(spineTongue, sideTongue) - cowlCusps + liveWiggle * 0.92);
+  if (isGripen > 0.5) {
+    float gSpine = 2.60 * exp(-pow(ax / 0.52, 2.0));
+    float gSide = smoothstep(0.45, 0.75, abs(rn.x)) * 1.85 * exp(-pow((rp.y + 0.05) / 0.28, 2.0));
+    dFuseTop = (rp.z - (-0.75 - max(gSpine, gSide))) * 1.35 + liveWiggle * 0.92;
+  }
+  float dFuseBot = isGripen > 0.5
+    ? (rp.z - (2.35 + 0.22 * cos(ax * 2.4))) * 1.35 + liveWiggle * 0.55
+    : mp.z - (3.55 + 0.32 * cos(maxX * 2.5) + liveWiggle * 0.6);
+  float dFuse = mix(dFuseTop, dFuseBot, isVentral);
+
+  float dFlame = dFuse;
+  dFlame = mix(dFlame, dWing, wingZone);
+  dFlame = mix(dFlame, dStab, stabZone);
+  dFlame = mix(dFlame, dFin, finZone);
+
+  float canopyFrameMask = isSu30 > 0.5
+    ? smoothstep(-9.72, -9.45, rp.z) * (1.0 - smoothstep(-4.72, -4.45, rp.z)) * smoothstep(0.74, 0.92, rp.y) * (1.0 - smoothstep(0.58, 0.74, ax))
+    : (isGripen > 0.5 ? smoothstep(-5.98, -5.75, rp.z) * (1.0 - smoothstep(-3.45, -3.22, rp.z)) * smoothstep(0.24, 0.36, rp.y) * (1.0 - smoothstep(0.38, 0.52, ax)) : 0.0);
+
+  float aaD = clamp(fwidth(dFlame), 0.004, 0.045);
+
+  // 5. Select Living Skin Colorways (1 = Flame Phantom Solar Flare, 2 = Cherenkov Ion Surge, 3 = Nebula Sovereign Prism, 4 = Solaris Aurora)
+  vec3 palPearl = vec3(0.90, 0.915, 0.935);
+  vec3 palObsidian = vec3(0.007, 0.009, 0.014);
+  vec3 palFireLow = vec3(0.58, 0.020, 0.002);
+  vec3 palFireMid = vec3(1.0, 0.13, 0.004);
+  vec3 palFireAmber = vec3(1.0, 0.38, 0.018);
+  vec3 palFireHot = vec3(1.0, 0.90, 0.54);
+  vec3 palNebA = vec3(0.85, 0.22, 0.03);
+  vec3 palNebB = vec3(0.24, 0.38, 0.85);
+  float filmPhase = 0.08;
+
+  if (uSkinMode > 3.5) {
+    // Mode 4: Solaris Aurora Borealis (frost titanium -> jade / teal -> imperial gold curtains on pitch obsidian glass)
+    palPearl = vec3(0.86, 0.92, 0.90);
+    palObsidian = vec3(0.006, 0.014, 0.016);
+    palFireLow = vec3(0.02, 0.48, 0.34);
+    palFireMid = vec3(0.06, 0.92, 0.60);
+    palFireAmber = vec3(0.98, 0.78, 0.16);
+    palFireHot = vec3(0.86, 1.0, 0.86);
+    palNebA = vec3(0.06, 0.92, 0.62);
+    palNebB = vec3(0.95, 0.72, 0.22);
+    filmPhase = 0.42;
+  } else if (uSkinMode > 2.5) {
+    // Mode 3: Nebula Sovereign Prism (moonstone pearl -> crimson-violet-rose-gold parallax cosmos in deep black void)
+    palPearl = vec3(0.90, 0.88, 0.94);
+    palObsidian = vec3(0.008, 0.005, 0.018);
+    palFireLow = vec3(0.46, 0.04, 0.42);
+    palFireMid = vec3(0.96, 0.16, 0.68);
+    palFireAmber = vec3(1.0, 0.62, 0.36);
+    palFireHot = vec3(1.0, 0.92, 1.0);
+    palNebA = vec3(0.88, 0.18, 0.72);
+    palNebB = vec3(0.24, 0.72, 1.0);
+    filmPhase = 0.74;
+  } else if (uSkinMode > 1.5) {
+    // Mode 2: Cherenkov Ion Surge (cryo silver-white -> cobalt -> cyan-white electric arc plasma on dark carbon)
+    palPearl = vec3(0.88, 0.92, 0.96);
+    palObsidian = vec3(0.005, 0.010, 0.022);
+    palFireLow = vec3(0.05, 0.14, 0.72);
+    palFireMid = vec3(0.10, 0.56, 1.0);
+    palFireAmber = vec3(0.46, 0.95, 1.0);
+    palFireHot = vec3(0.92, 0.99, 1.0);
+    palNebA = vec3(0.14, 0.70, 1.0);
+    palNebB = vec3(0.58, 0.32, 1.0);
+    filmPhase = 0.56;
+  }
+
+  // Blend subtle world-atmosphere chroma strictly into grazing thin-film clearcoat & recessed parallax highlights
+  palNebB = mix(palNebB, uWorldTint, 0.42);
+
+  // 6. Asymmetric 3-Layer View-Parallax Obsidian Glass Interior (zero Rorschach spine symmetry!)
+  vec2 pOff = viewDir.xz / max(0.34, ndv + 0.26);
+  vec2 uvSurface = vec2(mp.x, mp.z);
+  vec2 uvDepth1 = uvSurface - pOff * 0.22; // mid depth: plasma/magma/lightning veins
+  vec2 uvDepth2 = uvSurface - pOff * 0.52; // deep cosmos: nebula wisps & twinkling stars
+
+  float swirlSpeed = 0.28 + 0.52 * uSkinAB + 0.30 * gNorm;
+  vec2 nebFlow = uvDepth2 * 0.36 + vec2(sin(uSkinTime * 0.24 + mp.z * 0.18) * 0.32, -uSkinTime * swirlSpeed);
+  float nebGasA = fpFbm2(nebFlow);
+  float nebGasB = fpFbm2(nebFlow * 1.55 - vec2(uSkinTime * 0.16, 4.1));
+  float auroraCurtain = uSkinMode > 3.5
+    ? pow(0.5 + 0.5 * sin(uvDepth1.x * 2.1 + fpFbm2(vec2(uvDepth1.x * 0.7, uvDepth1.y * 0.35 - uSkinTime * 0.85)) * 4.2), 3.4)
+    : 0.0;
+
+  float starsLayer1 = fpParallaxStars(uvDepth1 * 1.15, uSkinTime, 2.8);
+  float starsLayer2 = fpParallaxStars(uvDepth2 * 1.45 + vec2(3.1, 7.7), uSkinTime * 1.2 + 1.4, 4.2);
+  float flakeAngle = max(0.0, dot(normalize(vec3(sin(fpHash2(floor(rp.xz * 28.0)) * 20.0), 1.4, cos(fpHash2(floor(rp.zx * 28.0)) * 20.0))), viewDir));
+  float metallicFlake = pow(flakeAngle, 16.0) * 0.45;
+
+  // Razor-thin asymmetric magma / plasma veins branching aft from the flame tongues into deep obsidian glass
+  float veinDistDecay = smoothstep(0.05, 0.45, dFlame) * (1.0 - smoothstep(2.0, 5.8, dFlame));
+  vec2 veinCoord = vec2(mp.x * 0.95 + warp.x * 0.55 + mp.y * 0.25, advZ * 0.65 + warp.y * 0.42);
+  float veinsPrimary = pow(fpVeinRidge(veinCoord * 1.05), 1.65);
+  float veinsVolt = uSkinMode > 1.5 && uSkinMode < 2.5
+    ? pow(fpVeinRidge(veinCoord * 1.9 + vec2(uSkinTime * 2.1, -uSkinTime * 2.8)), 1.5) * (0.45 + 0.75 * gNorm + 0.55 * uSkinAB)
+    : 0.0;
+  float aftVeins = clamp((veinsPrimary * (0.55 + 0.60 * uSkinAB + 0.45 * gNorm) + veinsVolt * 0.85) * (0.28 + 0.72 * veinDistDecay), 0.0, 1.0);
+
+  // Detached glowing ember wisps peeling cleanly off asymmetrical flame tips
+  float wispField = fpFbm2(vec2(mp.x * 2.1 + mp.y * 1.2 + sin(uSkinTime * 0.8), advZ * 1.8));
+  float detachedLicks = smoothstep(0.64, 0.84, wispField) * smoothstep(0.32, 0.68, dFlame) * (1.0 - smoothstep(0.95, 1.95, dFlame));
+
+  // Deep pitch-black obsidian albedo (never muddy grey!) with subtle recessed cosmos & glint
+  vec3 parallaxVoid = palObsidian * mix(0.88, 1.15, weave);
+  float nebDepthWeight = uSkinMode > 2.5 ? 0.09 : (uSkinMode > 3.5 ? 0.07 : 0.035);
+  parallaxVoid += mix(palNebA, palNebB, nebGasB) * smoothstep(0.48, 0.88, nebGasA) * nebDepthWeight;
+  parallaxVoid += palNebA * auroraCurtain * 0.06;
+  parallaxVoid += mix(vec3(0.88, 0.92, 1.0), palFireAmber, 0.28) * (starsLayer1 * 0.32 + starsLayer2 * 0.55);
+  parallaxVoid += mix(uWorldTint, palFireAmber, 0.25) * metallicFlake * 0.08;
+
+  // Crisp pure white pearl forebody (fresnel^4.2 keeps straight-on diamond white!)
+  float fresnelRim = pow(1.0 - ndv, 4.2);
+  vec3 filmCol = fpThinFilm(ndv, filmPhase + uSkinLightSweep * 0.32 + mp.z * 0.025);
+  vec3 worldBounceTint = mix(uWorldTint, filmCol, 0.62);
+  vec3 forebodyPaint = palPearl + worldBounceTint * fresnelRim * (uSkinMode > 2.5 ? 0.14 : 0.08);
+  forebodyPaint += vec3(0.92, 0.96, 1.0) * metallicFlake * 0.03;
+
+  float flameSpan = 0.56 + 0.16 * uSkinAB + 0.10 * gNorm;
+  float blackMask = smoothstep(flameSpan * 0.78 - aaD, flameSpan + 0.14 + aaD, dFlame);
+  vec3 basePaint = mix(forebodyPaint, parallaxVoid, smoothstep(-0.02 - aaD, 0.06 + aaD, dFlame));
+
+  // Wide sharp dark charcoal/obsidian outer graphic border separating pearl white from fire
+  float rimOuter = smoothstep(-0.095 - aaD, -0.040, dFlame) * (1.0 - smoothstep(0.025, 0.075 + aaD, dFlame));
+  basePaint = mix(basePaint, vec3(0.008, 0.008, 0.011), rimOuter * 0.98);
+
+  // Multi-stop living fire + flowing aurora/plasma tongue cores
+  float fireTurbulence = fpFbm2(vec2(mp.x * 2.2 + mp.y * 1.8, advZ * 2.1)) * 0.64 + fpNoise2(vec2(mp.x * 4.8, advZ * 4.2)) * 0.36;
+  float fireBand = smoothstep(0.015 - aaD, 0.065, dFlame) * (1.0 - smoothstep(flameSpan * 0.80, flameSpan * 1.22 + aaD, dFlame));
+  fireBand = clamp(max(fireBand, detachedLicks * 0.68), 0.0, 1.0);
+  float tFire = clamp(dFlame / max(flameSpan, 0.05), 0.0, 1.0);
+  float coreMask = sin(clamp(tFire * 3.14159265, 0.0, 3.14159265));
+  float hotCore = clamp(max(coreMask * (0.38 + 0.72 * fireTurbulence + 0.42 * uSkinAB + 0.28 * gNorm), detachedLicks * 0.78), 0.0, 1.0);
+
+  vec3 fireAlbedo = mix(palFireLow, palFireMid, smoothstep(0.10, 0.46, hotCore));
+  fireAlbedo = mix(fireAlbedo, palFireAmber, smoothstep(0.42, 0.82, hotCore));
+  float surgeHot = clamp(max(uSkinAB, gNorm * 0.88) - 0.08, 0.0, 1.0);
+  fireAlbedo = mix(fireAlbedo, palFireHot, smoothstep(0.72, 0.96, hotCore) * surgeHot);
+
+  fireBand *= (1.0 - canopyFrameMask);
+  hotCore *= (1.0 - canopyFrameMask);
+  float suppressedVeins = pow(aftVeins, 1.45) * blackMask * (1.0 - canopyFrameMask);
+
+  basePaint = mix(basePaint, fireAlbedo, fireBand);
+  basePaint = mix(basePaint, mix(palFireMid, palFireAmber, aftVeins), suppressedVeins * 0.28);
+  basePaint = mix(basePaint, palObsidian, canopyFrameMask);
+  blackMask = max(blackMask, canopyFrameMask);
+
+  // Subtle world-tinted mirror edge sheen only at sharp grazing angles of dark wings
+  basePaint += worldBounceTint * pow(1.0 - ndv, 4.4) * blackMask * 0.05;
+
+  // Aerospace panel-line & rivet shading across white, flame, and black zones
+  basePaint *= mix(1.0, 0.74, groove);
+
+  // 7. Continuous Telemetry Heartbeat Sweep + Razor-Crisp Radial Shockwave Ring!
+  float sweepZ = -11.5 + fract(uSkinTime * (0.21 + 0.26 * uSkinAB + 0.14 * gNorm)) * 19.5;
+  float MachSweep = exp(-pow((mp.z - sweepZ) / 0.36, 2.0)) * (0.22 + 0.45 * uSkinAB + 0.35 * gNorm);
+  float shockR = uSkinPulseAge * 26.0;
+  float dPulse = length(rp - uSkinPulseOrigin) - shockR;
+  float shockRing = exp(-dPulse * dPulse * 18.0) * exp(-uSkinPulseAge * 1.45) * step(uSkinPulseAge, 3.0);
+  float totalWave = clamp(MachSweep * (groove * 0.65 + aftVeins * 1.15 + fireBand * 0.55) + shockRing * (0.85 + aftVeins * 1.1), 0.0, 1.85);
+
+  // 8. Indian Air Force Markings: Forward Cheek Roundel + SB-143 + Wing Roundels + Fin Flashes
+  float cheekZone = isSu30 > 0.5
+    ? smoothstep(0.50, 0.70, abs(rn.x)) * smoothstep(0.28, 0.45, ax) * smoothstep(-10.85, -10.55, rp.z) * (1.0 - smoothstep(-8.65, -8.35, rp.z)) * smoothstep(-0.32, -0.18, rp.y) * (1.0 - smoothstep(0.24, 0.38, rp.y))
+    : smoothstep(0.48, 0.68, abs(rn.x)) * smoothstep(0.16, 0.32, ax) * smoothstep(-6.50, -6.25, rp.z) * (1.0 - smoothstep(-4.85, -4.60, rp.z));
+  vec4 fwdRnd = fpIafRoundel(rp.zy - rCheekPos, rCheekRad, aaCheekRnd);
+  basePaint = mix(basePaint, fwdRnd.rgb, fwdRnd.a * cheekZone);
+  float sbInside = step(0.0, uSB) * step(uSB, 1.0) * step(0.0, vSB) * step(vSB, 1.0);
+  basePaint = mix(basePaint, sbSample.rgb * 0.18, sbSample.a * cheekZone * sbInside);
+
+  // Wing IAF Tricolor Roundels (TOP & BOTTOM outer wings)
+  float wingRndMask = smoothstep(0.45, 0.72, abs(rn.y)) * (1.0 - finZone) * (1.0 - stabZone);
+  float yBand = isSu30 > 0.5 ? (1.0 - smoothstep(0.24, 0.36, abs(rp.y))) : 1.0;
+  vec4 wRnd = fpIafRoundel(vec2(ax - wCenter.x, rp.z - wCenter.y), wRad, aaWingRnd);
+  float wingRndPop = wRnd.a * wingRndMask * yBand;
+  basePaint = mix(basePaint, wRnd.rgb, wingRndPop);
+
+  // IAF Tricolor Fin Flash on BOTH vertical fins
+  vec4 flash = fpIafFinFlash(fUv, aaFin);
+  float finFlashPop = flash.a * finZone * smoothstep(0.50, 0.62, abs(rn.x));
+  vec3 finFlashCol = flash.rgb;
+  basePaint = mix(basePaint, flash.rgb, finFlashPop);
+
+  // 9. Matte Grey Radome & Titanium Nozzle Shroud Collar
+  vec3 radomeGrey = vec3(0.23, 0.26, 0.31) * mix(1.0, 0.80, groove * 0.4);
+  basePaint = mix(basePaint, radomeGrey, radomeMask);
+  basePaint = mix(basePaint, vec3(0.025, 0.028, 0.032), radomeSeam * 0.85);
+  basePaint = mix(basePaint, vec3(0.16, 0.17, 0.20), shroudCollar);
+
+  // 10. Selective Razor-Crisp HDR Glow (keeps pearl-white sharp & black ink deep while sparks/veins/waves ignite!)
+  float pulseBeat = 0.80 + 0.20 * sin(uSkinTime * (4.6 + uSkinAB * 7.5 + gNorm * 4.5) - mp.z * 1.45);
+  float travelingCore = smoothstep(0.40, 0.95, sin(advZ * 2.1 + mp.x * 1.4)) * 0.65 + 0.35;
+  float surgeBoost = clamp(0.55 + uSkinAB * 2.65 + gNorm * 1.55 + uSkinDarkness * 0.60 + clamp(uSkinJerk, 0.0, 1.0) * 0.65, 0.0, 4.8);
+  vec3 glowColor = mix(palFireMid, palFireAmber, hotCore);
+  glowColor = mix(glowColor, palFireHot, smoothstep(0.65, 1.0, hotCore) * max(surgeHot, travelingCore * 0.38));
+
+  float filamentHdr = pow(clamp(hotCore, 0.0, 1.0), 1.95) * travelingCore;
+  vec3 emissive = glowColor * (fireBand * 0.28 + filamentHdr * 1.15) * surgeBoost * pulseBeat * (1.0 - radomeMask) * (1.0 - shroudCollar);
+  emissive += mix(palFireMid, palFireHot, 0.52) * suppressedVeins * (0.45 + 1.45 * uSkinAB + 0.95 * gNorm + 0.45 * uSkinDarkness);
+  emissive += mix(palNebA, palFireHot, 0.48) * auroraCurtain * blackMask * (0.38 + 0.85 * uSkinDarkness + 0.75 * uSkinAB);
+  emissive += mix(palFireMid, palFireHot, 0.72) * totalWave * (0.85 + 1.15 * shockRing) * (1.0 - radomeMask);
+  // Crisp national emblem illumination & deep parallax stars inside obsidian glass
+  emissive += finFlashCol * finFlashPop * 0.16 + basePaint * wingRndPop * 0.06;
+  emissive += mix(vec3(0.75, 0.86, 1.0), palFireAmber, 0.35) * (starsLayer1 * 0.45 + starsLayer2 * 0.92) * blackMask * (0.35 + 0.65 * uSkinDarkness + 0.45 * uSkinAB) * (1.0 - radomeMask);
+
+  // 11. Per-Zone PBR Roughness, Metalness & Clearcoat Modulation
+  float paintRough = mix(0.24, 0.08, smoothstep(0.0, 0.2, dFlame));
+  paintRough = mix(paintRough, 0.30, fireBand);
+  paintRough = clamp(paintRough + groove * 0.14 - suppressedVeins * 0.06, 0.05, 0.92);
+  paintRough = mix(paintRough, 0.64, radomeMask);
+  paintRough = mix(paintRough, 0.32, shroudCollar);
+
+  float paintMetal = mix(0.14, 0.32, blackMask);
+  paintMetal = mix(paintMetal, 0.88, clamp((starsLayer1 + metallicFlake) * blackMask, 0.0, 1.0));
+  paintMetal = mix(paintMetal, 0.05, radomeMask);
+  paintMetal = mix(paintMetal, 0.86, shroudCollar);
+
+  float ccMul = mix(1.0, 0.04, radomeMask) * (1.0 - shroudCollar * 0.78);
+
+  res.color = basePaint;
+  res.roughness = paintRough;
+  res.metalness = paintMetal;
+  res.clearcoatMul = ccMul;
+  res.emissive = emissive;
+  return res;
+}`,
+        )
+        .replace(
+          '#include <map_fragment>',
+          `#include <map_fragment>
+FpSkinEval fpSkin = fpEvalSkin(vRestPos, normalize(vRestNormal), diffuseColor.rgb);
+if (uSkinMode > 0.5) {
+  diffuseColor.rgb = mix(diffuseColor.rgb, fpSkin.color, fpSkin.skinWeight);
+}`,
+        )
+        .replace(
+          '#include <roughnessmap_fragment>',
+          `#include <roughnessmap_fragment>
+if (uSkinMode > 0.5) {
+  roughnessFactor = mix(roughnessFactor, fpSkin.roughness, fpSkin.skinWeight);
+}`,
+        )
+        .replace(
+          '#include <metalnessmap_fragment>',
+          `#include <metalnessmap_fragment>
+if (uSkinMode > 0.5) {
+  metalnessFactor = mix(metalnessFactor, fpSkin.metalness, fpSkin.skinWeight);
+}`,
+        )
+        .replace(
+          '#include <emissivemap_fragment>',
+          `#include <emissivemap_fragment>
+if (uSkinMode > 0.5) {
+  totalEmissiveRadiance = mix(totalEmissiveRadiance, fpSkin.emissive, fpSkin.skinWeight);
+}`,
+        )
+        .replace(
+          '#include <lights_physical_fragment>',
+          `#include <lights_physical_fragment>
+#ifdef USE_CLEARCOAT
+  if (uSkinMode > 0.5) {
+    material.clearcoat *= mix(1.0, fpSkin.clearcoatMul, fpSkin.skinWeight);
+  }
+#endif`,
+        );
+    };
+    mat.customProgramCacheKey = () => `${prevKey ? `${prevKey.call(mat)}|` : ''}solaris-jet-skin-v3-${isRivetLayer ? 1 : 0}`;
+    mat.needsUpdate = true;
+    if (!this.hullSkinMats.includes(mat)) this.hullSkinMats.push(mat);
+  }
+
+  /** Attach exterior canopy tint shader (Clear / Smoked / Gold Iridium) without obscuring cockpit view. */
+  private patchCanopyMaterial(mat: THREE.MeshPhysicalMaterial): void {
+    if (mat.userData.solarisCanopyPatched) return;
+    mat.userData.solarisCanopyPatched = true;
+    const prev = mat.onBeforeCompile;
+    const prevKey = mat.customProgramCacheKey;
+    mat.onBeforeCompile = (shader, renderer) => {
+      prev?.call(mat, shader, renderer);
+      Object.assign(shader.uniforms, this.skinU);
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+attribute vec3 aRestPos;
+attribute vec3 aRestNormal;
+varying vec3 vRestPos;
+varying vec3 vRestNormal;`,
+        )
+        .replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+vRestPos = aRestPos;
+vRestNormal = aRestNormal;`,
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          '#include <common>',
+          `#include <common>
+uniform float uCanopyMode;
+uniform float uSkinInside;
+uniform float uAirframeType;
+varying vec3 vRestPos;
+varying vec3 vRestNormal;`,
+        )
+        .replace(
+          '#include <map_fragment>',
+          `#include <map_fragment>
+float fpDomeMask = (uAirframeType < 0.5)
+  ? smoothstep(0.62, 0.78, vRestPos.y) * smoothstep(-9.52, -9.25, vRestPos.z) * (1.0 - smoothstep(-4.68, -4.42, vRestPos.z))
+  : 1.0;
+float fpExtTint = fpDomeMask * (1.0 - uSkinInside);
+if (uCanopyMode > 1.5) {
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.76, 0.48, 0.08), fpExtTint);
+  diffuseColor.a = mix(diffuseColor.a, 0.72, fpExtTint);
+} else if (uCanopyMode > 0.5) {
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.02, 0.025, 0.035), fpExtTint);
+  diffuseColor.a = mix(diffuseColor.a, 0.64, fpExtTint);
+}
+if (uSkinInside > 0.5) {
+  diffuseColor.a = min(diffuseColor.a, 0.07);
+}`,
+        )
+        .replace(
+          '#include <lights_physical_fragment>',
+          `#include <lights_physical_fragment>
+if (uCanopyMode > 1.5 && fpExtTint > 0.01) {
+  material.specularColor = mix(material.specularColor, vec3(1.0, 0.78, 0.24), fpExtTint * 0.85);
+}`,
+        );
+    };
+    mat.customProgramCacheKey = () => `${prevKey ? `${prevKey.call(mat)}|` : ''}solaris-canopy-tint-v1`;
+    mat.needsUpdate = true;
+    if (!this.canopyMats.includes(mat)) this.canopyMats.push(mat);
   }
 
   /** True when the loaded model has its own cockpit interior. */
@@ -1714,6 +2772,48 @@ if (uClipOn > 0.5) {
     this.root.traverse((o) => {
       o.frustumCulled = false;
     });
+    // Initialize procedural Kestrel hull & canopy with shared rest-pose skin & canopy shaders
+    this.stampRestPose(this.body);
+    for (const mat of [hull, darkHull]) {
+      const pm = this.upgradeToPhysical(mat);
+      this.patchHullSkinMaterial(pm);
+    }
+    const glassPm = this.upgradeToPhysical(glass);
+    this.patchCanopyMaterial(glassPm);
+    this.setupSkinFX();
+    this.skinU.uAirframeType.value = 2;
+    this.repositionSkinFX();
+    this.setSkin(this.skinId);
+    this.setCanopyTint(this.canopyTint);
+  }
+
+  /** Clear any previously loaded GLB airframe and free its WebGL buffers/materials/textures. */
+  public clearLoadedAirframe(): void {
+    if (this.airframe) {
+      this.airframe.removeFromParent();
+      this.airframe = null;
+    }
+    if (this.bubble) {
+      this.bubble.removeFromParent();
+      this.bubble = null;
+    }
+    if (this.canopyFrame) {
+      this.canopyFrame.removeFromParent();
+      this.canopyFrame = null;
+    }
+    this.loadedExtras.clear();
+    this.crew.clear();
+    this.crewHead = null;
+    this.insideMeshes = [];
+    this.canopyMesh = null;
+    const loadedSet = new Set<THREE.Material>();
+    for (const d of this.airframeDisposables) {
+      if ((d as THREE.Material).isMaterial) loadedSet.add(d as THREE.Material);
+      d.dispose();
+    }
+    this.airframeDisposables = [];
+    this.hullSkinMats = this.hullSkinMats.filter((m) => !loadedSet.has(m));
+    this.canopyMats = this.canopyMats.filter((m) => !loadedSet.has(m));
   }
 
   /**
@@ -1721,8 +2821,9 @@ if (uClipOn > 0.5) {
    * compression supported), turned so its nose points down -Z. The exhaust, nozzle glow, lights
    * and the pilot's eye move to the model's own positions (`anchors`, in the turned frame).
    */
-  public async loadAirframe(url: string, anchors: AirframeAnchors): Promise<void> {
-    if (this.airframe) return;
+  public async loadAirframe(url: string, anchors: AirframeAnchors, forceReplace = false): Promise<void> {
+    if (this.airframe && !forceReplace) return;
+    const token = ++this.loadToken;
     // Wait for Meshopt WASM decoder readiness before parsing compressed GLB buffers
     if (MeshoptDecoder && 'ready' in MeshoptDecoder && MeshoptDecoder.ready) {
       await MeshoptDecoder.ready;
@@ -1744,11 +2845,18 @@ if (uClipOn > 0.5) {
     } else {
       gltf = await loader.loadAsync(url);
     }
+    if (token !== this.loadToken) return;
+    if (this.airframe) this.clearLoadedAirframe();
+
     const model = gltf.scene;
     if (anchors.noseAlongPositiveZ) model.rotation.y = Math.PI;
     if (anchors.noseAlongPositiveX) model.rotation.y = Math.PI / 2;
     if (anchors.modelScale) model.scale.setScalar(anchors.modelScale);
+    const airframeId = anchors.airframeId ?? (anchors.nozzles.length === 1 ? 'gripen' : 'su30');
     const hidden = anchors.hideMaterials ?? [];
+    const hullPrefixes = airframeId === 'gripen' ? ['saab_jas39a_aircraft_normal_detail'] : ['0c5b', '1718', 'a04b'];
+    const upgradedMats = new Map<THREE.Material, THREE.MeshPhysicalMaterial>();
+
     // Group all insideClip boxes per material so multi-box clipping never drops subsequent boxes
     const clipsByMat = new Map<string, Array<{ min: [number, number, number]; max: [number, number, number] }>>();
     for (const clip of anchors.insideClip ?? []) {
@@ -1765,18 +2873,29 @@ if (uClipOn > 0.5) {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.frustumCulled = false;
-      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+
+      // Upgrade hull & canopy materials cleanly to MeshPhysicalMaterial BEFORE insideClip & carving
+      const rawMats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      const nextMats = rawMats.map((orig) => {
+        const nm = orig?.name ?? '';
+        const isHull = hullPrefixes.some((p) => nm.startsWith(p));
+        const isCanopy = nm.startsWith(anchors.canopyMaterial);
+        if (!isHull && !isCanopy) return orig;
+        let up = upgradedMats.get(orig);
+        if (!up) {
+          up = this.upgradeToPhysical(orig);
+          upgradedMats.set(orig, up);
+          if (up !== orig) orig.dispose();
+        }
+        return up;
+      });
+      mesh.material = Array.isArray(mesh.material) ? nextMats : nextMats[0];
+
+      const mats = nextMats;
       if (hidden.some((h) => mats[0]?.name?.startsWith(h))) mesh.visible = false;
       if (anchors.hideMeshes?.includes(mesh.name)) mesh.visible = false;
       if (anchors.insideHideMeshes?.includes(mesh.name)) this.insideMeshes.push(mesh);
 
-      for (const mat of mats) {
-        const boxes = clipsByMat.get(mat.name);
-        if (!boxes || mat.userData.canopyClip) continue;
-        mat.userData.canopyClip = true;
-        this.addInsideClip(mat as THREE.MeshStandardMaterial, boxes);
-      }
-      if (mats[0]?.name?.startsWith(anchors.canopyMaterial)) this.canopyMesh = mesh;
       for (const m of mats) {
         const sm = m as THREE.MeshStandardMaterial;
         if (sm.transparent) sm.depthWrite = false;
@@ -1802,20 +2921,44 @@ if (uClipOn > 0.5) {
             sm.emissive?.setHex(tw.emissive);
             sm.emissiveIntensity = 1;
           }
+          // Refresh stock baseline snapshot after materialTweaks
+          if (sm.userData.stockProps) {
+            sm.userData.stockProps.color.copy(sm.color);
+            sm.userData.stockProps.roughness = sm.roughness;
+            sm.userData.stockProps.metalness = sm.metalness;
+            sm.userData.stockProps.opacity = sm.opacity;
+            sm.userData.stockProps.envMapIntensity = sm.envMapIntensity;
+          }
         }
-        this.disposables.push(sm);
+
+        const boxes = clipsByMat.get(sm.name);
+        if (boxes && !sm.userData.canopyClip) {
+          sm.userData.canopyClip = true;
+          this.addInsideClip(sm, boxes);
+        }
+        if (hullPrefixes.some((p) => sm.name.startsWith(p))) {
+          this.patchHullSkinMaterial(sm as THREE.MeshPhysicalMaterial, sm.name.startsWith('a04b'));
+        }
+        if (sm.name.startsWith(anchors.canopyMaterial)) {
+          this.patchCanopyMaterial(sm as THREE.MeshPhysicalMaterial);
+        }
+
+        this.airframeDisposables.push(sm);
         for (const key of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap'] as const) {
           const t = sm[key] as THREE.Texture | null | undefined;
           if (t) {
             t.anisotropy = 8;
-            this.disposables.push(t);
+            this.airframeDisposables.push(t);
           }
         }
       }
-      this.disposables.push(mesh.geometry);
+      if (mats[0]?.name?.startsWith(anchors.canopyMaterial)) this.canopyMesh = mesh;
+      this.airframeDisposables.push(mesh.geometry);
     });
     this.root.add(model);
     this.airframe = model;
+    // Stamp jet-local rest-pose coords BEFORE carveAirframeParts splits & shifts pivots
+    this.stampRestPose(model);
     if (anchors.canopyProfile) {
       this.bubble = this.buildBubble(anchors.canopyProfile);
       this.root.add(this.bubble);
@@ -1824,7 +2967,8 @@ if (uClipOn > 0.5) {
     }
     this.body.visible = false;
     this.root.visible = true;
-    this.airframeId = anchors.airframeId ?? (anchors.nozzles.length === 1 ? 'gripen' : 'su30');
+    this.airframeId = airframeId;
+    this.skinU.uAirframeType.value = airframeId === 'gripen' ? 1 : airframeId === 'kestrel' ? 2 : 0;
     this.hasInterior = anchors.hasInterior;
     this.length = anchors.lengthM;
     this.plumeScale = anchors.nozzleRadiusM / 0.36;
@@ -1853,6 +2997,9 @@ if (uClipOn > 0.5) {
     this.hud = { centre: anchors.hudCentre.clone(), widthM: anchors.hudWidthM };
     this.buildCrew();
     this.setupLoadedRig(model, anchors);
+    this.repositionSkinFX();
+    this.setSkin(this.skinId);
+    this.setCanopyTint(this.canopyTint);
   }
 
   /**
@@ -2200,12 +3347,15 @@ if (uClipOn > 0.5) {
     this.disposables.push(bayMat, pistonMat);
 
     for (const sp of specs) {
-      const mat = new THREE.MeshPhysicalMaterial({
-        color: sp.flapColor,
-        roughness: 0.55,
-        metalness: 0.38,
-        clearcoat: 0.25,
-      });
+      const mat = this.upgradeToPhysical(
+        new THREE.MeshPhysicalMaterial({
+          color: sp.flapColor,
+          roughness: 0.55,
+          metalness: 0.38,
+          clearcoat: 0.25,
+        }),
+      );
+      this.patchHullSkinMaterial(mat);
       this.disposables.push(mat);
 
       const mount = new THREE.Group();
@@ -2233,12 +3383,13 @@ if (uClipOn > 0.5) {
       flap.castShadow = flap.receiveShadow = true;
       pivot.add(flap);
       mount.add(pivot);
+      this.stampRestPose(pivot);
 
       const piston = new THREE.Mesh(rodGeo, pistonMat);
       piston.position.set(0, 0.01, sp.size.z * 0.14);
       mount.add(piston);
 
-      rig.airbrakes.push({ pivot, axis: sp.axis.clone().normalize(), maxRad: sp.maxRad, piston: { mesh: piston, baseLen } });
+      rig.airbrakes.push({ mount, pivot, axis: sp.axis.clone().normalize(), maxRad: sp.maxRad, piston: { mesh: piston, baseLen } });
     }
   }
 
@@ -2483,6 +3634,8 @@ if (uClipOn > 0.5) {
       if (!pos) continue;
       const nor = geo.attributes.normal;
       const uv = geo.attributes.uv;
+      const restPosAttr = geo.attributes.aRestPos;
+      const restNorAttr = geo.attributes.aRestNormal;
       const idx = geo.index;
 
       const m = new THREE.Matrix4().multiplyMatrices(toJet, mesh.matrixWorld);
@@ -2502,12 +3655,16 @@ if (uClipOn > 0.5) {
         const tri: TriVert[] = [];
         for (let k = 0; k < 3; k++) {
           const vi = idx ? idx.getX(t + k) : t + k;
+          const p = new THREE.Vector3().fromBufferAttribute(pos, vi).applyMatrix4(m);
+          const n = nor
+            ? new THREE.Vector3().fromBufferAttribute(nor, vi).applyMatrix3(normalM).normalize()
+            : new THREE.Vector3(0, 1, 0);
           tri.push({
-            p: new THREE.Vector3().fromBufferAttribute(pos, vi).applyMatrix4(m),
-            n: nor
-              ? new THREE.Vector3().fromBufferAttribute(nor, vi).applyMatrix3(normalM).normalize()
-              : new THREE.Vector3(0, 1, 0),
+            p,
+            n,
             u: uv ? new THREE.Vector2(uv.getX(vi), uv.getY(vi)) : new THREE.Vector2(),
+            rp: restPosAttr ? new THREE.Vector3().fromBufferAttribute(restPosAttr, vi) : p.clone(),
+            rn: restNorAttr ? new THREE.Vector3().fromBufferAttribute(restNorAttr, vi).normalize() : n.clone(),
           });
         }
         tris.push(tri);
@@ -2576,24 +3733,30 @@ if (uClipOn > 0.5) {
           const outP: number[] = [];
           const outN: number[] = [];
           const outU: number[] = [];
+          const outRP: number[] = [];
+          const outRN: number[] = [];
           for (const tri of captured) {
             for (let k = 0; k < 3; k++) {
               outP.push(tri[k].p.x - spec.pivot.x, tri[k].p.y - spec.pivot.y, tri[k].p.z - spec.pivot.z);
               outN.push(tri[k].n.x, tri[k].n.y, tri[k].n.z);
               outU.push(tri[k].u.x, tri[k].u.y);
+              outRP.push(tri[k].rp.x, tri[k].rp.y, tri[k].rp.z);
+              outRN.push(tri[k].rn.x, tri[k].rn.y, tri[k].rn.z);
             }
           }
           const partGeo = new THREE.BufferGeometry();
           partGeo.setAttribute('position', new THREE.Float32BufferAttribute(outP, 3));
           partGeo.setAttribute('normal', new THREE.Float32BufferAttribute(outN, 3));
           partGeo.setAttribute('uv', new THREE.Float32BufferAttribute(outU, 2));
+          partGeo.setAttribute('aRestPos', new THREE.Float32BufferAttribute(outRP, 3));
+          partGeo.setAttribute('aRestNormal', new THREE.Float32BufferAttribute(outRN, 3));
           if (!nor) partGeo.computeVertexNormals();
           const pm = new THREE.Mesh(partGeo, mesh.material);
           pm.castShadow = pm.receiveShadow = true;
           pm.frustumCulled = false;
           entry.group.add(pm);
           entry.triangleCount += captured.length;
-          this.disposables.push(partGeo);
+          this.airframeDisposables.push(partGeo);
         }
       }
     }
@@ -2604,6 +3767,8 @@ if (uClipOn > 0.5) {
       const outP: number[] = [];
       const outN: number[] = [];
       const outU: number[] = [];
+      const outRP: number[] = [];
+      const outRN: number[] = [];
       const lp = new THREE.Vector3();
       const ln = new THREE.Vector3();
       for (const tri of st.tris) {
@@ -2613,15 +3778,19 @@ if (uClipOn > 0.5) {
           outP.push(lp.x, lp.y, lp.z);
           outN.push(ln.x, ln.y, ln.z);
           outU.push(tri[k].u.x, tri[k].u.y);
+          outRP.push(tri[k].rp.x, tri[k].rp.y, tri[k].rp.z);
+          outRN.push(tri[k].rn.x, tri[k].rn.y, tri[k].rn.z);
         }
       }
       const nextGeo = new THREE.BufferGeometry();
       nextGeo.setAttribute('position', new THREE.Float32BufferAttribute(outP, 3));
       nextGeo.setAttribute('normal', new THREE.Float32BufferAttribute(outN, 3));
       nextGeo.setAttribute('uv', new THREE.Float32BufferAttribute(outU, 2));
+      nextGeo.setAttribute('aRestPos', new THREE.Float32BufferAttribute(outRP, 3));
+      nextGeo.setAttribute('aRestNormal', new THREE.Float32BufferAttribute(outRN, 3));
       mesh.geometry.dispose();
       mesh.geometry = nextGeo;
-      this.disposables.push(nextGeo);
+      this.airframeDisposables.push(nextGeo);
     }
     return out;
   }
@@ -3356,8 +4525,9 @@ if (uClipOn > 0.5) {
       for (const petal of rig.irisPetals[i]) petal.rotation.x = irisAng;
     }
 
-    // Airbrake panels & telescoping hydraulic actuators
+    // Airbrake panels & telescoping hydraulic actuators (hide flush on GLB airframes when stowed)
     for (const ab of rig.airbrakes) {
+      if (rig !== this.kestrelRig) ab.mount.visible = sm.airbrake > 0.015;
       const ang = ab.maxRad * sm.airbrake;
       ab.pivot.quaternion.setFromAxisAngle(ab.axis, ang);
       if (ab.piston) {
@@ -3496,6 +4666,407 @@ if (uClipOn > 0.5) {
     });
     this.baseWingtips[0].set(-5.45, -0.02, 4.4);
     this.baseWingtips[1].set(5.45, -0.02, 4.4);
+    this.skinU.uAirframeType.value = 2;
+    this.repositionSkinFX();
+    this.syncSkinFXPalette();
+  }
+
+  /** Build floating 3D Holo-Aura wing/spine crests & 160-starburst thermal spark field. */
+  private setupSkinFX(): void {
+    if (this.holoAuraGroup || this.emberPoints) return;
+
+    const HOLO_VERT = /* glsl */ `
+      varying vec2 vUv;
+      varying vec3 vLocalPos;
+      void main() {
+        vUv = uv;
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vLocalPos = wp.xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `;
+    const HOLO_FRAG = /* glsl */ `
+      uniform float uTime;
+      uniform float uAB;
+      uniform float uGLoad;
+      uniform float uPulseAge;
+      uniform float uScale;
+      uniform vec3 uAccent;
+      uniform vec3 uCore;
+      uniform vec3 uWorldTint;
+      varying vec2 vUv;
+      varying vec3 vLocalPos;
+
+      float ringBand(float r, float radius, float width) {
+        return exp(-pow((r - radius) / width, 2.0));
+      }
+
+      void main() {
+        vec2 p = vUv * 2.0 - 1.0;
+        float r = length(p);
+        if (r > 1.0) discard;
+
+        float gNorm = clamp((uGLoad - 1.0) / 8.0, 0.0, 1.0);
+        float spin = uTime * (0.55 + uAB * 1.45 + gNorm * 1.25);
+        float theta = atan(p.y, p.x);
+
+        // Two depth-parallax offset layers for crisp hologram stereo separation
+        vec2 pTop = p + vec2(sin(uTime * 0.9) * 0.014, cos(uTime * 0.7) * 0.014);
+        float rTop = length(pTop);
+        float thTop = atan(pTop.y, pTop.x);
+
+        // Outer precision 24-tick aerospace telemetry dial
+        float outerArc = ringBand(r, 0.86, 0.015);
+        float ticks24 = smoothstep(0.55, 0.92, cos(theta * 24.0 + spin * 1.4));
+        float outerDash = smoothstep(0.15, 0.55, sin(theta * 3.0 - spin * 1.1));
+
+        // Counter-rotating dual middle reticle rings
+        float midRingA = ringBand(rTop, 0.66, 0.014) * (0.45 + 0.55 * smoothstep(-0.1, 0.35, cos(thTop * 4.0 + spin * 1.8)));
+        float midRingB = ringBand(r, 0.50, 0.012) * (0.45 + 0.55 * smoothstep(-0.2, 0.25, sin(theta * 6.0 - spin * 2.2)));
+
+        // Rotating sweeping radar sector beam
+        float sweepDiff = fract((theta - spin * 2.4) / 6.2831853);
+        float sweepBeam = smoothstep(0.78, 1.0, sweepDiff) * smoothstep(0.18, 0.86, r) * (1.0 - smoothstep(0.84, 0.94, r));
+
+        // Inner triangular chevron crest
+        float tri = max(max(pTop.y * -0.95, abs(pTop.x) * 0.86 - pTop.y * 0.45), 0.0);
+        float crest = smoothstep(0.27, 0.255, tri) * smoothstep(0.15, 0.175, tri);
+        float centerCore = exp(-r * r * 24.0);
+
+        float pulseFlash = exp(-uPulseAge * 1.6) * step(uPulseAge, 3.0);
+        float ringWave = ringBand(r, fract(uTime * 0.32 + uPulseAge * 0.85) * 0.95, 0.032) * (0.30 + 0.70 * pulseFlash);
+
+        float alpha = outerArc * (0.45 + 0.55 * max(ticks24, outerDash))
+                    + midRingA * 0.90
+                    + midRingB * 0.80
+                    + sweepBeam * 0.24
+                    + crest * 0.78
+                    + centerCore * 0.22
+                    + ringWave * 0.55;
+
+        alpha *= (0.58 + 0.42 * uAB + 0.32 * gNorm + 0.48 * pulseFlash) * uScale;
+        alpha = clamp(alpha, 0.0, 0.95);
+        if (alpha < 0.008) discard;
+
+        vec3 tint = mix(uAccent, uWorldTint, 0.22);
+        vec3 col = mix(tint * 1.5, uCore * 2.6, clamp(crest * 0.6 + centerCore * 0.8 + outerArc * ticks24 * 0.4 + pulseFlash * 0.5, 0.0, 1.0));
+        gl_FragColor = vec4(col * alpha, alpha);
+      }
+    `;
+
+    this.holoAuraMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uAB: { value: 0 },
+        uGLoad: { value: 1 },
+        uPulseAge: { value: 99 },
+        uScale: { value: 1 },
+        uAccent: { value: new THREE.Color(0xff6218) },
+        uCore: { value: new THREE.Color(0xffcf54) },
+        uWorldTint: { value: new THREE.Color(0x62b6ff) },
+      },
+      vertexShader: HOLO_VERT,
+      fragmentShader: HOLO_FRAG,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+    this.disposables.push(this.holoAuraMat);
+
+    const quadGeo = new THREE.PlaneGeometry(1, 1);
+    quadGeo.rotateX(-Math.PI / 2);
+    this.disposables.push(quadGeo);
+
+    const group = new THREE.Group();
+    group.name = 'jet_holo_aura';
+    group.userData.noAO = true;
+    for (let i = 0; i < 3; i++) {
+      const m = new THREE.Mesh(quadGeo, this.holoAuraMat);
+      m.renderOrder = 6;
+      m.frustumCulled = false;
+      m.userData.noAO = true;
+      group.add(m);
+      this.holoAuraQuads.push(m);
+    }
+    this.holoAuraGroup = group;
+    this.root.add(group);
+
+    // 160 GPU 4-Point HDR Diamond Starburst & Flowing Ember Particle System (active in Hangar + Flight!)
+    const SPARK_COUNT = 160;
+    const pos = new Float32Array(SPARK_COUNT * 3);
+    const vel = new Float32Array(SPARK_COUNT * 3);
+    const age = new Float32Array(SPARK_COUNT);
+    const life = new Float32Array(SPARK_COUNT);
+    const seed = new Float32Array(SPARK_COUNT);
+    const size = new Float32Array(SPARK_COUNT);
+    this.emberState = { pos, vel, age, life, seed, size, rng: 42197 };
+
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('aAgeNorm', new THREE.BufferAttribute(age, 1).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
+    g.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+    this.disposables.push(g);
+
+    const EMBER_VERT = /* glsl */ `
+      attribute float aAgeNorm;
+      attribute float aSeed;
+      attribute float aSize;
+      uniform float uPixelRatio;
+      uniform float uAB;
+      uniform float uGLoad;
+      varying float vAge;
+      varying float vSeed;
+      void main() {
+        vAge = aAgeNorm;
+        vSeed = aSeed;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+        float dist = max(0.35, -mv.z);
+        float swell = 1.0 + uAB * 0.45 + clamp((uGLoad - 1.0) / 8.0, 0.0, 1.0) * 0.35;
+        float lifeCurve = sin(clamp(aAgeNorm, 0.0, 1.0) * 3.14159265);
+        gl_PointSize = clamp((aSize * swell * lifeCurve * 155.0 * uPixelRatio) / dist, 1.0, 16.0);
+      }
+    `;
+    const EMBER_FRAG = /* glsl */ `
+      uniform float uTime;
+      uniform float uAB;
+      uniform vec3 uAccent;
+      uniform vec3 uCore;
+      varying float vAge;
+      varying float vSeed;
+      void main() {
+        vec2 p = gl_PointCoord * 2.0 - 1.0;
+        float r = length(p);
+        if (r > 1.0) discard;
+
+        // Ultra-crisp pinpoint HDR micro-spark + hairline 4-point glint
+        float ax = abs(p.x);
+        float ay = abs(p.y);
+        float starCross = exp(-ax * 14.0) * exp(-ay * 2.0) + exp(-ay * 14.0) * exp(-ax * 2.0);
+        float coreBokeh = exp(-r * r * 14.0);
+        float twinkle = 0.55 + 0.45 * sin(uTime * (5.0 + vSeed * 8.0) + vSeed * 43.0);
+
+        float mask = (coreBokeh * 0.85 + starCross * 0.52) * twinkle * sin(clamp(vAge, 0.0, 1.0) * 3.14159265);
+        if (mask < 0.015) discard;
+
+        vec3 tint = mix(uAccent, uCore, clamp(coreBokeh * 0.85 + uAB * 0.25, 0.0, 1.0));
+        float hdr = 1.85 + uAB * 2.0;
+        gl_FragColor = vec4(tint * hdr * mask, clamp(mask, 0.0, 1.0));
+      }
+    `;
+
+    this.emberMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uAB: { value: 0 },
+        uGLoad: { value: 1 },
+        uPixelRatio: { value: typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1 },
+        uAccent: { value: new THREE.Color(0xff6218) },
+        uCore: { value: new THREE.Color(0xffcf54) },
+      },
+      vertexShader: EMBER_VERT,
+      fragmentShader: EMBER_FRAG,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    this.disposables.push(this.emberMat);
+
+    const pts = new THREE.Points(g, this.emberMat);
+    pts.name = 'jet_skin_embers';
+    pts.frustumCulled = false;
+    pts.renderOrder = 7;
+    pts.userData.noAO = true;
+    this.emberPoints = pts;
+    this.root.add(pts);
+
+    for (let i = 0; i < SPARK_COUNT; i++) {
+      this.respawnEmber(i, true);
+    }
+    this.syncSkinFXPalette();
+  }
+
+  private nextEmberRand(): number {
+    if (!this.emberState) return 0.5;
+    this.emberState.rng = (this.emberState.rng * 16807) % 2147483647;
+    return this.emberState.rng / 2147483647;
+  }
+
+  private respawnEmber(idx: number, staggerAge = false): void {
+    const es = this.emberState;
+    if (!es) return;
+    const isGripen = this.airframeId === 'gripen';
+    const isKestrel = this.airframeId === 'kestrel';
+    const r1 = this.nextEmberRand();
+    const r2 = this.nextEmberRand();
+    const r3 = this.nextEmberRand();
+    const r4 = this.nextEmberRand();
+    const side = idx % 2 === 0 ? -1 : 1;
+
+    let x = 0;
+    let y = 0;
+    let z = 0;
+    if (isGripen) {
+      if (r1 < 0.62) {
+        const t = r2;
+        x = side * (0.95 + t * 3.05);
+        y = 0.05 + (r3 - 0.5) * 0.25;
+        z = -1.2 + t * 3.6 + (r4 - 0.5) * 0.8;
+      } else {
+        x = side * (0.04 + r2 * 0.22);
+        y = 0.55 + r3 * 1.85;
+        z = 1.6 + r4 * 2.4;
+      }
+    } else if (isKestrel) {
+      x = side * (1.2 + r2 * 4.1);
+      y = 0.1 + r3 * 1.1;
+      z = -0.6 + r4 * 5.2;
+    } else {
+      // Su-30MKI: wing flame contours + LERX shoulder flames + twin tails + engine nozzles
+      if (r1 < 0.55) {
+        const t = r2;
+        x = side * (1.9 + t * 5.2);
+        y = 0.14 + (r3 - 0.5) * 0.35;
+        z = -0.3 + t * 2.5 + (r4 - 0.5) * 1.1;
+      } else if (r1 < 0.82) {
+        // Twin canted tails & dorsal spine
+        x = side * (1.95 + (r2 - 0.5) * 0.35);
+        y = 0.95 + r3 * 2.55;
+        z = 2.4 + r3 * 2.9 + (r4 - 0.5) * 0.5;
+      } else {
+        // Side LERX & aft engine nacelle cowls
+        x = side * (0.65 + r2 * 1.15);
+        y = 0.35 + (r3 - 0.5) * 0.55;
+        z = -1.8 + r4 * 5.2;
+      }
+    }
+
+    const o = idx * 3;
+    es.pos[o] = x;
+    es.pos[o + 1] = y;
+    es.pos[o + 2] = z;
+    es.vel[o] = side * (0.15 + r2 * 0.45);
+    es.vel[o + 1] = 0.32 + r3 * 0.72;
+    es.vel[o + 2] = 0.65 + r4 * 1.65;
+    es.life[idx] = 0.85 + r4 * 1.35;
+    es.age[idx] = staggerAge ? this.nextEmberRand() : 0;
+    es.seed[idx] = r2;
+    es.size[idx] = 0.22 + r3 * 0.32;
+  }
+
+  private repositionSkinFX(): void {
+    const q = this.holoAuraQuads;
+    if (q.length < 3) return;
+    if (this.airframeId === 'gripen') {
+      // Crisp gyro-halos around wingtip launchers & over aft delta spine (clear of roundels)
+      q[0].position.set(-4.05, 0.06, 2.55);
+      q[0].scale.setScalar(1.95);
+      q[0].rotation.set(0, 0, 0.06);
+      q[1].position.set(4.05, 0.06, 2.55);
+      q[1].scale.setScalar(1.95);
+      q[1].rotation.set(0, 0, -0.06);
+      q[2].position.set(0, 1.15, 0.85);
+      q[2].scale.setScalar(2.15);
+      q[2].rotation.set(0, 0, 0);
+    } else if (this.airframeId === 'kestrel') {
+      q[0].position.set(-5.35, 0.14, 3.8);
+      q[0].scale.setScalar(2.2);
+      q[1].position.set(5.35, 0.14, 3.8);
+      q[1].scale.setScalar(2.2);
+      q[2].position.set(0, 1.35, 1.2);
+      q[2].scale.setScalar(2.35);
+    } else {
+      // Su-30MKI wingtip tactical gyro-halos + twin-tail crown crest (clear of wing roundels!)
+      q[0].position.set(-7.15, 0.16, 2.55);
+      q[0].scale.setScalar(2.45);
+      q[0].rotation.set(0, 0, 0.05);
+      q[1].position.set(7.15, 0.16, 2.55);
+      q[1].scale.setScalar(2.45);
+      q[1].rotation.set(0, 0, -0.05);
+      q[2].position.set(0, 2.05, 2.75);
+      q[2].scale.setScalar(3.15);
+      q[2].rotation.set(0, 0, 0);
+    }
+    if (this.emberState) {
+      for (let i = 0; i < this.emberState.age.length; i++) {
+        this.respawnEmber(i, true);
+      }
+    }
+  }
+
+  private syncSkinFXPalette(): void {
+    const spec = JET_SKIN_BY_ID[this.skinId] ?? JET_SKIN_BY_ID.flame_phantom;
+    const isCustom = this.skinId !== 'stock' && !this.insideOn;
+    if (this.holoAuraMat) {
+      this.holoAuraMat.uniforms.uAccent.value.setHex(spec.accentHex);
+      this.holoAuraMat.uniforms.uCore.value.setHex(spec.coreHex);
+    }
+    if (this.emberMat) {
+      this.emberMat.uniforms.uAccent.value.setHex(spec.accentHex);
+      this.emberMat.uniforms.uCore.value.setHex(spec.coreHex);
+    }
+    if (this.holoAuraGroup) {
+      this.holoAuraGroup.visible = isCustom && this.holoAuraEnabled;
+    }
+    if (this.emberPoints) {
+      this.emberPoints.visible = isCustom;
+    }
+  }
+
+  private updateSkinFX(dt: number, timeSec: number, abBoost: number, gLoad: number, speedNorm: number): void {
+    const isCustom = this.skinId !== 'stock' && !this.insideOn;
+    if (this.holoAuraGroup) {
+      this.holoAuraGroup.visible = isCustom && this.holoAuraEnabled;
+    }
+    if (this.emberPoints) {
+      this.emberPoints.visible = isCustom;
+    }
+    if (!isCustom) return;
+
+    if (this.holoAuraMat) {
+      const hu = this.holoAuraMat.uniforms;
+      hu.uTime.value = timeSec;
+      hu.uAB.value = abBoost;
+      hu.uGLoad.value = gLoad;
+      hu.uPulseAge.value = this.skinU.uSkinPulseAge.value;
+      hu.uWorldTint.value.copy(this.skinU.uWorldTint.value);
+    }
+    for (let i = 0; i < this.holoAuraQuads.length; i++) {
+      const bob = Math.sin(timeSec * 1.85 + i * 1.7) * 0.045;
+      const baseY = this.airframeId === 'gripen' ? (i === 2 ? 1.15 : 0.06) : this.airframeId === 'kestrel' ? (i === 2 ? 1.35 : 0.14) : (i === 2 ? 2.05 : 0.16);
+      this.holoAuraQuads[i].position.y = baseY + bob;
+    }
+
+    const es = this.emberState;
+    if (es && this.emberPoints && this.emberMat) {
+      const eu = this.emberMat.uniforms;
+      eu.uTime.value = timeSec;
+      eu.uAB.value = abBoost;
+      eu.uGLoad.value = gLoad;
+
+      const gNorm = Math.max(0, (gLoad - 1) / 8);
+      const speedMul = 1 + abBoost * 3.8 + speedNorm * 2.6 + gNorm * 1.8;
+      const riseDamp = Math.max(0.25, 1 - speedNorm * 0.45);
+      const n = es.age.length;
+      for (let i = 0; i < n; i++) {
+        const lifeS = Math.max(0.25, es.life[i] / (1 + abBoost * 0.65));
+        es.age[i] += dt / lifeS;
+        if (es.age[i] >= 1) {
+          this.respawnEmber(i, false);
+          continue;
+        }
+        const o = i * 3;
+        const swirl = Math.sin(timeSec * 4.2 + es.seed[i] * 25.0) * (0.45 + abBoost * 0.85);
+        es.pos[o] += (es.vel[o] + swirl) * dt;
+        es.pos[o + 1] += es.vel[o + 1] * riseDamp * dt;
+        es.pos[o + 2] += es.vel[o + 2] * speedMul * dt;
+      }
+      const geo = this.emberPoints.geometry;
+      geo.attributes.position.needsUpdate = true;
+      geo.attributes.aAgeNorm.needsUpdate = true;
+    }
   }
 
   /** Diagnostic rig summary for flight-qualification verification & browser QA. */
@@ -3530,8 +5101,28 @@ if (uClipOn > 0.5) {
 
   /** Engines, exhaust, lights, and articulated surfaces/gear/vapor for this frame. */
   public update(timeSec: number, throttle: number, boost: number, vacuum: number, visual?: JetVisualState): void {
-    const abBoost = visual?.abStage !== undefined ? Math.max(boost, visual.abStage / 3) : boost;
+    const abBoost = visual?.abStage !== undefined ? Math.max(boost, visual.boost ?? 0, visual.abStage / 3) : Math.max(boost, visual?.boost ?? 0);
     const dt = THREE.MathUtils.clamp(visual?.dt ?? 1 / 60, 0, 0.1);
+    // Drive reactive 3D skin uniforms smoothly without recompilation
+    const su = this.skinU;
+    su.uSkinTime.value = timeSec;
+    su.uSkinLightSweep.value = (su.uSkinLightSweep.value + dt * (0.28 + abBoost * 0.55)) % 1000;
+    if (su.uSkinPulseAge.value < 50) {
+      su.uSkinPulseAge.value += dt;
+    }
+    if (visual?.worldTintHex !== undefined) {
+      su.uWorldTint.value.setHex(visual.worldTintHex);
+    }
+    const airspeedNorm = THREE.MathUtils.clamp((visual?.airspeedMps ?? 0) / 450, 0, 2.5);
+    const kSmooth = dt > 0 ? 1 - Math.exp(-10 * dt) : 1;
+    su.uSkinAirspeed.value += (airspeedNorm - su.uSkinAirspeed.value) * kSmooth;
+    su.uSkinMach.value += ((visual?.mach ?? 0) - su.uSkinMach.value) * kSmooth;
+    su.uSkinGLoad.value += ((visual?.gLoad ?? 1) - su.uSkinGLoad.value) * kSmooth;
+    su.uSkinAB.value += (THREE.MathUtils.clamp(abBoost, 0, 1) - su.uSkinAB.value) * kSmooth;
+    su.uSkinDarkness.value += (THREE.MathUtils.clamp(visual?.ambientDarkness ?? 0, 0, 1) - su.uSkinDarkness.value) * kSmooth;
+    su.uSkinJerk.value += (THREE.MathUtils.clamp(visual?.maneuverJerk ?? 0, 0, 2) - su.uSkinJerk.value) * kSmooth;
+    this.updateSkinFX(dt, timeSec, su.uSkinAB.value, su.uSkinGLoad.value, su.uSkinAirspeed.value);
+
     const u = this.plumeMat.uniforms;
     u.uThrottle.value = throttle;
     u.uBoost.value = abBoost;
@@ -3578,9 +5169,11 @@ if (uClipOn > 0.5) {
     // From inside, the canopy is all but invisible: just the glints
     this.canopyGlass.opacity = v ? 0.2 : 0.06;
     this.canopyGlass.envMapIntensity = v ? 0.8 : 0.35;
+    this.applyCanopyMaterialProps();
   }
 
   public dispose(): void {
+    this.clearLoadedAirframe();
     this.loadedExtras.clear();
     this.kestrelExtras.clear();
     for (const d of this.disposables) d.dispose();

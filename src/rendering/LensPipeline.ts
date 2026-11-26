@@ -28,6 +28,12 @@ class OverlayAOPass extends GTAOPass {
     this.aoScene = scene;
   }
 
+  public setTarget(scene: THREE.Scene, camera: THREE.Camera): void {
+    this.aoScene = scene;
+    this.scene = scene;
+    this.camera = camera;
+  }
+
   render(renderer: THREE.WebGLRenderer, writeBuffer: THREE.WebGLRenderTarget, readBuffer: THREE.WebGLRenderTarget, deltaTime?: number, maskActive?: boolean): void {
     this.hidden.length = 0;
     this.aoScene.traverseVisible((o) => {
@@ -747,12 +753,25 @@ export class LensPipeline {
     // No glow over a map (bright snow and desert would bloom into haze)
     this.bloomPass.strength = this.profile.bloomStrength * k * this.bloomGain;
     this.bloomPass.threshold = this.bloomThresholdOverride ?? this.profile.bloomThreshold;
-    // With an overlay (jet mode) even the clean lens keeps a little glow for engines and lights
-    if (this.overlayPass.enabled && this.profile.name === 'clean') {
-      this.bloomPass.strength = 0.2 * this.bloomGain;
-      this.bloomPass.radius = 0.35;
-      this.bloomPass.threshold = 2.2; // only the Sun and flames glow, not sunlit cloud or paint
+    // Over a map the terrain keeps threshold high; in Hangar or Jet Space mode, selective HDR sparks & veins shimmer
+    if (this.hangarBloom) {
+      this.bloomPass.strength = 0.28 * this.bloomGain;
+      this.bloomPass.radius = 0.48;
+      this.bloomPass.threshold = 2.08;
+    } else if (this.overlayPass.enabled && this.profile.name === 'clean') {
+      this.bloomPass.strength = 0.24 * this.bloomGain;
+      this.bloomPass.radius = 0.42;
+      this.bloomPass.threshold = 1.85; // sparks & living flame tips glow while sunlit paint stays crisp
     }
+  }
+
+  /** Enable balanced studio HDR bloom while inspecting aircraft inside Polaris Hangar. */
+  private hangarBloom = false;
+
+  public setHangarBloom(on: boolean): void {
+    if (on === this.hangarBloom) return;
+    this.hangarBloom = on;
+    this.applyProfileUniforms();
   }
 
   /** User bloom control: multiplier on the profile's bloom strength (0 = off, 1 = as designed). */
@@ -904,6 +923,8 @@ export class LensPipeline {
       this.aoPass.updatePdMaterial({ radius: 5, rings: 2, samples: 8 });
       this.aoPass.blendIntensity = 0.85;
       this.composer.insertPass(this.aoPass, this.composer.passes.indexOf(this.overlayPass) + 1);
+    } else if (on && scene && camera && this.aoPass) {
+      this.aoPass.setTarget(scene, camera);
     }
     if (on === this.overlayPass.enabled) return;
     this.overlayPass.enabled = on;

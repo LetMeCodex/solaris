@@ -20,7 +20,7 @@ import { SUN_SCALE, UNITS_PER_KM } from '../../rendering/Scale';
 
 /** Closer than this to the Sun's centre and Vela gets nervous (about 2.2 solar radii). */
 const SUN_CLOSE_UNITS = 695700 * UNITS_PER_KM * SUN_SCALE * 2.2;
-import { Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle, Camera, Settings2, Plane } from 'lucide-react';
+import { Eye, EyeOff, X, RotateCcw, SlidersHorizontal, HelpCircle, Camera, Settings2, Plane, Warehouse } from 'lucide-react';
 import type { ComparisonPropKind } from '../../rendering/SpacecraftFactory';
 import { SettingsPanel } from './SettingsPanel';
 import { useSettings } from '../settings';
@@ -65,6 +65,8 @@ interface FlightHUDProps {
   onNebula?: (name: string) => boolean;
   /** Take off in the SX-1 (jet mode). */
   onLaunchJet?: () => void;
+  /** Open the 3D Hangar bay to customize airframe, livery, canopy film, and smoke. */
+  onOpenHangar?: () => void;
   /** Focus a NASA spacecraft in 3D and optionally jump to its signature epoch. */
   onSelectSpacecraft?: (nameOrId: string, featuredEpochUtc?: string | null) => void;
   /** Enter Jet Mode in close formation beside a NASA spacecraft. */
@@ -146,6 +148,7 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
   onCapture,
   onNebula,
   onLaunchJet,
+  onOpenHangar,
   onSelectSpacecraft,
   onFlyJetSpacecraft,
   onMissionEvent,
@@ -654,6 +657,22 @@ export const FlightHUD: React.FC<FlightHUDProps> = ({
               <SlidersHorizontal size={11} />
               <span className="max-[359px]:hidden sm:hidden min-[900px]:inline">Optics</span>
             </button>
+            {onOpenHangar && (
+              <button
+                type="button"
+                data-tour="hangar"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenHangar();
+                }}
+                className="hud-btn"
+                style={{ color: 'var(--sol-amber)' }}
+                title="Open 3D Hangar · Customize Su-30MKI Flame Phantom & airframe"
+              >
+                <Warehouse size={11} />
+                <span className="max-[359px]:hidden sm:hidden min-[900px]:inline">Hangar</span>
+              </button>
+            )}
             {onLaunchJet && (
               <button
                 type="button"

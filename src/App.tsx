@@ -3,6 +3,8 @@ import React, { useMemo, useEffect, useRef, useState, useCallback } from 'react'
 import { SolarSystemScene, TelemetryData } from './rendering/SolarSystemScene';
 import { FlightHUD } from './ui/HUD/FlightHUD';
 import { JetHUD } from './flight/JetHUD';
+import { HangarOverlay } from './flight/HangarOverlay';
+import type { HangarState } from './flight/HangarStudio';
 import { AIRFRAMES, chosenAirframe } from './flight/JetModel';
 import { FpsCounter } from './ui/FpsCounter';
 import { LensProfileName } from './rendering/LensPipeline';
@@ -46,6 +48,8 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
   const [revealed, setRevealed] = useState(false);      // iris opening: HUD powers on with it
   const [introFinished, setIntroFinished] = useState(false); // iris fully open
   const [jetActive, setJetActive] = useState(false);     // flying the jet (src/flight)
+  const [hangarState, setHangarState] = useState<HangarState | null>(null);
+  const hangarActiveRef = useRef(false);
   const [landedAt, setLandedAt] = useState<string | null>(null); // landed at a landmark from the jet
   const [comparisonKind, setComparisonKind] = useState<ComparisonPropKind>('none');
   const [scienceOverlaysOn, setScienceOverlaysOn] = useState<boolean>(false);
@@ -270,14 +274,27 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
           window.clearTimeout(exitTimer);
           exitTimer = null;
         }
-        // The fly page is the jet: leaving it (not landing) goes back to the observatory
-        if (!t.active && mode === 'fly') {
+        // The fly page is the jet: leaving it (not landing or inspecting the Hangar) goes back to the observatory
+        if (!t.active && mode === 'fly' && !hangarActiveRef.current && !scene.isHangarActive()) {
           if (exitTimer !== null) window.clearTimeout(exitTimer);
           exitTimer = window.setTimeout(() => {
             exitTimer = null;
-            if (!landedRef.current && !jetWas) window.location.assign(SITE_URL);
+            if (!landedRef.current && !jetWas && !hangarActiveRef.current && !scene.isHangarActive()) {
+              window.location.assign(SITE_URL);
+            }
           }, 400);
         }
+      }
+    });
+    const initialHangar = scene.getHangarState();
+    hangarActiveRef.current = initialHangar.active;
+    setHangarState(initialHangar);
+    const unsubHangar = scene.subscribeHangar((next) => {
+      hangarActiveRef.current = next.active;
+      setHangarState(next);
+      if (next.active && exitTimer !== null) {
+        window.clearTimeout(exitTimer);
+        exitTimer = null;
       }
     });
     // Load every texture and compile every shader up front (no first-use stalls later)
@@ -298,6 +315,7 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
       if (resizeRaf) cancelAnimationFrame(resizeRaf);
       ro?.disconnect();
       window.visualViewport?.removeEventListener('resize', triggerSceneResize);
+      unsubHangar();
       unsubJet();
       scene.dispose();
       sceneRef.current = null;
@@ -504,6 +522,17 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
     sceneRef.current?.exitJet();
   }, []);
 
+  const handleEnterHangar = useCallback((worldName?: string) => {
+    const sc = sceneRef.current;
+    if (!sc) return;
+    const preferredWorld =
+      worldName ??
+      (sc.jet.active ? sc.jet.nearestWorld() || undefined : undefined);
+    hangarActiveRef.current = true;
+    sc.enterHangar(preferredWorld);
+  }, []);
+
+  const hangarActive = Boolean(hangarState?.active);
   const isSpacecraftTarget = telemetry?.activeTarget?.category === 'spacecraft';
   const isSurfaceClose =
     !isSpacecraftTarget &&
@@ -521,7 +550,7 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
       <div ref={containerRef} className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }} />
 
       {/* Flight HUD Overlay (powers on once the opening sequence has revealed the scene) */}
-      {revealed && !jetActive && <FlightHUD
+      {revealed && !jetActive && !hangarActive && <FlightHUD
         telemetry={telemetry}
         getView={getView}
         onSelectPlanet={handleSelectPlanet}
@@ -555,13 +584,40 @@ export const App: React.FC<{ mode?: 'site' | 'fly' }> = ({ mode = 'site' }) => {
         onCapture={handleCapture}
         onNebula={handleNebula}
         onLaunchJet={handleLaunchJet}
+        onOpenHangar={() => handleEnterHangar()}
       />}
 
       {/* Jet mode: the SX-1's own HUD replaces the observatory's */}
-      {revealed && jetActive && sceneRef.current && <JetHUD controller={sceneRef.current.jet} onExit={handleExitJet} />}
+      {revealed && jetActive && !hangarActive && sceneRef.current && (
+        <JetHUD
+          controller={sceneRef.current.jet}
+          onExit={handleExitJet}
+          onOpenHangar={() => handleEnterHangar()}
+        />
+      )}
+
+      {/* 3D Hangar Bay Overlay */}
+      {revealed && hangarActive && hangarState && sceneRef.current && (
+        <HangarOverlay
+          state={hangarState}
+          onExit={() => sceneRef.current?.exitHangar()}
+          onDeploy={() => sceneRef.current?.deployFromHangar()}
+          onSelectWorld={(w) => sceneRef.current?.setHangarWorld(w)}
+          onSelectAirframe={(a) => sceneRef.current?.setHangarAirframe(a)}
+          onSelectSkin={(s) => sceneRef.current?.setHangarSkin(s)}
+          onSelectCanopyTint={(t) => sceneRef.current?.setHangarCanopyTint(t)}
+          onSelectSmoke={(s) => sceneRef.current?.setHangarSmoke(s)}
+          onSelectHoloAura={(on) => sceneRef.current?.setHangarHoloAura(on)}
+          onTriggerPulse={() => sceneRef.current?.triggerHangarPulse()}
+          onSelectLighting={(l) => sceneRef.current?.setHangarLighting(l)}
+          onSelectCameraPreset={(c) => sceneRef.current?.setHangarCameraPreset(c)}
+          onAfterburnerChange={(ab) => sceneRef.current?.setHangarAfterburner(ab)}
+          onGLoadChange={(g) => sceneRef.current?.setHangarGLoad(g)}
+        />
+      )}
 
       {/* Landed from the jet: stand and look, then take off again from the same spot */}
-      {revealed && !jetActive && landedAt && (
+      {revealed && !jetActive && !hangarActive && landedAt && (
         <div
           className="sol-landed-pill"
           style={{

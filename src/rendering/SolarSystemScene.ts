@@ -52,6 +52,22 @@ import { localToLatLon } from '../explorer/TileMath';
 import { CoordinateFrames } from '../astronomy/CoordinateFrames';
 import { BodyFrame, getBodyFrame, getSynchronousFrame } from '../astronomy/BodyOrientation';
 import { JetController } from '../flight/JetController';
+import {
+  HangarStudio,
+  resolveHangarWorld,
+  type HangarCameraPreset,
+  type HangarLightingPreset,
+  type HangarState,
+} from '../flight/HangarStudio';
+import { AIRFRAME_KEY, type AirframeId } from '../flight/JetModel';
+import {
+  setChosenAirshowSmoke,
+  setChosenCanopyTint,
+  setChosenJetSkin,
+  type AirshowSmokeId,
+  type CanopyTintId,
+  type JetSkinId,
+} from '../flight/JetSkins';
 import { EarthMaterial } from './EarthMaterial';
 import {
   ComparisonPropKind,
@@ -214,6 +230,25 @@ export class SolarSystemScene {
   public jet: JetController = new JetController();
   private jetSaved: { rate: number; paused: boolean; fov: number; orbits: boolean; constellations: boolean } | null = null;
   private jetLastCam = new THREE.Vector3();
+  private hangarStudio!: HangarStudio;
+  private hangarSaved: {
+    rate: number;
+    paused: boolean;
+    fov: number;
+    orbits: boolean;
+    constellations: boolean;
+    bodyName: string;
+    moonOrbits: boolean[];
+  } | null = null;
+  private hangarFromJet = false;
+  private hangarReturnWorld: string | null = null;
+  private hangarQWorld = new THREE.Quaternion();
+  private hangarMat4 = new THREE.Matrix4();
+  private hangarV1 = new THREE.Vector3();
+  private hangarV2 = new THREE.Vector3();
+  private hangarV3 = new THREE.Vector3();
+  private hangarV4 = new THREE.Vector3();
+  private hangarV5 = new THREE.Vector3();
   private labels: ScreenLabels;
   /** Rings and names for worlds too small to see at true scale. */
   private markers: BodyMarkers;
@@ -338,6 +373,7 @@ export class SolarSystemScene {
     // 3. Camera Rig
     this.cameraRig = new CameraRig(container);
     this.lens = new LensPipeline(this.renderer, this.scene, this.cameraRig.camera);
+    this.hangarStudio = new HangarStudio(this.renderer);
 
     // 4. Lighting, Crisp Anisotropy & Deferred Deep-Space Asset Streaming
     this.setupLighting();
@@ -734,6 +770,7 @@ export class SolarSystemScene {
   public visitNebula(name: string): boolean {
     const pic = this.starfield.nebulae.picture(name);
     if (!pic) return false;
+    if (this.hangarStudio.isActive()) this.exitHangar(false);
     if (this.surface.isActive()) this.exitSurface(false);
     this.exitHorizonView(false);
     if (this.showcase.active) this.stopShowcase();
@@ -765,6 +802,7 @@ export class SolarSystemScene {
   public enterDeepTime(id: string): boolean {
     const d = DEEP_TIME_SCENES.find((x) => x.id === id);
     if (!d) return false;
+    if (this.hangarStudio.isActive()) this.exitHangar(false);
     // The last scene is the black hole: stand on the shore of the world beside it
     if (d.body === 'Sagittarius A*') {
       if (this.surface.isActive()) this.exitSurface(false);
@@ -830,6 +868,7 @@ export class SolarSystemScene {
 
   /** Go into a postcard: the same world, place, moment and framing as its picture. */
   public openPostcard(c: Postcard): boolean {
+    if (this.hangarStudio.isActive()) this.exitHangar(false);
     this.endNebulaVisit();
     // The black hole: fly out and stand on the shore of the world beside it
     if (c.body === 'Sagittarius A*') {
@@ -1074,7 +1113,7 @@ export class SolarSystemScene {
   private onCanvasClick = (e: MouseEvent): void => {
     // Only handle clicks directly on the WebGL canvas
     if (e.target !== this.renderer.domElement) return;
-    if (this.surface.isActive() || this.horizon?.active || this.showcase.active || this.jet.active) return;
+    if (this.surface.isActive() || this.horizon?.active || this.showcase.active || this.jet.active || this.hangarStudio.isActive()) return;
 
     // Ignore drags
     const dist = Math.hypot(e.clientX - this.pointerDownPos.x, e.clientY - this.pointerDownPos.y);
@@ -1217,6 +1256,7 @@ export class SolarSystemScene {
 
   public selectBody(name: string, durationMs: number = 1800): void {
     if (name !== 'Earth') this.hydrateDeepSpace();
+    if (this.hangarStudio.isActive()) this.exitHangar(false);
     if (this.showcase.active) this.stopShowcase();
     this.endNebulaVisit();
     if (this.surface?.isActive()) this.exitSurface(false);
@@ -1283,6 +1323,7 @@ export class SolarSystemScene {
   }
 
   public resetView(): void {
+    if (this.hangarStudio.isActive()) this.exitHangar(false);
     this.endNebulaVisit();
     if (this.surface?.isActive()) this.exitSurface(false);
     this.exitHorizonView(false);
@@ -1306,6 +1347,7 @@ export class SolarSystemScene {
     this.renderer.setSize(w, h);
     this.cameraRig.handleResize(w, h);
     this.lens.setSize(w, h);
+    this.hangarStudio?.resize(w, h);
   };
 
   /** Orient a body group to a body-fixed frame and spin its surface layers by W. */
@@ -1536,6 +1578,11 @@ export class SolarSystemScene {
       const gopBase = jt.airDensity > 0 ? 0.9 : 1.15;
       const wantExposure = jt.lens === 'gopro' ? gopBase - 0.45 * jt.sunInView : 1.05 - 0.25 * jt.sunInView;
       this.renderer.toneMappingExposure += (wantExposure - this.renderer.toneMappingExposure) * Math.min(1, deltaSec * 2.5);
+    } else if (this.hangarStudio.isActive()) {
+      this.hangarStudio.update(deltaSec, now * 0.001);
+      this.updateHangarBackdrop();
+      const wantExposure = this.hangarStudio.getState().lighting === 'studio' ? 1.1 : 1.05;
+      this.renderer.toneMappingExposure += (wantExposure - this.renderer.toneMappingExposure) * Math.min(1, deltaSec * 4.0);
     } else {
       this.cameraRig.update();
     }
@@ -1554,20 +1601,21 @@ export class SolarSystemScene {
       this.pendingHorizonPostcard = false;
       this.enterHorizonView();
     }
+    const hangarActive = this.hangarStudio.isActive();
     // Nebulae show only in a dark sky: always in space and on airless worlds, after twilight under air
     const sky = this.surface.getStatus();
     const airy = !!sky && sky.atmosphereOn && sky.atmosphereKind !== 'none';
     // Flying in Earth's air: the coloured nebula pictures are not a naked-eye sight from here
     const jetLowOverEarth = this.jet.active && this.jet.telemetry.nearest === 'Earth' && this.jet.telemetry.altKm < 60;
     this.starfield.nebulae.setSkyDarkness(
-      jetLowOverEarth ? 0 : !sky || !airy ? 1 : sky.atmosphereKind === 'overcast' ? 0 : 1 - THREE.MathUtils.smoothstep(sky.sunAltDeg, -16, -7)
+      hangarActive ? 1 : jetLowOverEarth ? 0 : !sky || !airy ? 1 : sky.atmosphereKind === 'overcast' ? 0 : 1 - THREE.MathUtils.smoothstep(sky.sunAltDeg, -16, -7)
     );
     if (this.horizon?.active) this.horizon.update(this.cameraRig.camera, now * 0.001);
 
     const isBlackHole = this.selectedBody.name === 'Sagittarius A*';
     // In the jet, the world under it streams its real surface imagery
     const jetWorld = this.jet.active && this.jet.telemetry.nearest && this.jet.telemetry.nearest !== 'Sun' ? this.jet.telemetry.nearest : null;
-    const focusedName = this.jet.active ? jetWorld : this.cameraRig.focusedObject && !isBlackHole && !this.showcase.active ? this.selectedBody.name : null;
+    const focusedName = hangarActive ? null : this.jet.active ? jetWorld : this.cameraRig.focusedObject && !isBlackHole && !this.showcase.active ? this.selectedBody.name : null;
     this.explorer.update(focusedName, this.cameraRig.camera, this.renderer.domElement.height);
     if (this.pendingSkyView && this.explorer.getStatus().body === this.pendingSkyView.body) {
       const p = this.pendingSkyView;
@@ -1600,10 +1648,12 @@ export class SolarSystemScene {
       (!this.jet.active && !selectedIsSpacecraft && Number.isFinite(explorerAltRadii) && explorerAltRadii < 0.35);
 
     // Suppress deep-space small-body clouds whenever landed or zoomed close onto a planetary surface
-    this.asteroidBelt.setSurfaceSuppressed(nearPlanetarySurface);
+    this.asteroidBelt.setSurfaceSuppressed(
+      nearPlanetarySurface || (hangarActive && this.hangarStudio.getState().world !== 'Observatory'),
+    );
 
     // Over a map the lens character steps aside (clean, web-map look); it returns in space
-    if (this.jet.active) {
+    if (this.jet.active || hangarActive) {
       this.lens.setEffectScale(1);
     } else if (!this.surface.isActive()) {
       const alt = this.cameraRig.altitudeInRadii();
@@ -1611,7 +1661,7 @@ export class SolarSystemScene {
     }
     (this.labels as ScreenLabels & { setSurfaceProximity?: (closeOrLanded: boolean) => void }).setSurfaceProximity?.(nearPlanetarySurface);
     this.labels.update(
-      this.jet.active ? [] : this.surface.isActive() ? this.surface.labelItems() : this.explorer.featureLabels(this.cameraRig.camera),
+      this.jet.active || hangarActive ? [] : this.surface.isActive() ? this.surface.labelItems() : this.explorer.featureLabels(this.cameraRig.camera),
       this.cameraRig.camera,
       this.container.clientWidth,
       this.container.clientHeight
@@ -1624,7 +1674,7 @@ export class SolarSystemScene {
       const pxPerRad = this.container.clientHeight / 2 / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2));
       const diskPx = (262.2 / Math.max(1, d)) * pxPerRad;
       const u = (this.sunGlint.material as THREE.ShaderMaterial).uniforms;
-      u.uAlpha.value = (1 - THREE.MathUtils.smoothstep(diskPx, 2.5, 9)) * (this.surface.isActive() ? 0 : 1);
+      u.uAlpha.value = (1 - THREE.MathUtils.smoothstep(diskPx, 2.5, 9)) * (this.surface.isActive() || hangarActive ? 0 : 1);
       u.uSize.value = THREE.MathUtils.clamp(40 / Math.pow(Math.max(1, d / UNITS_PER_AU), 0.3), 12, 40) * this.renderer.getPixelRatio();
     }
 
@@ -1632,13 +1682,16 @@ export class SolarSystemScene {
     const markersOn =
       this.userMarkers &&
       !this.jet.active &&
+      !hangarActive &&
       !nearPlanetarySurface &&
       !this.horizon?.active &&
       !isBlackHole &&
       !this.showcase.active &&
       this.cameraRig.camera.position.length() < 3500.0 * COSMIC_SCALE;
     this.markers.setVisible(markersOn);
-    if (!this.jet.active) {
+    if (hangarActive) {
+      this.updateSpacecraftAndComets(0, false, true, 0, true);
+    } else if (!this.jet.active) {
       this.updateSpacecraftAndComets(deltaSec, markersOn, nearPlanetarySurface, explorerAltRadii);
     }
     if (markersOn) {
@@ -1659,6 +1712,8 @@ export class SolarSystemScene {
     // Exposure: a sunlit world filling the frame washes the faint stars out, as on a real camera
     if (this.deepLook) {
       this.starfield.catalogueStars?.setExposure(this.deepLook.stars);
+    } else if (hangarActive) {
+      this.starfield.catalogueStars?.setExposure(this.hangarStudio.getState().world === 'Observatory' ? 1.35 : 0.65);
     } else if (this.starfield.catalogueStars && !this.jet.active) {
       const rig = this.cameraRig;
       let fill = 0;
@@ -1672,7 +1727,9 @@ export class SolarSystemScene {
     }
     // Speed as the eye judges it: relative to the scale of the view. A slow drift around the whole
     // system covers 20,000 units a second; crossing it in a flight close to a planet reads as fast
-    if (this.jet.active) {
+    if (hangarActive) {
+      this.perceivedVelocity.set(0, 0, 0);
+    } else if (this.jet.active) {
       // The jet draws its own speed field (src/flight/SpeedEffects); the observatory's travel
       // streaks around the camera read as a swirling tunnel from the cockpit, so they rest
       // In open space the observatory's travel motes streak with the jet's speed (in air the jet's
@@ -1769,6 +1826,7 @@ export class SolarSystemScene {
   public startShowcase(name: string | null, hero?: string | null): boolean {
     const subject = this.showcaseSubject(name, hero);
     if (!subject) return false;
+    if (this.hangarStudio.isActive()) this.exitHangar(false);
     if (this.surface.isActive()) this.exitSurface(false);
     this.exitHorizonView(false);
     const now = performance.now() * 0.001;
@@ -1828,6 +1886,7 @@ export class SolarSystemScene {
    */
   public enterJet(takeOffFrom?: Landmark): void {
     if (this.jet.active) return;
+    if (this.hangarStudio.isActive()) this.exitHangar(false);
     this.landedFrom = null;
     this.onJetLanding?.(null);
     if (this.surface.isActive()) this.exitSurface(false);
@@ -1952,6 +2011,285 @@ export class SolarSystemScene {
       this.hydrateDeepSpace();
       this.selectBody(world, 1600);
     }
+  }
+
+  // --- 3D Hangar Studio mode ---
+
+  public enterHangar(worldName?: string): void {
+    const targetWorld = resolveHangarWorld(
+      worldName ?? (this.jet.active ? this.jet.nearestWorld() : this.selectedBody?.name),
+    );
+    const fromJet = this.jet.active;
+    const returnWorld = fromJet ? this.jet.nearestWorld() : null;
+
+    if (this.surface.isActive()) this.exitSurface(false);
+    if (this.showcase.active) this.stopShowcase();
+    this.exitHorizonView(false);
+    if (this.visiting) this.endNebulaVisit();
+    if (targetWorld !== 'Earth') this.hydrateDeepSpace();
+
+    this.hangarFromJet = fromJet;
+    this.hangarReturnWorld = returnWorld;
+    // Enter Hangar BEFORE exitJet so React subscribers (e.g. App.tsx in /fly/) see hangarState.active === true first
+    this.hangarStudio.enter(this.container, targetWorld);
+
+    if (fromJet) this.exitJet(false);
+
+    const cam = this.cameraRig.camera;
+    if (!this.hangarSaved) {
+      this.hangarSaved = {
+        rate: this.clock.timeMultiplier,
+        paused: this.clock.isPaused,
+        fov: cam.fov,
+        orbits: this.orbitLinesGroup.visible,
+        constellations: this.starfield.areConstellationsVisible(),
+        bodyName: this.selectedBody.name,
+        moonOrbits: Array.from(this.moonOrbitLines.values()).map((l) => l.visible),
+      };
+    }
+
+    this.orbitLinesGroup.visible = false;
+    for (const l of this.moonOrbitLines.values()) l.visible = false;
+    this.starfield.travelParticles.mesh.visible = false;
+    this.starfield.setConstellationsVisible(false);
+    if (this.photoreal) this.photoreal.tiles.group.visible = false;
+    this.clock.timeMultiplier = 1;
+    this.clock.isPaused = false;
+    this.cameraRig.suspended = true;
+
+    this.lens.setLensOverride(null);
+    this.lens.setActionCam(false, 0, 0);
+    this.lens.setProjection(false);
+    this.lens.setHelmet(0, 0, 0, 0, 0);
+    this.lens.setCanopySun(0, 0, 0, false);
+    this.lens.setGodRays(0, 0, 0);
+    this.lens.setSpeedBlur(0, 0, 0);
+    this.lens.setGrey(0);
+    this.lens.setEffectScale(1);
+    this.lens.setBloomThreshold(null);
+    this.lens.setHangarBloom(true);
+    this.lens.setOverlay(this.hangarStudio.scene, this.hangarStudio.camera);
+    this.renderer.toneMappingExposure = this.hangarStudio.getState().lighting === 'studio' ? 1.1 : 1.05;
+
+    this.hangarStudio.update(0.016, performance.now() * 0.001);
+    this.updateHangarBackdrop();
+    this.updateSpacecraftAndComets(0, false, true, 0, true);
+  }
+
+  public exitHangar(restoreView = true): void {
+    if (!this.hangarStudio.isActive()) return;
+    const hangarState = this.hangarStudio.getState();
+    const fromJet = this.hangarFromJet;
+    const returnWorld = this.hangarReturnWorld;
+    this.hangarFromJet = false;
+    this.hangarReturnWorld = null;
+
+    this.hangarStudio.exit();
+    this.lens.setHangarBloom(false);
+    this.lens.setOverlay(null, null);
+    this.renderer.toneMappingExposure = 1.05;
+
+    const cam = this.cameraRig.camera;
+    const saved = this.hangarSaved;
+    this.hangarSaved = null;
+    if (saved) {
+      this.clock.timeMultiplier = saved.rate;
+      this.clock.isPaused = saved.paused;
+      cam.fov = saved.fov;
+      cam.updateProjectionMatrix();
+      this.orbitLinesGroup.visible = saved.orbits;
+      let idx = 0;
+      for (const l of this.moonOrbitLines.values()) {
+        l.visible = saved.moonOrbits[idx++] ?? saved.orbits;
+      }
+      this.starfield.setConstellationsVisible(saved.constellations);
+    }
+    this.cameraRig.suspended = false;
+    this.cameraRig.syncFromCamera();
+
+    if (!restoreView) return;
+    if (fromJet) {
+      this.launchWorldInJet(returnWorld ?? hangarState.world, hangarState);
+      return;
+    }
+    if (hangarState.world !== 'Observatory' && this.planetBundles.has(hangarState.world)) {
+      if (hangarState.world !== 'Earth') this.hydrateDeepSpace();
+      this.selectBody(hangarState.world, 1400);
+    } else if (saved?.bodyName) {
+      this.selectBody(saved.bodyName, 1400);
+    }
+  }
+
+  public isHangarActive(): boolean {
+    return this.hangarStudio.isActive();
+  }
+
+  public setHangarWorld(w: string): void {
+    if (resolveHangarWorld(w) !== 'Earth') this.hydrateDeepSpace();
+    this.hangarStudio.setWorld(w);
+  }
+
+  public setHangarAirframe(a: 'su30' | 'gripen'): void {
+    this.hangarStudio.setAirframe(a);
+  }
+
+  public setHangarSkin(s: JetSkinId): void {
+    this.hangarStudio.setSkin(s);
+  }
+
+  public setHangarCanopyTint(t: CanopyTintId): void {
+    this.hangarStudio.setCanopyTint(t);
+  }
+
+  public setHangarSmoke(s: AirshowSmokeId): void {
+    this.hangarStudio.setSmoke(s);
+  }
+
+  public setHangarLighting(l: HangarLightingPreset): void {
+    this.hangarStudio.setLighting(l);
+  }
+
+  public setHangarCameraPreset(c: HangarCameraPreset): void {
+    this.hangarStudio.setCameraPreset(c);
+  }
+
+  public setHangarAfterburner(ab: number): void {
+    this.hangarStudio.setAfterburner(ab);
+  }
+
+  public setHangarGLoad(g: number): void {
+    this.hangarStudio.setGLoad(g);
+  }
+
+  public setHangarHoloAura(on: boolean): void {
+    this.hangarStudio.setHoloAura(on);
+  }
+
+  public triggerHangarPulse(): void {
+    this.hangarStudio.triggerPulse();
+  }
+
+  public getHangarState(): HangarState {
+    return this.hangarStudio.getState();
+  }
+
+  public subscribeHangar(fn: (s: HangarState) => void): () => void {
+    return this.hangarStudio.subscribe(fn);
+  }
+
+  public deployFromHangar(): void {
+    const st = this.hangarStudio.getState();
+    try {
+      globalThis.localStorage?.setItem(AIRFRAME_KEY, st.airframe);
+    } catch {
+      /* ignore storage errors */
+    }
+    setChosenJetSkin(st.skin);
+    setChosenCanopyTint(st.canopyTint);
+    setChosenAirshowSmoke(st.smoke);
+    this.hangarFromJet = false;
+    this.hangarReturnWorld = null;
+    this.exitHangar(false);
+    this.launchWorldInJet(st.world, st);
+  }
+
+  private launchWorldInJet(worldName: string, st: HangarState): void {
+    if (worldName !== 'Observatory') {
+      const b = this.planetBundles.get(worldName);
+      if (b) {
+        if (worldName !== 'Earth') this.hydrateDeepSpace();
+        this.selectedBody = b.definition;
+      }
+    } else if (this.selectedBody.category === 'star' || this.selectedBody.category === 'black_hole') {
+      const earth = this.planetBundles.get('Earth');
+      if (earth) this.selectedBody = earth.definition;
+    }
+    this.enterJet();
+    void this.jet.setAirframe(st.airframe as AirframeId);
+    this.jet.setSkin(st.skin);
+    this.jet.setCanopyTint(st.canopyTint);
+    this.jet.setAirshowSmoke(st.smoke);
+    this.jet.setHoloAuraEnabled(st.holoAura);
+    this.jet.syncCosmetics();
+  }
+
+  private updateHangarBackdrop(): void {
+    const cam = this.cameraRig.camera;
+    const hCam = this.hangarStudio.camera;
+    const world = this.hangarStudio.getState().world;
+
+    if (world === 'Observatory') {
+      const backdropPos = this.hangarV1.set(0, 2200, 16000);
+      const gcRaw = this.starfield?.externalGalaxy?.getGalacticCenterWorldPosition?.() ?? this.hangarV2.set(-9000, -1400, 40000);
+      const gc = this.hangarV2.copy(gcRaw);
+      gc.y += 5200;
+      const windowDir = this.hangarV3.subVectors(gc, backdropPos).normalize();
+      const upRef = this.hangarV4.set(0.14, 0.99, 0).normalize();
+      const windowUp = upRef.addScaledVector(windowDir, -upRef.dot(windowDir)).normalize();
+      const windowRight = this.hangarV5.crossVectors(windowUp, windowDir).normalize();
+      this.hangarMat4.makeBasis(windowRight, windowUp, windowDir);
+      this.hangarQWorld.setFromRotationMatrix(this.hangarMat4);
+
+      cam.position.copy(backdropPos);
+      cam.quaternion.copy(this.hangarQWorld).multiply(hCam.quaternion);
+      cam.fov = hCam.fov;
+      cam.aspect = hCam.aspect;
+      cam.near = 1;
+      cam.far = 1.2e8;
+      cam.updateProjectionMatrix();
+      cam.updateMatrixWorld();
+      return;
+    }
+
+    const bundle = this.planetBundles.get(world) ?? this.planetBundles.get('Earth');
+    if (!bundle) return;
+    if (bundle.atmosphereMesh) bundle.atmosphereMesh.visible = true;
+    if (bundle.cloudMesh) bundle.cloudMesh.visible = true;
+    if (bundle.ringMesh) bundle.ringMesh.visible = true;
+
+    const planetPos = bundle.bodyGroup.getWorldPosition(this.hangarV1);
+    const R = Math.max(0.5, bundle.visualRadius);
+    const toSun = this.hangarV2.copy(planetPos);
+    if (toSun.lengthSq() > 1e-6) toSun.negate().normalize();
+    else toSun.set(0, 0, 1);
+
+    const pole = this.hangarV3.set(0, 1, 0).applyQuaternion(bundle.bodyGroup.quaternion).normalize();
+    const eastSun = this.hangarV4.crossVectors(pole, toSun);
+    if (eastSun.lengthSq() < 1e-6) eastSun.crossVectors(new THREE.Vector3(1, 0, 0), toSun);
+    eastSun.normalize();
+
+    const isSaturn = world === 'Saturn';
+    const elev = isSaturn ? 0.38 : 0.2;
+    const dist = R * (isSaturn ? 3.45 : 1.98);
+    const fromPlanet = this.hangarV5
+      .copy(toSun)
+      .multiplyScalar(isSaturn ? 0.68 : 0.72)
+      .addScaledVector(eastSun, isSaturn ? 0.62 : 0.66)
+      .addScaledVector(pole, elev)
+      .normalize();
+
+    const backdropPos = planetPos.clone().addScaledVector(fromPlanet, dist);
+    const aimPoint = planetPos
+      .clone()
+      .addScaledVector(pole, R * (isSaturn ? 0.14 : 0.36))
+      .addScaledVector(eastSun, -R * 0.14);
+    const windowDir = aimPoint.sub(backdropPos).normalize();
+    const windowUp = pole.clone().addScaledVector(windowDir, -pole.dot(windowDir));
+    if (windowUp.lengthSq() < 1e-6) windowUp.set(0, 1, 0);
+    windowUp.normalize();
+    const windowRight = new THREE.Vector3().crossVectors(windowUp, windowDir).normalize();
+
+    this.hangarMat4.makeBasis(windowRight, windowUp, windowDir);
+    this.hangarQWorld.setFromRotationMatrix(this.hangarMat4);
+
+    cam.position.copy(backdropPos);
+    cam.quaternion.copy(this.hangarQWorld).multiply(hCam.quaternion);
+    cam.fov = hCam.fov;
+    cam.aspect = hCam.aspect;
+    cam.near = Math.max(0.05, R * 0.02);
+    cam.far = Math.max(1.25e8, backdropPos.length() * 2.5);
+    cam.updateProjectionMatrix();
+    cam.updateMatrixWorld();
   }
 
   /** Sgr A* as a jet target: it lives in the galaxy, not among the planet bundles. */
@@ -2267,7 +2605,7 @@ export class SolarSystemScene {
     if (this.gate.mode !== 'hold') {
       TexturePipeline.getInstance().flushPendingUploads(this.renderer, (tex) => this.gate.tryUploadTexture(tex));
     }
-    if (this.jet.active || this.surface.isActive()) {
+    if (this.jet.active || this.surface.isActive() || this.hangarStudio.isActive()) {
       this.orbitLinesGroup.visible = false;
       for (const l of this.moonOrbitLines.values()) l.visible = false;
       this.starfield.setConstellationsVisible(false);
@@ -2672,6 +3010,16 @@ export class SolarSystemScene {
     if (!earth) return;
     const cam = this.cameraRig.camera;
     const centre = earth.bodyGroup.getWorldPosition(this.hiResTmp);
+    if (this.hangarStudio.isActive()) {
+      if (p) p.tiles.group.visible = false;
+      if (this.city) this.city.group.visible = false;
+      if (this.jetSky) this.jetSky.mesh.visible = false;
+      this.earthClouds?.hide();
+      this.setFineGlobe(earth, false);
+      if (earth.atmosphereMesh) earth.atmosphereMesh.visible = true;
+      this.updateNightLight(earth, cam.position, centre);
+      return;
+    }
     const kmPerUnit = earth.definition.physical.meanRadiusKm / earth.visualRadius;
     const altKm = (cam.position.distanceTo(centre) - earth.visualRadius) * kmPerUnit;
     const deepLand = this.surface.isActive() && !!this.surface.getStatus()?.deepTime;
@@ -3278,6 +3626,7 @@ export class SolarSystemScene {
     showReticles = true,
     suppressForSurface = false,
     focusedBodyAltitudeRadii = Infinity,
+    hideAll = false,
   ): void {
     if (!this.spacecraftLayer) return;
     const cam = this.cameraRig.camera;
@@ -3285,13 +3634,13 @@ export class SolarSystemScene {
     if (!this.jet.active) {
       for (const c of this.comets) {
         if (c.spec.modelPath) {
-          const visible = !suppressForSurface || this.selectedBody.id === `comet:${c.spec.name}`;
+          const visible = !hideAll && (!suppressForSurface || this.selectedBody.id === `comet:${c.spec.name}`);
           c.group.visible = visible;
           if (visible) c.update(deltaSec, cam);
         }
       }
     }
-    const focusedBundle = this.selectedBody ? this.planetBundles.get(this.selectedBody.name) : undefined;
+    const focusedBundle = !hideAll && this.selectedBody ? this.planetBundles.get(this.selectedBody.name) : undefined;
     const focusedBodyPos = focusedBundle ? focusedBundle.bodyGroup.getWorldPosition(this.tmpFocusedPos) : null;
     const focusedBodyRadius = focusedBundle?.visualRadius ?? 0;
     const w = this.container.clientWidth;
@@ -3301,25 +3650,26 @@ export class SolarSystemScene {
       jdTDB: this.clock.getJulianDateTDB(),
       camera: cam,
       resolver: this.getParentResolver(),
-      focusedName: this.selectedBody?.name ?? null,
-      jetLockedName: this.jet.active ? this.jet.target : null,
+      focusedName: hideAll ? null : (this.selectedBody?.name ?? null),
+      jetLockedName: hideAll ? null : (this.jet.active ? this.jet.target : null),
       jetActive: this.jet.active,
       deltaSec,
-      suppressForSurface,
-      deferStreaming: this.flyMode && !this.deepSpaceHydrated,
-      focusedBodyPos,
-      focusedBodyRadius,
+      suppressForSurface: hideAll || suppressForSurface,
+      deferStreaming: hideAll || (this.flyMode && !this.deepSpaceHydrated),
+      focusedBodyPos: hideAll ? null : focusedBodyPos,
+      focusedBodyRadius: hideAll ? 0 : focusedBodyRadius,
       focusedBodyAltitudeRadii,
       topSafeY: this.getTopNavbarSafeY(),
-      projectWorldToScreen: showReticles
-        ? (world) => {
-            const p = this.tmpMarker.copy(world).project(cam);
-            if (p.z > 1 || p.z < -1) return null;
-            const [ox, oy] = this.lens.sceneToOutputNdc(p.x, p.y, aspect);
-            if (Math.abs(ox) > 1.02 || Math.abs(oy) > 1.02) return null;
-            return { x: (ox * 0.5 + 0.5) * w, y: (-oy * 0.5 + 0.5) * h };
-          }
-        : () => null,
+      projectWorldToScreen:
+        showReticles && !hideAll
+          ? (world) => {
+              const p = this.tmpMarker.copy(world).project(cam);
+              if (p.z > 1 || p.z < -1) return null;
+              const [ox, oy] = this.lens.sceneToOutputNdc(p.x, p.y, aspect);
+              if (Math.abs(ox) > 1.02 || Math.abs(oy) > 1.02) return null;
+              return { x: (ox * 0.5 + 0.5) * w, y: (-oy * 0.5 + 0.5) * h };
+            }
+          : () => null,
     });
   }
 
@@ -3449,6 +3799,7 @@ export class SolarSystemScene {
     }
     this.isRunning = false;
     this.horizon?.dispose();
+    this.hangarStudio?.dispose();
     this.jet.dispose();
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);

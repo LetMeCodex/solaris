@@ -1004,9 +1004,10 @@ const MANEUVER_HINTS: Record<ManeuverKind, string> = {
 interface JetHUDProps {
   controller: JetController;
   onExit: () => void;
+  onOpenHangar?: () => void;
 }
 
-export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
+export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit, onOpenHangar }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cobraHintSecRef = useRef(0);
   const [slow, setSlow] = useState({
@@ -1551,6 +1552,42 @@ export const JetHUD: React.FC<JetHUDProps> = ({ controller, onExit }) => {
           onClick={() => { if (slow.landing) controller.cancelLanding(); else controller.landMenu = !controller.landMenu; setListOpen(false); }}
         />
         <IconButton icon={`view-${controller.view}` as IconName} label="Camera" state={String(slow.view)} title="Camera: chase, cockpit, GoPro, fly-by (C)" onClick={() => controller.cycleView()} />
+        {onOpenHangar && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenHangar();
+            }}
+            title="Open 3D Hangar · Liveries, Canopy & Smoke"
+            aria-label="Hangar"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              height: compact ? 36 : 30,
+              padding: narrow ? '0 8px' : '0 10px',
+              borderRadius: 999,
+              background: 'rgba(14, 12, 10, 0.72)',
+              border: '1px solid rgba(244, 205, 114, 0.42)',
+              color: '#f4cd72',
+              fontFamily: 'var(--sol-mono, monospace)',
+              fontSize: 10,
+              letterSpacing: '0.14em',
+              cursor: 'pointer',
+              pointerEvents: 'auto',
+              backdropFilter: 'blur(6px)',
+              WebkitBackdropFilter: 'blur(6px)',
+            }}
+          >
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <path d="M3 10.5 12 4l9 6.5" />
+              <path d="M5 9.5V20h14V9.5" />
+              <path d="M9 20v-5.5h6V20" />
+            </svg>
+            {!narrow && <span>HANGAR</span>}
+          </button>
+        )}
         {compact ? (
           <IconButton icon="menu" label="More" on={menuOpen} ariaExpanded={menuOpen} title="More controls" onClick={() => { setMenuOpen((o) => !o); setListOpen(false); controller.landMenu = false; }} />
         ) : (

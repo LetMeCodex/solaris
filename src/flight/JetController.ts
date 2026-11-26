@@ -5,8 +5,23 @@ import { perf } from '../rendering/Performance';
 import { PhotorealEarth } from '../rendering/PhotorealEarth';
 import type { PlanetMeshBundle } from '../rendering/PlanetFactory';
 import { FlightModel, FlightInput, airDensity, gapKm, localKmPerUnit, resolveSurfaceContact, unitsPerMps, UNIVERSE_RADIUS_UNITS } from './FlightModel';
-import { AIRFRAMES, chosenAirframe, JetModel, JET_LENGTH_M } from './JetModel';
+import { AIRFRAMES, AIRFRAME_KEY, chosenAirframe, JetModel, JET_LENGTH_M, type AirframeAnchors, type AirframeId } from './JetModel';
 import { SpeedField, ShockEffects, ExhaustSmoke, VortexRig } from './SpeedEffects';
+import {
+  AIRSHOW_SMOKE_BY_ID,
+  chosenAirshowSmoke,
+  chosenCanopyTint,
+  chosenHoloAura,
+  chosenJetSkin,
+  nextAirshowSmoke,
+  setChosenAirshowSmoke,
+  setChosenCanopyTint,
+  setChosenHoloAura,
+  setChosenJetSkin,
+  type AirshowSmokeId,
+  type CanopyTintId,
+  type JetSkinId,
+} from './JetSkins';
 import {
   type JetView,
   type JetMarker,
@@ -150,8 +165,19 @@ const TARGET_ORDER = ['Mercury', 'Venus', 'Earth', 'Moon', 'Mars', 'Phobos', 'Ce
 
 export class JetController {
   /** The airframe flown (a setting: Gripen or Su-30MKK). */
-  public readonly airframeId = chosenAirframe();
-  public readonly airframe = AIRFRAMES[this.airframeId];
+  public airframeId: AirframeId = chosenAirframe();
+  public airframe = AIRFRAMES[this.airframeId];
+  private skinId: JetSkinId = chosenJetSkin();
+  private canopyTint: CanopyTintId = chosenCanopyTint();
+  private airshowSmoke: AirshowSmokeId = chosenAirshowSmoke();
+  private holoAuraEnabled: boolean = chosenHoloAura();
+  private lastNonOffSmoke: AirshowSmokeId = this.airshowSmoke === 'off' ? 'ember' : this.airshowSmoke;
+  private prevJetRates = new THREE.Vector3();
+  private maneuverJerk = 0;
+  private prevGLoad = 1;
+  private airframeLoadSeq = 0;
+  private lastAirshowWorld = new THREE.Vector3();
+  private lastAirshowValid = false;
   public active = false;
   public view: JetView = 'chase';
   public assist = true;
@@ -523,6 +549,8 @@ export class JetController {
     this.overlayScene.environment = this.envTarget.texture;
     this.vortex.addTo(this.overlayScene);
     this.overlayScene.add(this.smoke.mesh, this.flare.group, this.asteroids.group, this.weather.group, this.sky.group);
+    this.smoke.setAirshowSmoke(this.airshowSmoke);
+    this.vortex.setAirshowSmoke(this.airshowSmoke);
     // (development: the jet from the console, e.g. __jet.director.event('awe'))
     if (import.meta.env.DEV) (window as unknown as { __jet?: JetController }).__jet = this;
     this.weather.onLightning = (km) => {
@@ -539,9 +567,154 @@ export class JetController {
     this.ensureModel();
   }
 
+  public setSkin(id: JetSkinId): void {
+    this.skinId = id;
+    setChosenJetSkin(id);
+    this.model?.setSkin(id);
+  }
+
+  public getSkin(): JetSkinId {
+    return this.skinId;
+  }
+
+  public setCanopyTint(tint: CanopyTintId): void {
+    this.canopyTint = tint;
+    setChosenCanopyTint(tint);
+    this.model?.setCanopyTint(tint);
+  }
+
+  public getCanopyTint(): CanopyTintId {
+    return this.canopyTint;
+  }
+
+  public setAirshowSmoke(mode: AirshowSmokeId): void {
+    this.airshowSmoke = mode;
+    if (mode !== 'off') this.lastNonOffSmoke = mode;
+    setChosenAirshowSmoke(mode);
+    this.smoke.setAirshowSmoke(mode);
+    this.vortex.setAirshowSmoke(mode);
+  }
+
+  public getAirshowSmoke(): AirshowSmokeId {
+    return this.airshowSmoke;
+  }
+
+  public toggleAirshowSmoke(): void {
+    const next = this.airshowSmoke === 'off' ? this.lastNonOffSmoke : 'off';
+    this.setAirshowSmoke(next);
+    if (next !== 'off') this.model?.triggerSkinPulse();
+    this.radio(
+      next === 'off'
+        ? 'AIRSHOW SMOKE · OFF'
+        : `AIRSHOW SMOKE · ${AIRSHOW_SMOKE_BY_ID[next].name.toUpperCase()}`,
+      2.4,
+    );
+  }
+
+  public setHoloAuraEnabled(on: boolean): void {
+    this.holoAuraEnabled = on;
+    setChosenHoloAura(on);
+    this.model?.setHoloAuraEnabled(on);
+  }
+
+  public cycleAirshowSmoke(): void {
+    const next = nextAirshowSmoke(this.airshowSmoke);
+    this.setAirshowSmoke(next);
+    if (next !== 'off') this.model?.triggerSkinPulse();
+    this.radio(
+      next === 'off'
+        ? 'AIRSHOW SMOKE · OFF'
+        : `AIRSHOW SMOKE · ${AIRSHOW_SMOKE_BY_ID[next].name.toUpperCase()}`,
+      2.4,
+    );
+  }
+
+  /** Sync skin, canopy tint, Holo Aura, and airshow smoke from persisted Hangar/browser settings. */
+  public syncCosmetics(): void {
+    this.setSkin(chosenJetSkin());
+    this.setCanopyTint(chosenCanopyTint());
+    this.setHoloAuraEnabled(chosenHoloAura());
+    this.setAirshowSmoke(chosenAirshowSmoke());
+  }
+
+  /** Hot-swap the active airframe (`'su30'` or `'gripen'`) cleanly from Hangar or settings. */
+  public async setAirframe(id: AirframeId): Promise<void> {
+    try {
+      localStorage.setItem(AIRFRAME_KEY, id);
+    } catch {
+      /* storage blocked */
+    }
+    const nextSpec = AIRFRAMES[id];
+    const changed = this.airframeId !== id;
+    this.airframeId = id;
+    this.airframe = nextSpec;
+    this.flight.setAirframe(id, false);
+    this.telemetry.airframeId = id;
+    this.telemetry.airframeName = nextSpec.anchors.name;
+    this.syncCosmetics();
+    if (!this.model) {
+      this.ensureModel();
+      return;
+    }
+    if (!changed && this.model.airframe) {
+      this.syncCosmetics();
+      return;
+    }
+    const seq = ++this.airframeLoadSeq;
+    const model = this.model;
+    this.glints?.dispose();
+    this.glints = null;
+    if (this.hudGlass) {
+      this.hudGlass.mesh.removeFromParent();
+      this.hudGlass.dispose();
+      this.hudGlass = null;
+    }
+    this.controls?.dispose();
+    this.controls = null;
+    model.setSkin(this.skinId);
+    model.setCanopyTint(this.canopyTint);
+    model.setHoloAuraEnabled(this.holoAuraEnabled);
+    const fullUrl = import.meta.env.BASE_URL + nextSpec.url;
+    try {
+      await model.loadAirframe(fullUrl, nextSpec.anchors, true);
+      if (this.model !== model || seq !== this.airframeLoadSeq) return;
+      this.attachLoadedAirframe(model, nextSpec.anchors);
+      this.syncCosmetics();
+    } catch (err) {
+      console.warn('[Solaris] airframe hot-swap fallback:', err);
+    }
+  }
+
+  private attachLoadedAirframe(model: JetModel, anchors: AirframeAnchors): void {
+    this.fallbackAircraftReady = false;
+    this.cockpitLight.position.copy(model.eye).add(new THREE.Vector3(0, -0.25, -0.5));
+    this.mirrorCount = this.mirror.attach(model.root, (m) => m.name.startsWith('dynamic_mirror'));
+    this.mfdCount = this.mfd.attach(model.root);
+    // Close behind: the jet fills the frame (wheel + Shift pulls back)
+    this.chaseDist = model.length * 0.82;
+    this.shock.group.scale.setScalar(model.length / JET_LENGTH_M);
+    const half = model.length * 0.56;
+    const sc = this.sun.shadow.camera;
+    sc.left = -half;
+    sc.right = half;
+    sc.top = half;
+    sc.bottom = -half;
+    sc.near = 24;
+    sc.far = 58;
+    sc.updateProjectionMatrix();
+    if (anchors.cockpit) this.controls = new CockpitControls(model, anchors.cockpit);
+    if (model.hud) {
+      this.hudGlass = new HudGlass(model.hud.centre, model.eye, model.hud.widthM);
+      model.root.add(this.hudGlass.mesh);
+    }
+  }
+
   private ensureModel(): JetModel {
     if (!this.model) {
       this.model = new JetModel();
+      this.model.setSkin(this.skinId);
+      this.model.setCanopyTint(this.canopyTint);
+      this.model.setHoloAuraEnabled(this.holoAuraEnabled);
       this.jetGroup.add(this.model.root);
       this.cockpit = new Cockpit();
       this.model.root.add(this.cockpit.group);
@@ -552,25 +725,7 @@ export class JetController {
       const model = this.model;
       const { url, anchors } = this.airframe;
       const fullUrl = import.meta.env.BASE_URL + url;
-      const attachLoadedAirframe = (): void => {
-        this.fallbackAircraftReady = false;
-        this.cockpitLight.position.copy(model.eye).add(new THREE.Vector3(0, -0.25, -0.5));
-        this.mirrorCount = this.mirror.attach(model.root, (m) => m.name.startsWith('dynamic_mirror'));
-        this.mfdCount = this.mfd.attach(model.root);
-        // Close behind: the jet fills the frame (wheel + Shift pulls back)
-        this.chaseDist = model.length * 0.82;
-        this.shock.group.scale.setScalar(model.length / JET_LENGTH_M);
-        const half = model.length * 0.56;
-        const sc = this.sun.shadow.camera;
-        sc.left = -half; sc.right = half; sc.top = half; sc.bottom = -half;
-        sc.near = 24; sc.far = 58;
-        sc.updateProjectionMatrix();
-        if (anchors.cockpit) this.controls = new CockpitControls(model, anchors.cockpit);
-        if (model.hud) {
-          this.hudGlass = new HudGlass(model.hud.centre, model.eye, model.hud.widthM);
-          model.root.add(this.hudGlass.mesh);
-        }
-      };
+      const seq = ++this.airframeLoadSeq;
       const loadWithRetry = async (): Promise<void> => {
         const retryDelaysMs = [0, 700, 1800, 3500];
         let lastErr: unknown = null;
@@ -578,17 +733,19 @@ export class JetController {
           if (retryDelaysMs[attempt] > 0) {
             await new Promise((r) => window.setTimeout(r, retryDelaysMs[attempt]));
           }
-          if (this.model !== model) return;
+          if (this.model !== model || seq !== this.airframeLoadSeq) return;
           try {
             const bustUrl = attempt === 0 ? fullUrl : `${fullUrl}${fullUrl.includes('?') ? '&' : '?'}r=${attempt}`;
             await model.loadAirframe(bustUrl, anchors);
-            if (this.model !== model) return;
-            attachLoadedAirframe();
+            if (this.model !== model || seq !== this.airframeLoadSeq) return;
+            this.attachLoadedAirframe(model, anchors);
+            this.syncCosmetics();
             return;
           } catch (err) {
             lastErr = err;
           }
         }
+        if (this.model !== model || seq !== this.airframeLoadSeq) return;
         console.warn('[Solaris] jet model delayed; flying built-in airframe while retrying', lastErr);
         model.showBuiltIn();
         this.chaseDist = JET_LENGTH_M * 0.90;
@@ -596,11 +753,12 @@ export class JetController {
         // Quiet background hot-swap recovery if connectivity returns later in flight
         for (let bg = 1; bg <= 3; bg++) {
           await new Promise((r) => window.setTimeout(r, 9000 * bg));
-          if (this.model !== model || model.airframe) return;
+          if (this.model !== model || seq !== this.airframeLoadSeq || model.airframe) return;
           try {
             await model.loadAirframe(`${fullUrl}${fullUrl.includes('?') ? '&' : '?'}bg=${bg}`, anchors);
-            if (this.model !== model) return;
-            attachLoadedAirframe();
+            if (this.model !== model || seq !== this.airframeLoadSeq) return;
+            this.attachLoadedAirframe(model, anchors);
+            this.syncCosmetics();
             return;
           } catch {
             /* keep flying built-in until next quiet retry */
@@ -725,6 +883,10 @@ export class JetController {
     this.lastGpwsRadioAt = 0;
     this.lastFrameMs = 0;
     if (options.takeOffFrom) this.placeAtLandmark(options.takeOffFrom);
+    this.syncCosmetics();
+    this.lastAirshowValid = false;
+    this.maneuverJerk = 0;
+    this.prevJetRates.set(0, 0, 0);
     this.vortex.clear();
     this.smoke.clear();
 
@@ -1053,6 +1215,10 @@ export class JetController {
       if (k === 'z') this.zFpvHoldLatched = true;
       this.flight.toggleFpvHold();
     }
+    else if (k === '2') {
+      if (e.shiftKey) this.cycleAirshowSmoke();
+      else this.toggleAirshowSmoke();
+    }
     else if (k >= '0' && k <= '9') this.throttle = k === '0' ? 1 : Number(k) / 10;
   };
 
@@ -1328,6 +1494,10 @@ export class JetController {
     for (const l of this.lastNozzleWorld) {
       if (rot) l.p.sub(centre).applyQuaternion(rot).add(centre);
       else l.p.add(delta);
+    }
+    if (this.lastAirshowValid) {
+      if (rot) this.lastAirshowWorld.sub(centre).applyQuaternion(rot).add(centre);
+      else this.lastAirshowWorld.add(delta);
     }
   }
 
@@ -1633,6 +1803,7 @@ export class JetController {
     this.vortex.clear();
     this.smoke.clear();
     for (const l of this.lastNozzleWorld) l.valid = false;
+    this.lastAirshowValid = false;
     return true;
   }
 
@@ -3213,22 +3384,38 @@ export class JetController {
 
     // --- Engines, motes, vortex ribbons, shock cones, tire & exhaust smoke
     const boost = f.boosting ? 1 : 0;
+    const rawJerk = dt > 1e-4 ? this.v1.subVectors(f.rates, this.prevJetRates).length() / dt : 0;
+    this.prevJetRates.copy(f.rates);
+    this.maneuverJerk += (THREE.MathUtils.clamp(rawJerk * 0.25, 0, 1.8) - this.maneuverJerk) * (1 - Math.exp(-8 * dt));
+    const dayLit = THREE.MathUtils.smoothstep(this.lastSunUp, -0.15, 0.25) * lit;
+    const ambientDarkness = THREE.MathUtils.clamp(1 - dayLit, 0, 1);
+    this.model.setSkinCameraWorld(this.overlayCamera.getWorldPosition(this.v1));
+    this.model.setWorldTint(col);
     this.model.update(timeSec, this.throttle, boost, 1 - Math.min(1, density * 8), {
       dt,
       surfaces: f.surfaces,
       aoaDeg: f.aoaDeg,
+      airspeedMps: speedMps,
       mach,
       gLoad: f.gLoad,
       airDensity: density,
       qPa: f.dynamicPressurePa,
       abStage: f.abStage,
+      boost,
+      ambientDarkness,
+      maneuverJerk: this.maneuverJerk,
       onGround: f.onGround,
       groundSpeedMs: speedMps,
     });
     this.shock.update(dt, timeSec, this.heat * (isSun ? 0.6 : 1), mach, density, f.aoaDeg);
-    if (f.abStage === 3 && this.prevAbStage < 3 && density > 0.05) {
-      this.shock.triggerShockCollar();
+    if (f.abStage === 3 && this.prevAbStage < 3) {
+      if (density > 0.05) this.shock.triggerShockCollar();
+      this.model.triggerSkinPulse();
     }
+    if (f.gLoad >= 6.8 && this.prevGLoad < 6.8) {
+      this.model.triggerSkinPulse();
+    }
+    this.prevGLoad = f.gLoad;
     this.prevAbStage = f.abStage;
 
     // Motes stream past at the jet's speed relative to the air (or to the world it rides)
@@ -3303,6 +3490,32 @@ export class JetController {
       }
     } else {
       for (const l of this.lastNozzleWorld) l.valid = false;
+    }
+    // Airshow smoke trail ('2' key toggle): vibrant colored volumetric plume from center smoke pod
+    if (this.airshowSmoke !== 'off' && speedMps > 15 && speedMps < 4500 && !f.onGround) {
+      const spec = AIRSHOW_SMOKE_BY_ID[this.airshowSmoke];
+      const smokeOrigin = this.model.nozzles.length > 1
+        ? this.v2.lerpVectors(this.model.nozzles[0], this.model.nozzles[1], 0.5).setY(this.model.nozzles[0].y + 0.12)
+        : this.v2.copy(this.model.nozzles[0]);
+      const nowSmoke = emitTo(smokeOrigin, this.v3).clone();
+      if (!this.lastAirshowValid) {
+        this.lastAirshowWorld.copy(nowSmoke);
+        this.lastAirshowValid = true;
+      }
+      const gapM = this.lastAirshowWorld.distanceTo(nowSmoke) * mpu;
+      const airScale = Math.max(0.45, Math.min(1, density * 3));
+      const speedFade = THREE.MathUtils.smoothstep(speedMps, 15, 45);
+      if (gapM >= 1.2) {
+        const steps = Math.min(10, Math.max(1, Math.ceil(gapM / 3.0)));
+        for (let k = 1; k <= steps; k++) {
+          const p = this.v1.lerpVectors(this.lastAirshowWorld, nowSmoke, k / steps);
+          const col = this.airshowSmoke === 'ember' && k % 2 === 0 ? spec.accentHex : spec.colorHex;
+          this.smoke.emit(p, this.model.length * 0.072, 4.5, 4.2, 0.58 * airScale * speedFade, col);
+        }
+        this.lastAirshowWorld.copy(nowSmoke);
+      }
+    } else {
+      this.lastAirshowValid = false;
     }
     this.wasBoosting = f.boosting;
     // Weather in the air the jet is in
